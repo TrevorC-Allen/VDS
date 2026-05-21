@@ -23,6 +23,7 @@ class WorkflowState:
     chart: Any = None
     final_response: Any = None
     trace: Any = None
+    tool_call_trace: list[Any] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[Any] = field(default_factory=list)
 

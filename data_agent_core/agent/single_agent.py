@@ -12,7 +12,7 @@ from data_agent_core.contracts.analysis_contracts import UserQuestion
 from data_agent_core.contracts.response_contracts import ChartSpec, FinalResponse, InsightResult
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.core.file_parser import load_dabstep_context
-from data_agent_core.core.intent_parser import parse_question
+from data_agent_core.core.intent_parser import parse_generic_table_question, parse_question
 from data_agent_core.executors import pandas_executor, sql_executor
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMStageResult, complete_stage_with_llm, plan_with_llm
@@ -24,6 +24,7 @@ from data_agent_core.verifier.rule_checker import verify_execution
 
 
 SQL_COMPATIBLE_OPERATIONS = {"top_count", "group_average", "not_applicable"}
+GENERIC_SQL_COMPATIBLE_OPERATIONS = {"aggregation", "ranking", "not_applicable"}
 
 SINGLE_AGENT_CHAIN = [
     "llm_intent_parser",
@@ -487,3 +488,187 @@ class DataAnalysisAgent:
     def _short_text(self, value: Any, limit: int = 500) -> str:
         text = str(value or "")
         return text if len(text) <= limit else text[:limit] + "..."
+
+
+class UploadedDatasetAgent(DataAnalysisAgent):
+    """Single-agent workflow for user-uploaded CSV / Excel tables."""
+
+    def __init__(
+        self,
+        tables: dict[str, Any],
+        dataset_id: str,
+        llm_client: LLMClient | None = None,
+    ) -> None:
+        self.context_dir = Path(".")
+        self.dataset_id = dataset_id
+        self.context = {"tables": tables, "primary_table": self._primary_table_name(tables)}
+        self.llm_client = llm_client or load_llm_client_from_env()
+
+    def analyze(self, question: str, guidelines: str = "", execution_mode: str = "auto") -> tuple[FinalResponse, RunTrace]:
+        """Analyze a question over uploaded tables using the standard chain."""
+
+        start = time.perf_counter()
+        run_id = "run_" + uuid.uuid4().hex[:16]
+        context_summary = self._context_summary()
+        user_question = UserQuestion(
+            dataset_id=self.dataset_id,
+            question=question,
+            execution_mode=execution_mode,
+            guidelines=guidelines,
+        )
+        llm_intent = self._llm_intent_stage(question, guidelines, context_summary)
+        guardrail_logic_form = parse_generic_table_question(question, self.context["tables"], guidelines)
+        column_mapping = self._rule_column_mapping(guardrail_logic_form)
+        llm_column_mapping = self._llm_column_mapping_stage(
+            question=question,
+            guidelines=guidelines,
+            context_summary=context_summary,
+            llm_intent=llm_intent,
+            rule_column_mapping=column_mapping,
+        )
+        llm_plan = plan_with_llm(
+            llm_client=self.llm_client,
+            question=question,
+            guidelines=guidelines,
+            context_summary=context_summary | {"rule_column_mapping": column_mapping},
+        )
+        logic_form = self._validated_logic_form(llm_plan.logic_form, guardrail_logic_form)
+        plan = build_analysis_plan(logic_form)
+        pandas_result = pandas_executor.execute_plan(plan, self.context)
+        sql_result = None
+        comparison = None
+        if execution_mode in {"auto", "dual", "sql"} and logic_form.operation in GENERIC_SQL_COMPATIBLE_OPERATIONS:
+            sql_result = sql_executor.execute_plan(plan, self.context)
+            comparison = compare_results(pandas_result, sql_result)
+        normalizer_summary = self._result_normalizer_summary(pandas_result, sql_result, comparison)
+        verification = verify_execution(pandas_result, comparison)
+        llm_verifier_critic = self._llm_verifier_critic_stage(
+            question=question,
+            guidelines=guidelines,
+            context_summary=context_summary,
+            plan=plan,
+            pandas_result=pandas_result,
+            sql_result=sql_result,
+            verification=verification,
+        )
+        llm_correction_plan = self._llm_correction_stage(
+            question=question,
+            guidelines=guidelines,
+            context_summary=context_summary,
+            verification=verification,
+            verifier_critic=llm_verifier_critic,
+        )
+        llm_insight = self._llm_insight_stage(
+            question=question,
+            guidelines=guidelines,
+            context_summary=context_summary,
+            answer=str(pandas_result.value),
+            verification=verification,
+        )
+        rule_chart = self._rule_chart_spec(plan, pandas_result, verification.passed)
+        llm_chart = self._llm_chart_stage(
+            question=question,
+            guidelines=guidelines,
+            context_summary=context_summary,
+            plan=plan,
+            rule_chart=rule_chart,
+            verification=verification,
+        )
+        stage_summaries = {
+            "intent_parser": self._stage_summary(llm_intent),
+            "column_mapping": self._stage_summary(llm_column_mapping),
+            "analysis_planner": {
+                "stage_name": "analysis_planner",
+                "confidence": llm_plan.confidence,
+                "reasoning_summary": self._short_text(llm_plan.reasoning_summary),
+                "llm_operation": llm_plan.logic_form.operation,
+                "selected_operation": logic_form.operation,
+                "guardrail_applied": llm_plan.logic_form.operation != logic_form.operation,
+            },
+            "verifier_critic": self._stage_summary(llm_verifier_critic),
+            "correction_planner": self._stage_summary(llm_correction_plan),
+            "insight_generator": self._stage_summary(llm_insight),
+            "chart_planner": self._stage_summary(llm_chart),
+        }
+        response = build_response(
+            run_id=run_id,
+            user_question=user_question,
+            plan=plan,
+            execution_result=pandas_result,
+            verification=verification,
+            debug={
+                "pandas_success": pandas_result.success,
+                "sql_success": None if sql_result is None else sql_result.success,
+                "operation": logic_form.operation,
+                "llm_used": True,
+                "llm_operation": llm_plan.logic_form.operation,
+                "llm_confidence": llm_plan.confidence,
+                "single_agent_chain": SINGLE_AGENT_CHAIN,
+                "llm_stage_summaries": stage_summaries,
+                "column_mapping": column_mapping,
+            },
+        )
+        response.insight = self._insight_from_stage(response.answer, verification.passed, llm_insight)
+        response.chart = self._chart_from_stage(rule_chart, llm_chart, verification.passed)
+        trace = RunTrace(
+            run_id=run_id,
+            dataset_id=self.dataset_id,
+            question=question,
+            intent_summary=stage_summaries["intent_parser"],
+            column_mapping_summary={"rule_mapping": column_mapping, "llm_summary": stage_summaries["column_mapping"]},
+            analysis_planner_summary=stage_summaries["analysis_planner"],
+            logic_form=response.logic_form,
+            analysis_plan={"plan_id": plan.plan_id, "steps": plan.steps},
+            llm_plan_summary={
+                "llm_operation": llm_plan.logic_form.operation,
+                "selected_operation": logic_form.operation,
+                "guardrail_applied": llm_plan.logic_form.operation != logic_form.operation,
+                "confidence": llm_plan.confidence,
+                "reasoning_summary": self._short_text(llm_plan.reasoning_summary),
+            },
+            pandas_result_summary={"success": pandas_result.success, "value": pandas_result.value},
+            sql_result_summary=None if sql_result is None else {"success": sql_result.success, "value": sql_result.value},
+            result_normalizer_summary=normalizer_summary,
+            verification_result=response.verification,
+            verifier_critic_summary=stage_summaries["verifier_critic"],
+            correction_plan_summary=stage_summaries["correction_planner"],
+            insight_summary=stage_summaries["insight_generator"],
+            chart_plan_summary=stage_summaries["chart_planner"],
+            final_response={"answer": response.answer, "success": response.success},
+            latency_ms=(time.perf_counter() - start) * 1000,
+            errors=response.errors,
+            warnings=response.warnings,
+        )
+        return response, trace
+
+    def _context_summary(self) -> dict[str, Any]:
+        return {
+            "tables": {
+                name: {"columns": list(df.columns), "row_count": int(len(df))}
+                for name, df in self.context["tables"].items()
+            },
+            "knowledge_files": [],
+        }
+
+    def _rule_column_mapping(self, logic_form: Any) -> dict[str, Any]:
+        tables = self.context["tables"]
+        table_name = str(logic_form.parameters.get("table") or self.context["primary_table"])
+        df = tables[table_name]
+        available_columns = list(df.columns)
+        available = set(available_columns)
+        mapped_columns: dict[str, str] = {}
+        for key, value in logic_form.parameters.items():
+            if isinstance(value, str) and value in available:
+                mapped_columns[key] = value
+        return {
+            "table": table_name,
+            "available_columns": available_columns,
+            "mapped_columns": mapped_columns,
+            "knowledge_fields": [],
+            "unmapped_terms": [],
+        }
+
+    def _primary_table_name(self, tables: dict[str, Any]) -> str:
+        if not tables:
+            raise ValueError("UploadedDatasetAgent requires at least one table.")
+        return max(tables.items(), key=lambda item: (len(item[1]), len(item[1].columns)))[0]

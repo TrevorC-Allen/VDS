@@ -24,8 +24,11 @@ class VerificationResult:
     passed: bool
     confidence: float = 0.0
     pandas_sql_consistent: bool | None = None
+    semantic_passed: bool | None = None
     issues: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    semantic_verification_notes: list[str] = field(default_factory=list)
+    correction_action: dict[str, Any] | None = None
 
 
 @dataclass

@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from data_agent_core.benchmark.benchmark_runner import run_dabstep_benchmark
+from multi_agent_workflows.dabstep_benchmark_runner import run_dabstep_multi_agent_benchmark
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -45,9 +45,13 @@ class BenchmarkHardcodingBoundaryTest(unittest.TestCase):
     def test_benchmark_runner_does_not_pass_answer_or_task_id_to_agent(self) -> None:
         calls: list[dict[str, str]] = []
 
-        class FakeAgent:
+        class FakeWorkflow:
             def __init__(self, context_dir: pathlib.Path) -> None:
                 self.context_dir = context_dir
+
+            @classmethod
+            def from_dabstep_context(cls, context_dir: pathlib.Path, **_kwargs):
+                return cls(context_dir)
 
             def analyze(self, question: str, guidelines: str = "", execution_mode: str = "auto"):
                 calls.append(
@@ -77,8 +81,8 @@ class BenchmarkHardcodingBoundaryTest(unittest.TestCase):
                 + "\n"
             )
 
-            with patch("data_agent_core.benchmark.benchmark_runner.DataAnalysisAgent", FakeAgent):
-                run_dabstep_benchmark(dataset_root=dataset_root, split="dev", limit=1, output_dir=dataset_root / "out")
+            with patch("multi_agent_workflows.dabstep_benchmark_runner.DataAnalysisMultiAgentWorkflow", FakeWorkflow):
+                run_dabstep_multi_agent_benchmark(dataset_root=dataset_root, split="dev", limit=1, output_dir=dataset_root / "out")
 
         self.assertEqual(
             [{"question": "Which country has the most transactions?", "guidelines": "Answer with a country code.", "execution_mode": "auto"}],

@@ -1,0 +1,4 @@
+# Optional Microsoft Agent Framework adapter dependency.
+# This keeps the adapter runtime lean. Install the full `agent-framework`
+# package only when you need every provider/plugin extra locally.
+agent-framework-core==1.5.0

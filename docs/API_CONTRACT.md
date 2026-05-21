@@ -8,6 +8,14 @@
 
 2026-05-21 更新：Agent 已新增 LLM 单 Agent 链路。API 响应的 debug 可包含 llm_used、llm_operation、llm_confidence、single_agent_chain、llm_stage_summaries 等调试字段，但前端不能依赖 debug 字段作为稳定契约。
 
+2026-05-21 更新：Phase 1 最小后端调用壳已落地。backend 通过 DataAgentService 调用 data_agent_core，支持上传 CSV / Excel 后返回 DatasetProfile、按 dataset_id 分析问题、获取 profile。router 仍只做请求转发，不包含 Pandas / SQL / Verifier 核心逻辑。
+
+2026-05-21 更新：Phase 5 工具调用 trace 契约已预留。API 稳定字段不变；debug 未来可包含 tool_call_summaries，但前端仍不能依赖 debug。
+
+2026-05-21 更新：内部工具 callable 和 Microsoft Agent Framework adapter 已开始实现。该变化不修改 upload/analyze/profile 的稳定 API 字段；如果 adapter 参与运行，只能把工具调用摘要放入 debug / trace，不允许新增前端必须依赖的字段。
+
+2026-05-21 更新：analyze 默认切换为 multi_agent。请求可选 agent_mode，支持 multi_agent / single_agent；该字段用于内部运行模式选择，不改变稳定响应字段。默认 multi_agent 不要求安装 Microsoft Agent Framework，不引入前端强依赖字段。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
@@ -34,7 +42,7 @@
 
 ## POST /api/data-agent/analyze
 
-目标：接收 dataset_id、用户问题和 execution_mode，返回分析结果、校验信息、解释建议和图表配置。
+目标：接收 dataset_id、用户问题、execution_mode 和可选 agent_mode，返回分析结果、校验信息、解释建议和图表配置。
 
 execution_mode 预留：
 
@@ -44,6 +52,13 @@ execution_mode 预留：
 - dual
 
 默认建议：dual。
+
+agent_mode 预留：
+
+- multi_agent
+- single_agent
+
+默认建议：multi_agent。
 
 稳定字段草案：
 
@@ -64,6 +79,17 @@ execution_mode 预留：
 - errors
 - debug
 
+verification 当前可包含：
+
+- passed
+- confidence
+- pandas_sql_consistent
+- semantic_passed
+- issues
+- notes
+- semantic_verification_notes
+- correction_action
+
 debug 当前可能包含：
 
 - llm_used
@@ -74,8 +100,37 @@ debug 当前可能包含：
 - column_mapping
 - pandas_success
 - sql_success
+- trace_path
+- tool_call_summaries
+- agent_mode
+- workflow_mode
+- multi_agent_roles
+- agent_task_results
+
+trace 当前可包含：
+
+- metric_definition
+- numerator
+- denominator
+- semantic_verification_notes
+- correction_attempts
+- candidate_table_summary
+- selected_candidate
+- tool_call_summary
 
 llm_stage_summaries 只允许包含 structured analysis plan、reasoning summary、execution trace、verification notes 等摘要，不能包含完整 Chain of Thought。
+
+tool_call_summaries 只允许包含 tool_name、step_id、requested_by、arguments_summary、result_summary、success、latency_ms、error，不允许包含完整 Chain of Thought、raw reasoning tokens、API key 或敏感原始数据。
+
+失败响应必须包含：
+
+- response_version
+- success=false
+- warnings
+- errors
+- run_id（analyze 请求）
+
+errors 中的元素必须包含 error_type、error_message、failed_step、recoverable、suggested_fix。
 
 ## GET /api/data-agent/datasets/{dataset_id}/profile
 
@@ -95,6 +150,6 @@ llm_stage_summaries 只允许包含 structured analysis plan、reasoning summary
 
 ## TODO
 
-- Phase 1 用后端 schema 和 response_contracts.py 对齐这些字段。
-- 增加失败响应示例。
-- 增加错误类型到 errors 字段的映射说明。
+- 后续如引入真实 FastAPI 部署配置，需要保持 router 只调用 service，不写核心算法。
+- 后续补充更多失败响应示例。
+- 后续补充 storage retention 和最大文件大小的可配置项。

@@ -16,7 +16,13 @@ PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "data_agent_syst
 
 
 SUPPORTED_OPERATIONS = {
+    "aggregation",
     "top_count",
+    "ranking",
+    "filtering",
+    "detail_lookup",
+    "trend",
+    "comparison",
     "group_average",
     "average_fee_for_filters",
     "fee_ids_for_filters",
