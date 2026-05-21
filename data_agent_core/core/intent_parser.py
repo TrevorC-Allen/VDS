@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import pandas as pd
+
 from data_agent_core.contracts.analysis_contracts import LogicForm
 from data_agent_core.core.date_utils import MONTH_NAME_TO_NUMBER
 from data_agent_core.core.logic_form import make_logic_form
@@ -311,6 +313,70 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
     )
 
 
+def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame], guidelines: str = "") -> LogicForm:
+    """Parse a simple uploaded-table question into a generic LogicForm.
+
+    This is a conservative rule guardrail for common analytical questions. LLM
+    stages can propose plans, but this parser keeps execution grounded in
+    uploaded table columns.
+    """
+
+    lowered = question.lower()
+    table_name, df = _select_primary_table(tables)
+    metric = _find_metric_column(question, df)
+    dimension = _find_dimension_column(question, df, metric)
+    output_format = {"guidelines": guidelines}
+
+    if _is_ranking_question(lowered) and dimension:
+        aggregation = _infer_aggregation(lowered, default="sum" if metric else "count")
+        return make_logic_form(
+            task_type="ranking",
+            operation="ranking",
+            parameters={
+                "table": table_name,
+                "metric": metric,
+                "dimension": dimension,
+                "aggregation": aggregation,
+                "sort_order": "asc" if _is_bottom_question(lowered) else "desc",
+                "limit": _extract_limit(question, default=1),
+            },
+            output_format=output_format | {"answer_type": "table"},
+        )
+
+    if _is_aggregation_question(lowered):
+        aggregation = _infer_aggregation(lowered, default="sum")
+        return make_logic_form(
+            task_type="aggregation",
+            operation="aggregation",
+            parameters={
+                "table": table_name,
+                "metric": metric,
+                "dimension": dimension if _has_grouping_language(lowered) else None,
+                "aggregation": aggregation,
+            },
+            output_format=output_format | {"answer_type": "table" if dimension and _has_grouping_language(lowered) else "number"},
+        )
+
+    if _is_filtering_question(lowered):
+        return make_logic_form(
+            task_type="filtering",
+            operation="filtering",
+            parameters={
+                "table": table_name,
+                "conditions": _extract_simple_conditions(question, df),
+                "limit": _extract_limit(question, default=20),
+            },
+            output_format=output_format | {"answer_type": "table"},
+        )
+
+    return make_logic_form(
+        task_type="detail_lookup",
+        operation="detail_lookup",
+        parameters={"table": table_name, "limit": _extract_limit(question, default=20)},
+        output_format=output_format | {"answer_type": "table"},
+    )
+
+
 def _extract_fee_id(question: str) -> int | None:
     match = re.search(r"\bID\s*=?\s*(\d+)|fee with ID\s*=?\s*(\d+)|Fee with ID\s+(\d+)", question, re.I)
     if not match:
@@ -324,3 +390,93 @@ def _extract_fee_id(question: str) -> int | None:
 def _decimal_places(guidelines: str, default: int | None = None) -> int | None:
     match = re.search(r"(\d+)\s+decimals?", guidelines, re.I)
     return int(match.group(1)) if match else default
+
+
+def _select_primary_table(tables: dict[str, pd.DataFrame]) -> tuple[str, pd.DataFrame]:
+    if not tables:
+        raise ValueError("No parsed tables are available.")
+    return max(tables.items(), key=lambda item: (len(item[1]), len(item[1].columns)))
+
+
+def _find_metric_column(question: str, df: pd.DataFrame) -> str | None:
+    lowered = question.lower()
+    for column in df.columns:
+        name = str(column)
+        if name.lower() in lowered or name in question:
+            if pd.api.types.is_numeric_dtype(df[column]):
+                return name
+    numeric_columns = [str(column) for column in df.columns if pd.api.types.is_numeric_dtype(df[column])]
+    if not numeric_columns:
+        return None
+    metric_keywords = ("sales", "revenue", "amount", "fee", "cost", "price", "profit", "销售", "金额", "收入", "费用", "利润")
+    for column in numeric_columns:
+        if any(keyword in column.lower() for keyword in metric_keywords):
+            return column
+    return numeric_columns[0]
+
+
+def _find_dimension_column(question: str, df: pd.DataFrame, metric: str | None) -> str | None:
+    lowered = question.lower()
+    for column in df.columns:
+        name = str(column)
+        if name == metric:
+            continue
+        if name.lower() in lowered or name in question:
+            return name
+    categorical = [
+        str(column)
+        for column in df.columns
+        if str(column) != metric and not pd.api.types.is_numeric_dtype(df[column])
+    ]
+    dimension_keywords = ("city", "country", "region", "category", "merchant", "城市", "国家", "地区", "类别", "分类", "商户")
+    for column in categorical:
+        if any(keyword in column.lower() for keyword in dimension_keywords):
+            return column
+    return categorical[0] if categorical else None
+
+
+def _is_ranking_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("highest", "lowest", "top", "bottom", "max", "min", "最多", "最高", "最低", "最少", "前"))
+
+
+def _is_bottom_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("lowest", "bottom", "min", "最低", "最少"))
+
+
+def _is_aggregation_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("total", "sum", "average", "avg", "mean", "count", "number", "总", "合计", "平均", "数量", "多少"))
+
+
+def _is_filtering_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("where", "filter", "show", "list", "greater than", "less than", "筛选", "列出", "大于", "小于"))
+
+
+def _has_grouping_language(lowered: str) -> bool:
+    return any(token in lowered for token in (" by ", "group", "per ", "each", "按", "各", "每"))
+
+
+def _infer_aggregation(lowered: str, default: str) -> str:
+    if any(token in lowered for token in ("average", "avg", "mean", "平均")):
+        return "mean"
+    if any(token in lowered for token in ("count", "number", "数量", "多少")):
+        return "count"
+    if any(token in lowered for token in ("max", "最高")):
+        return "max"
+    if any(token in lowered for token in ("min", "最低")):
+        return "min"
+    return default
+
+
+def _extract_limit(question: str, default: int) -> int:
+    match = re.search(r"(?:top|前)\s*(\d+)", question, re.I)
+    return int(match.group(1)) if match else default
+
+
+def _extract_simple_conditions(question: str, df: pd.DataFrame) -> list[dict[str, Any]]:
+    conditions: list[dict[str, Any]] = []
+    for column in df.columns:
+        name = str(column)
+        pattern = rf"{re.escape(name)}\s*(>=|<=|=|>|<)\s*([\w.\-\u4e00-\u9fff]+)"
+        for op, value in re.findall(pattern, question):
+            conditions.append({"column": name, "operator": op, "value": value})
+    return conditions

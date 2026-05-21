@@ -26,6 +26,7 @@ class RunTrace:
     verifier_critic_summary: Any = None
     correction_plan_summary: Any = None
     correction_attempts: list[Any] = field(default_factory=list)
+    tool_call_summary: list[Any] = field(default_factory=list)
     insight_summary: Any = None
     chart_plan_summary: Any = None
     final_response: Any = None

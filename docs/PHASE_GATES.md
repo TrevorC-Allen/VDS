@@ -11,6 +11,7 @@
 3. 禁止让 Microsoft Agent Framework 成为 data_agent_core 的依赖。
 4. 禁止把核心算法写进 backend、ms_agent_framework_adapter 或 multi_agent_workflows。
 5. 所有能力提升必须归入通用模块，例如字段画像、意图识别、执行器、结果标准化、校验、自纠和解释。
+6. 禁止把 Tool Calling 变成任意代码、任意 SQL、shell、网络请求或外部文件访问入口；工具只能来自内部白名单和受控执行器。
 
 ## Phase 1：核心算法 + 最小 API
 
@@ -28,6 +29,8 @@
 3. backend router 不包含 Pandas / SQL 核心分析逻辑。
 4. 架构边界测试通过。
 
+当前状态（2026-05-21）：已达到最小可测状态。CSV 解析、DatasetProfile、backend service upload/profile/analyze、run_id、trace_path、errors/warnings 均已有测试覆盖；Excel 和多 sheet 仍属于增强项。
+
 ## Phase 2：单 Agent MVP
 
 目标：
@@ -44,6 +47,8 @@
 3. DABstep 或其他 Benchmark 只用于评估，不改变核心输入。
 4. 防硬编码测试通过。
 
+当前状态（2026-05-21）：已达到最小可测状态。单 Agent 链路包含 LLM stages、代码执行、结果标准化、校验、解释和图表规划；mock LLM 可运行单测，真实 LLM 可通过本地环境变量运行。
+
 ## Phase 3：Benchmark 评测与错误归因
 
 目标：
@@ -57,6 +62,8 @@
 1. runner 不把 task_id、question_id、answer、expected_answer 传入 agent.analyze。
 2. 报告按 operation、error_type、backend、verification issue 聚合。
 3. 修复项必须指向通用能力，例如字段映射、日期解析、聚合口径、TopN 排序、费用规则执行。
+
+当前状态（2026-05-21）：已达到最小可测状态。runner 支持 limit/offset、predictions、trace、metrics、error_analysis；dev 前 10 题可本地评分，public all split 因 answer 为空不能本地计算官方准确率。
 
 ## Phase 4：Microsoft Agent Framework Adapter 实验
 
@@ -74,7 +81,29 @@
 3. 不引入任何 data_agent_core → adapter 的反向依赖。
 4. 同一 AgentTask 能由自研 runtime 或 Microsoft adapter 映射。
 
-## Phase 5+：多 Agent Workflow
+当前状态（2026-05-21）：已新增 Microsoft Agent Framework 可选适配实现。adapter 可以包装内部工具为 function tool、创建按角色分配工具的 Agent，并按内部角色顺序构建 sequential workflow；本地没有 `agent-framework` 时返回清晰错误；requirements-ms-agent.txt 作为独立可选依赖入口；data_agent_core 仍不依赖 Microsoft Agent Framework。
+
+## Phase 5：受控 Tool Calling 层
+
+目标：
+
+1. 将字段画像、计划构建、Pandas 执行、SQL / DuckDB 执行、结果校验、图表规划和解释生成包装为内部白名单工具。
+2. ToolRegistry 支持稳定工具名、JSON schema、参数校验、allowed_roles、timeout、result_policy 和审计摘要。
+3. LLM client 增加 provider-neutral 的工具调用循环，可适配 OpenAI Responses API、OpenAI-compatible chat completions 和 DeepSeek tool calls。
+4. 工具调用只能发生在受控 stage 内，不能绕过 LogicForm、AnalysisPlan、Executor、Result Normalizer、Verifier 或 Response Builder。
+5. thinking / reasoning 相关 provider 字段只在 provider adapter 内部用于续传，不写入稳定 trace、debug 或 API 响应。
+
+进入 Phase 6 前必须满足：
+
+1. mock tool-calling 流程可在无真实 key 环境下完成单元测试。
+2. 每个工具都有 JSON schema、白名单声明、参数校验和失败响应。
+3. 工具调用 trace 只记录工具名、参数摘要、结果摘要、错误、耗时和 step id，不记录完整 Chain of Thought 或 raw reasoning tokens。
+4. OpenAI / DeepSeek provider 差异被限制在 data_agent_core/llm 或 provider adapter 内，data_agent_core 核心契约保持 provider-neutral。
+5. 工具调用失败必须进入 errors / warnings，并可由 Verifier 或 Correction Planner 处理。
+
+当前状态（2026-05-21）：已完成 provider-neutral 契约、本地 dispatcher 和内部工具 callable 测试。当前包含 ToolDefinition、ToolCall、ToolResult、ToolTraceEvent、Data Agent tool catalog、tool whitelist、DataAgentToolRuntime 和 Microsoft adapter function tool mapping；仍不得启用 OpenAI / DeepSeek provider 原生工具调用。
+
+## Phase 6+：多 Agent Workflow
 
 目标：
 

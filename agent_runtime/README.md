@@ -59,8 +59,61 @@ WorkflowState:
 - sql_result
 - verification
 - final_response
+- tool_call_trace
+
+## Phase 5 受控工具契约
+
+ToolDefinition:
+- name
+- description
+- input_schema
+- allowed_roles
+- timeout_seconds
+- result_policy
+- constraints
+
+ToolCall:
+- step_id
+- tool_name
+- arguments
+- requested_by
+
+ToolResult:
+- step_id
+- tool_name
+- success
+- output_payload
+- warnings
+- errors
+- trace_event
+
+当前白名单工具：
+
+1. profile_schema
+2. build_analysis_plan
+3. execute_pandas_plan
+4. execute_sql_plan
+5. verify_results
+6. build_chart_spec
+7. generate_insight
+
+工具层是 provider-neutral 的内部契约。OpenAI、DeepSeek、Microsoft Agent Framework、LangGraph 或 CrewAI 都只能通过 adapter 映射这些契约，不能直接改变 data_agent_core 的核心算法。
+
+## 当前工具实现
+
+agent_runtime/data_agent_tool_impl.py 提供受控 callable：
+
+1. profile_schema 调用 schema profiler / DatasetProfile。
+2. build_analysis_plan 调用 data_agent_core.core.analysis_planner。
+3. execute_pandas_plan 调用 data_agent_core.executors.pandas_executor。
+4. execute_sql_plan 调用 data_agent_core.executors.sql_executor。
+5. verify_results 调用 result_comparator 和 rule_checker。
+6. build_chart_spec 只基于已验证结果生成基础 ChartSpec。
+7. generate_insight 只基于已验证结果生成基础 InsightResult。
+
+这些工具不开放 raw Python、raw SQL、shell、网络或任意外部文件访问。
 
 ## TODO
 
-- Phase 2 将 agent_contracts.py 的草案对齐到 agent_runtime。
-- Phase 4 由 ms_agent_framework_adapter 映射到具体框架。
+- Phase 5 后续接入 provider-native OpenAI / DeepSeek tool call adapter，但保持内部 ToolDefinition 不变。
+- Phase 6+ 由 ms_agent_framework_adapter 或其他 workflow runtime 编排多 Agent。

@@ -7,7 +7,13 @@ Stable shapes:
 - AgentTask: task_id, role, input_payload, context, constraints
 - AgentResult: task_id, role, success, output_payload, issues, confidence
 - WorkflowState: dataset_id, question, schema_profile, logic_form,
-  analysis_plan, pandas_result, sql_result, verification, final_response
+  analysis_plan, pandas_result, sql_result, verification, final_response,
+  tool_call_trace
+- ToolDefinition: name, description, input_schema, allowed_roles,
+  timeout_seconds, result_policy, constraints
+- ToolCall: step_id, tool_name, arguments, requested_by
+- ToolResult: step_id, tool_name, success, output_payload, warnings, errors,
+  trace_event
 
 Adapters for Microsoft Agent Framework, LangGraph, CrewAI, or a self-hosted
 runtime must map these shapes instead of changing core algorithms.

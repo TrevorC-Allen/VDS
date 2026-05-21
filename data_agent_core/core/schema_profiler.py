@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pandas as pd
@@ -18,6 +19,8 @@ def infer_column_type(series: pd.Series) -> str:
         return "number"
     if pd.api.types.is_datetime64_any_dtype(series):
         return "datetime"
+    if _looks_datetime(series):
+        return "datetime"
     return "category" if series.nunique(dropna=True) <= max(50, len(series) * 0.2) else "text"
 
 
@@ -30,13 +33,33 @@ def semantic_hints(name: str, series: pd.Series) -> list[str]:
         hints.append("time")
     if "amount" in lowered or "fee" in lowered or "volume" in lowered or "rate" in lowered:
         hints.append("metric")
+    if "sales" in lowered or "revenue" in lowered or "销售" in lowered or "金额" in lowered:
+        hints.append("metric")
     if "country" in lowered:
         hints.append("country")
+    if "city" in lowered or "城市" in lowered:
+        hints.append("location")
     if "id" in lowered or lowered.endswith("_reference"):
         hints.append("id")
     if series.nunique(dropna=True) <= max(20, len(series) * 0.05):
         hints.append("category")
     return sorted(set(hints))
+
+
+def _looks_datetime(series: pd.Series) -> bool:
+    sample = series.dropna().astype(str).head(50)
+    if sample.empty:
+        return False
+    date_like = sample.map(
+        lambda value: bool(
+            re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", value)
+            or re.search(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", value)
+        )
+    )
+    if float(date_like.mean()) < 0.8:
+        return False
+    parsed = pd.to_datetime(sample, errors="coerce")
+    return float(parsed.notna().mean()) >= 0.8
 
 
 def profile_table(table_name: str, df: pd.DataFrame) -> TableProfile:

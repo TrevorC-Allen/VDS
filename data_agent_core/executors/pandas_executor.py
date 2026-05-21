@@ -20,11 +20,11 @@ def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult
     start = time.perf_counter()
     try:
         value = _execute_value(plan, context)
-        rows = [{"answer": value}]
+        columns, rows = _result_rows(value)
         return ExecutionResult(
             backend="pandas",
             success=True,
-            columns=["answer"],
+            columns=columns,
             rows=rows,
             value=value,
             summary=f"Executed operation {plan.logic_form.operation}.",
@@ -55,6 +55,14 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
 
     if op == "not_applicable":
         return "Not Applicable"
+    if op == "detail_lookup":
+        return _detail_lookup(context["tables"], params)
+    if op == "filtering":
+        return _filtering(context["tables"], params)
+    if op == "aggregation":
+        return _aggregation(context["tables"], params)
+    if op == "ranking":
+        return _ranking(context["tables"], params)
     if op == "top_count":
         return _top_count(context["payments"], filters, params)
     if op == "group_average":
@@ -134,6 +142,116 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         )
         return {"card_scheme": aci, "fee": delta, "candidates": candidates}
     raise ValueError(f"Unsupported operation: {op}")
+
+
+def _result_rows(value: Any) -> tuple[list[str], list[dict[str, Any]]]:
+    if isinstance(value, list) and all(isinstance(row, dict) for row in value):
+        columns: list[str] = []
+        for row in value:
+            for key in row:
+                if key not in columns:
+                    columns.append(str(key))
+        return columns, value
+    if isinstance(value, dict):
+        return list(value.keys()), [value]
+    return ["answer"], [{"answer": value}]
+
+
+def _table(tables: dict[str, pd.DataFrame], name: str | None = None) -> pd.DataFrame:
+    if name and name in tables:
+        return tables[name]
+    if not tables:
+        raise ValueError("No tables available for execution.")
+    return max(tables.values(), key=lambda df: (len(df), len(df.columns)))
+
+
+def _detail_lookup(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> list[dict[str, Any]]:
+    data = _table(tables, params.get("table"))
+    return data.head(int(params.get("limit") or 20)).to_dict(orient="records")
+
+
+def _filtering(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> list[dict[str, Any]]:
+    data = _table(tables, params.get("table"))
+    for condition in params.get("conditions") or []:
+        column = condition.get("column")
+        if column not in data.columns:
+            continue
+        data = _apply_condition(data, str(column), str(condition.get("operator") or "="), condition.get("value"))
+    return data.head(int(params.get("limit") or 20)).to_dict(orient="records")
+
+
+def _aggregation(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> Any:
+    data = _table(tables, params.get("table"))
+    metric = params.get("metric")
+    dimension = params.get("dimension")
+    aggregation = str(params.get("aggregation") or "sum")
+    if dimension:
+        return _aggregate_grouped(data, str(dimension), None if metric is None else str(metric), aggregation)
+    return _aggregate_series(data, None if metric is None else str(metric), aggregation)
+
+
+def _ranking(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> list[dict[str, Any]]:
+    data = _table(tables, params.get("table"))
+    dimension = params.get("dimension")
+    if not dimension:
+        raise ValueError("Ranking requires a dimension column.")
+    rows = _aggregate_grouped(
+        data,
+        str(dimension),
+        None if params.get("metric") is None else str(params.get("metric")),
+        str(params.get("aggregation") or "sum"),
+    )
+    metric_column = next((key for key in rows[0] if key != str(dimension)), "value") if rows else "value"
+    reverse = str(params.get("sort_order") or "desc") == "desc"
+    rows.sort(key=lambda row: row.get(metric_column), reverse=reverse)
+    return rows[: int(params.get("limit") or 1)]
+
+
+def _aggregate_grouped(data: pd.DataFrame, dimension: str, metric: str | None, aggregation: str) -> list[dict[str, Any]]:
+    if dimension not in data.columns:
+        raise ValueError(f"Unknown dimension column: {dimension}")
+    if aggregation == "count" or metric is None:
+        result = data.groupby(dimension, dropna=True).size().reset_index(name="count")
+        return result.to_dict(orient="records")
+    if metric not in data.columns:
+        raise ValueError(f"Unknown metric column: {metric}")
+    result = data.groupby(dimension, dropna=True)[metric].agg(aggregation).reset_index()
+    return result.to_dict(orient="records")
+
+
+def _aggregate_series(data: pd.DataFrame, metric: str | None, aggregation: str) -> Any:
+    if aggregation == "count" or metric is None:
+        return int(len(data))
+    if metric not in data.columns:
+        raise ValueError(f"Unknown metric column: {metric}")
+    series = data[metric]
+    if aggregation == "mean":
+        return float(series.mean())
+    if aggregation == "max":
+        return float(series.max())
+    if aggregation == "min":
+        return float(series.min())
+    return float(series.sum())
+
+
+def _apply_condition(data: pd.DataFrame, column: str, operator: str, raw_value: Any) -> pd.DataFrame:
+    series = data[column]
+    value = _coerce_filter_value(raw_value, series)
+    if operator == ">":
+        return data[series > value]
+    if operator == "<":
+        return data[series < value]
+    if operator == ">=":
+        return data[series >= value]
+    if operator == "<=":
+        return data[series <= value]
+    return data[series.astype(str) == str(value)]
+
+
+def _coerce_filter_value(value: Any, series: pd.Series) -> Any:
+    if pd.api.types.is_numeric_dtype(series):
+        return float(value)
+    return value
 
 
 def _top_count(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> Any:

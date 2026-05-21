@@ -65,8 +65,6 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否新增或修改运行追踪逻辑
 
----
-
 ### 日期时间
 
 2026-05-21 11:59 CST
@@ -178,6 +176,104 @@ YYYY-MM-DD HH:MM TZ
 ### 是否新增或修改运行追踪逻辑
 
 否。本轮未新增 trace 字段。
+
+---
+
+### 日期时间
+
+2026-05-21 13:52 CST
+
+### 本次目标
+
+实现受控内部工具 callable，并把 Microsoft Agent Framework 从声明式骨架推进到可选 adapter：支持 function tool 包装、按 AgentRole 创建 Microsoft Agent、按内部角色顺序构建 sequential workflow，同时保持 data_agent_core 框架无关。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- BRANCH_RULES.md
+- docs/API_CONTRACT.md
+- docs/ARCHITECTURE.md
+- docs/FEATURE_BACKLOG.md
+- docs/PHASE_GATES.md
+- requirements-ms-agent.txt
+- agent_runtime/README.md
+- agent_runtime/data_agent_tool_catalog.py
+- agent_runtime/data_agent_tool_impl.py
+- data_agent_core/configs/tool_whitelist.yaml
+- ms_agent_framework_adapter/README.md
+- ms_agent_framework_adapter/adapter.py
+- ms_agent_framework_adapter/framework_tools.py
+- ms_agent_framework_adapter/framework_agents.py
+- ms_agent_framework_adapter/framework_workflow.py
+- ms_agent_framework_adapter/tool_mapping.py
+- tests/agent_runtime/test_data_agent_tool_impl.py
+- tests/agent_runtime/test_runtime_contracts.py
+- tests/architecture/test_dependency_boundaries.py
+- tests/ms_agent_framework_adapter/__init__.py
+- tests/ms_agent_framework_adapter/test_framework_adapter.py
+
+### 修改内容
+
+- 新增 DataAgentToolRuntime 和真实内部工具 callable，覆盖 profile_schema、build_analysis_plan、execute_pandas_plan、execute_sql_plan、verify_results、build_chart_spec、generate_insight。
+- 工具 callable 只调用既有 data_agent_core 模块，不开放 raw Python、raw SQL、shell、网络或任意外部文件访问。
+- 新增 Microsoft Agent Framework 可选 adapter：framework_tools 负责 function tool 包装，framework_agents 负责按 AgentRole 创建 Agent，framework_workflow 负责 sequential workflow builder。
+- 新增 requirements-ms-agent.txt，作为独立可选依赖入口，未把 agent-framework 写入 core/backend 强依赖。
+- 更新架构边界测试：允许 agent_framework 只在 ms_agent_framework_adapter 或 tests 中出现，继续禁止 data_agent_core import Microsoft Framework。
+- 更新 MAIN_GOAL、BRANCH_RULES、ARCHITECTURE、API_CONTRACT、FEATURE_BACKLOG、PHASE_GATES 和 README，明确 Microsoft adapter 当前实现边界。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- rg -n "^\\s*(from|import)\\s+(backend|ms_agent_framework_adapter|multi_agent_workflows|agent_framework)" data_agent_core
+- rg -n "sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}" --glob '!outputs/**' --glob '!storage/**' --glob '!.env*' .
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/ms_tool_adapter_dev_verify_final
+
+### 测试结果
+
+- unittest 通过：Ran 25 tests in 8.760s，OK。
+- compileall 通过。
+- data_agent_core 禁止 import 边界检查未发现匹配。
+- secret 扫描未发现 sk-* 或 sk-proj-* key 进入仓库文件。
+- DABstep dev 前 10 题 mock LLM 路径：total=10，scored=10，correct=8，accuracy=0.8。
+
+### 遗留问题
+
+- 当前 Microsoft adapter 使用 fake framework 单测验证包装逻辑；未在本轮安装真实 agent-framework 包运行 Azure Foundry client。
+- 当前仍未启用 OpenAI / DeepSeek provider 原生 tool call loop。
+- requirements-ms-agent.txt 是可选依赖入口，服务器运行真实 Microsoft adapter 前需要单独安装。
+
+### 是否影响主流程
+
+否。未修改旧 BigCat / VDS 主流程，未修改前端或复杂后端业务。
+
+### 是否涉及 Benchmark
+
+是，仅运行 DABstep dev 前 10 题回归验证；未修改 Benchmark 数据，未把 task_id 或标准答案传入核心分析链路，未做单题特判。
+
+### 是否涉及 Microsoft Agent Framework
+
+是。新增 Microsoft Agent Framework 可选 adapter 和独立可选依赖文件；data_agent_core 不依赖 Microsoft Agent Framework。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。AgentRole、ToolDefinition、ToolDispatcher 和 WorkflowState 现在可以映射到 Microsoft function tool、Agent 和 sequential workflow，同时保留未来替换 LangGraph / CrewAI / 自研 runtime 的空间。
+
+### 是否修改核心数据契约
+
+否。未修改 data_agent_core/contracts 中的稳定 dataclass 字段；本轮新增的是 agent_runtime 工具 callable 和 Microsoft adapter 映射测试。
+
+### 是否修改 API 契约
+
+是。仅更新 docs/API_CONTRACT.md，说明 adapter 参与运行时只能写入 debug / trace 摘要；稳定 upload/analyze/profile 字段未改变。
+
+### 是否新增或修改错误类型
+
+否。未新增 data_agent_core/errors 错误类型；Microsoft adapter 缺包时使用 adapter-local MicrosoftAgentFrameworkUnavailable 异常。
+
+### 是否新增或修改运行追踪逻辑
+
+否。沿用既有 ToolTraceEvent / tool_call_summary 摘要策略；本轮未修改 RunTrace 字段。
 
 ---
 
@@ -745,5 +841,292 @@ YYYY-MM-DD HH:MM TZ
 ### 是否新增或修改运行追踪逻辑
 
 否。本轮未新增 trace 字段，但第 11 到 20 题生成了新的 trace 输出。
+
+---
+
+### 日期时间
+
+2026-05-21 13:23 CST
+
+### 本次目标
+
+按用户要求调整 MAIN_GOAL 和路线图，把 Tool Calling 明确放到 Phase 5 后置阶段，避免在当前 Phase 1/2/3 或 Phase 4 adapter 阶段过早启用模型原生工具循环。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- docs/PHASE_GATES.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- MAIN_GOAL 增加 Phase 5 受控 Tool Calling 目标、架构原则、当前不做事项和工具调用阶段说明。
+- PHASE_GATES 新增 Phase 5：受控 Tool Calling 层，并将原多 Agent Workflow 后移为 Phase 6+。
+- PHASE_GATES 增加工具调用总红线：禁止任意代码、任意 SQL、shell、网络请求或外部文件访问。
+- FEATURE_BACKLOG 新增 Controlled Tool Calling Layer，记录工具形式、影响模块、验收标准、风险和当前未实现状态。
+- 明确 OpenAI / DeepSeek / Microsoft Agent Framework 只作为 provider / framework 适配层，内部工具契约保持 provider-neutral。
+
+### 测试方式
+
+- 未运行自动化测试；本轮仅修改项目目标和路线图文档。
+
+### 测试结果
+
+- 不适用，文档-only 修改。
+
+### 遗留问题
+
+- Phase 5 Tool Calling 仍未实现；后续需要补 ToolDefinition schema、tool dispatcher、provider adapter、mock tool-calling 测试和 trace 摘要字段。
+
+### 是否影响主流程
+
+否。未修改旧 BigCat / VDS 主流程，未修改执行代码。
+
+### 是否涉及 Benchmark
+
+否。未修改 Benchmark runner、evaluator 或测试数据。
+
+### 是否涉及 Microsoft Agent Framework
+
+仅文档层面说明 Microsoft Agent Framework 不能承载核心工具实现；未安装、未 import、未实现 framework workflow。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。路线图调整为 Phase 5 先建立 provider-neutral 工具层，Phase 6+ 再做多 Agent workflow。
+
+### 是否修改核心数据契约
+
+否。本轮未修改 contracts dataclass。
+
+### 是否修改 API 契约
+
+否。本轮未修改 API 稳定字段。
+
+### 是否新增或修改错误类型
+
+否。本轮未新增错误类型。
+
+### 是否新增或修改运行追踪逻辑
+
+否。本轮只规定未来工具调用 trace 摘要原则，未修改 trace 代码。
+
+---
+
+### 日期时间
+
+2026-05-21 13:24 CST
+
+### 本次目标
+
+按 Phase 1 / Phase 2 / Phase 3 继续推进到最小可测完成状态：上传文件核心算法测试可运行，最小后端调用壳可用，单 Agent 链路可用真实 LLM 跑 DABstep dev 前 10 题并保持 80% 正确率，Benchmark 报告支持通用 metrics 和 error_analysis 聚合。
+
+### 修改文件
+
+- .gitignore
+- MAIN_GOAL.md
+- BRANCH_RULES.md
+- docs/API_CONTRACT.md
+- docs/ARCHITECTURE.md
+- docs/BENCHMARK_RULES.md
+- docs/FEATURE_BACKLOG.md
+- docs/PHASE_GATES.md
+- backend/main.py
+- backend/routers/data_agent.py
+- backend/schemas/data_agent_schema.py
+- backend/services/data_agent_service.py
+- backend/storage/temp_file_store.py
+- data_agent_core/agent/single_agent.py
+- data_agent_core/benchmark/benchmark_runner.py
+- data_agent_core/benchmark/error_analysis.py
+- data_agent_core/benchmark/metrics.py
+- data_agent_core/core/file_parser.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/core/schema_profiler.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/llm/planner.py
+- tests/architecture/test_dependency_boundaries.py
+- tests/backend/__init__.py
+- tests/backend/test_data_agent_service.py
+- tests/benchmark/__init__.py
+- tests/benchmark/test_benchmark_metrics.py
+- tests/core/test_uploaded_table_agent.py
+
+### 修改内容
+
+- 新增 ParsedDataset 和 parse_dataset_file，支持 CSV / Excel 解析入口、DatasetProfile 生成、多 sheet warning、空表 warning 和不确定表头 warning。
+- 增强 Schema Profiler 的日期、金额/销售、城市/位置语义 hint，避免普通文本列触发日期解析 warning。
+- 新增 UploadedDatasetAgent，复用固定 LLM 单 Agent 链路分析用户上传单表数据。
+- 新增通用上传表 LogicForm guardrail，支持 detail_lookup、filtering、aggregation、ranking 的最小解析。
+- 扩展 Pandas Executor 和 SQL fallback Executor，使上传单表的 aggregation / ranking 可双路径执行并可比较。
+- SQL fallback 对动态列名增加标识符 quoting，降低上传字段名包含空格、中文或特殊字符时的 SQL 失败风险。
+- 新增 backend 最小调用壳：DataAgentService、TempFileStore、API schema helper、可选 FastAPI router、main app。
+- backend 支持 upload/profile/analyze 的最小本地流程，analyze 返回 run_id、response_version、warnings、errors 和 debug.trace_path。
+- 新增 Benchmark metrics 和 error_analysis 聚合，按 operation 和 error_type 输出通用能力缺口，不输出单题修复建议。
+- 扩展架构边界测试，确保 backend router 不 import Pandas / SQL / Verifier / Benchmark 核心逻辑。
+- 更新 MAIN_GOAL、BRANCH_RULES、API_CONTRACT、ARCHITECTURE、BENCHMARK_RULES、FEATURE_BACKLOG、PHASE_GATES，记录 Phase 1/2/3 当前完成边界。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/dabstep_phase123_dev_verify_after_sql_quote
+- source .env.local 后运行 /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/dabstep_phase123_dev_real_llm_verify_final
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- rg -n "^\\s*(from|import)\\s+(backend|ms_agent_framework_adapter|multi_agent_workflows|agent_framework)" data_agent_core
+- rg secret-pattern scan against repository files excluding outputs、storage 和 .env*
+
+### 测试结果
+
+- unittest 通过：Ran 17 tests in 9.145s，OK。
+- DABstep dev 前 10 题 mock LLM 路径：total=10，scored=10，correct=8，accuracy=0.8。
+- DABstep dev 前 10 题真实 LLM 路径：total=10，scored=10，correct=8，accuracy=0.8。
+- 真实 LLM 输出文件：outputs/dabstep_phase123_dev_real_llm_verify_final/dev_1_to_10_predictions.jsonl。
+- compileall 通过。
+- data_agent_core 禁止 import 边界检查未发现实际 import 匹配。
+- secret 扫描未发现 API key 进入仓库文件；.env.local 仍为 ignored 文件。
+
+### 遗留问题
+
+- 当前 TempFileStore 只适合 Phase 1 本地测试，进程重启后不会恢复 DataFrame tables。
+- Excel 多 sheet、编码识别、复杂表头识别、趋势/对比/复杂过滤仍需后续增强。
+- public all.jsonl 的 answer 字段为空，不能本地计算完整 450 题官方准确率。
+- DABstep dev 前 10 的 2 个失败点需要后续做通用 top_count 和 best_fraud_aci_choice 能力分析，禁止按题号或题面特判。
+- 当前 SQL 路径是 sqlite fallback，后续需要接入 DuckDB runtime。
+
+### 是否影响主流程
+
+否。未修改旧 BigCat / VDS 主流程，未修改前端或复杂后端业务。
+
+### 是否涉及 Benchmark
+
+是。新增 Benchmark metrics 和 error_analysis，并用 DABstep dev 前 10 做 mock 和真实 LLM 验证；标准答案只在 evaluator 评分阶段使用，不进入核心分析链路或 LLM 输入。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未安装、未 import、未实现 Microsoft Agent Framework workflow。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。当前 UploadedDatasetAgent、backend service、Benchmark 聚合都保持框架无关，未来可映射到 agent_runtime 和 Microsoft adapter。
+
+### 是否修改核心数据契约
+
+否。未新增或破坏 contracts dataclass 字段；新增 ParsedDataset 是 file_parser 内部返回结构。
+
+### 是否修改 API 契约
+
+是。最小 backend upload/profile/analyze 响应已落地并同步 docs/API_CONTRACT.md，保持 response_version、run_id、warnings、errors。
+
+### 是否新增或修改错误类型
+
+否。未新增错误类型；backend service 使用既有 FILE_PARSE_ERROR 和 LOGIC_FORM_ERROR，Benchmark 归因使用既有 BENCHMARK_EVALUATION_ERROR 和 VERIFICATION_FAILED。
+
+### 是否新增或修改运行追踪逻辑
+
+是。UploadedDatasetAgent 生成 RunTrace，backend service 写入 storage/runs/{run_id}/trace.json，并在 debug.trace_path 中暴露调试路径；trace 不记录完整 Chain of Thought。
+
+---
+
+### 日期时间
+
+2026-05-21 13:32 CST
+
+### 本次目标
+
+根据用户更新后的 MAIN_GOAL，同步 Phase 5 受控 Tool Calling 和 Phase 6+ 多 Agent 路线，并实现 provider-neutral 工具契约、工具注册、工具 dispatcher、工具 trace 摘要和 Microsoft adapter 工具映射骨架。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- BRANCH_RULES.md
+- docs/API_CONTRACT.md
+- docs/ARCHITECTURE.md
+- docs/FEATURE_BACKLOG.md
+- docs/PHASE_GATES.md
+- agent_runtime/README.md
+- agent_runtime/tool_contracts.py
+- agent_runtime/tool_registry.py
+- agent_runtime/tool_dispatcher.py
+- agent_runtime/data_agent_tool_catalog.py
+- agent_runtime/runtime_interfaces.py
+- agent_runtime/workflow_state.py
+- data_agent_core/configs/tool_whitelist.yaml
+- data_agent_core/contracts/agent_contracts.py
+- data_agent_core/tracing/run_trace.py
+- ms_agent_framework_adapter/README.md
+- ms_agent_framework_adapter/adapter.py
+- ms_agent_framework_adapter/tool_mapping.py
+- multi_agent_workflows/README.md
+- tests/agent_runtime/test_runtime_contracts.py
+- tests/agent_runtime/test_tool_calling_contracts.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 ToolCall、ToolResult、ToolTraceEvent 和 provider-neutral to_json_ready 工具契约。
+- 扩展 ToolDefinition，补 input_schema、allowed_roles、timeout_seconds、result_policy、constraints 和 provider schema 输出。
+- 新增 ToolDispatcher，支持工具名查找、角色白名单校验、required/type 参数校验、callable 执行、标准错误和 trace-safe 摘要。
+- 新增 Data Agent 白名单工具 catalog：profile_schema、build_analysis_plan、execute_pandas_plan、execute_sql_plan、verify_results、build_chart_spec、generate_insight。
+- 更新 tool_whitelist.yaml，声明允许工具、blocked operations、schema validation、role whitelist 和 timeout 要求。
+- 更新 WorkflowState 和 RunTrace，预留 tool_call_trace / tool_call_summary。
+- 更新 Microsoft adapter 的 tool_mapping 和 adapter plan，使其只声明内部工具到 Microsoft function tool 的映射，不实现工具逻辑、不 import Microsoft 包。
+- 更新 docs 和 README，明确 Phase 5 先建立受控工具层，Phase 6+ 再进入多 Agent workflow。
+- 新增工具契约测试，覆盖工具元数据、角色校验、参数校验、trace 摘要和 adapter tool mapping。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- rg -n "^\\s*(from|import)\\s+(backend|ms_agent_framework_adapter|multi_agent_workflows|agent_framework)" data_agent_core
+- rg secret-pattern scan against repository files excluding outputs、storage 和 .env*
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/tool_layer_dev_verify
+
+### 测试结果
+
+- unittest 通过：Ran 20 tests in 9.135s，OK。
+- compileall 通过。
+- data_agent_core 禁止 import 边界检查未发现实际 import 匹配。
+- secret 扫描未发现 API key 进入仓库文件；.env.local 仍为 ignored 文件。
+- DABstep dev 前 10 题 mock LLM 路径：total=10，scored=10，correct=8，accuracy=0.8。
+
+### 遗留问题
+
+- 当前工具层仍是 Phase 5 契约和本地 dispatcher 骨架，尚未接 OpenAI / DeepSeek provider 原生 tool call loop。
+- 当前 dispatcher 不执行真实超时中断，只记录每个工具的 timeout_seconds 契约；后续 provider/runtime 层需要补受控超时执行。
+- 当前工具 callable 通过 runtime 注入，尚未把 profile_schema 等工具接到真实 data_agent_core 函数。
+- Phase 6+ 多 Agent workflow 仍是任务序列骨架，未启用 Microsoft Agent Framework 实际 workflow。
+
+### 是否影响主流程
+
+否。未修改旧 BigCat / VDS 主流程，未修改前端或复杂后端业务。
+
+### 是否涉及 Benchmark
+
+是，仅运行 DABstep dev 前 10 题回归验证；未修改 Benchmark 数据、未读取 all split 标准答案、未做单题特判。
+
+### 是否涉及 Microsoft Agent Framework
+
+是，仅涉及适配层声明式 tool mapping；未安装、未 import、未实现 Microsoft Agent Framework workflow。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。Phase 5 provider-neutral 工具契约可被 Phase 6+ 多 Agent workflow、Microsoft adapter 或自研 runtime 复用。
+
+### 是否修改核心数据契约
+
+是。新增 agent_runtime 工具契约，并在 data_agent_core/contracts/agent_contracts.py 记录 ToolDefinition / ToolCall / ToolResult 稳定形状。
+
+### 是否修改 API 契约
+
+是。docs/API_CONTRACT.md 预留 debug.tool_call_summaries 的摘要字段，但 API 稳定字段不变，前端仍不能依赖 debug。
+
+### 是否新增或修改错误类型
+
+否。未新增 data_agent_core/errors 错误类型；ToolDispatcher 内部返回 TOOL_DISPATCH_ERROR 作为工具层标准错误 payload。
+
+### 是否新增或修改运行追踪逻辑
+
+是。RunTrace 预留 tool_call_summary，WorkflowState 预留 tool_call_trace，ToolTraceEvent 只记录工具名、角色、参数摘要、结果摘要、错误和耗时，不记录完整 Chain of Thought。
 
 ---

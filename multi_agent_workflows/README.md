@@ -23,7 +23,13 @@ DataAnalysisSupervisor
 ├─ Visualization Agent：规则 + LLM
 └─ Benchmark Agent：代码为主，LLM 辅助错误归因
 
+## Phase 关系
+
+1. Phase 5 先建立受控 Tool Calling 层。
+2. Phase 6+ 再启用多 Agent workflow。
+3. 多 Agent 可以调用 agent_runtime 的 provider-neutral 工具契约，但不能直接写核心算法。
+
 ## TODO
 
-- Phase 5 从单 Agent MVP 演进到多 Agent workflow。
+- Phase 6+ 从单 Agent MVP 演进到多 Agent workflow。
 - 确保多 Agent 只改变编排方式，不改变核心算法位置。

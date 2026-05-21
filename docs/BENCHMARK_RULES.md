@@ -10,6 +10,8 @@
 
 2026-05-21 更新：DABstep public scorer 地址为 https://huggingface.co/spaces/adyen/DABstep/blob/main/dabstep_benchmark/evaluation/scorer.py。本地 evaluator 的 question_scorer 需要保持与该 scorer 的归一化、数字容差、列表比较和字符串相似度规则一致。
 
+2026-05-21 更新：Phase 3 最小 metrics 和 error_analysis 已落地。报告按 operation 和 error_type 聚合，只输出通用能力缺口，不生成单题修复建议。
+
 ## 使用原则
 
 1. Benchmark 只能用于评测和错误归因。
@@ -38,9 +40,9 @@ Benchmark 只能帮助发现通用问题，例如字段识别、时间解析、T
 
 ## TODO
 
-- Phase 3 实现 benchmark_runner.py。
-- Phase 3 实现 evaluator.py 和 metrics.py。
-- Phase 3 输出按错误类型聚合的 regression report。
+- 继续对齐官方 scorer 的边界行为。
+- 增加 backend、verification issue、latency 的聚合维度。
+- 当有官方隐藏答案或提交反馈时，只把结果用于通用模块改进，不按题号优化。
 
 ## 本地运行命令
 
