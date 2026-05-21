@@ -2,15 +2,15 @@
 
 ## 当前阶段
 
-当前只定义 API 契约骨架，不实现完整接口业务逻辑。
+当前已实现最小 API 调用壳和稳定响应契约，尚未实现复杂后端业务系统。
 
-2026-05-21 更新：核心算法 MVP 已能返回 FinalResponse dataclass。后端 API 仍未实现业务接口，但未来 response schema 应与 FinalResponse 对齐。
+2026-05-21 更新：核心算法 MVP 已能返回 FinalResponse dataclass。后端 API 已有最小 upload / analyze / profile 调用壳，response schema 与 FinalResponse 对齐；复杂部署、权限、持久化和任务队列仍不在当前范围。
 
 2026-05-21 更新：Agent 已新增 LLM 单 Agent 链路。API 响应的 debug 可包含 llm_used、llm_operation、llm_confidence、single_agent_chain、llm_stage_summaries 等调试字段，但前端不能依赖 debug 字段作为稳定契约。
 
 2026-05-21 更新：Phase 1 最小后端调用壳已落地。backend 通过 DataAgentService 调用 data_agent_core，支持上传 CSV / Excel 后返回 DatasetProfile、按 dataset_id 分析问题、获取 profile。router 仍只做请求转发，不包含 Pandas / SQL / Verifier 核心逻辑。
 
-2026-05-21 更新：Phase 5 工具调用 trace 契约已预留。API 稳定字段不变；debug 未来可包含 tool_call_summaries，但前端仍不能依赖 debug。
+2026-05-21 更新：Phase 5 工具调用 trace 契约已落地。API 稳定字段不变；debug 可包含 tool_call_summaries，但前端仍不能依赖 debug。
 
 2026-05-21 更新：内部工具 callable 和 Microsoft Agent Framework adapter 已开始实现。该变化不修改 upload/analyze/profile 的稳定 API 字段；如果 adapter 参与运行，只能把工具调用摘要放入 debug / trace，不允许新增前端必须依赖的字段。
 

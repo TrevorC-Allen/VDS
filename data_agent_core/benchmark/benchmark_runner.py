@@ -107,6 +107,7 @@ def run_dabstep_benchmark(
         for row in predictions:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
+    metrics = summarize_details(details)
     summary = {
         "split": split,
         "limit": limit,
@@ -116,11 +117,15 @@ def run_dabstep_benchmark(
         "scored": scored,
         "correct": correct,
         "accuracy": None if scored == 0 else correct / scored,
+        "success_count": metrics["success_count"],
+        "unexpected_not_applicable": metrics["unexpected_not_applicable"],
+        "true_unsupported": metrics["true_unsupported"],
+        "not_applicable_counts": metrics["not_applicable_counts"],
         "predictions_path": str(predictions_path),
         "trace_dir": str(trace_dir),
         "agent_mode": agent_mode,
         "details": details,
-        "metrics": summarize_details(details),
+        "metrics": metrics,
         "error_analysis": summarize_failures(details),
     }
     report_path = output_dir / f"{split}_{start_number}_to_{end_number}_report.json"

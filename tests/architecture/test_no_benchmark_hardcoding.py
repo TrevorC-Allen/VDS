@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -24,6 +25,13 @@ class BenchmarkHardcodingBoundaryTest(unittest.TestCase):
             "expected_answer",
             "standard_answer",
             "hidden_answer",
+            "proxy answer",
+            "accepted answer",
+            "public proxy",
+        }
+        forbidden_patterns = {
+            "task_id equality": re.compile(r"\b(task_id|question_id)\s*==\s*['\"]"),
+            "task_id membership": re.compile(r"\b(task_id|question_id)\s+in\s+\{?[\['\"]"),
         }
         scan_roots = [
             REPO_ROOT / "data_agent_core" / "agent",
@@ -32,14 +40,26 @@ class BenchmarkHardcodingBoundaryTest(unittest.TestCase):
             REPO_ROOT / "data_agent_core" / "llm",
             REPO_ROOT / "data_agent_core" / "output",
             REPO_ROOT / "data_agent_core" / "verifier",
+            REPO_ROOT / "agent_runtime",
+            REPO_ROOT / "backend",
+            REPO_ROOT / "ms_agent_framework_adapter",
+            REPO_ROOT / "multi_agent_workflows",
         ]
+        excluded_paths = {
+            REPO_ROOT / "multi_agent_workflows" / "dabstep_benchmark_runner.py",
+        }
         violations: list[str] = []
         for root in scan_roots:
             for path in root.rglob("*.py"):
+                if path in excluded_paths:
+                    continue
                 text = path.read_text().lower()
                 for term in forbidden_terms:
                     if term in text:
                         violations.append(f"{path.relative_to(REPO_ROOT)} contains {term}")
+                for label, pattern in forbidden_patterns.items():
+                    if pattern.search(text):
+                        violations.append(f"{path.relative_to(REPO_ROOT)} contains {label}")
         self.assertEqual([], violations)
 
     def test_benchmark_runner_does_not_pass_answer_or_task_id_to_agent(self) -> None:

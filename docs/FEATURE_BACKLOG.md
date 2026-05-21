@@ -117,7 +117,7 @@
 
 风险：如果过早启用自由工具调用，模型可能绕过确定性执行器和 Verifier；如果工具 schema 不严格，容易出现参数漂移、隐式任意 SQL、敏感数据泄露或不可复现结果。
 
-状态：2026-05-21 已完成 provider-neutral 契约、本地 dispatcher 和真实内部工具 callable 测试，包括 profile_schema、build_analysis_plan、execute_pandas_plan、execute_sql_plan、verify_results、build_chart_spec、generate_insight；仍未启用 OpenAI / DeepSeek provider 原生工具循环。
+状态：2026-05-22 已完成 provider-neutral 契约、本地 dispatcher、timeout_seconds 执行边界、真实内部工具 callable 测试和 OpenAI / DeepSeek 兼容 provider-native mock loop，包括 profile_schema、build_analysis_plan、execute_pandas_plan、execute_sql_plan、verify_results、build_chart_spec、generate_insight；仍未把真实 OpenAI / DeepSeek 网络 tool loop 作为生产默认链路。
 
 ### Microsoft Agent Framework Adapter
 
@@ -175,7 +175,7 @@
 
 泛化验证方式：每个新业务语义能力必须至少包含一个合成/非 Benchmark 用例、一个同类变体用例和一个旧代表回归用例；DABstep 只能作为后验回归观察。
 
-状态：2026-05-21 已完成 fraud volume rate ranking、Verifier semantic correction action、受控重跑 wiring 和合成能力测试；DABstep dev 前 10 回归为 9/10。ACI associated cost 仍需继续按通用 fee what-if candidate table 能力增强，不能只修当前失败样本。
+状态：2026-05-22 已完成 fraud volume rate ranking、Verifier semantic correction action、受控重跑 wiring、trace 证据、合成能力测试、Not Applicable 第一/二批能力族、DABstep hour-of-day 和 Microsoft 21-40 中文零售能力闭环。DABstep dev 前 10 回归为 9/10。ACI associated cost / best_fraud_aci_choice 仍需继续按通用 fee what-if candidate table 和 associated cost 语义增强，不能只修当前失败样本。
 
 ### Chinese-First Multilingual Data Analysis
 
@@ -207,7 +207,7 @@
 
 泛化验证方式：每个能力族至少有合成/非 Benchmark 用例，并覆盖中文问题或中文字段名；同时保留英文上传表或 DABstep 回归。
 
-状态：2026-05-21 已完成第一批能力族、Not Applicable 归因、CAPABILITY_GAP 错误类型、trace/debug/report 摘要和合成中英文测试。2026-05-21 已继续补齐 null_check、更多英文/中文季度表达、fraud likelihood 多维排名、fee what-if candidate table 和 provider-native tool calling adapter 骨架。DABstep 100-130 和 Microsoft 脱敏数据 21-40 的真实回归结论已进入 MAIN_GOAL：DABstep official 本地准确率仍不可计算，public proxy 仅用于后验观察；Microsoft 21-40 暴露中文零售 target / aggregation / ranking / row_count 能力缺口。本轮已按通用能力族补齐 DABstep hour-of-day top group / outlier group，以及中文零售服务客户、目标达成率、今日分销、拜访/陈列记录、订单状态枚举和路线品类贡献，并用合成中英文用例验证。
+状态：2026-05-22 已完成第一批能力族、Not Applicable 归因、CAPABILITY_GAP 错误类型、trace/debug/report 摘要和合成中英文测试。已继续补齐 null_check、更多英文/中文季度表达、fraud likelihood 多维排名、fee what-if candidate table 和 provider-native tool calling adapter 骨架。DABstep official 本地准确率仍不可计算，public proxy 仅用于后验观察；DABstep 100-130 暴露的 hour-of-day top group / outlier group 已按通用能力族补齐。Microsoft 21-40 中文零售 target / aggregation / ranking / row_count 等能力缺口已用中文零售能力族和合成中文用例闭环。
 
 ### Chinese Retail 21-40 Capability Closure
 
@@ -244,3 +244,4 @@
 ## TODO
 
 - 新功能进入开发前，先确认是否影响 contracts / API_CONTRACT / tracing / errors。
+- 真实 OpenAI / DeepSeek provider-native tool loop、DuckDB runtime、ACI associated cost 通用口径、复杂并行/多轮自纠、DABstep 131+、Microsoft 41+ 和更多中文真实数据仍需按能力族推进。

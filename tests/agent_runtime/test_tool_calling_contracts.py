@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 import json
+import time
 
 from agent_runtime.agent_role import AgentRole
 from agent_runtime.data_agent_tool_catalog import TOOL_NAMES, build_data_agent_tool_registry
@@ -14,6 +15,7 @@ from agent_runtime.provider_native_tool_adapter import (
 )
 from agent_runtime.tool_contracts import ToolCall
 from agent_runtime.tool_dispatcher import ToolDispatcher
+from agent_runtime.tool_registry import ToolDefinition, ToolRegistry
 from ms_agent_framework_adapter.tool_mapping import build_tool_mappings
 
 
@@ -136,6 +138,27 @@ class ToolCallingContractTest(unittest.TestCase):
         self.assertTrue(result.tool_results[0].success)
         self.assertEqual("profile_schema", result.trace_events[0]["tool_name"])
         self.assertNotIn("reasoning_content", result.messages[1])
+
+    def test_dispatcher_enforces_tool_timeout(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="slow_tool",
+                description="Test-only slow tool.",
+                input_schema={"type": "object", "required": [], "properties": {}, "additionalProperties": False},
+                allowed_roles=[AgentRole.PLANNER],
+                timeout_seconds=0.01,
+                callable_ref=lambda _arguments: time.sleep(1),
+            )
+        )
+
+        result = ToolDispatcher(registry).dispatch(
+            ToolCall(step_id="tool_timeout", tool_name="slow_tool", arguments={}, requested_by=AgentRole.PLANNER)
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual("TOOL_DISPATCH_ERROR", result.errors[0]["error_type"])
+        self.assertIn("timed out", result.errors[0]["error_message"])
 
 
 class _FakeProviderClient:

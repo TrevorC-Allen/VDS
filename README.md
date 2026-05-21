@@ -64,12 +64,12 @@ VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runti
 - Phase 2：LLM 单 Agent MVP 已可测，保留为 fallback。
 - Phase 3：Benchmark runner、metrics、error_analysis 已可测；禁止单题硬编码和伪泛化补丁，标准答案只用于评分。
 - Phase 4：Microsoft Agent Framework adapter 已作为可选承载层验证，不污染 `data_agent_core`。
-- Phase 5：受控 Tool Calling 契约、ToolDispatcher、tool trace 摘要和内部工具 catalog 已建立。
+- Phase 5：受控 Tool Calling 契约、ToolDispatcher timeout 边界、tool trace 摘要、内部工具 catalog 和 provider-native mock loop 已建立。
 - Phase 6：最小多 Agent workflow 已启用，backend 默认 `multi_agent`，DABstep dev 前 10 当前可复现 9/10。
 
 后续 TODO：
 
 - 增强通用 `best_fraud_aci_choice`、ACI associated cost 和 fee what-if candidate table 能力缺口；禁止按题号、题面、固定样本值或当前错误形态特判。
 - 所有 benchmark 暴露的问题都必须转成可迁移能力族，并用合成/非 Benchmark 用例验证泛化能力没有下降。
-- 接入 provider 原生 OpenAI / DeepSeek tool loop，同时保持工具白名单、超时、trace 摘要和核心算法框架无关。
+- 将 provider 原生 OpenAI / DeepSeek tool loop 接入真实网络 smoke；当前已有兼容 schema、tool call 解析和 mock loop，但不作为生产默认链路。
 - 在不改写 `data_agent_core` 的前提下，继续完善 Microsoft Agent Framework workflow 承载层。

@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-当前只定义 Data Agent 的工程边界和扩展方向，不实现复杂业务逻辑。
+当前已实现 Data Agent 最小核心算法、最小 API 壳、内部多 Agent 顺序 workflow、受控工具层和可选 Microsoft adapter 边界；复杂后端业务、前端、部署、权限和生产级 provider tool loop 仍不在当前默认范围。
 
 2026-05-21 更新：当前已新增核心算法 MVP，可在本地直接运行 DABstep 风格数据分析任务。该 MVP 仍保持框架无关，不依赖 Microsoft Agent Framework。
 
@@ -16,11 +16,13 @@
 
 2026-05-21 更新：Phase 6 最小可运行多 Agent workflow 已落地。backend analyze 默认使用 multi_agent；multi_agent_workflows/end_to_end_data_analysis_workflow.py 负责编排；agent_runtime/data_analysis_roles.py 负责角色执行；data_agent_core 仍不依赖 multi_agent_workflows。
 
-2026-05-21 更新：下一阶段业务口径驱动校验已开始落地。LogicForm 预留 metric、metric_definition、numerator、denominator、group_by、objective 和 options；Verifier 不只检查 Pandas / SQL 一致性，也检查问题语义和指标定义是否一致；Correction 可输出结构化 corrected LogicForm 并触发受控重跑。
+2026-05-21 更新：业务口径驱动校验已开始落地。LogicForm 预留 metric、metric_definition、numerator、denominator、group_by、objective 和 options；Verifier 不只检查 Pandas / SQL 一致性，也检查问题语义和指标定义是否一致；Correction 可输出结构化 corrected LogicForm 并触发受控重跑。
 
 2026-05-21 更新：`Not Applicable` 能力缺口闭环已继续推进。Response Builder、trace 和 Benchmark report 会区分 `true_unsupported` 与 `capability_gap`；基础通用能力族已新增 row_count、distinct_count、repeat_entity_percentage、outlier_count、top_k_share、filtered_metric_ranking、null_check、季度过滤、fraud likelihood 多维排名和 fee what-if candidate table，并优先用合成中英文用例验证泛化。
 
 2026-05-21 更新：Provider-native tool calling adapter 已建立在 `agent_runtime/provider_native_tool_adapter.py`。该层只把 OpenAI / DeepSeek 兼容 tool schema 和 tool_calls 映射到内部 ToolDefinition / ToolCall / ToolResult，再交给 ToolDispatcher；不实现 DatasetProfile、Pandas、SQL、Verifier、Chart、Insight 或 Benchmark 逻辑。
+
+2026-05-22 更新：ToolDispatcher 已对 timeout_seconds 增加本地 POSIX timeout 执行边界；架构测试新增 tracked-file secret scan，并把 Benchmark 硬编码扫描扩大到 agent_runtime、backend、ms_agent_framework_adapter 和 multi_agent_workflows 的核心源码范围。
 
 ## 层次边界
 
@@ -129,7 +131,7 @@ Phase 5 的工具层只暴露内部白名单工具，不开放任意代码、任
 2. ToolCall：step_id、tool_name、arguments、requested_by。
 3. ToolResult：success、output_payload、warnings、errors、trace_event。
 4. ToolTraceEvent：只记录工具名、角色、参数摘要、结果摘要、错误和耗时。
-5. ToolDispatcher：本地校验工具名、角色和 JSON 参数，再调用受控 callable。
+5. ToolDispatcher：本地校验工具名、角色、JSON 参数和 timeout_seconds，再调用受控 callable。
 6. DataAgentToolRuntime：保存当前运行会话中的 dataset context / profile，并把工具绑定到 data_agent_core 的既有函数。
 
 当前 Data Agent 白名单工具：
@@ -146,7 +148,7 @@ OpenAI、DeepSeek、Microsoft Agent Framework 只能适配这些内部工具契�
 
 ## 业务口径校验
 
-下一阶段的质量提升必须围绕通用业务口径能力，不围绕 Benchmark 单题，也不围绕当前错误样本做伪泛化补丁：
+后续质量提升必须围绕通用业务口径能力，不围绕 Benchmark 单题，也不围绕当前错误样本做伪泛化补丁：
 
 1. Planner 输出的 LogicForm 必须携带指标定义、分子、分母、维度、候选项和目标方向。
 2. Data Engineer 负责把 manual / schema profile / guidelines 中的业务定义落入结构化字段。
@@ -227,5 +229,5 @@ Microsoft 脱敏数据回归只用于暴露中文真实业务表能力缺口，�
 
 - 扩展 CSV / Excel 表头识别和多 sheet 策略。
 - 将 sqlite fallback 替换或扩展为 DuckDB runtime，但保持核心框架无关。
-- 后续再启用 provider 原生 OpenAI / DeepSeek 工具循环；当前先保证内部 dispatcher 和 Microsoft adapter 可测。
+- 后续再把 provider 原生 OpenAI / DeepSeek 工具循环接入真实网络 smoke；当前已有 schema / tool call 解析 / mock loop，但不作为生产默认链路。
 - Phase 6 后续再扩展真实 Microsoft Agent Framework demo、并行 executor、更完整 Correction Loop 和 ACI associated cost 通用口径，不把核心算法写进 workflow。

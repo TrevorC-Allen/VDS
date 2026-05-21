@@ -699,6 +699,106 @@ YYYY-MM-DD HH:MM TZ
 
 ### 日期时间
 
+2026-05-22 00:46 CST
+
+### 本次目标
+
+按用户要求核查“上一轮遗留问题是否已处理”和“MAIN_GOAL 是否还有陈旧待做项”，把已解决项写成已解决，把真实未完成项保留为遗留；同时补齐本轮审计发现的最小治理缺口：工具 timeout 执行边界、tracked-file secret scan、扩大 Benchmark 硬编码扫描范围，以及 benchmark report 顶层执行统计。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- README.md
+- docs/API_CONTRACT.md
+- docs/ARCHITECTURE.md
+- docs/DATASET_LIFECYCLE.md
+- docs/FEATURE_BACKLOG.md
+- docs/PHASE_GATES.md
+- docs/SECURITY_BOUNDARIES.md
+- agent_runtime/tool_dispatcher.py
+- data_agent_core/benchmark/benchmark_runner.py
+- tests/agent_runtime/test_tool_calling_contracts.py
+- tests/architecture/test_no_benchmark_hardcoding.py
+- tests/architecture/test_no_secrets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 将 MAIN_GOAL 当前阶段从“未来支持/待搭建”改为“已完成基线/继续增强”，明确 CSV / Excel、Pandas、SQL fallback、Benchmark Runner、最小 API、Phase 5 工具层和 Phase 6 多 Agent 已有可测基线。
+- 将 Phase 6 TODO 改为完成状态与真实遗留项：已完成 Not Applicable 第一/二批能力、DABstep hour-of-day、Microsoft 21-40 中文零售、trace/debug 证据和治理测试；仍遗留 ACI associated cost、DuckDB runtime、真实 provider 网络 tool loop、复杂并行/多轮自纠、DABstep 131+、Microsoft 41+ 和更多中文真实数据验证。
+- 明确 provider-native adapter 当前是 OpenAI / DeepSeek 兼容 schema、tool call 解析和 mock/fake client loop，不宣称生产真实 provider tool loop 已完成。
+- ToolDispatcher 根据 ToolDefinition.timeout_seconds 增加 POSIX timeout 执行边界，超时失败进入标准 ToolResult.errors 和 trace_event.error。
+- Benchmark report 顶层新增 success_count、unexpected_not_applicable、true_unsupported、not_applicable_counts，避免只在 metrics 子节点中查看执行覆盖。
+- 架构测试新增 tracked-file secret scan，确认真实 key 不进入 Git tracked files；扩大 Benchmark 硬编码扫描到 agent_runtime、backend、ms_agent_framework_adapter 和 multi_agent_workflows 核心源码范围。
+- 同步 API、Architecture、Dataset Lifecycle、Security Boundaries、Feature Backlog、Phase Gates 和 README 的阶段状态，移除“后端 API 仍未实现”“仅预留工具 trace”等陈旧表述。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.agent_runtime.test_tool_calling_contracts tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- rg import-boundary scan for forbidden data_agent_core imports
+- rg --pcre2 secret scan excluding outputs、storage、.env* 和 __pycache__
+- rg source hardcoding scan excluding benchmark runner scoring wrapper
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/main_goal_sync_dev10_20260522_0040
+
+### 测试结果
+
+- targeted unittest 通过：Ran 9 tests，OK。
+- full unittest 通过：Ran 62 tests in 11.705s，OK，skipped=1。
+- compileall 通过。
+- data_agent_core 禁止 import 边界扫描无命中。
+- secret 扫描无命中，tracked-file secret scan 已纳入 unittest。
+- 源码 hardcoding 扫描无 task_id 等值判断、expected_answer、standard_answer、hidden_answer、proxy answer、accepted answer 或 public proxy 泄漏命中。
+- DABstep dev 1-10 mock 多 Agent 回归：total=10，scored=10，correct=9，accuracy=0.9，success_count=10，unexpected_not_applicable=0，true_unsupported=1；输出目录 `outputs/main_goal_sync_dev10_20260522_0040`。
+
+### 遗留问题
+
+- 已解决：上一轮列出的 `null_check`、季度表达、fraud likelihood 多维比较、fee what-if candidate table、provider-native adapter 骨架、DABstep 100-130 hour-of-day capability_gap、Microsoft 21-40 中文零售能力缺口，仍按已解决记录。
+- 已解决：本轮发现的 secret scan 无测试入口、hardcoding scan 范围偏窄、ToolDispatcher 只有 timeout metadata 无执行边界、benchmark report 顶层缺少 success_count / unexpected_not_applicable 的问题。
+- 仍遗留：ACI associated cost / best_fraud_aci_choice 费用口径需继续按通用 fee what-if candidate table 和 associated cost 语义增强，禁止按 DABstep dev 单题特判。
+- 仍遗留：DuckDB runtime 尚未生产化，当前 SQL 路径仍以 sqlite fallback / SQL-compatible operation 为主。
+- 仍遗留：真实 OpenAI / DeepSeek provider-native 网络 tool loop 尚未作为生产默认链路启用；当前是兼容 schema、解析和 mock/fake client loop。
+- 仍遗留：DABstep public all answer 为空，本地不能计算 all split official accuracy；public proxy 只能后验观察，不能进入核心链路。
+- 仍遗留：DABstep 131+、Microsoft 41+ 和更多中文真实数据未完成大范围验证。
+- 仍遗留：当前多 Agent 是内部顺序 workflow，复杂并行 executor、真实 Microsoft cloud workflow 和多轮代码级自纠仍属后续增强。
+
+### 是否影响主流程
+
+否。未修改旧 BigCat / VDS 主流程，未修改前端页面或复杂后端业务。
+
+### 是否涉及 Benchmark
+
+是。修改 benchmark report 汇总字段并运行 DABstep dev 1-10 mock 多 Agent 回归；标准答案只用于离线 scorer，未传入 Agent workflow、prompt、Planner、Executor、Verifier、Correction 或核心逻辑。
+
+### 是否涉及 Microsoft Agent Framework
+
+是，但仅涉及文档边界和硬编码扫描覆盖范围。未安装 Microsoft Agent Framework，未新增核心依赖，未让 data_agent_core 依赖 adapter。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。工具 timeout、secret scan、扩大硬编码扫描和文档状态同步强化了多 Agent / provider adapter 的受控边界；核心算法仍保持框架无关。
+
+### 是否修改核心数据契约
+
+否。未修改 contracts dataclass 稳定字段。
+
+### 是否修改 API 契约
+
+是。docs/API_CONTRACT.md 同步当前最小 API 已实现和 tool_call_summaries 当前可用状态；稳定 API 字段未变化。
+
+### 是否新增或修改错误类型
+
+否。未新增错误类型；ToolDispatcher 超时沿用 TOOL_DISPATCH_ERROR 标准结构。
+
+### 是否新增或修改运行追踪逻辑
+
+是。ToolDispatcher timeout 失败会进入 ToolResult.errors 和 trace_event.error；benchmark report 顶层新增执行覆盖/Not Applicable 归因汇总字段。未新增完整 Chain of Thought、raw reasoning tokens、API key 或敏感原始数据。
+
+---
+
+### 日期时间
+
 2026-05-21 17:11 CST
 
 ### 本次目标
