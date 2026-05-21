@@ -14,13 +14,15 @@
 
 2026-05-21 更新：Phase 4/5 的 Microsoft adapter 和内部工具 callable 已开始落地。agent_runtime/data_agent_tool_impl.py 调用既有 data_agent_core 模块；ms_agent_framework_adapter/framework_tools.py、framework_agents.py、framework_workflow.py 只把内部工具、角色和顺序映射到 Microsoft Agent Framework 可选对象。
 
+2026-05-21 更新：Phase 6 最小可运行多 Agent workflow 已落地。backend analyze 默认使用 multi_agent；multi_agent_workflows/end_to_end_data_analysis_workflow.py 负责编排；agent_runtime/data_analysis_roles.py 负责角色执行；data_agent_core 仍不依赖 multi_agent_workflows。
+
 ## 层次边界
 
 1. data_agent_core 是核心算法层。
 2. backend 是调用壳，只负责接收请求、临时文件管理、调用核心层和返回结构化 JSON。
 3. agent_runtime 是项目内部 Agent 抽象层。
-4. ms_agent_framework_adapter 是未来 Microsoft Agent Framework 适配层。
-5. multi_agent_workflows 是未来多 Agent 编排目录。
+4. ms_agent_framework_adapter 是可选 Microsoft Agent Framework 适配层。
+5. multi_agent_workflows 已承载默认 Phase 6 最小顺序多 Agent workflow。
 6. docs 是工程契约和扩展需求管理目录。
 
 ## 依赖规则
@@ -75,7 +77,7 @@ LLM + 规则：Chart Planner
 9. LLM Insight Generator：只在结果可信后生成解释和建议。
 10. LLM + 规则 Chart Planner：规则先约束图表类型，LLM 辅助选择展示语义。
 
-## 未来多 Agent 映射
+## 当前多 Agent 映射
 
 1. Planner Agent：LLM 为主。
 2. Data Engineer Agent：代码为主，LLM 辅助字段语义。
@@ -85,9 +87,30 @@ LLM + 规则：Chart Planner
 6. Correction Agent：LLM 生成修正方向，代码执行。
 7. Insight Agent：LLM 为主。
 8. Visualization Agent：规则 + LLM。
-9. Benchmark Agent：代码为主，LLM 辅助错误归因。
+9. Response Builder：代码为主，生成最终稳定 JSON。
+10. Benchmark Agent：代码为主，LLM 辅助错误归因。
 
-这些角色后续由 agent_runtime 表达，Microsoft Agent Framework adapter 只负责把角色映射到 workflow，不承载核心算法。
+这些角色由 agent_runtime 表达，multi_agent_workflows 只负责编排，Microsoft Agent Framework adapter 只负责把角色映射到 framework workflow，不承载核心算法。
+
+当前默认 analyze 顺序：
+
+Planner Agent
+↓
+Data Engineer Agent
+↓
+Pandas Executor Agent
+↓
+SQL Executor Agent
+↓
+Verifier Agent
+↓
+Correction Agent
+↓
+Insight Agent
+↓
+Visualization Agent
+↓
+Response Builder
 
 ## Phase 5 受控工具层
 
@@ -144,13 +167,14 @@ OpenAI、DeepSeek、Microsoft Agent Framework 只能适配这些内部工具契�
 2. DataAgentService 调用 data_agent_core.core.file_parser.parse_dataset_file。
 3. File Parser 返回 ParsedDataset，其中包含 tables 和 DatasetProfile。
 4. TempFileStore 保存 source_file、profile.json，并在当前进程内保存 DataFrame tables。
-5. analyze 时 DataAgentService 根据 dataset_id 取回 tables，创建 UploadedDatasetAgent。
-6. UploadedDatasetAgent 复用固定 LLM 单 Agent 链路，执行 Pandas / SQL 双路径、Result Normalizer、Verifier、Insight 和 Chart。
+5. analyze 时 DataAgentService 根据 dataset_id 取回 tables，默认创建 DataAnalysisMultiAgentWorkflow。
+6. DataAnalysisMultiAgentWorkflow 通过 agent_runtime 角色和受控工具执行 Pandas / SQL 双路径、Result Normalizer、Verifier、Insight 和 Chart。
 7. trace 写入 storage/runs/{run_id}/trace.json，debug.trace_path 只用于调试，前端不能依赖它作为稳定契约。
+8. UploadedDatasetAgent 保留为 single_agent fallback。
 
 ## TODO
 
 - 扩展 CSV / Excel 表头识别和多 sheet 策略。
 - 将 sqlite fallback 替换或扩展为 DuckDB runtime，但保持核心框架无关。
 - 后续再启用 provider 原生 OpenAI / DeepSeek 工具循环；当前先保证内部 dispatcher 和 Microsoft adapter 可测。
-- Phase 6+ 再扩展复杂多 Agent workflow，不把核心算法写进 workflow。
+- Phase 6 后续再扩展真实 Microsoft Agent Framework demo、并行 executor 和更完整 Correction Loop，不把核心算法写进 workflow。

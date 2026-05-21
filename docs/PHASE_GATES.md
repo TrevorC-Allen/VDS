@@ -2,7 +2,7 @@
 
 ## 目标
 
-本文件定义从 Phase 1 到 Phase 4+ 的推进门槛，避免为了 Benchmark 单题得分牺牲泛化能力。
+本文件定义从 Phase 1 到 Phase 6+ 的推进门槛，避免为了 Benchmark 单题得分牺牲泛化能力。
 
 ## 总红线
 
@@ -123,3 +123,5 @@
 2. 每个 Agent 可独立测试。
 3. WorkflowState 可序列化、可追踪、可回归。
 4. 可替换为 LangGraph、CrewAI 或自研 runtime，而不重写 data_agent_core。
+
+当前状态（2026-05-21）：Phase 6 最小可运行状态已完成。backend analyze 默认使用 multi_agent；DABstep 多 Agent runner 可运行 dev 前 10 题并保持 8/10；agent_runtime 负责角色执行和工具调用；multi_agent_workflows 负责编排；data_agent_core 不 import multi_agent_workflows 或 Microsoft Agent Framework。

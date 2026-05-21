@@ -14,6 +14,8 @@
 
 2026-05-21 更新：内部工具 callable 和 Microsoft Agent Framework adapter 已开始实现。该变化不修改 upload/analyze/profile 的稳定 API 字段；如果 adapter 参与运行，只能把工具调用摘要放入 debug / trace，不允许新增前端必须依赖的字段。
 
+2026-05-21 更新：analyze 默认切换为 multi_agent。请求可选 agent_mode，支持 multi_agent / single_agent；该字段用于内部运行模式选择，不改变稳定响应字段。默认 multi_agent 不要求安装 Microsoft Agent Framework，不引入前端强依赖字段。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
@@ -40,7 +42,7 @@
 
 ## POST /api/data-agent/analyze
 
-目标：接收 dataset_id、用户问题和 execution_mode，返回分析结果、校验信息、解释建议和图表配置。
+目标：接收 dataset_id、用户问题、execution_mode 和可选 agent_mode，返回分析结果、校验信息、解释建议和图表配置。
 
 execution_mode 预留：
 
@@ -50,6 +52,13 @@ execution_mode 预留：
 - dual
 
 默认建议：dual。
+
+agent_mode 预留：
+
+- multi_agent
+- single_agent
+
+默认建议：multi_agent。
 
 稳定字段草案：
 
@@ -82,6 +91,10 @@ debug 当前可能包含：
 - sql_success
 - trace_path
 - tool_call_summaries
+- agent_mode
+- workflow_mode
+- multi_agent_roles
+- agent_task_results
 
 llm_stage_summaries 只允许包含 structured analysis plan、reasoning summary、execution trace、verification notes 等摘要，不能包含完整 Chain of Thought。
 

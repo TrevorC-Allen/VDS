@@ -144,7 +144,21 @@
 
 风险：如果跳过 Phase gate 直接做 Microsoft workflow，容易把核心算法绑死在具体框架里。
 
-状态：2026-05-21 开始落地 Phase gate、内部 runtime 契约、工具 callable 和 Microsoft adapter 可选实现；Phase 6+ 复杂多 Agent workflow 仍只保留任务序列，不执行核心算法。
+状态：2026-05-21 已落地 Phase 6 最小可运行多 Agent workflow。backend 默认 multi_agent；DABstep 多 Agent runner 可跑 dev 前 10；复杂并行、多轮纠错和真实 Microsoft cloud workflow 仍属后续增强。
+
+### Phase 6 Multi-Agent Runtime
+
+目标：把主 analyze 链路从单 Agent 编排切换为多 Agent 顺序 workflow。
+
+影响模块：agent_runtime/data_analysis_roles.py、multi_agent_workflows/end_to_end_data_analysis_workflow.py、multi_agent_workflows/dabstep_benchmark_runner.py、backend/services、benchmark wrapper、tests。
+
+优先级：P0。
+
+验收标准：Planner、Data Engineer、Pandas Executor、SQL Executor、Verifier、Correction、Insight、Visualization、Response Builder 都进入 debug.multi_agent_roles；trace 包含 tool_call_summary，debug 包含 tool_call_summaries；DABstep dev 前 10 题仍不低于 80%；data_agent_core 不依赖 multi_agent_workflows。
+
+风险：当前为顺序多 Agent，尚未实现复杂并行、真实 Microsoft cloud execution 和多轮自纠执行。
+
+状态：2026-05-21 已完成最小可运行版本。
 
 ## TODO
 

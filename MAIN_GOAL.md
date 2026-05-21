@@ -19,7 +19,7 @@
 5. 搭建最小 backend API 目录
 6. 搭建 agent_runtime 内部 Agent 抽象目录
 7. 搭建 ms_agent_framework_adapter 微软框架适配层目录
-8. 搭建 multi_agent_workflows 多 Agent 工作流预留目录
+8. 搭建 multi_agent_workflows Phase 6 最小多 Agent 工作流目录
 9. 搭建 docs 工程文档目录
 10. 搭建 tests/architecture 架构边界测试目录
 11. 定义文件解析、字段画像、问题理解、分析计划、执行器、校验器、解释器、图表规划器的模块边界
@@ -51,6 +51,7 @@
 12. Tool Calling 暂定为 Phase 5 后置能力；当前只保留 ToolRegistry / tool mapping 骨架，不在当前阶段启用模型原生工具循环或 thinking-mode 工具回填。
 13. 已补充 Phase 5 受控 Tool Calling 的 provider-neutral 契约骨架：ToolDefinition、ToolCall、ToolResult、ToolTraceEvent、ToolDispatcher、Data Agent tool catalog 和 Microsoft adapter tool mapping；当前仍不启用 provider 原生工具循环。
 14. 已开始实现 Microsoft Agent Framework adapter 和真实内部工具 callable：工具 callable 位于 agent_runtime，调用既有 data_agent_core 核心模块；Microsoft adapter 只做可选 function tool、agent factory 和 sequential workflow builder，不让 data_agent_core 依赖 Microsoft Agent Framework。
+15. 已切换到 Phase 6 最小可运行多 Agent workflow：backend analyze 默认走 multi_agent；DABstep 多 Agent runner 可运行 dev 前 10 题并保持 8/10；data_agent_core 仍不依赖 multi_agent_workflows。
 
 ## 架构原则
 
@@ -59,7 +60,7 @@
 3. 前端只负责上传、提问和展示，不参与数据处理
 4. Agent Framework 只能作为后续 workflow 编排层，不允许污染核心算法
 5. Benchmark 只能用于评估、错误归因和回归测试，不允许针对单题硬编码
-6. 先做单 Agent，再考虑多 Agent
+6. 历史推进顺序为先做单 Agent，当前已切换为最小多 Agent 默认链路
 7. 先保证核心算法稳定，再扩展外围工程
 8. 所有模块必须可测试、可复现、可回归
 9. 核心算法不依赖 Microsoft Agent Framework
@@ -84,7 +85,7 @@
 
 ## Microsoft Agent Framework 策略
 
-Microsoft Agent Framework 是后续多 Agent 编排的候选框架，但不是当前核心算法依赖。
+Microsoft Agent Framework 是多 Agent 编排的候选承载框架，但不是当前核心算法依赖。当前默认 Phase 6 workflow 使用内部 runtime；Microsoft adapter 只是可选承载和映射层。
 
 当前实现方式：
 
@@ -203,9 +204,9 @@ Verifier / Response Builder 生成最终结构化 JSON
 3. Microsoft Agent Framework adapter 可以把内部工具包装为 function tool，但仅作为可选适配层。
 4. 仍未启用 provider 原生 OpenAI / DeepSeek tool loop，仍不允许模型获得 raw Python、raw SQL、shell、网络或任意文件访问。
 
-## 未来多 Agent 工作流
+## 当前多 Agent 工作流
 
-Phase 6+ 多 Agent 目标结构：
+Phase 6 最小可运行多 Agent 结构：
 
 用户问题
 ↓
@@ -236,6 +237,8 @@ Response Builder：生成最终结构化 JSON
 3. 每个 Agent 必须能独立测试
 4. 多 Agent 只是编排方式，不改变核心算法位置
 5. Microsoft Agent Framework 只负责 workflow orchestration
+6. 当前 backend 默认走 multi_agent，single_agent 只作为 fallback
+7. 当前 DABstep 多 Agent runner 位于 multi_agent_workflows/dabstep_benchmark_runner.py
 
 ## 最小 API 目标
 

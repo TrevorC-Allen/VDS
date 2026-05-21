@@ -41,6 +41,8 @@ def run_dabstep_benchmark(
     limit: int = 10,
     offset: int = 0,
     output_dir: str | Path = "outputs/dabstep",
+    agent_factory: Any | None = None,
+    agent_mode: str = "single_agent",
 ) -> dict[str, Any]:
     """Run the core agent against DABstep tasks."""
 
@@ -51,7 +53,7 @@ def run_dabstep_benchmark(
     output_dir.mkdir(parents=True, exist_ok=True)
     trace_dir = output_dir / "traces"
 
-    agent = DataAnalysisAgent(context_dir=context_dir)
+    agent = agent_factory(context_dir) if agent_factory is not None else DataAnalysisAgent(context_dir=context_dir)
     tasks = load_tasks(tasks_path, limit=limit, offset=offset)
     predictions: list[dict[str, Any]] = []
     details: list[dict[str, Any]] = []
@@ -68,7 +70,7 @@ def run_dabstep_benchmark(
         prediction = {
             "task_id": task["task_id"],
             "agent_answer": response.answer,
-            "reasoning_trace": f"structured analysis plan: {response.debug.get('operation')}; trace: {trace_path}",
+            "reasoning_trace": f"structured analysis plan: {response.debug.get('operation')}; agent_mode: {response.debug.get('agent_mode', agent_mode)}; trace: {trace_path}",
         }
         predictions.append(prediction)
 
@@ -111,6 +113,7 @@ def run_dabstep_benchmark(
         "accuracy": None if scored == 0 else correct / scored,
         "predictions_path": str(predictions_path),
         "trace_dir": str(trace_dir),
+        "agent_mode": agent_mode,
         "details": details,
         "metrics": summarize_details(details),
         "error_analysis": summarize_failures(details),
@@ -145,6 +148,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--output-dir", default="outputs/dabstep")
+    parser.add_argument("--agent-mode", default="single_agent", choices=["single_agent"])
     args = parser.parse_args()
 
     summary = run_dabstep_benchmark(
@@ -153,6 +157,7 @@ def main() -> None:
         limit=args.limit,
         offset=args.offset,
         output_dir=args.output_dir,
+        agent_mode=args.agent_mode,
     )
     printable = {key: value for key, value in summary.items() if key != "details"}
     print(json.dumps(printable, ensure_ascii=False, indent=2))

@@ -30,6 +30,7 @@ def analyze_payload(payload: dict[str, Any]) -> dict[str, Any]:
         question=str(payload.get("question") or ""),
         execution_mode=str(payload.get("execution_mode") or "dual"),
         guidelines=str(payload.get("guidelines") or ""),
+        agent_mode=str(payload.get("agent_mode") or "multi_agent"),
     )
 
 
@@ -50,6 +51,7 @@ try:
         question: str
         execution_mode: str = "dual"
         guidelines: str = ""
+        agent_mode: str = "multi_agent"
 
     @router.post("/upload")
     async def upload(file: UploadFile = File(...)) -> dict[str, Any]:
@@ -69,6 +71,7 @@ try:
             question=payload.question,
             execution_mode=payload.execution_mode,
             guidelines=payload.guidelines,
+            agent_mode=payload.agent_mode,
         )
 
     @router.get("/datasets/{dataset_id}/profile")

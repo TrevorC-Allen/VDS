@@ -1,3 +1,4 @@
 # Optional Microsoft Agent Framework adapter dependency.
-# Install only when running ms_agent_framework_adapter against the real framework.
-agent-framework==1.5.0
+# This keeps the adapter runtime lean. Install the full `agent-framework`
+# package only when you need every provider/plugin extra locally.
+agent-framework-core==1.5.0

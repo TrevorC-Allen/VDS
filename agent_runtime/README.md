@@ -22,7 +22,9 @@ AgentRole:
 - VISUALIZATION
 - BENCHMARK
 
-## 未来角色职责
+## 当前角色职责
+
+默认 analyze 的 Phase 6 workflow 通过这些 handler 执行。
 
 1. PLANNER：Planner Agent，LLM 为主。
 2. DATA_ENGINEER：Data Engineer Agent，代码为主，LLM 辅助字段语义。
@@ -113,7 +115,21 @@ agent_runtime/data_agent_tool_impl.py 提供受控 callable：
 
 这些工具不开放 raw Python、raw SQL、shell、网络或任意外部文件访问。
 
+## 当前多 Agent 角色执行
+
+agent_runtime/data_analysis_roles.py 提供 Phase 6 角色 handler：
+
+1. Data Engineer Agent：调用 profile_schema。
+2. Planner Agent：执行 LLM intent、LLM + 规则 column mapping、LLM plan，并通过 build_analysis_plan 工具生成 AnalysisPlan。
+3. Pandas Executor Agent：调用 execute_pandas_plan。
+4. SQL Executor Agent：对 SQL-compatible plan 调用 execute_sql_plan。
+5. Verifier Agent：规则优先校验，并调用 LLM verifier critic。
+6. Correction Agent：生成 bounded correction plan，不执行任意代码。
+7. Insight Agent：在 verification 之后生成 insight。
+8. Visualization Agent：在 verification 之后生成 chart spec。
+9. Response Builder：生成稳定 FinalResponse。
+
 ## TODO
 
 - Phase 5 后续接入 provider-native OpenAI / DeepSeek tool call adapter，但保持内部 ToolDefinition 不变。
-- Phase 6+ 由 ms_agent_framework_adapter 或其他 workflow runtime 编排多 Agent。
+- Phase 6 后续接真实 Microsoft Agent Framework cloud workflow、并行 executor 和更完整 Correction Loop。

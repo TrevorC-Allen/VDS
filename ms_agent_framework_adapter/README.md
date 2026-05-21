@@ -70,6 +70,8 @@ agent_runtime.ToolDefinition / ToolCall / ToolResult
 pip install -r requirements-ms-agent.txt
 ```
 
+如果需要 Azure Foundry、OpenAI、Anthropic、Redis 等完整 provider extras，再按官方文档安装完整 `agent-framework` 包。
+
 adapter 不会自动读取 `.env`。模型、Azure Foundry 或其他 provider 配置应由运行脚本从环境变量显式传入，禁止提交 key。
 
 ## 禁止事项

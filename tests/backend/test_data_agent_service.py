@@ -43,6 +43,8 @@ class DataAgentServiceTest(unittest.TestCase):
             self.assertEqual(analysis["response_version"], "v1")
             self.assertTrue(analysis["run_id"].startswith("run_"))
             self.assertEqual(analysis["result"]["rows"][0]["city"], "Shanghai")
+            self.assertEqual("multi_agent", analysis["debug"]["agent_mode"])
+            self.assertIn("planner", analysis["debug"]["multi_agent_roles"])
             self.assertIn("trace_path", analysis["debug"])
 
     def test_analyze_unknown_dataset_returns_standard_error(self) -> None:

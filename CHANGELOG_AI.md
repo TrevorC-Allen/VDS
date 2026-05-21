@@ -181,6 +181,113 @@ YYYY-MM-DD HH:MM TZ
 
 ### 日期时间
 
+2026-05-21 14:14 CST
+
+### 本次目标
+
+按 MAIN_GOAL 进入 Phase 6，把主 analyze 链路从单 Agent 编排切换为最小可运行多 Agent workflow，并保持核心算法框架无关、Benchmark 不泄漏标准答案、不针对题目优化。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- BRANCH_RULES.md
+- docs/API_CONTRACT.md
+- docs/ARCHITECTURE.md
+- docs/FEATURE_BACKLOG.md
+- docs/PHASE_GATES.md
+- README.md
+- agent_runtime/README.md
+- agent_runtime/data_analysis_roles.py
+- backend/routers/data_agent.py
+- backend/schemas/data_agent_schema.py
+- backend/services/data_agent_service.py
+- data_agent_core/benchmark/benchmark_runner.py
+- multi_agent_workflows/README.md
+- multi_agent_workflows/dabstep_benchmark_runner.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- requirements-ms-agent.txt
+- ms_agent_framework_adapter/README.md
+- tests/architecture/test_no_benchmark_hardcoding.py
+- tests/backend/test_data_agent_service.py
+- tests/core/test_dabstep_core.py
+- tests/multi_agent_workflows/__init__.py
+- tests/multi_agent_workflows/test_phase6_multi_agent_workflow.py
+
+### 修改内容
+
+- 新增 DataAnalysisRoleRuntime，按 Planner、Data Engineer、Pandas Executor、SQL Executor、Verifier、Correction、Insight、Visualization、Response Builder 拆分职责。
+- 新增 DataAnalysisMultiAgentWorkflow，作为 Phase 6 内部顺序多 Agent runner；workflow 只编排，不直接实现核心算法。
+- backend analyze 默认切换为 agent_mode=multi_agent，single_agent 保留为 fallback。
+- 新增 multi_agent_workflows.dabstep_benchmark_runner，DABstep 多 Agent runner 通过外层 wrapper 调用 core benchmark，避免 data_agent_core import multi_agent_workflows。
+- 更新 benchmark runner 为 agent_factory 注入模式，保持核心 benchmark runner 框架无关。
+- 更新 API / 架构 / Phase Gates / Backlog / README 文档，去掉“未来/预留”旧措辞，明确 Phase 6 最小多 Agent workflow 已启用，Microsoft adapter 仍为可选承载层。
+- 新增多 Agent workflow 测试和 backend 默认 multi_agent 验证。
+- 将 requirements-ms-agent.txt 调整为轻量 `agent-framework-core==1.5.0`，避免完整 `agent-framework` 元包默认拉取大量 provider extras；真实 provider extras 可按需另装。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/phase6_multi_agent_dev_verify_final
+- rg -n "^\\s*(from|import)\\s+(backend|ms_agent_framework_adapter|multi_agent_workflows|agent_framework)" data_agent_core
+- rg -n "sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}" --glob '!outputs/**' --glob '!storage/**' --glob '!.env*' .
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pip install -r requirements-ms-agent.txt
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 - <<'PY' from agent_framework import Agent, WorkflowBuilder, tool; print('agent_framework core import ok') PY
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 - <<'PY' build_microsoft_tool_functions smoke for 7 FunctionTool objects PY
+
+### 测试结果
+
+- unittest 通过：Ran 27 tests in 11.161s，OK，skipped=1（真实 agent_framework 已安装时跳过缺包错误测试）。
+- compileall 通过。
+- DABstep dev 前 10 题 multi_agent mock LLM 路径：total=10，scored=10，correct=8，accuracy=0.8。
+- data_agent_core 禁止 import 边界检查未发现匹配。
+- secret 扫描未发现 sk-* 或 sk-proj-* key 进入仓库文件。
+- Microsoft Agent Framework 轻量可选依赖安装通过：agent-framework-core==1.5.0。
+- Microsoft adapter import smoke 通过：Agent、WorkflowBuilder、tool 均可从 agent_framework 导入。
+- Microsoft function tool smoke 通过：build_microsoft_tool_functions 返回 7 个 FunctionTool 对象，adapter plan 显示 imports_framework=True。
+
+### 遗留问题
+
+- 当前多 Agent 是顺序内部 workflow，尚未启用复杂并行 executor、真实 Microsoft cloud workflow 或多轮代码级自纠执行。
+- backend service 当前是 single_agent / multi_agent 的运行模式选择点；router 仍保持薄转发。
+- OpenAI / DeepSeek provider 原生 tool call loop 仍未启用。
+
+### 是否影响主流程
+
+否。未修改旧 BigCat / VDS 主流程，未修改前端、权限、登录、数据库或部署。
+
+### 是否涉及 Benchmark
+
+是。运行 DABstep dev 前 10 做多 Agent 回归；未修改 Benchmark 数据，未把 task_id 或 answer 传入分析链路，未做单题特判。
+
+### 是否涉及 Microsoft Agent Framework
+
+是。Microsoft adapter 仍为可选承载层；当前默认 multi_agent 使用内部 runtime，不要求安装 Microsoft Agent Framework。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。主 analyze 链路已按多 Agent 职责拆分，未来可由 Microsoft Agent Framework、LangGraph、CrewAI 或自研 runtime 承载。
+
+### 是否修改核心数据契约
+
+否。未修改 data_agent_core/contracts 稳定 dataclass 字段。
+
+### 是否修改 API 契约
+
+是。新增可选 agent_mode，默认 multi_agent；稳定响应字段未破坏，新增信息只进入 debug / trace。
+
+### 是否新增或修改错误类型
+
+否。未新增 data_agent_core/errors 错误类型。
+
+### 是否新增或修改运行追踪逻辑
+
+是。多 Agent trace 汇总 tool_call_summary、agent_task_results、multi_agent_roles；仍不记录完整 Chain of Thought、raw reasoning tokens 或 API key。
+
+---
+
+### 日期时间
+
 2026-05-21 13:52 CST
 
 ### 本次目标
