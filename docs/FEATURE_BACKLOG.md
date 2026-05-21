@@ -116,7 +116,7 @@
 
 风险：如果过早启用自由工具调用，模型可能绕过确定性执行器和 Verifier；如果工具 schema 不严格，容易出现参数漂移、隐式任意 SQL、敏感数据泄露或不可复现结果。
 
-状态：未实现。当前只保留 ToolRegistry 和 tool_mapping 骨架，Phase 5 前不启用 provider 原生工具调用。
+状态：2026-05-21 已完成 provider-neutral 契约骨架和本地 dispatcher 测试，包括 ToolDefinition、ToolCall、ToolResult、ToolTraceEvent、Data Agent tool catalog、tool whitelist 和 Microsoft adapter tool mapping；仍未启用 provider 原生工具调用。
 
 ### Phase Gate And Multi-Agent Migration
 
@@ -130,7 +130,7 @@
 
 风险：如果跳过 Phase gate 直接做 Microsoft workflow，容易把核心算法绑死在具体框架里。
 
-状态：2026-05-21 开始落地 Phase gate、内部 runtime 契约和 adapter 映射骨架。
+状态：2026-05-21 开始落地 Phase gate、内部 runtime 契约和 adapter 映射骨架；Phase 6+ 多 Agent workflow 仍只保留任务序列，不执行核心算法。
 
 ## TODO
 

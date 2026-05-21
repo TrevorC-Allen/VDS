@@ -6,6 +6,7 @@ from typing import Protocol
 
 from agent_runtime.agent_result import AgentResult
 from agent_runtime.agent_task import AgentTask
+from agent_runtime.tool_contracts import ToolCall, ToolResult
 from agent_runtime.workflow_state import WorkflowState
 
 
@@ -21,3 +22,10 @@ class WorkflowRuntime(Protocol):
 
     def run(self, tasks: list[AgentTask], initial_state: WorkflowState) -> WorkflowState:
         """Run workflow tasks and return final state."""
+
+
+class ToolExecutor(Protocol):
+    """Protocol for provider-neutral controlled tool dispatch."""
+
+    def dispatch(self, call: ToolCall) -> ToolResult:
+        """Dispatch one validated tool call."""

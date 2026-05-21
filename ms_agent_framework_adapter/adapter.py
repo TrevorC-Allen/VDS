@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ms_agent_framework_adapter.tool_mapping import TOOL_MAPPINGS
 from ms_agent_framework_adapter.workflow_mapping import build_workflow_mapping
 
 
@@ -28,6 +29,16 @@ def build_adapter_plan() -> dict[str, Any]:
                 "responsibility": step.role_mapping.responsibility,
             }
             for step in build_workflow_mapping()
+        ],
+        "tool_mappings": [
+            {
+                "internal_name": tool.internal_name,
+                "framework_kind": tool.framework_kind,
+                "code_owner": tool.code_owner,
+                "result_policy": tool.result_policy,
+                "timeout_seconds": tool.timeout_seconds,
+            }
+            for tool in TOOL_MAPPINGS
         ],
         "boundary_rules": [
             "adapter_does_not_parse_files",

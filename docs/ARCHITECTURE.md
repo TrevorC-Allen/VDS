@@ -10,6 +10,8 @@
 
 2026-05-21 更新：Phase 1 最小后端调用壳已落地。backend/services 负责临时存储、dataset_id 查询和调用 UploadedDatasetAgent；backend/routers 只做 API 转发；data_agent_core 仍不依赖 backend。
 
+2026-05-21 更新：Phase 5 受控 Tool Calling 契约骨架已落地。agent_runtime 定义 ToolDefinition、ToolCall、ToolResult、ToolTraceEvent、ToolDispatcher 和 Data Agent tool catalog；ms_agent_framework_adapter 只做工具映射，不实现工具逻辑。
+
 ## 层次边界
 
 1. data_agent_core 是核心算法层。
@@ -85,6 +87,30 @@ LLM + 规则：Chart Planner
 
 这些角色后续由 agent_runtime 表达，Microsoft Agent Framework adapter 只负责把角色映射到 workflow，不承载核心算法。
 
+## Phase 5 受控工具层
+
+Phase 5 的工具层只暴露内部白名单工具，不开放任意代码、任意 SQL、shell、网络请求或外部文件访问。
+
+当前 provider-neutral 工具契约位于 agent_runtime：
+
+1. ToolDefinition：稳定工具名、说明、input_schema、allowed_roles、timeout_seconds、result_policy、constraints。
+2. ToolCall：step_id、tool_name、arguments、requested_by。
+3. ToolResult：success、output_payload、warnings、errors、trace_event。
+4. ToolTraceEvent：只记录工具名、角色、参数摘要、结果摘要、错误和耗时。
+5. ToolDispatcher：本地校验工具名、角色和 JSON 参数，再调用受控 callable。
+
+当前 Data Agent 白名单工具：
+
+1. profile_schema
+2. build_analysis_plan
+3. execute_pandas_plan
+4. execute_sql_plan
+5. verify_results
+6. build_chart_spec
+7. generate_insight
+
+OpenAI、DeepSeek、Microsoft Agent Framework 只能适配这些内部工具契约，不能把 provider 原生工具格式写成核心算法契约。
+
 ## DABstep 本地测试链路
 
 当前 DABstep 测试按以下边界处理：
@@ -113,4 +139,5 @@ LLM + 规则：Chart Planner
 
 - 扩展 CSV / Excel 表头识别和多 sheet 策略。
 - 将 sqlite fallback 替换或扩展为 DuckDB runtime，但保持核心框架无关。
-- Phase 4 后再实验 Microsoft Agent Framework adapter，不提前绑定核心算法。
+- Phase 5 后再启用 provider 原生工具循环；当前只保留内部 dispatcher 和 adapter mapping。
+- Phase 6+ 再做多 Agent workflow，不提前把核心算法写进 workflow。

@@ -29,6 +29,7 @@ class AgentRuntimeContractTest(unittest.TestCase):
         self.assertFalse(plan["imports_framework"])
         self.assertEqual("data_agent_core", plan["core_algorithm_location"])
         self.assertGreaterEqual(len(plan["workflow_steps"]), 8)
+        self.assertGreaterEqual(len(plan["tool_mappings"]), 7)
 
     def test_end_to_end_task_sequence_uses_internal_roles(self) -> None:
         tasks = build_end_to_end_tasks(dataset_id="ds_1", question="q")

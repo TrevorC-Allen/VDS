@@ -49,6 +49,7 @@
 10. 当前最小后端 API 仍是调用壳，核心 Pandas / SQL / Verifier / Insight / Chart 逻辑仍在 data_agent_core。
 11. public all.jsonl 的 answer 字段为空，不能本地计算完整 450 题官方准确率；dev 前 10 题仍用于本地可复现 smoke benchmark。
 12. Tool Calling 暂定为 Phase 5 后置能力；当前只保留 ToolRegistry / tool mapping 骨架，不在当前阶段启用模型原生工具循环或 thinking-mode 工具回填。
+13. 已补充 Phase 5 受控 Tool Calling 的 provider-neutral 契约骨架：ToolDefinition、ToolCall、ToolResult、ToolTraceEvent、ToolDispatcher、Data Agent tool catalog 和 Microsoft adapter tool mapping；当前仍不启用 provider 原生工具循环。
 
 ## 架构原则
 

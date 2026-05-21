@@ -65,8 +65,6 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否新增或修改运行追踪逻辑
 
----
-
 ### 日期时间
 
 2026-05-21 11:59 CST
@@ -929,5 +927,108 @@ YYYY-MM-DD HH:MM TZ
 ### 是否新增或修改运行追踪逻辑
 
 是。UploadedDatasetAgent 生成 RunTrace，backend service 写入 storage/runs/{run_id}/trace.json，并在 debug.trace_path 中暴露调试路径；trace 不记录完整 Chain of Thought。
+
+---
+
+### 日期时间
+
+2026-05-21 13:32 CST
+
+### 本次目标
+
+根据用户更新后的 MAIN_GOAL，同步 Phase 5 受控 Tool Calling 和 Phase 6+ 多 Agent 路线，并实现 provider-neutral 工具契约、工具注册、工具 dispatcher、工具 trace 摘要和 Microsoft adapter 工具映射骨架。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- BRANCH_RULES.md
+- docs/API_CONTRACT.md
+- docs/ARCHITECTURE.md
+- docs/FEATURE_BACKLOG.md
+- docs/PHASE_GATES.md
+- agent_runtime/README.md
+- agent_runtime/tool_contracts.py
+- agent_runtime/tool_registry.py
+- agent_runtime/tool_dispatcher.py
+- agent_runtime/data_agent_tool_catalog.py
+- agent_runtime/runtime_interfaces.py
+- agent_runtime/workflow_state.py
+- data_agent_core/configs/tool_whitelist.yaml
+- data_agent_core/contracts/agent_contracts.py
+- data_agent_core/tracing/run_trace.py
+- ms_agent_framework_adapter/README.md
+- ms_agent_framework_adapter/adapter.py
+- ms_agent_framework_adapter/tool_mapping.py
+- multi_agent_workflows/README.md
+- tests/agent_runtime/test_runtime_contracts.py
+- tests/agent_runtime/test_tool_calling_contracts.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 ToolCall、ToolResult、ToolTraceEvent 和 provider-neutral to_json_ready 工具契约。
+- 扩展 ToolDefinition，补 input_schema、allowed_roles、timeout_seconds、result_policy、constraints 和 provider schema 输出。
+- 新增 ToolDispatcher，支持工具名查找、角色白名单校验、required/type 参数校验、callable 执行、标准错误和 trace-safe 摘要。
+- 新增 Data Agent 白名单工具 catalog：profile_schema、build_analysis_plan、execute_pandas_plan、execute_sql_plan、verify_results、build_chart_spec、generate_insight。
+- 更新 tool_whitelist.yaml，声明允许工具、blocked operations、schema validation、role whitelist 和 timeout 要求。
+- 更新 WorkflowState 和 RunTrace，预留 tool_call_trace / tool_call_summary。
+- 更新 Microsoft adapter 的 tool_mapping 和 adapter plan，使其只声明内部工具到 Microsoft function tool 的映射，不实现工具逻辑、不 import Microsoft 包。
+- 更新 docs 和 README，明确 Phase 5 先建立受控工具层，Phase 6+ 再进入多 Agent workflow。
+- 新增工具契约测试，覆盖工具元数据、角色校验、参数校验、trace 摘要和 adapter tool mapping。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- rg -n "^\\s*(from|import)\\s+(backend|ms_agent_framework_adapter|multi_agent_workflows|agent_framework)" data_agent_core
+- rg secret-pattern scan against repository files excluding outputs、storage 和 .env*
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/tool_layer_dev_verify
+
+### 测试结果
+
+- unittest 通过：Ran 20 tests in 9.135s，OK。
+- compileall 通过。
+- data_agent_core 禁止 import 边界检查未发现实际 import 匹配。
+- secret 扫描未发现 API key 进入仓库文件；.env.local 仍为 ignored 文件。
+- DABstep dev 前 10 题 mock LLM 路径：total=10，scored=10，correct=8，accuracy=0.8。
+
+### 遗留问题
+
+- 当前工具层仍是 Phase 5 契约和本地 dispatcher 骨架，尚未接 OpenAI / DeepSeek provider 原生 tool call loop。
+- 当前 dispatcher 不执行真实超时中断，只记录每个工具的 timeout_seconds 契约；后续 provider/runtime 层需要补受控超时执行。
+- 当前工具 callable 通过 runtime 注入，尚未把 profile_schema 等工具接到真实 data_agent_core 函数。
+- Phase 6+ 多 Agent workflow 仍是任务序列骨架，未启用 Microsoft Agent Framework 实际 workflow。
+
+### 是否影响主流程
+
+否。未修改旧 BigCat / VDS 主流程，未修改前端或复杂后端业务。
+
+### 是否涉及 Benchmark
+
+是，仅运行 DABstep dev 前 10 题回归验证；未修改 Benchmark 数据、未读取 all split 标准答案、未做单题特判。
+
+### 是否涉及 Microsoft Agent Framework
+
+是，仅涉及适配层声明式 tool mapping；未安装、未 import、未实现 Microsoft Agent Framework workflow。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。Phase 5 provider-neutral 工具契约可被 Phase 6+ 多 Agent workflow、Microsoft adapter 或自研 runtime 复用。
+
+### 是否修改核心数据契约
+
+是。新增 agent_runtime 工具契约，并在 data_agent_core/contracts/agent_contracts.py 记录 ToolDefinition / ToolCall / ToolResult 稳定形状。
+
+### 是否修改 API 契约
+
+是。docs/API_CONTRACT.md 预留 debug.tool_call_summaries 的摘要字段，但 API 稳定字段不变，前端仍不能依赖 debug。
+
+### 是否新增或修改错误类型
+
+否。未新增 data_agent_core/errors 错误类型；ToolDispatcher 内部返回 TOOL_DISPATCH_ERROR 作为工具层标准错误 payload。
+
+### 是否新增或修改运行追踪逻辑
+
+是。RunTrace 预留 tool_call_summary，WorkflowState 预留 tool_call_trace，ToolTraceEvent 只记录工具名、角色、参数摘要、结果摘要、错误和耗时，不记录完整 Chain of Thought。
 
 ---

@@ -44,6 +44,21 @@ agent_runtime.AgentRole.BENCHMARK
 agent_runtime.WorkflowState
 → Microsoft Agent Framework Workflow State / Session State
 
+agent_runtime.ToolDefinition / ToolCall / ToolResult
+→ Microsoft Agent Framework Function Tool / Tool Call / Tool Result
+
+当前适配层只导出 declarative tool mapping：
+
+1. profile_schema
+2. build_analysis_plan
+3. execute_pandas_plan
+4. execute_sql_plan
+5. verify_results
+6. build_chart_spec
+7. generate_insight
+
+这些 mapping 只说明未来 Microsoft Agent Framework 应如何暴露内部工具，不实现工具逻辑。
+
 ## 禁止事项
 
 1. 禁止在 adapter 中写文件解析逻辑。
@@ -55,5 +70,6 @@ agent_runtime.WorkflowState
 
 ## TODO
 
-- Phase 4 增加最小 demo workflow。
-- Phase 4 验证 adapter 不污染核心算法依赖边界。
+- Phase 4/5 验证 adapter 不污染核心算法依赖边界。
+- Phase 5 以后再接 Microsoft Agent Framework 真实 tool/function step。
+- Phase 6+ 再做多 Agent workflow 编排。

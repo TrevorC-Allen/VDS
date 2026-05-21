@@ -1,7 +1,20 @@
-# Tool whitelist draft for future executor sandboxing.
-# TODO: Define allowed Pandas, NumPy, and DuckDB operations in Phase 1 or later.
-allowed_tools: []
+# Phase 5 controlled tool-calling whitelist.
+allowed_tools:
+  - profile_schema
+  - build_analysis_plan
+  - execute_pandas_plan
+  - execute_sql_plan
+  - verify_results
+  - build_chart_spec
+  - generate_insight
+result_policy: summary_only
+requires_schema_validation: true
+requires_role_whitelist: true
+requires_timeout: true
 blocked_operations:
   - network_request
   - external_file_access
   - shell_execution
+  - raw_python
+  - raw_sql
+  - benchmark_answer_access

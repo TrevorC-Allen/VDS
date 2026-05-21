@@ -10,6 +10,8 @@
 
 2026-05-21 更新：Phase 1 最小后端调用壳已落地。backend 通过 DataAgentService 调用 data_agent_core，支持上传 CSV / Excel 后返回 DatasetProfile、按 dataset_id 分析问题、获取 profile。router 仍只做请求转发，不包含 Pandas / SQL / Verifier 核心逻辑。
 
+2026-05-21 更新：Phase 5 工具调用 trace 契约已预留。API 稳定字段不变；debug 未来可包含 tool_call_summaries，但前端仍不能依赖 debug。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
@@ -77,8 +79,11 @@ debug 当前可能包含：
 - pandas_success
 - sql_success
 - trace_path
+- tool_call_summaries
 
 llm_stage_summaries 只允许包含 structured analysis plan、reasoning summary、execution trace、verification notes 等摘要，不能包含完整 Chain of Thought。
+
+tool_call_summaries 只允许包含 tool_name、step_id、requested_by、arguments_summary、result_summary、success、latency_ms、error，不允许包含完整 Chain of Thought、raw reasoning tokens、API key 或敏感原始数据。
 
 失败响应必须包含：
 

@@ -99,7 +99,7 @@
 4. OpenAI / DeepSeek provider 差异被限制在 data_agent_core/llm 或 provider adapter 内，data_agent_core 核心契约保持 provider-neutral。
 5. 工具调用失败必须进入 errors / warnings，并可由 Verifier 或 Correction Planner 处理。
 
-当前状态（2026-05-21）：未实现。当前只存在 agent_runtime.ToolRegistry 和 ms_agent_framework_adapter.tool_mapping 的骨架；Phase 5 前不得启用模型原生工具调用。
+当前状态（2026-05-21）：已完成 provider-neutral 契约骨架和本地 dispatcher 测试。当前包含 ToolDefinition、ToolCall、ToolResult、ToolTraceEvent、Data Agent tool catalog、tool whitelist 和 Microsoft adapter tool mapping；仍不得启用 provider 原生工具调用。
 
 ## Phase 6+：多 Agent Workflow
 
