@@ -18,14 +18,20 @@ class RunTrace:
     analysis_planner_summary: Any = None
     llm_plan_summary: Any = None
     logic_form: Any = None
+    metric_definition: Any = None
+    numerator: Any = None
+    denominator: Any = None
     analysis_plan: Any = None
     pandas_result_summary: Any = None
     sql_result_summary: Any = None
     result_normalizer_summary: Any = None
     verification_result: Any = None
     verifier_critic_summary: Any = None
+    semantic_verification_notes: list[str] = field(default_factory=list)
     correction_plan_summary: Any = None
     correction_attempts: list[Any] = field(default_factory=list)
+    candidate_table_summary: Any = None
+    selected_candidate: Any = None
     tool_call_summary: list[Any] = field(default_factory=list)
     insight_summary: Any = None
     chart_plan_summary: Any = None

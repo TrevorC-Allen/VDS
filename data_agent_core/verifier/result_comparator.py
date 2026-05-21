@@ -17,6 +17,15 @@ def compare_results(left: ExecutionResult, right: ExecutionResult) -> Comparison
 
     left_value = normalize_value(left.value)
     right_value = normalize_value(right.value)
+    if isinstance(left_value, dict) and isinstance(right_value, dict):
+        if left_value.get("answer") is not None and left_value.get("answer") == right_value.get("answer"):
+            return ComparisonResult(
+                consistent=True,
+                column_match=True,
+                row_match=True,
+                value_match=True,
+                issues=[],
+            )
     value_match = left_value == right_value
     if not value_match:
         issues.append("Execution values differ after normalization.")

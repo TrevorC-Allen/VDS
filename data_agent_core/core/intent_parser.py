@@ -171,17 +171,45 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
         return make_logic_form(
             task_type="ranking",
             operation="top_count",
+            metric="transaction_count",
+            metric_definition={
+                "name": "transaction_count",
+                "description": "Count of payment transactions.",
+                "aggregation": "count",
+                "source": "payments.csv",
+            },
+            group_by=group_by,
+            objective="maximum",
             parameters={"table": "payments", "group_by": group_by},
             output_format=output_format | {"answer_type": "country_code"},
         )
 
     if "top country" in lowered and "fraud" in lowered:
         group_by = "ip_country" if "ip_country" in question else "issuing_country"
+        options = _extract_options(question)
         return make_logic_form(
             task_type="ranking",
-            operation="top_count",
-            filters={"has_fraudulent_dispute": True},
-            parameters={"table": "payments", "group_by": group_by, "options": _extract_options(question)},
+            operation="rank_by_metric",
+            metric="fraud_volume_rate",
+            metric_definition={
+                "name": "fraud_volume_rate",
+                "description": "Fraud is defined in the manual as fraudulent volume divided by total volume.",
+                "aggregation": "ratio",
+                "source": "manual.md section 7 and payments.csv",
+            },
+            numerator={"column": "eur_amount", "filter": {"has_fraudulent_dispute": True}, "aggregation": "sum"},
+            denominator={"column": "eur_amount", "aggregation": "sum"},
+            group_by=group_by,
+            objective="maximum",
+            options=options,
+            parameters={
+                "table": "payments",
+                "group_by": group_by,
+                "metric": "fraud_volume_rate",
+                "sort_order": "desc",
+                "limit": 1,
+                "options": options,
+            },
             output_format=output_format | {"answer_type": "multiple_choice_country"},
         )
 

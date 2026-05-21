@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.schemas.data_agent_schema import (
+    VALID_AGENT_MODES,
     VALID_EXECUTION_MODES,
     dataset_profile_response,
     error_response,
@@ -18,6 +19,7 @@ from data_agent_core.core.file_parser import parse_dataset_file
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import FILE_PARSE_ERROR, LOGIC_FORM_ERROR
 from data_agent_core.llm.client import LLMClient
+from multi_agent_workflows.end_to_end_data_analysis_workflow import DataAnalysisMultiAgentWorkflow
 
 
 class DataAgentService:
@@ -59,8 +61,9 @@ class DataAgentService:
         question: str,
         execution_mode: str = "dual",
         guidelines: str = "",
+        agent_mode: str = "multi_agent",
     ) -> dict[str, Any]:
-        """Run the single-agent core chain for an uploaded dataset."""
+        """Run the configured Data Agent workflow for an uploaded dataset."""
 
         run_id = "run_" + uuid.uuid4().hex[:16]
         if execution_mode not in VALID_EXECUTION_MODES:
@@ -73,6 +76,18 @@ class DataAgentService:
                     failed_step="analyze_dataset",
                     recoverable=True,
                     suggested_fix="Use one of auto, pandas, sql, or dual.",
+                ),
+            )
+        if agent_mode not in VALID_AGENT_MODES:
+            return error_response(
+                dataset_id=dataset_id,
+                run_id=run_id,
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message=f"Unsupported agent_mode: {agent_mode}",
+                    failed_step="analyze_dataset",
+                    recoverable=True,
+                    suggested_fix="Use multi_agent or single_agent.",
                 ),
             )
 
@@ -91,12 +106,23 @@ class DataAgentService:
             )
 
         try:
-            agent = UploadedDatasetAgent(tables=tables, dataset_id=dataset_id, llm_client=self.llm_client)
-            response, trace = agent.analyze(question=question, guidelines=guidelines, execution_mode=execution_mode)
+            profile = self.file_store.get_profile(dataset_id)
+            if agent_mode == "single_agent":
+                agent = UploadedDatasetAgent(tables=tables, dataset_id=dataset_id, llm_client=self.llm_client)
+                response, trace = agent.analyze(question=question, guidelines=guidelines, execution_mode=execution_mode)
+            else:
+                agent = DataAnalysisMultiAgentWorkflow.from_uploaded_tables(
+                    tables,
+                    dataset_id=dataset_id,
+                    dataset_profile=profile,
+                    llm_client=self.llm_client,
+                )
+                response, trace = agent.analyze(question=question, guidelines=guidelines, execution_mode=execution_mode)
             trace_path = self.file_store.write_run_trace(trace)
             payload = response.to_dict()
             payload.setdefault("debug", {})
             payload["debug"]["trace_path"] = str(trace_path)
+            payload["debug"]["agent_mode"] = agent_mode
             return to_json_ready(payload)
         except Exception as exc:  # noqa: BLE001 - service must normalize API errors.
             return error_response(

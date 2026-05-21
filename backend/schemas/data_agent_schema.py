@@ -11,6 +11,7 @@ from data_agent_core.contracts.dataset_contracts import DatasetProfile
 
 RESPONSE_VERSION = "v1"
 VALID_EXECUTION_MODES = {"auto", "pandas", "sql", "dual"}
+VALID_AGENT_MODES = {"multi_agent", "single_agent"}
 
 
 @dataclass
@@ -21,6 +22,7 @@ class AnalyzeRequest:
     question: str
     execution_mode: str = "dual"
     guidelines: str = ""
+    agent_mode: str = "multi_agent"
 
 
 def dataset_profile_response(profile: DatasetProfile | dict[str, Any]) -> dict[str, Any]:
