@@ -63,6 +63,8 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         return _aggregation(context["tables"], params)
     if op == "ranking":
         return _ranking(context["tables"], params)
+    if op == "rank_by_metric":
+        return _rank_by_metric(context["payments"] if "payments" in context else _table(context["tables"], params.get("table")), logic)
     if op == "top_count":
         return _top_count(context["payments"], filters, params)
     if op == "group_average":
@@ -270,6 +272,90 @@ def _top_count(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]
             if option_value == top_value:
                 return f"{letter}. {top_value}"
     return top_value
+
+
+def _rank_by_metric(df: pd.DataFrame, logic: Any) -> dict[str, Any]:
+    params = logic.parameters
+    group_by = str(logic.group_by or params["group_by"])
+    metric = str(logic.metric or params.get("metric") or "count")
+    objective = str(logic.objective or params.get("objective") or "maximum")
+    options = dict(logic.options or params.get("options") or {})
+    sort_desc = objective != "minimum"
+    if metric == "fraud_volume_rate":
+        candidate_table = _fraud_volume_rate_by_dimension(df, group_by, options)
+        metric_column = "fraud_volume_rate"
+    elif metric == "fraud_transaction_rate":
+        candidate_table = _fraud_transaction_rate_by_dimension(df, group_by, options)
+        metric_column = "fraud_transaction_rate"
+    else:
+        return {"answer": _top_count(df, logic.filters, {"group_by": group_by, "options": options}), "candidate_table": []}
+    if not candidate_table:
+        return {"answer": "Not Applicable", "candidate_table": [], "metric": metric}
+    candidate_table.sort(key=lambda row: row[metric_column], reverse=sort_desc)
+    selected = candidate_table[0]
+    selected_value = str(selected[group_by])
+    answer = selected_value
+    selected_option = None
+    for letter, option_value in options.items():
+        if str(option_value) == selected_value:
+            selected_option = letter
+            answer = f"{letter}. {selected_value}"
+            break
+    return {
+        "answer": answer,
+        "selected": selected_value,
+        "selected_option": selected_option,
+        "metric": metric,
+        "metric_definition": logic.metric_definition,
+        "group_by": group_by,
+        "objective": objective,
+        "candidate_table": candidate_table,
+    }
+
+
+def _fraud_volume_rate_by_dimension(df: pd.DataFrame, group_by: str, options: dict[str, Any]) -> list[dict[str, Any]]:
+    data = _limit_to_option_values(df, group_by, options)
+    grouped = data.groupby(group_by, dropna=True)
+    rows: list[dict[str, Any]] = []
+    for value, group in grouped:
+        total_volume = float(group["eur_amount"].sum())
+        fraudulent_volume = float(group.loc[group["has_fraudulent_dispute"].astype(bool), "eur_amount"].sum())
+        fraud_volume_rate = 0.0 if total_volume == 0 else fraudulent_volume / total_volume
+        rows.append(
+            {
+                group_by: str(value),
+                "fraudulent_volume": fraudulent_volume,
+                "total_volume": total_volume,
+                "fraud_volume_rate": fraud_volume_rate,
+            }
+        )
+    return rows
+
+
+def _fraud_transaction_rate_by_dimension(df: pd.DataFrame, group_by: str, options: dict[str, Any]) -> list[dict[str, Any]]:
+    data = _limit_to_option_values(df, group_by, options)
+    grouped = data.groupby(group_by, dropna=True)
+    rows: list[dict[str, Any]] = []
+    for value, group in grouped:
+        transaction_count = int(len(group))
+        fraudulent_count = int(group["has_fraudulent_dispute"].astype(bool).sum())
+        fraud_transaction_rate = 0.0 if transaction_count == 0 else fraudulent_count / transaction_count
+        rows.append(
+            {
+                group_by: str(value),
+                "fraudulent_transactions": fraudulent_count,
+                "transaction_count": transaction_count,
+                "fraud_transaction_rate": fraud_transaction_rate,
+            }
+        )
+    return rows
+
+
+def _limit_to_option_values(df: pd.DataFrame, group_by: str, options: dict[str, Any]) -> pd.DataFrame:
+    if not options:
+        return df
+    option_values = {str(value) for value in options.values()}
+    return df[df[group_by].astype(str).isin(option_values)]
 
 
 def _group_average(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:

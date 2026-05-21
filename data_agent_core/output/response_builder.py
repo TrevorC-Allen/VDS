@@ -56,6 +56,8 @@ def format_answer(value: Any, output_format: dict[str, Any]) -> str:
         return "Not Applicable"
     if value == "Not Applicable":
         return "Not Applicable"
+    if isinstance(value, dict) and "answer" in value:
+        return str(value["answer"])
     if answer_type == "number":
         return _format_number(float(value), decimals)
     if answer_type == "list":

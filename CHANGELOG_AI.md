@@ -67,6 +67,139 @@ YYYY-MM-DD HH:MM TZ
 
 ### 日期时间
 
+2026-05-21 15:09 CST
+
+### 本次目标
+
+按用户明确要求，将“禁止针对题目特调”提升为下一阶段 Rule NO.1，并把 DABstep 21-50 public proxy 暴露的问题写成通用能力族目标，而不是题号修复计划。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 在 MAIN_GOAL 当前实现状态中补充：all 21-50 public proxy 只能作为阶段性回归观察，不能替代 hidden ground truth official score。
+- 在架构原则中新增 Rule NO.1：禁止针对 Benchmark 题号、task_id、题面、标准答案、隐藏答案推测或 public proxy 答案池做单题特调；所有提升必须抽象为可复用能力族。
+- 在“下一阶段：业务口径驱动的多 Agent 质量提升”中新增 Rule NO.1 专段，明确 public proxy answer pool 不能进入 Planner、Executor、Verifier、Correction、prompt、测试 fixture 或核心分析链路。
+- 将 all 21-50 暴露出的失败归纳为能力族：字段枚举、比例和百分比、数据质量检查、欺诈维度排名、ACI 极值、Fee restriction 影响商户分析、Public proxy 回归报告。
+- 在重要红线中将禁止单题特调调整为第 1 条。
+
+### 测试方式
+
+- 文档规划变更，未运行代码测试。
+- 只读检查 MAIN_GOAL.md、CHANGELOG_AI.md 和当前 git 状态。
+
+### 测试结果
+
+- 未运行自动化测试；本次未修改 Python、API、contracts、tracing 或 runtime 逻辑。
+
+### 遗留问题
+
+- 当前工作区存在多个非本次修改的 Python 文件变更；本次未触碰、未回滚。
+- 下一阶段仍需按能力族实现字段枚举、比例、重复检测、欺诈维度排名、ACI 极值和 fee restriction 影响分析。
+
+### 是否影响主流程
+
+否。仅文档规划变更。
+
+### 是否涉及 Benchmark
+
+是。仅明确 Benchmark / public proxy 的使用边界和禁止单题特调规则；未修改 Benchmark 数据、runner、评分器或标准答案。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 Microsoft adapter 或框架接入逻辑。
+
+### 是否影响未来多 Agent 迁移
+
+是。将下一阶段多 Agent 迁移的首要约束明确为能力族泛化，不允许按题号或答案池特调。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 日期时间
+
+2026-05-21 14:50 CST
+
+### 本次目标
+
+按最新诊断结果更新 MAIN_GOAL，把下一阶段从“更换多 Agent 框架”明确调整为“业务口径驱动的多 Agent 质量提升”，并加入可执行 TODO，避免后续按 DABstep 单题修补。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 在当前实现状态中记录：DABstep dev 前 10 题保持 8/10 的瓶颈来自核心语义口径和费用模拟能力，不是 Microsoft adapter 或多 Agent 框架本身。
+- 新增“下一阶段：业务口径驱动的多 Agent 质量提升”章节，明确 Planner、Data Engineer、Executor、Verifier、Correction、Response Builder 和 Microsoft adapter 的职责边界。
+- 新增“下一阶段 TODO”，覆盖 Planner 语义指标增强、Data Engineer 业务定义落地、通用 Executor 能力、Verifier 语义校验、Correction 闭环重跑、trace/debug 证据、能力族回归测试和阶段验收标准。
+- 明确下一阶段必须通过通用能力修复 DABstep dev 前 10 的已知失败类型，禁止按 task_id、题号、标准答案或固定题面写特判。
+
+### 测试方式
+
+- 文档规划变更，未运行代码测试。
+- 只读检查 MAIN_GOAL.md、CHANGELOG_AI.md、BRANCH_RULES.md 和当前 git 状态。
+
+### 测试结果
+
+- 未运行自动化测试；本次未修改 Python、API、contracts、tracing 或 runtime 逻辑。
+
+### 遗留问题
+
+- 下一阶段仍需实际实现 Planner 语义指标、Verifier 语义校验、Correction 重跑和通用 executor 能力。
+- DABstep dev 前 10 当前仍为 8/10，本次只记录下一阶段计划，不改变评测结果。
+
+### 是否影响主流程
+
+否。仅文档规划变更。
+
+### 是否涉及 Benchmark
+
+是。仅记录 DABstep dev 前 10 的已知能力缺口和下一阶段通用修复方向；未修改 Benchmark 数据、runner、评分器或标准答案。
+
+### 是否涉及 Microsoft Agent Framework
+
+是。仅文档说明 Microsoft adapter 仍只负责承载和映射，不承载业务语义、Pandas、SQL、Verifier 或 Benchmark 逻辑。
+
+### 是否影响未来多 Agent 迁移
+
+是。明确下一阶段多 Agent 迁移重点是业务口径校验、结构化修正和受控重跑，而不是继续更换框架。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。仅提出下一阶段 trace/debug 证据增强 TODO。
+
+### 日期时间
+
 2026-05-21 11:59 CST
 
 ### 本次目标
@@ -176,6 +309,112 @@ YYYY-MM-DD HH:MM TZ
 ### 是否新增或修改运行追踪逻辑
 
 否。本轮未新增 trace 字段。
+
+---
+
+### 日期时间
+
+2026-05-21 15:25 CST
+
+### 本次目标
+
+按用户更新后的 MAIN_GOAL 继续推进下一阶段：业务口径驱动的多 Agent 质量提升。重点增强 LogicForm 指标语义、fraud ranking 通用口径、Verifier 语义校验、Correction 结构化修正重跑、运行追踪证据和能力级测试，禁止按 DABstep 题号或标准答案优化。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- docs/API_CONTRACT.md
+- docs/ARCHITECTURE.md
+- docs/FEATURE_BACKLOG.md
+- docs/PHASE_GATES.md
+- agent_runtime/data_agent_tool_impl.py
+- agent_runtime/data_analysis_roles.py
+- data_agent_core/contracts/analysis_contracts.py
+- data_agent_core/contracts/verification_contracts.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/core/logic_form.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/output/response_builder.py
+- data_agent_core/tracing/run_trace.py
+- data_agent_core/verifier/result_comparator.py
+- data_agent_core/verifier/rule_checker.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- tests/core/test_semantic_metric_verification.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 扩展 LogicForm，新增 metric、metric_definition、numerator、denominator、group_by、objective 和 options，用于表达业务指标口径。
+- 将 top fraud 类 ranking 从原始 transaction count 改为通用 fraud_volume_rate 指标，分子为 fraudulent eur_amount，分母为 total eur_amount，支持 multiple-choice candidate table。
+- 扩展 Pandas / SQL 执行器，支持 rank_by_metric / fraud_volume_rate 双路径执行，返回 answer、selected、selected_option、metric、metric_definition、candidate_table。
+- 扩展 Result Comparator，对 dict 结果优先比较最终 answer，避免候选表浮点细节导致 Pandas / SQL 一致答案被误判。
+- 扩展 VerificationResult 和 Verifier，检查业务语义口径；当 fraud ranking 使用 raw count 时输出 correction_action。
+- 扩展 Correction Agent 和 multi_agent workflow，能把 correction_action 转成 corrected LogicForm，并触发一次受控 Pandas / SQL / Verifier 重跑。
+- 扩展 RunTrace，记录 metric_definition、numerator、denominator、semantic_verification_notes、candidate_table_summary 和 selected_candidate。
+- 更新 response builder，使执行结果 value 为 dict 且包含 answer 时，最终 answer 使用该稳定字段。
+- 新增合成测试，验证 fraud ranking 按 volume rate 而非 raw count，并验证 Verifier 能对错误口径发出结构化修正。
+- 同步 MAIN_GOAL、ARCHITECTURE、API_CONTRACT、FEATURE_BACKLOG、PHASE_GATES，记录当前 dev 前 10 为 9/10，并明确 ACI associated cost 仍是通用能力缺口。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_semantic_metric_verification tests.core.test_dabstep_core tests.multi_agent_workflows.test_phase6_multi_agent_workflow
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/next_phase_semantic_tests_dev_1_10
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split all --limit 50 --offset 0 --output-dir outputs/next_phase_semantic_all_1_50
+- rg dependency-boundary scan for forbidden data_agent_core imports
+- rg secret-pattern scan excluding outputs、storage 和 .env*
+- rg hardcoding scan for task_id equality、DABstep dev answer literals and expected_answer usage
+
+### 测试结果
+
+- 针对性单测通过：Ran 7 tests，OK。
+- 全量单测通过：Ran 29 tests，OK，skipped=1。
+- compileall 通过。
+- DABstep dev 前 10：total=10，scored=10，correct=9，accuracy=0.9，agent_mode=multi_agent。
+- DABstep all 前 50：total=50，success_count=50，scored=0，accuracy=null；本地 public all.jsonl answer 字段为空，不能计算官方准确率。
+- data_agent_core 禁止 import 边界检查未发现实际 import 匹配。
+- secret 扫描未发现 API key 进入仓库文件。
+- 硬编码扫描未发现 task_id 等值判断、dev 答案字面值或核心链路 expected_answer 使用；仅剩文档和架构测试中的禁止项说明。
+
+### 遗留问题
+
+- ACI incentive / associated cost 费用口径仍需继续作为通用 fee what-if candidate table 能力增强；当前不能为了 dev 单题写答案特判。
+- 当前 SQL 路径仍是 sqlite fallback，后续需要接 DuckDB runtime。
+- all split public 文件没有本地答案，不能用本地 public all.jsonl 计算官方完整 450 题准确率。
+
+### 是否影响主流程
+
+否。未修改旧 BigCat / VDS 主流程，未修改前端或复杂后端业务。
+
+### 是否涉及 Benchmark
+
+是。使用 DABstep dev 前 10 和 public all 前 50 做回归与执行覆盖；标准答案只在 dev evaluator 评分阶段使用，不进入 Planner、Executor、Verifier、Correction、prompt 或 LLM 输入。
+
+### 是否涉及 Microsoft Agent Framework
+
+是，但只保持既有 adapter / multi-agent 映射边界。本轮没有安装 Microsoft Agent Framework，没有把核心算法写入 adapter，也没有让 data_agent_core 依赖 Microsoft Agent Framework。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。多 Agent WorkflowState、Verifier、Correction 和 trace 增强都保持框架无关，可继续映射到 Microsoft Agent Framework 或其他编排框架。
+
+### 是否修改核心数据契约
+
+是。扩展 LogicForm 和 VerificationResult，用于表达业务指标口径、语义校验结果和结构化 correction_action。
+
+### 是否修改 API 契约
+
+是。docs/API_CONTRACT.md 记录 verification 的 semantic_passed、semantic_verification_notes、correction_action，以及 trace 的 metric_definition、candidate_table_summary、selected_candidate 等调试字段；稳定响应主字段不变。
+
+### 是否新增或修改错误类型
+
+否。未新增 data_agent_core/errors 错误类型。
+
+### 是否新增或修改运行追踪逻辑
+
+是。RunTrace 新增指标定义、分子、分母、语义校验 notes、候选表摘要和选中候选记录；trace 仍不记录完整 Chain of Thought、raw reasoning tokens 或 API key。
 
 ---
 

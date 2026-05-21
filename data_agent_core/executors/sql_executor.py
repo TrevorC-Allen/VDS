@@ -51,7 +51,7 @@ def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult
 
 def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
     op = plan.logic_form.operation
-    if op not in {"top_count", "group_average", "not_applicable", "aggregation", "ranking"}:
+    if op not in {"top_count", "group_average", "not_applicable", "aggregation", "ranking", "rank_by_metric"}:
         raise ValueError(f"Operation {op} is not SQL-compatible in the MVP.")
     if op == "not_applicable":
         return "Not Applicable"
@@ -68,6 +68,8 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
             return _aggregation_sql(conn, plan)
         if op == "ranking":
             return _ranking_sql(conn, plan)
+        if op == "rank_by_metric":
+            return _rank_by_metric_sql(conn, plan)
     finally:
         conn.close()
     raise ValueError(f"Unsupported operation: {op}")
@@ -172,6 +174,61 @@ def _ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> list[dict[str,
     reverse = str(params.get("sort_order") or "desc") == "desc"
     rows.sort(key=lambda row: row.get(metric_column), reverse=reverse)
     return rows[: int(params.get("limit") or 1)]
+
+
+def _rank_by_metric_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> dict[str, Any]:
+    logic = plan.logic_form
+    params = logic.parameters
+    group_by = str(logic.group_by or params["group_by"])
+    metric = str(logic.metric or params.get("metric") or "count")
+    options = dict(logic.options or params.get("options") or {})
+    if metric != "fraud_volume_rate":
+        raise ValueError(f"Metric {metric} is not SQL-compatible in the MVP.")
+    values: list[Any] = []
+    where_sql = ""
+    if options:
+        placeholders = ", ".join("?" for _ in options)
+        where_sql = f" WHERE {_quote_identifier(group_by)} IN ({placeholders})"
+        values.extend(str(value) for value in options.values())
+    q_group_by = _quote_identifier(group_by)
+    rows = conn.execute(
+        f"SELECT {q_group_by}, "
+        "SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END) AS fraudulent_volume, "
+        "SUM(eur_amount) AS total_volume, "
+        "CASE WHEN SUM(eur_amount) = 0 THEN 0 ELSE SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END) / SUM(eur_amount) END AS fraud_volume_rate "
+        f"FROM analysis_table{where_sql} GROUP BY {q_group_by} ORDER BY fraud_volume_rate DESC",
+        values,
+    ).fetchall()
+    candidate_table = [
+        {
+            group_by: str(row[0]),
+            "fraudulent_volume": row[1],
+            "total_volume": row[2],
+            "fraud_volume_rate": row[3],
+        }
+        for row in rows
+    ]
+    if not candidate_table:
+        return {"answer": "Not Applicable", "candidate_table": [], "metric": metric}
+    selected = candidate_table[0]
+    selected_value = str(selected[group_by])
+    selected_option = None
+    answer = selected_value
+    for letter, option_value in options.items():
+        if str(option_value) == selected_value:
+            selected_option = letter
+            answer = f"{letter}. {selected_value}"
+            break
+    return {
+        "answer": answer,
+        "selected": selected_value,
+        "selected_option": selected_option,
+        "metric": metric,
+        "metric_definition": logic.metric_definition,
+        "group_by": group_by,
+        "objective": logic.objective or params.get("objective") or "maximum",
+        "candidate_table": candidate_table,
+    }
 
 
 def _grouped_aggregation_sql(conn: sqlite3.Connection, dimension: str, metric: str | None, aggregation: str) -> list[dict[str, Any]]:

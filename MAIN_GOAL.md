@@ -40,7 +40,7 @@
 1. 已建立 Phase 0 项目规则和目录骨架。
 2. 已新增可运行的核心算法 MVP，用于本地核心算法测试。
 3. 已支持 DABstep 风格的业务表和规则知识库输入：payments.csv 作为业务数据库表，manual.md / fees.json / merchant_data.json 作为文档和规则知识库。
-4. 已支持 DABstep dev 前 10 题本地评测，当前验证结果为 8/10，准确率 80%。
+4. 已支持 DABstep dev 前 10 题本地评测，当前验证结果为 9/10，准确率 90%。
 5. all.jsonl 可生成前 10 题预测文件，但本地 all.jsonl 的 answer 字段为空，因此不能本地计算准确率。
 6. 该实现不使用 task_id、标准答案或单题硬编码进入分析链路。
 7. 已新增 LLM 单 Agent 链路，Intent Parser、Column Mapping、Analysis Planner、Verifier / Critic、Correction Planner、Insight Generator 和 Chart Planner 均预留 LLM 参与；确定性代码负责文件/规则读取、执行、结果标准化、规则校验和评分。
@@ -51,37 +51,41 @@
 12. Tool Calling 暂定为 Phase 5 后置能力；当前只保留 ToolRegistry / tool mapping 骨架，不在当前阶段启用模型原生工具循环或 thinking-mode 工具回填。
 13. 已补充 Phase 5 受控 Tool Calling 的 provider-neutral 契约骨架：ToolDefinition、ToolCall、ToolResult、ToolTraceEvent、ToolDispatcher、Data Agent tool catalog 和 Microsoft adapter tool mapping；当前仍不启用 provider 原生工具循环。
 14. 已开始实现 Microsoft Agent Framework adapter 和真实内部工具 callable：工具 callable 位于 agent_runtime，调用既有 data_agent_core 核心模块；Microsoft adapter 只做可选 function tool、agent factory 和 sequential workflow builder，不让 data_agent_core 依赖 Microsoft Agent Framework。
-15. 已切换到 Phase 6 最小可运行多 Agent workflow：backend analyze 默认走 multi_agent；DABstep 多 Agent runner 可运行 dev 前 10 题并保持 8/10；data_agent_core 仍不依赖 multi_agent_workflows。
+15. 已切换到 Phase 6 最小可运行多 Agent workflow：backend analyze 默认走 multi_agent；DABstep 多 Agent runner 可运行 dev 前 10 题并保持 9/10；data_agent_core 仍不依赖 multi_agent_workflows。
+16. 已开始把多 Agent 从顺序角色编排升级为业务口径驱动的计划、校验和自纠闭环：LogicForm 支持 metric、metric_definition、numerator、denominator、group_by、objective 和 options；Verifier 能识别 top fraud 使用 raw count 的语义错误，并要求修正为 fraud_volume_rate。
+17. 当前 9/10 的主要瓶颈不是多 Agent 框架或 Microsoft adapter，而是 ACI incentive 类问题的 associated cost 费用口径仍未完全对齐；该问题必须按通用 fee what-if / ACI candidate table 能力继续修复，禁止按题号或答案特调。
+18. DABstep all 前 50 题可运行 public split 执行覆盖；本地 public all.jsonl 的 answer 字段为空，因此只能验证执行率和 trace，不能本地计算官方准确率。
 
 ## 架构原则
 
-1. 核心算法必须放在 data_agent_core/ 中
-2. 后端 backend/ 只作为调用壳，不承载核心数据分析逻辑
-3. 前端只负责上传、提问和展示，不参与数据处理
-4. Agent Framework 只能作为后续 workflow 编排层，不允许污染核心算法
-5. Benchmark 只能用于评估、错误归因和回归测试，不允许针对单题硬编码
-6. 历史推进顺序为先做单 Agent，当前已切换为最小多 Agent 默认链路
-7. 先保证核心算法稳定，再扩展外围工程
-8. 所有模块必须可测试、可复现、可回归
-9. 核心算法不依赖 Microsoft Agent Framework
-10. Microsoft Agent Framework 适配层可以调用核心算法
-11. 多 Agent 角色必须通过统一输入输出协议交互
-12. 后续替换 Agent 框架时，不应重写核心算法
-13. 所有核心模块必须基于 contracts 中的稳定契约交互
-14. 所有 analyze 请求未来必须生成 run_id
-15. 所有 API 响应未来必须包含 response_version
-16. 所有错误必须进入 errors 字段
-17. 所有警告必须进入 warnings 字段
-18. 工程文档中不要求模型输出完整 Chain of Thought，只保留 structured analysis plan、reasoning summary、execution trace、verification notes
-19. Agent 必须包含 LLM 单 Agent 链路；LLM 负责意图理解、字段语义映射、分析计划、校验辅助、修正方向、解释和图表语义规划，本地执行器负责确定性计算和校验
-20. LLM API key 必须从环境变量读取，不允许提交到 Git
-21. LLM 不能绕过代码执行器、Result Normalizer、Verifier 或 Correction Planner 直接输出最终结论
-22. DABstep / Benchmark 的 task_id 和标准答案不能进入 LLM 输入或核心分析链路
-23. Tool Calling 只能调用内部白名单工具，工具定义必须有稳定名称、JSON schema、参数校验、超时和结果摘要策略
-24. Tool Calling 的工具实现仍然属于 data_agent_core 或 agent_runtime 的受控代码路径，不能把核心算法写进 provider adapter、Microsoft adapter 或多 Agent workflow
-25. 模型可以选择工具和填写参数，但不能获得 raw Python、raw SQL、shell、网络访问或任意文件访问能力
-26. 工具调用 trace 只能记录工具名、参数摘要、结果摘要、错误和耗时，不记录完整 Chain of Thought、raw reasoning tokens、API key 或敏感数据
-27. OpenAI / DeepSeek / Microsoft Agent Framework 只能作为工具调用协议适配层；内部工具契约必须保持 provider-neutral
+1. Rule NO.1：禁止针对 Benchmark 题号、task_id、题面、标准答案或 public proxy 答案池做单题特调；所有提升必须抽象为可复用能力族，并能解释其适用边界。
+2. 核心算法必须放在 data_agent_core/ 中
+3. 后端 backend/ 只作为调用壳，不承载核心数据分析逻辑
+4. 前端只负责上传、提问和展示，不参与数据处理
+5. Agent Framework 只能作为后续 workflow 编排层，不允许污染核心算法
+6. Benchmark 只能用于评估、错误归因和回归测试，不允许针对单题硬编码
+7. 历史推进顺序为先做单 Agent，当前已切换为最小多 Agent 默认链路
+8. 先保证核心算法稳定，再扩展外围工程
+9. 所有模块必须可测试、可复现、可回归
+10. 核心算法不依赖 Microsoft Agent Framework
+11. Microsoft Agent Framework 适配层可以调用核心算法
+12. 多 Agent 角色必须通过统一输入输出协议交互
+13. 后续替换 Agent 框架时，不应重写核心算法
+14. 所有核心模块必须基于 contracts 中的稳定契约交互
+15. 所有 analyze 请求未来必须生成 run_id
+16. 所有 API 响应未来必须包含 response_version
+17. 所有错误必须进入 errors 字段
+18. 所有警告必须进入 warnings 字段
+19. 工程文档中不要求模型输出完整 Chain of Thought，只保留 structured analysis plan、reasoning summary、execution trace、verification notes
+20. Agent 必须包含 LLM 单 Agent 链路；LLM 负责意图理解、字段语义映射、分析计划、校验辅助、修正方向、解释和图表语义规划，本地执行器负责确定性计算和校验
+21. LLM API key 必须从环境变量读取，不允许提交到 Git
+22. LLM 不能绕过代码执行器、Result Normalizer、Verifier 或 Correction Planner 直接输出最终结论
+23. DABstep / Benchmark 的 task_id 和标准答案不能进入 LLM 输入或核心分析链路
+24. Tool Calling 只能调用内部白名单工具，工具定义必须有稳定名称、JSON schema、参数校验、超时和结果摘要策略
+25. Tool Calling 的工具实现仍然属于 data_agent_core 或 agent_runtime 的受控代码路径，不能把核心算法写进 provider adapter、Microsoft adapter 或多 Agent workflow
+26. 模型可以选择工具和填写参数，但不能获得 raw Python、raw SQL、shell、网络访问或任意文件访问能力
+27. 工具调用 trace 只能记录工具名、参数摘要、结果摘要、错误和耗时，不记录完整 Chain of Thought、raw reasoning tokens、API key 或敏感数据
+28. OpenAI / DeepSeek / Microsoft Agent Framework 只能作为工具调用协议适配层；内部工具契约必须保持 provider-neutral
 
 ## Microsoft Agent Framework 策略
 
@@ -240,6 +244,82 @@ Response Builder：生成最终结构化 JSON
 6. 当前 backend 默认走 multi_agent，single_agent 只作为 fallback
 7. 当前 DABstep 多 Agent runner 位于 multi_agent_workflows/dabstep_benchmark_runner.py
 
+## 下一阶段：业务口径驱动的多 Agent 质量提升
+
+下一阶段不是继续更换 Agent 框架，也不是按 Benchmark 题号补规则，而是让多 Agent 真正参与业务语义判断、计划修正和结果校验。
+
+Rule NO.1：
+
+1. 禁止针对单个 Benchmark 题目、题号、task_id、固定题面、标准答案、隐藏答案推测或 public proxy 答案池写任何特调逻辑。
+2. public proxy answer pool 只能用于回归观察、能力缺口归因和趋势判断，不能进入 Planner、Executor、Verifier、Correction、prompt、测试 fixture 或任何核心分析链路。
+3. 任何改动必须先被表述为能力族，例如字段枚举、比例计算、重复检测、设备欺诈排名、ACI 极值选择、fee what-if、影响商户分析；不能被表述为“修某一道题”。
+4. 新能力必须至少有一个非 Benchmark 或合成通用用例验证其泛化边界；DABstep 只能作为后验回归观察。
+
+阶段目标：
+
+1. Planner Agent 不只选择 operation，还必须输出 metric、metric_definition、numerator、denominator、group_by、filters、options、objective 和 output_format。
+2. Data Engineer Agent 负责把 manual / guidelines / column profile 中的业务定义落到结构化字段和公式，例如 fraud 必须区分 fraud count、fraud transaction rate、fraud volume rate 和 monthly fraud level。
+3. Executor Agent 只执行通用 LogicForm，不允许根据 task_id、题号、标准答案或固定题面写分支。
+4. Verifier Agent 不只检查 Pandas / SQL 是否一致，还必须检查业务口径是否匹配问题和文档定义；如果 Pandas / SQL 一致但指标定义错误，也必须判为需要修正。
+5. Correction Agent 必须能生成修正后的 LogicForm 并触发受控重跑，而不是只写自然语言建议。
+6. Response Builder 只允许基于已验证的执行结果、候选表和修正记录输出最终答案。
+7. Microsoft Agent Framework adapter 仍只负责承载和映射，不承载业务语义、Pandas、SQL、Verifier 或 Benchmark 逻辑。
+8. 将 all 21-50 public proxy 暴露出的 `Not Applicable` 缺口归纳为通用能力族补齐：字段可取值枚举、比例/百分比、重复行检测、欺诈交易维度排名、ACI 最贵/最便宜选择、fee restriction 影响商户解析。
+
+## 下一阶段 TODO
+
+1. Planner 语义指标增强
+   - 为 ranking / top / highest / lowest 类问题增加 metric selection。
+   - 将 `top fraud` 默认解析为明确的 fraud-rate 类 metric，而不是直接落到 raw count。
+   - 保留 `highest number of transactions` 这类问题的 raw count 语义，避免把所有 top 都改成 rate。
+
+2. Data Engineer 业务定义落地
+   - 从 manual / payments-readme / guidelines 中提取指标定义，并写入 LogicForm。
+   - 对 fraud 相关问题明确 numerator 和 denominator，例如 fraudulent volume / total volume。
+   - 对 multiple choice 问题校验候选值是否存在于数据列中，并把候选集作为执行约束传递。
+
+3. 通用 Executor 能力补齐
+   - 新增或扩展通用 `rank_by_metric` / `top_rate` / `fraud_rate_by_dimension` 能力。
+   - ACI incentive / what-if fee 场景必须输出候选表，包含 baseline、candidate fee、delta、匹配 fee IDs 和选择理由。
+   - 所有新增能力必须服务一类问题，不能绑定 DABstep dev 前 10 的 task_id 或题面。
+
+4. Verifier 语义校验升级
+   - 检查问题语义、manual 定义、LogicForm 指标定义和执行结果是否一致。
+   - 对 fraud、rate、level、top、lowest、delta、associated cost 等高风险词触发口径检查。
+   - 对 multiple choice 输出检查最终字母和值是否来自候选表中的最优项。
+   - 对 fee what-if 输出检查 baseline、candidate 和 delta / associated cost 的口径是否与 guidelines 一致。
+
+5. Correction 闭环重跑
+   - Correction Agent 输出结构化修正动作，例如 `top_count -> rank_by_metric(metric=fraud_volume_rate)`。
+   - Workflow 支持一次或多次受控重跑，并在 trace 中记录 correction_attempts。
+   - 修正仍必须经过 ToolDispatcher / Executor / Verifier，LLM 不能直接改最终答案。
+
+6. Trace 和 debug 证据增强
+   - Trace 中记录 metric_definition、numerator、denominator、candidate_table_summary、selected_candidate 和 semantic_verification_notes。
+   - 对费用模拟记录命中的 fee rule 摘要，避免只有最终数字。
+   - Trace 不记录完整 Chain of Thought、raw reasoning tokens、API key 或敏感原始数据。
+
+7. 能力族回归测试
+   - 按能力族新增测试：fraud rate ranking、raw count ranking、multiple choice ranking、ACI incentive、fee what-if、semantic correction rerun。
+   - 测试命名和断言必须围绕业务能力，不围绕 task_id。
+   - DABstep dev 前 10 只作为回归结果观察；通过这两类通用能力提升分数，不允许写单题特判。
+
+8. 阶段验收标准
+   - DABstep dev 前 10 的两个已知失败点必须通过通用能力修复自然改善，而不是按题号修复。
+   - DABstep all 21-50 的 public proxy 失败项必须通过通用能力族自然改善，而不是按题号、task_id 或 sample public answer 修复。
+   - Verifier 能识别 Pandas / SQL 一致但业务口径错误的情况。
+   - multi_agent trace 能说明一次计划、执行、语义校验、修正和重跑链路。
+   - data_agent_core 仍不 import backend、ms_agent_framework_adapter、multi_agent_workflows 或 agent_framework。
+
+9. 21-50 暴露出的下一阶段能力族
+   - 字段枚举能力：回答字段可能取值，例如 ACI codes、card scheme、device type 等，必须从字段画像、manual 或数据列去重得到。
+   - 比例和百分比能力：回答占比、百分比、credit/debit 分布、fraud rate 等，必须明确 numerator、denominator、单位和 rounding。
+   - 数据质量检查能力：回答重复行、空值、唯一值、异常值等，不应落入 `Not Applicable`。
+   - 欺诈维度排名能力：回答 fraudulent transactions 中某个维度的 most common / top / rate ranking，必须明确是 count、transaction rate 还是 volume rate。
+   - ACI 极值能力：回答给定 card scheme、transaction value、credit/debit 条件下最贵或最便宜 ACI，必须支持 tie-break 规则和 list 输出。
+   - Fee restriction 影响分析能力：回答 fee rule 限制条件变化会影响哪些 merchant，必须基于通用 rule matching 和 period simulation，不允许写固定 merchant 列表。
+   - Public proxy 回归报告能力：报告必须清楚标注 proxy score 不是 official hidden ground truth，并输出按能力族聚合的缺口，而不是只列题号。
+
 ## 最小 API 目标
 
 当前后端至少需要支持：
@@ -258,20 +338,21 @@ Response Builder：生成最终结构化 JSON
 
 ## 重要红线
 
-1. 不允许直接在 main 分支开发
-2. 不允许修改旧系统主流程，除非任务明确要求
-3. 不允许把核心算法写进 backend/router
-4. 不允许把 Benchmark 题目写成硬编码规则
-5. 不允许绕过 Verifier 直接输出最终结论
-6. 不允许一次任务混合多个无关目标
-7. 每次修改前必须读取 MAIN_GOAL.md、CHANGELOG_AI.md、BRANCH_RULES.md
-8. 每次修改后必须更新 CHANGELOG_AI.md
-9. 不允许核心算法依赖 Microsoft Agent Framework
-10. 不允许在适配层中实现核心业务逻辑
-11. 不允许每个模块随意返回不同结构的 dict
-12. 不允许没有 run_id 的 analyze 链路
-13. 不允许没有错误类型的失败结果
-14. 不允许没有 trace 的分析链路设计
-15. 不允许工程文档要求输出完整 Chain of Thought
-16. CHANGELOG_AI.md 新增记录必须写日期时间，格式为 YYYY-MM-DD HH:MM TZ，精确到分钟
-17. 不允许为了补齐格式而给历史 CHANGELOG 记录编造分钟级时间
+1. Rule NO.1：不允许针对 Benchmark 题号、task_id、固定题面、标准答案、隐藏答案推测或 public proxy 答案池做单题特调。
+2. 不允许直接在 main 分支开发
+3. 不允许修改旧系统主流程，除非任务明确要求
+4. 不允许把核心算法写进 backend/router
+5. 不允许把 Benchmark 题目写成硬编码规则
+6. 不允许绕过 Verifier 直接输出最终结论
+7. 不允许一次任务混合多个无关目标
+8. 每次修改前必须读取 MAIN_GOAL.md、CHANGELOG_AI.md、BRANCH_RULES.md
+9. 每次修改后必须更新 CHANGELOG_AI.md
+10. 不允许核心算法依赖 Microsoft Agent Framework
+11. 不允许在适配层中实现核心业务逻辑
+12. 不允许每个模块随意返回不同结构的 dict
+13. 不允许没有 run_id 的 analyze 链路
+14. 不允许没有错误类型的失败结果
+15. 不允许没有 trace 的分析链路设计
+16. 不允许工程文档要求输出完整 Chain of Thought
+17. CHANGELOG_AI.md 新增记录必须写日期时间，格式为 YYYY-MM-DD HH:MM TZ，精确到分钟
+18. 不允许为了补齐格式而给历史 CHANGELOG 记录编造分钟级时间

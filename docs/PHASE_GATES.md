@@ -124,4 +124,4 @@
 3. WorkflowState 可序列化、可追踪、可回归。
 4. 可替换为 LangGraph、CrewAI 或自研 runtime，而不重写 data_agent_core。
 
-当前状态（2026-05-21）：Phase 6 最小可运行状态已完成。backend analyze 默认使用 multi_agent；DABstep 多 Agent runner 可运行 dev 前 10 题并保持 8/10；agent_runtime 负责角色执行和工具调用；multi_agent_workflows 负责编排；data_agent_core 不 import multi_agent_workflows 或 Microsoft Agent Framework。
+当前状态（2026-05-21）：Phase 6 最小可运行状态已完成，并开始业务口径驱动校验增强。backend analyze 默认使用 multi_agent；DABstep 多 Agent runner 可运行 dev 前 10 题并保持 9/10；agent_runtime 负责角色执行和工具调用；multi_agent_workflows 负责编排；data_agent_core 不 import multi_agent_workflows 或 Microsoft Agent Framework。下一步继续按通用能力补齐 ACI associated cost、fee what-if candidate table、字段枚举、比例和数据质量检查能力。

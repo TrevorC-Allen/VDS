@@ -16,6 +16,8 @@
 
 2026-05-21 更新：Phase 6 最小可运行多 Agent workflow 已落地。backend analyze 默认使用 multi_agent；multi_agent_workflows/end_to_end_data_analysis_workflow.py 负责编排；agent_runtime/data_analysis_roles.py 负责角色执行；data_agent_core 仍不依赖 multi_agent_workflows。
 
+2026-05-21 更新：下一阶段业务口径驱动校验已开始落地。LogicForm 预留 metric、metric_definition、numerator、denominator、group_by、objective 和 options；Verifier 不只检查 Pandas / SQL 一致性，也检查问题语义和指标定义是否一致；Correction 可输出结构化 corrected LogicForm 并触发受控重跑。
+
 ## 层次边界
 
 1. data_agent_core 是核心算法层。
@@ -137,6 +139,17 @@ Phase 5 的工具层只暴露内部白名单工具，不开放任意代码、任
 
 OpenAI、DeepSeek、Microsoft Agent Framework 只能适配这些内部工具契约，不能把 provider 原生工具格式写成核心算法契约。
 
+## 业务口径校验
+
+下一阶段的质量提升必须围绕通用业务口径能力，不围绕 Benchmark 单题：
+
+1. Planner 输出的 LogicForm 必须携带指标定义、分子、分母、维度、候选项和目标方向。
+2. Data Engineer 负责把 manual / schema profile / guidelines 中的业务定义落入结构化字段。
+3. Executor 只执行 LogicForm，不根据题号、标准答案或固定题面分支。
+4. Verifier 必须检查业务口径，例如 fraud ranking 应区分 raw count、transaction rate、volume rate 和 monthly fraud level。
+5. Correction 只能输出结构化修正动作，修正后仍要经过 Executor、Comparator 和 Verifier。
+6. Trace 记录 metric_definition、candidate_table_summary、selected_candidate 和 semantic_verification_notes，不记录完整 Chain of Thought。
+
 ## Microsoft Agent Framework Adapter
 
 当前 adapter 只负责可选映射：
@@ -177,4 +190,4 @@ OpenAI、DeepSeek、Microsoft Agent Framework 只能适配这些内部工具契�
 - 扩展 CSV / Excel 表头识别和多 sheet 策略。
 - 将 sqlite fallback 替换或扩展为 DuckDB runtime，但保持核心框架无关。
 - 后续再启用 provider 原生 OpenAI / DeepSeek 工具循环；当前先保证内部 dispatcher 和 Microsoft adapter 可测。
-- Phase 6 后续再扩展真实 Microsoft Agent Framework demo、并行 executor 和更完整 Correction Loop，不把核心算法写进 workflow。
+- Phase 6 后续再扩展真实 Microsoft Agent Framework demo、并行 executor、更完整 Correction Loop 和 ACI associated cost 通用口径，不把核心算法写进 workflow。

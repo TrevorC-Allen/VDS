@@ -139,7 +139,16 @@ class DataAnalysisMultiAgentWorkflow:
         task_results.append(self.runtime.run_sql_executor(task_by_role[AgentRole.SQL_EXECUTOR], state, execution_mode=execution_mode))
         verifier_result = self.runtime.run_verifier(task_by_role[AgentRole.VERIFIER], state, guidelines=guidelines)
         task_results.append(verifier_result)
-        task_results.append(self.runtime.run_correction(task_by_role[AgentRole.CORRECTION], state, guidelines=guidelines))
+        correction_result = self.runtime.run_correction(task_by_role[AgentRole.CORRECTION], state, guidelines=guidelines)
+        task_results.append(correction_result)
+        corrected_logic_form = correction_result.output_payload.get("corrected_logic_form") if isinstance(correction_result.output_payload, dict) else None
+        if corrected_logic_form:
+            self.runtime.apply_corrected_logic_form(state, corrected_logic_form)
+            state.correction_attempts[-1]["rerun_triggered"] = True
+            task_results.append(self.runtime.run_pandas_executor(task_by_role[AgentRole.PANDAS_EXECUTOR], state))
+            task_results.append(self.runtime.run_sql_executor(task_by_role[AgentRole.SQL_EXECUTOR], state, execution_mode=execution_mode))
+            verifier_result = self.runtime.run_verifier(task_by_role[AgentRole.VERIFIER], state, guidelines=guidelines)
+            task_results.append(verifier_result)
         task_results.append(self.runtime.run_insight(task_by_role[AgentRole.INSIGHT], state, guidelines=guidelines))
         task_results.append(self.runtime.run_visualization(task_by_role[AgentRole.VISUALIZATION], state, guidelines=guidelines))
 
@@ -196,6 +205,9 @@ def _build_trace(
         analysis_planner_summary=planner_output.get("analysis_planner"),
         llm_plan_summary=planner_output.get("analysis_planner"),
         logic_form=state.logic_form,
+        metric_definition=None if not isinstance(state.logic_form, dict) else state.logic_form.get("metric_definition"),
+        numerator=None if not isinstance(state.logic_form, dict) else state.logic_form.get("numerator"),
+        denominator=None if not isinstance(state.logic_form, dict) else state.logic_form.get("denominator"),
         analysis_plan=state.analysis_plan,
         pandas_result_summary=_execution_summary(state.pandas_result),
         sql_result_summary=_execution_summary(state.sql_result),
@@ -205,8 +217,11 @@ def _build_trace(
         },
         verification_result=state.verification,
         verifier_critic_summary=verifier_output.get("verifier_critic"),
+        semantic_verification_notes=[] if not isinstance(state.verification, dict) else list(state.verification.get("semantic_verification_notes") or []),
         correction_plan_summary=state.correction_attempts[-1] if state.correction_attempts else None,
         correction_attempts=state.correction_attempts,
+        candidate_table_summary=_candidate_table_summary(state.pandas_result),
+        selected_candidate=_selected_candidate(state.pandas_result),
         tool_call_summary=state.tool_call_trace,
         insight_summary=state.insight,
         chart_plan_summary=state.chart,
@@ -232,3 +247,20 @@ def _primary_table_name(tables: dict[str, Any]) -> str:
     if not tables:
         raise ValueError("At least one table is required for uploaded multi-agent workflow.")
     return max(tables.items(), key=lambda item: (len(item[1]), len(item[1].columns)))[0]
+
+
+def _candidate_table_summary(payload: Any) -> Any:
+    value = payload.get("value") if isinstance(payload, dict) else None
+    if not isinstance(value, dict):
+        return None
+    table = value.get("candidate_table")
+    if not isinstance(table, list):
+        return None
+    return {"row_count": len(table), "rows": table[:10]}
+
+
+def _selected_candidate(payload: Any) -> Any:
+    value = payload.get("value") if isinstance(payload, dict) else None
+    if not isinstance(value, dict):
+        return None
+    return {"selected": value.get("selected"), "selected_option": value.get("selected_option"), "answer": value.get("answer")}

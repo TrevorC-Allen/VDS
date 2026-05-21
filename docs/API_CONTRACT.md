@@ -79,6 +79,17 @@ agent_mode 预留：
 - errors
 - debug
 
+verification 当前可包含：
+
+- passed
+- confidence
+- pandas_sql_consistent
+- semantic_passed
+- issues
+- notes
+- semantic_verification_notes
+- correction_action
+
 debug 当前可能包含：
 
 - llm_used
@@ -95,6 +106,17 @@ debug 当前可能包含：
 - workflow_mode
 - multi_agent_roles
 - agent_task_results
+
+trace 当前可包含：
+
+- metric_definition
+- numerator
+- denominator
+- semantic_verification_notes
+- correction_attempts
+- candidate_table_summary
+- selected_candidate
+- tool_call_summary
 
 llm_stage_summaries 只允许包含 structured analysis plan、reasoning summary、execution trace、verification notes 等摘要，不能包含完整 Chain of Thought。
 

@@ -28,7 +28,7 @@ from data_agent_core.verifier.result_normalizer import normalize_value
 from data_agent_core.verifier.rule_checker import verify_execution
 
 
-SQL_COMPATIBLE_OPERATIONS = {"aggregation", "ranking", "top_count", "group_average", "not_applicable"}
+SQL_COMPATIBLE_OPERATIONS = {"aggregation", "ranking", "rank_by_metric", "top_count", "group_average", "not_applicable"}
 
 
 class DataAnalysisRoleRuntime:
@@ -170,6 +170,17 @@ class DataAnalysisRoleRuntime:
         state.pandas_result = result.output_payload
         return _agent_result(task, result.success, result.output_payload, result.errors, confidence=1.0 if result.success else 0.0)
 
+    def apply_corrected_logic_form(self, state: WorkflowState, corrected_logic_form: dict[str, Any]) -> None:
+        """Apply a structured correction action and rebuild the analysis plan."""
+
+        logic_form = _logic_form_from_payload(corrected_logic_form)
+        plan = build_analysis_plan(logic_form)
+        state.logic_form = _json_ready(logic_form)
+        state.analysis_plan = _json_ready(plan)
+        state.pandas_result = None
+        state.sql_result = None
+        state.verification = None
+
     def run_sql_executor(self, task: AgentTask, state: WorkflowState, *, execution_mode: str) -> AgentResult:
         """Run SQL executor when the plan is SQL-compatible."""
 
@@ -194,13 +205,15 @@ class DataAnalysisRoleRuntime:
         """Run rule-first verification plus LLM critique."""
 
         pandas_result = _execution_result_from_payload(state.pandas_result or {})
+        plan = _analysis_plan_from_payload(state.analysis_plan or {})
+        user_question = UserQuestion(dataset_id=self.dataset_id, question=state.question, execution_mode="auto", guidelines=guidelines)
         sql_payload = state.sql_result if isinstance(state.sql_result, dict) else {}
         if sql_payload and not sql_payload.get("skipped"):
             comparison = compare_results(pandas_result, _execution_result_from_payload(sql_payload))
-            verification = verify_execution(pandas_result, comparison)
+            verification = verify_execution(pandas_result, comparison, plan=plan, user_question=user_question)
             comparison_summary = _json_ready(comparison)
         else:
-            verification = verify_execution(pandas_result)
+            verification = verify_execution(pandas_result, plan=plan, user_question=user_question)
             comparison_summary = None
         state.verification = _json_ready(verification)
         critic = complete_stage_with_llm(
@@ -231,6 +244,7 @@ class DataAnalysisRoleRuntime:
     def run_correction(self, task: AgentTask, state: WorkflowState, *, guidelines: str) -> AgentResult:
         """Run bounded correction planning without executing arbitrary retries."""
 
+        rule_action = (state.verification or {}).get("correction_action") if isinstance(state.verification, dict) else None
         correction = complete_stage_with_llm(
             llm_client=self.llm_client,
             stage_name="correction_planner",
@@ -238,7 +252,7 @@ class DataAnalysisRoleRuntime:
             question=state.question,
             guidelines=guidelines,
             context_summary=self.context_summary(),
-            payload={"rule_verification": state.verification or {}, "max_attempts": 2},
+            payload={"rule_verification": state.verification or {}, "rule_correction_action": rule_action, "max_attempts": 2},
             required_output={
                 "needs_correction": "boolean",
                 "correction_targets": "array",
@@ -248,6 +262,14 @@ class DataAnalysisRoleRuntime:
             },
         )
         output = _stage_summary(correction)
+        if isinstance(rule_action, dict):
+            output["needs_correction"] = True
+            output["correction_action"] = rule_action
+            corrected_logic_form = _corrected_logic_form_payload(state.logic_form or {}, rule_action)
+            if corrected_logic_form:
+                output["corrected_logic_form"] = corrected_logic_form
+        else:
+            output["needs_correction"] = False
         state.correction_attempts.append(output)
         return _agent_result(task, True, output, confidence=correction.confidence)
 
@@ -454,6 +476,13 @@ def _logic_form_from_payload(payload: dict[str, Any]) -> LogicForm:
     return LogicForm(
         task_type=str(payload.get("task_type") or "unknown"),
         operation=str(payload.get("operation") or "not_applicable"),
+        metric=payload.get("metric"),
+        metric_definition=dict(payload.get("metric_definition") or {}),
+        numerator=dict(payload.get("numerator") or {}),
+        denominator=dict(payload.get("denominator") or {}),
+        group_by=payload.get("group_by"),
+        objective=payload.get("objective"),
+        options=dict(payload.get("options") or {}),
         filters=dict(payload.get("filters") or {}),
         parameters=dict(payload.get("parameters") or {}),
         output_format=dict(payload.get("output_format") or {}),
@@ -480,8 +509,11 @@ def _verification_result_from_payload(payload: dict[str, Any]) -> VerificationRe
         passed=bool(payload.get("passed")),
         confidence=float(payload.get("confidence") or 0.0),
         pandas_sql_consistent=payload.get("pandas_sql_consistent"),
+        semantic_passed=payload.get("semantic_passed"),
         issues=list(payload.get("issues") or []),
         notes=list(payload.get("notes") or []),
+        semantic_verification_notes=list(payload.get("semantic_verification_notes") or []),
+        correction_action=payload.get("correction_action"),
     )
 
 
@@ -592,3 +624,33 @@ def _json_ready(value: Any) -> Any:
 def _short_text(value: Any, limit: int = 500) -> str:
     text = str(value or "")
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _corrected_logic_form_payload(logic_payload: dict[str, Any], action: dict[str, Any]) -> dict[str, Any] | None:
+    if action.get("action") != "replace_logic_form" or action.get("to_operation") != "rank_by_metric":
+        return None
+    corrected = dict(logic_payload)
+    params = dict(corrected.get("parameters") or {})
+    group_by = corrected.get("group_by") or params.get("group_by")
+    options = dict(corrected.get("options") or params.get("options") or {})
+    corrected.update(
+        {
+            "task_type": "ranking",
+            "operation": "rank_by_metric",
+            "metric": str(action.get("metric") or "fraud_volume_rate"),
+            "metric_definition": {
+                "name": str(action.get("metric") or "fraud_volume_rate"),
+                "description": "Fraud is defined as fraudulent volume divided by total volume.",
+                "aggregation": "ratio",
+                "source": "manual.md section 7 and payments.csv",
+            },
+            "numerator": {"column": "eur_amount", "filter": {"has_fraudulent_dispute": True}, "aggregation": "sum"},
+            "denominator": {"column": "eur_amount", "aggregation": "sum"},
+            "group_by": group_by,
+            "objective": "maximum",
+            "options": options,
+        }
+    )
+    params.update({"metric": corrected["metric"], "group_by": group_by, "sort_order": "desc", "limit": 1, "options": options})
+    corrected["parameters"] = params
+    return corrected

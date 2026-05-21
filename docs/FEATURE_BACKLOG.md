@@ -32,7 +32,7 @@
 
 风险：当前为规则引擎和通用意图解析 MVP，覆盖的是 DABstep 风格的主要费用规则、聚合、分组和 what-if 问题；尚未覆盖完整 450 题。
 
-状态：2026-05-21 已完成 MVP，dev 前 10 题验证结果为 8/10。
+状态：2026-05-21 已完成 MVP 并开始业务口径增强，dev 前 10 题当前验证结果为 9/10。
 
 ### LLM Single Agent Chain
 
@@ -144,7 +144,7 @@
 
 风险：如果跳过 Phase gate 直接做 Microsoft workflow，容易把核心算法绑死在具体框架里。
 
-状态：2026-05-21 已落地 Phase 6 最小可运行多 Agent workflow。backend 默认 multi_agent；DABstep 多 Agent runner 可跑 dev 前 10；复杂并行、多轮纠错和真实 Microsoft cloud workflow 仍属后续增强。
+状态：2026-05-21 已落地 Phase 6 最小可运行多 Agent workflow。backend 默认 multi_agent；DABstep 多 Agent runner 可跑 dev 前 10，当前回归为 9/10；复杂并行、多轮纠错、ACI associated cost 通用口径和真实 Microsoft cloud workflow 仍属后续增强。
 
 ### Phase 6 Multi-Agent Runtime
 
@@ -159,6 +159,20 @@
 风险：当前为顺序多 Agent，尚未实现复杂并行、真实 Microsoft cloud execution 和多轮自纠执行。
 
 状态：2026-05-21 已完成最小可运行版本。
+
+### Business Semantic Verification Loop
+
+目标：让 Planner、Data Engineer、Verifier 和 Correction 围绕业务指标定义、候选表和中间计算证据工作，而不是只判断执行是否成功。
+
+影响模块：data_agent_core/contracts、data_agent_core/core/intent_parser.py、data_agent_core/executors、data_agent_core/verifier、data_agent_core/tracing、agent_runtime/data_analysis_roles.py、multi_agent_workflows、tests/core。
+
+优先级：P0，阶段：Phase 6+。
+
+验收标准：LogicForm 能表达 metric_definition、numerator、denominator、group_by、objective 和 options；Verifier 能识别业务口径错误并输出 correction_action；Correction 能生成 corrected LogicForm 并触发受控重跑；trace 能记录 semantic_verification_notes、candidate_table_summary 和 selected_candidate。
+
+风险：如果把 Benchmark dev 题面或答案写入判断，会破坏泛化能力；如果只比较 Pandas / SQL 一致性，可能出现两条路径一致但业务口径错误。
+
+状态：2026-05-21 已完成 fraud volume rate ranking、Verifier semantic correction action、受控重跑 wiring 和合成能力测试；DABstep dev 前 10 回归为 9/10。ACI associated cost 仍需继续按通用 fee what-if candidate table 能力增强。
 
 ## TODO
 
