@@ -13,6 +13,8 @@
 5. 上传文件需要大小限制。
 6. 敏感字段后续需要脱敏策略。
 7. 执行器未来必须运行在受控环境。
+8. LLM API key 只能通过环境变量提供，不允许写入仓库、文档、trace、CHANGELOG 或测试输出。
+9. benchmark runner 不允许把 task_id 或 answer 字段传给 LLM。
 
 ## TODO
 

@@ -12,6 +12,18 @@ hotfix/*：紧急修复分支，只用于修复影响运行的问题。
 
 refactor/*：重构分支，只用于结构调整，不允许混入新功能。
 
+## 当前分支状态
+
+2026-05-21 更新：
+
+当前本地开发分支为 feature/project-rules-and-data-agent-skeleton。
+
+远端 origin 已配置为 git@github.com:TrevorC-Allen/VDS.git。
+
+2026-05-21 已从 origin/main 创建 origin/dev，本地 dev 已 tracking origin/dev。
+
+本轮继续在当前 feature 分支上推进核心算法 MVP，后续应从 feature 发起 PR 到 dev。
+
 ## 禁止行为
 
 1. 禁止直接在 main 分支开发
@@ -108,6 +120,13 @@ git checkout -b feature/project-rules-and-data-agent-skeleton
 9. PR 合并目标分支
 10. 是否影响未来多 Agent 迁移
 11. 是否引入或修改 Microsoft Agent Framework 相关内容
+
+## CHANGELOG 时间规则
+
+1. 每次修改完成后，CHANGELOG_AI.md 必须追加真实修改记录。
+2. 新增记录的时间必须精确到分钟，格式为 `YYYY-MM-DD HH:MM TZ`。
+3. 禁止只写日期。
+4. 禁止为了统一格式而给历史记录编造分钟级时间。
 
 ## Commit Message 规范
 

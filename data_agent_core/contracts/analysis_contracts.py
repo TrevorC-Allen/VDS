@@ -1,14 +1,39 @@
-"""Analysis contract drafts for user questions, logic forms, and plans.
+"""Analysis contracts for user questions, logic forms, and plans."""
 
-TODO:
-- Define UserQuestion, LogicForm, and AnalysisPlan as serializable contracts.
-- Support future task types: detail_lookup, aggregation, ranking, filtering,
-  trend, and comparison.
-- Keep logic forms reusable by Pandas Executor, SQL Executor, Verifier,
-  Benchmark Runner, Planner Agent, and future framework adapters.
+from __future__ import annotations
 
-Draft structures:
-- UserQuestion: dataset_id, question, execution_mode, requested_at
-- LogicForm: task_type, metric, dimension, aggregation, filters, sort, limit
-- AnalysisPlan: plan_id, logic_form, steps, expected_result_shape, constraints
-"""
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class UserQuestion:
+    """Input question contract before intent parsing."""
+
+    dataset_id: str
+    question: str
+    execution_mode: str = "dual"
+    guidelines: str | None = None
+    requested_at: str | None = None
+
+
+@dataclass
+class LogicForm:
+    """Serializable intermediate form shared by executors and verifier."""
+
+    task_type: str
+    operation: str
+    filters: dict[str, Any] = field(default_factory=dict)
+    parameters: dict[str, Any] = field(default_factory=dict)
+    output_format: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class AnalysisPlan:
+    """Backend-neutral plan produced from a LogicForm."""
+
+    plan_id: str
+    logic_form: LogicForm
+    steps: list[str] = field(default_factory=list)
+    expected_result_shape: str = "scalar"
+    constraints: dict[str, Any] = field(default_factory=dict)

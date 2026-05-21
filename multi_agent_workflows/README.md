@@ -13,15 +13,15 @@
 ## 未来结构
 
 DataAnalysisSupervisor
-├─ Planner Agent
-├─ Data Engineer Agent
-├─ Pandas Executor Agent
-├─ SQL Executor Agent
-├─ Verifier Agent
-├─ Correction Agent
-├─ Insight Agent
-├─ Visualization Agent
-└─ Benchmark Agent
+├─ Planner Agent：LLM 为主
+├─ Data Engineer Agent：代码为主，LLM 辅助字段语义
+├─ Pandas Executor Agent：代码为主
+├─ SQL Executor Agent：代码为主
+├─ Verifier Agent：规则为主，LLM 辅助
+├─ Correction Agent：LLM 生成修正方向，代码执行
+├─ Insight Agent：LLM 为主
+├─ Visualization Agent：规则 + LLM
+└─ Benchmark Agent：代码为主，LLM 辅助错误归因
 
 ## TODO
 
