@@ -13,6 +13,9 @@ from typing import Any
 
 from data_agent_core.agent.single_agent import DataAnalysisAgent
 from data_agent_core.benchmark.evaluator import question_scorer
+from data_agent_core.benchmark.error_analysis import summarize_failures
+from data_agent_core.benchmark.metrics import summarize_details
+from data_agent_core.errors.error_types import BENCHMARK_EVALUATION_ERROR, VERIFICATION_FAILED
 from data_agent_core.tracing.trace_writer import write_trace
 
 
@@ -76,6 +79,7 @@ def run_dabstep_benchmark(
             scored += 1
             is_correct = question_scorer(str(expected), str(response.answer))
             correct += int(is_correct)
+        error_type = _benchmark_error_type(response, is_correct)
         details.append(
             {
                 "task_id": task["task_id"],
@@ -85,6 +89,7 @@ def run_dabstep_benchmark(
                 "correct": is_correct,
                 "operation": response.debug.get("operation"),
                 "success": response.success,
+                "error_type": error_type,
             }
         )
 
@@ -107,11 +112,28 @@ def run_dabstep_benchmark(
         "predictions_path": str(predictions_path),
         "trace_dir": str(trace_dir),
         "details": details,
+        "metrics": summarize_details(details),
+        "error_analysis": summarize_failures(details),
     }
     report_path = output_dir / f"{split}_{start_number}_to_{end_number}_report.json"
     report_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2))
     summary["report_path"] = str(report_path)
     return summary
+
+
+def _benchmark_error_type(response: Any, correct: bool | None) -> str | None:
+    if response.success and correct is not False:
+        return None
+    for error in getattr(response, "errors", []) or []:
+        if isinstance(error, dict) and error.get("error_type"):
+            return str(error["error_type"])
+        if hasattr(error, "error_type"):
+            return str(error.error_type)
+    if not response.success:
+        return VERIFICATION_FAILED
+    if correct is False:
+        return BENCHMARK_EVALUATION_ERROR
+    return None
 
 
 def main() -> None:

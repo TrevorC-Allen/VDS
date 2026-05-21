@@ -22,7 +22,7 @@ refactor/*：重构分支，只用于结构调整，不允许混入新功能。
 
 2026-05-21 已从 origin/main 创建 origin/dev，本地 dev 已 tracking origin/dev。
 
-本轮继续在当前 feature 分支上推进核心算法 MVP，后续应从 feature 发起 PR 到 dev。
+本轮继续在当前 feature 分支上推进 Phase 1 / Phase 2 / Phase 3 最小可测 Data Agent，后续应从 feature 发起 PR 到 dev。
 
 ## 禁止行为
 

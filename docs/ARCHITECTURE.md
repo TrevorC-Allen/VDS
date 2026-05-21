@@ -8,6 +8,8 @@
 
 2026-05-21 更新：当前已新增 LLM 单 Agent 链路。Intent Parser、Column Mapping、Analysis Planner、Verifier / Critic、Correction Planner、Insight Generator、Chart Planner 都显式经过 LLM 阶段；代码路径负责 Pandas / SQL 执行、Result Normalizer、规则校验和 Benchmark 评分。
 
+2026-05-21 更新：Phase 1 最小后端调用壳已落地。backend/services 负责临时存储、dataset_id 查询和调用 UploadedDatasetAgent；backend/routers 只做 API 转发；data_agent_core 仍不依赖 backend。
+
 ## 层次边界
 
 1. data_agent_core 是核心算法层。
@@ -95,8 +97,20 @@ LLM + 规则：Chart Planner
 6. answer 字段只允许在 benchmark evaluator 中用于评分，不允许进入 intent parser、executor、verifier 或 response builder。
 7. 运行 trace 记录 structured analysis plan、execution trace 和 verification notes，不记录完整 Chain of Thought。
 
+## 上传文件最小链路
+
+当前上传文件链路按以下边界处理：
+
+1. backend 接收文件路径或上传文件，并调用 DataAgentService。
+2. DataAgentService 调用 data_agent_core.core.file_parser.parse_dataset_file。
+3. File Parser 返回 ParsedDataset，其中包含 tables 和 DatasetProfile。
+4. TempFileStore 保存 source_file、profile.json，并在当前进程内保存 DataFrame tables。
+5. analyze 时 DataAgentService 根据 dataset_id 取回 tables，创建 UploadedDatasetAgent。
+6. UploadedDatasetAgent 复用固定 LLM 单 Agent 链路，执行 Pandas / SQL 双路径、Result Normalizer、Verifier、Insight 和 Chart。
+7. trace 写入 storage/runs/{run_id}/trace.json，debug.trace_path 只用于调试，前端不能依赖它作为稳定契约。
+
 ## TODO
 
-- 定义 Phase 1 最小服务入口。
-- 实现架构边界测试。
-- 在不引入框架依赖的前提下验证核心模块可导入。
+- 扩展 CSV / Excel 表头识别和多 sheet 策略。
+- 将 sqlite fallback 替换或扩展为 DuckDB runtime，但保持核心框架无关。
+- Phase 4 后再实验 Microsoft Agent Framework adapter，不提前绑定核心算法。

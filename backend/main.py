@@ -1,8 +1,15 @@
-"""Minimal backend application boundary for the Data Agent API.
+"""Minimal backend application boundary for the Data Agent API."""
 
-TODO:
-- Create a FastAPI app in Phase 1 if FastAPI is selected.
-- Mount data_agent router.
-- Keep backend as an API shell only.
-- Do not implement core data analysis logic here.
-"""
+from __future__ import annotations
+
+
+try:
+    from fastapi import FastAPI
+
+    from backend.routers.data_agent import router as data_agent_router
+
+    app = FastAPI(title="VDS Data Agent API")
+    if data_agent_router is not None:
+        app.include_router(data_agent_router)
+except ImportError:
+    app = None

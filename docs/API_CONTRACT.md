@@ -8,6 +8,8 @@
 
 2026-05-21 更新：Agent 已新增 LLM 单 Agent 链路。API 响应的 debug 可包含 llm_used、llm_operation、llm_confidence、single_agent_chain、llm_stage_summaries 等调试字段，但前端不能依赖 debug 字段作为稳定契约。
 
+2026-05-21 更新：Phase 1 最小后端调用壳已落地。backend 通过 DataAgentService 调用 data_agent_core，支持上传 CSV / Excel 后返回 DatasetProfile、按 dataset_id 分析问题、获取 profile。router 仍只做请求转发，不包含 Pandas / SQL / Verifier 核心逻辑。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
@@ -74,8 +76,19 @@ debug 当前可能包含：
 - column_mapping
 - pandas_success
 - sql_success
+- trace_path
 
 llm_stage_summaries 只允许包含 structured analysis plan、reasoning summary、execution trace、verification notes 等摘要，不能包含完整 Chain of Thought。
+
+失败响应必须包含：
+
+- response_version
+- success=false
+- warnings
+- errors
+- run_id（analyze 请求）
+
+errors 中的元素必须包含 error_type、error_message、failed_step、recoverable、suggested_fix。
 
 ## GET /api/data-agent/datasets/{dataset_id}/profile
 
@@ -95,6 +108,6 @@ llm_stage_summaries 只允许包含 structured analysis plan、reasoning summary
 
 ## TODO
 
-- Phase 1 用后端 schema 和 response_contracts.py 对齐这些字段。
-- 增加失败响应示例。
-- 增加错误类型到 errors 字段的映射说明。
+- 后续如引入真实 FastAPI 部署配置，需要保持 router 只调用 service，不写核心算法。
+- 后续补充更多失败响应示例。
+- 后续补充 storage retention 和最大文件大小的可配置项。

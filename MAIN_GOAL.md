@@ -31,6 +31,7 @@
 17. 支持未来 Benchmark Runner
 18. 提供最小后端接口，供前端上传文件、提交问题、获取结构化结果
 19. 预留未来单 Agent 到多 Agent 的平滑迁移能力
+20. 预留 Phase 5 受控 Tool Calling 能力，把字段画像、计划构建、Pandas / SQL 执行、结果校验和图表规划包装为白名单工具，但不允许模型直接执行任意代码、SQL、shell、网络请求或外部文件访问
 
 ## 当前实现状态
 
@@ -44,6 +45,10 @@
 6. 该实现不使用 task_id、标准答案或单题硬编码进入分析链路。
 7. 已新增 LLM 单 Agent 链路，Intent Parser、Column Mapping、Analysis Planner、Verifier / Critic、Correction Planner、Insight Generator 和 Chart Planner 均预留 LLM 参与；确定性代码负责文件/规则读取、执行、结果标准化、规则校验和评分。
 8. LLM key 只能通过环境变量提供，禁止写入仓库、文档、trace 或 CHANGELOG。
+9. 已进入 Phase 1 / Phase 2 / Phase 3 最小可测状态：支持上传 CSV / Excel 文件解析入口、DatasetProfile、UploadedDatasetAgent、最小 backend service upload/profile/analyze、Benchmark metrics 和 error_analysis 聚合。
+10. 当前最小后端 API 仍是调用壳，核心 Pandas / SQL / Verifier / Insight / Chart 逻辑仍在 data_agent_core。
+11. public all.jsonl 的 answer 字段为空，不能本地计算完整 450 题官方准确率；dev 前 10 题仍用于本地可复现 smoke benchmark。
+12. Tool Calling 暂定为 Phase 5 后置能力；当前只保留 ToolRegistry / tool mapping 骨架，不在当前阶段启用模型原生工具循环或 thinking-mode 工具回填。
 
 ## 架构原则
 
@@ -69,6 +74,11 @@
 20. LLM API key 必须从环境变量读取，不允许提交到 Git
 21. LLM 不能绕过代码执行器、Result Normalizer、Verifier 或 Correction Planner 直接输出最终结论
 22. DABstep / Benchmark 的 task_id 和标准答案不能进入 LLM 输入或核心分析链路
+23. Tool Calling 只能调用内部白名单工具，工具定义必须有稳定名称、JSON schema、参数校验、超时和结果摘要策略
+24. Tool Calling 的工具实现仍然属于 data_agent_core 或 agent_runtime 的受控代码路径，不能把核心算法写进 provider adapter、Microsoft adapter 或多 Agent workflow
+25. 模型可以选择工具和填写参数，但不能获得 raw Python、raw SQL、shell、网络访问或任意文件访问能力
+26. 工具调用 trace 只能记录工具名、参数摘要、结果摘要、错误和耗时，不记录完整 Chain of Thought、raw reasoning tokens、API key 或敏感数据
+27. OpenAI / DeepSeek / Microsoft Agent Framework 只能作为工具调用协议适配层；内部工具契约必须保持 provider-neutral
 
 ## Microsoft Agent Framework 策略
 
@@ -112,6 +122,7 @@ Microsoft Agent Framework 是后续多 Agent 编排的候选框架，但不是�
 14. 在本轮引入 Microsoft Agent Framework 作为强依赖
 15. 在本轮实现复杂 Agent workflow
 16. 在本轮实现完整业务逻辑
+17. 在本轮实现 provider 原生 Tool Calling、DeepSeek thinking mode 工具回填或 OpenAI Responses API 工具循环
 
 ## 核心工作流
 
@@ -146,9 +157,42 @@ LLM + 规则：Chart Planner
 3. Correction Planner 只能给出修正方向，真实修正仍由受控代码路径执行。
 4. Trace 只记录 structured analysis plan、reasoning summary、execution trace、verification notes，不记录完整 Chain of Thought。
 
+## Phase 5 受控 Tool Calling
+
+Phase 5 的目标不是让模型自由执行代码，而是把已有受控能力包装成可审计工具：
+
+1. profile_schema：读取 DatasetProfile / TableProfile / ColumnProfile，返回字段类型、语义 hint、缺失值和可分析列摘要。
+2. build_analysis_plan：把已验证的意图和字段映射转为 LogicForm / AnalysisPlan 草案。
+3. execute_pandas_plan：执行已经校验过的 Pandas / NumPy 分析计划。
+4. execute_sql_plan：执行已经校验过的 SQL / DuckDB 分析计划。
+5. verify_results：比较 Pandas / SQL 结果，输出可信度、错误类型和修正方向。
+6. build_chart_spec：在结果可信后生成前端中立图表配置。
+7. generate_insight：只基于已验证结果生成解释、建议和 caveat。
+
+Phase 5 执行顺序：
+
+用户问题
+↓
+LLM 选择白名单工具并填写 JSON 参数
+↓
+Tool Dispatcher 校验 schema、权限、超时和数据边界
+↓
+受控代码工具执行
+↓
+工具结果摘要回填给 LLM
+↓
+Verifier / Response Builder 生成最终结构化 JSON
+
+注意：
+
+1. 工具调用是单 Agent 能力增强，不等同于多 Agent。
+2. 工具层必须先支持 mock provider 和本地单元测试，再接 OpenAI / DeepSeek provider adapter。
+3. DeepSeek thinking mode 或 OpenAI reasoning item 只能由 provider adapter 内部维护，不进入稳定 trace 或 API 响应。
+4. 工具调用失败必须进入 errors / warnings，不能由模型自然语言掩盖。
+
 ## 未来多 Agent 工作流
 
-未来多 Agent 目标结构：
+Phase 6+ 多 Agent 目标结构：
 
 用户问题
 ↓

@@ -60,6 +60,8 @@
 
 风险：表头识别、编码识别、多 sheet 处理。
 
+状态：2026-05-21 已完成 Phase 1 最小 CSV / Excel 解析入口、DatasetProfile 生成、上传表核心测试；后续仍需增强编码识别、表头不确定处理和多 sheet 策略。
+
 ### 双执行路径
 
 目标：支持 Pandas / NumPy 和 SQL / DuckDB 两条执行路径。
@@ -71,6 +73,8 @@
 验收标准：两条路径能返回可比较的标准 ExecutionResult。
 
 风险：数值精度、排序、空值和日期标准化。
+
+状态：2026-05-21 已为上传单表的 aggregation / ranking 增加 Pandas 和 SQL fallback 双路径测试；后续需要补 DuckDB runtime、更多过滤/趋势/对比能力和更严格的标准化。
 
 ### Benchmark Runner
 
@@ -84,9 +88,39 @@
 
 风险：禁止标准答案泄漏和单题硬编码。
 
+状态：2026-05-21 已支持分段运行、dev 前 10 题评分、all offset 预测、metrics 和 error_analysis 聚合；public all.jsonl answer 为空，不能本地计算完整 450 题官方准确率。
+
+### Minimal Backend API Shell
+
+目标：提供 upload / analyze / profile 的最小后端调用壳，供前端未来接入。
+
+影响模块：backend/services、backend/storage、backend/schemas、backend/routers、tests/backend。
+
+优先级：P1。
+
+验收标准：backend 只调用 data_agent_core，不实现 Pandas / SQL / Verifier 核心逻辑；响应包含 response_version、errors、warnings；analyze 包含 run_id。
+
+风险：当前 TempFileStore 只适合本地和 Phase 1 测试，进程重启后不会恢复 DataFrame tables，后续服务化需要明确 retention 和重新加载策略。
+
+状态：2026-05-21 已完成最小服务壳和测试。
+
+### Controlled Tool Calling Layer
+
+目标：在 Phase 5 引入受控 Tool Calling，把 profile_schema、build_analysis_plan、execute_pandas_plan、execute_sql_plan、verify_results、build_chart_spec、generate_insight 等内部能力包装成模型可选择但代码受控执行的白名单工具。
+
+影响模块：agent_runtime/tool_registry.py、data_agent_core/configs/tool_whitelist.yaml、data_agent_core/llm、data_agent_core/agent、data_agent_core/tracing、ms_agent_framework_adapter/tool_mapping.py、tests/agent_runtime。
+
+优先级：P2，阶段：Phase 5。
+
+验收标准：每个工具必须有稳定名称、JSON schema、参数校验、allowed_roles、timeout、result_policy 和测试覆盖；mock tool-calling 可离线运行；OpenAI / DeepSeek 差异只出现在 provider adapter；trace 只记录工具调用摘要，不记录完整 Chain of Thought 或 raw reasoning tokens。
+
+风险：如果过早启用自由工具调用，模型可能绕过确定性执行器和 Verifier；如果工具 schema 不严格，容易出现参数漂移、隐式任意 SQL、敏感数据泄露或不可复现结果。
+
+状态：未实现。当前只保留 ToolRegistry 和 tool_mapping 骨架，Phase 5 前不启用 provider 原生工具调用。
+
 ### Phase Gate And Multi-Agent Migration
 
-目标：按 Phase 1 到 Phase 4+ 的门槛推进，先补核心泛化能力和防硬编码测试，再接 Microsoft Agent Framework adapter 和多 Agent workflow。
+目标：按 Phase 1 到 Phase 6+ 的门槛推进，先补核心泛化能力和防硬编码测试，再接 Microsoft Agent Framework adapter、Phase 5 受控 Tool Calling 和 Phase 6+ 多 Agent workflow。
 
 影响模块：docs、agent_runtime、ms_agent_framework_adapter、multi_agent_workflows、tests/architecture。
 

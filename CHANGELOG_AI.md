@@ -747,3 +747,187 @@ YYYY-MM-DD HH:MM TZ
 否。本轮未新增 trace 字段，但第 11 到 20 题生成了新的 trace 输出。
 
 ---
+
+### 日期时间
+
+2026-05-21 13:23 CST
+
+### 本次目标
+
+按用户要求调整 MAIN_GOAL 和路线图，把 Tool Calling 明确放到 Phase 5 后置阶段，避免在当前 Phase 1/2/3 或 Phase 4 adapter 阶段过早启用模型原生工具循环。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- docs/PHASE_GATES.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- MAIN_GOAL 增加 Phase 5 受控 Tool Calling 目标、架构原则、当前不做事项和工具调用阶段说明。
+- PHASE_GATES 新增 Phase 5：受控 Tool Calling 层，并将原多 Agent Workflow 后移为 Phase 6+。
+- PHASE_GATES 增加工具调用总红线：禁止任意代码、任意 SQL、shell、网络请求或外部文件访问。
+- FEATURE_BACKLOG 新增 Controlled Tool Calling Layer，记录工具形式、影响模块、验收标准、风险和当前未实现状态。
+- 明确 OpenAI / DeepSeek / Microsoft Agent Framework 只作为 provider / framework 适配层，内部工具契约保持 provider-neutral。
+
+### 测试方式
+
+- 未运行自动化测试；本轮仅修改项目目标和路线图文档。
+
+### 测试结果
+
+- 不适用，文档-only 修改。
+
+### 遗留问题
+
+- Phase 5 Tool Calling 仍未实现；后续需要补 ToolDefinition schema、tool dispatcher、provider adapter、mock tool-calling 测试和 trace 摘要字段。
+
+### 是否影响主流程
+
+否。未修改旧 BigCat / VDS 主流程，未修改执行代码。
+
+### 是否涉及 Benchmark
+
+否。未修改 Benchmark runner、evaluator 或测试数据。
+
+### 是否涉及 Microsoft Agent Framework
+
+仅文档层面说明 Microsoft Agent Framework 不能承载核心工具实现；未安装、未 import、未实现 framework workflow。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。路线图调整为 Phase 5 先建立 provider-neutral 工具层，Phase 6+ 再做多 Agent workflow。
+
+### 是否修改核心数据契约
+
+否。本轮未修改 contracts dataclass。
+
+### 是否修改 API 契约
+
+否。本轮未修改 API 稳定字段。
+
+### 是否新增或修改错误类型
+
+否。本轮未新增错误类型。
+
+### 是否新增或修改运行追踪逻辑
+
+否。本轮只规定未来工具调用 trace 摘要原则，未修改 trace 代码。
+
+---
+
+### 日期时间
+
+2026-05-21 13:24 CST
+
+### 本次目标
+
+按 Phase 1 / Phase 2 / Phase 3 继续推进到最小可测完成状态：上传文件核心算法测试可运行，最小后端调用壳可用，单 Agent 链路可用真实 LLM 跑 DABstep dev 前 10 题并保持 80% 正确率，Benchmark 报告支持通用 metrics 和 error_analysis 聚合。
+
+### 修改文件
+
+- .gitignore
+- MAIN_GOAL.md
+- BRANCH_RULES.md
+- docs/API_CONTRACT.md
+- docs/ARCHITECTURE.md
+- docs/BENCHMARK_RULES.md
+- docs/FEATURE_BACKLOG.md
+- docs/PHASE_GATES.md
+- backend/main.py
+- backend/routers/data_agent.py
+- backend/schemas/data_agent_schema.py
+- backend/services/data_agent_service.py
+- backend/storage/temp_file_store.py
+- data_agent_core/agent/single_agent.py
+- data_agent_core/benchmark/benchmark_runner.py
+- data_agent_core/benchmark/error_analysis.py
+- data_agent_core/benchmark/metrics.py
+- data_agent_core/core/file_parser.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/core/schema_profiler.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/llm/planner.py
+- tests/architecture/test_dependency_boundaries.py
+- tests/backend/__init__.py
+- tests/backend/test_data_agent_service.py
+- tests/benchmark/__init__.py
+- tests/benchmark/test_benchmark_metrics.py
+- tests/core/test_uploaded_table_agent.py
+
+### 修改内容
+
+- 新增 ParsedDataset 和 parse_dataset_file，支持 CSV / Excel 解析入口、DatasetProfile 生成、多 sheet warning、空表 warning 和不确定表头 warning。
+- 增强 Schema Profiler 的日期、金额/销售、城市/位置语义 hint，避免普通文本列触发日期解析 warning。
+- 新增 UploadedDatasetAgent，复用固定 LLM 单 Agent 链路分析用户上传单表数据。
+- 新增通用上传表 LogicForm guardrail，支持 detail_lookup、filtering、aggregation、ranking 的最小解析。
+- 扩展 Pandas Executor 和 SQL fallback Executor，使上传单表的 aggregation / ranking 可双路径执行并可比较。
+- SQL fallback 对动态列名增加标识符 quoting，降低上传字段名包含空格、中文或特殊字符时的 SQL 失败风险。
+- 新增 backend 最小调用壳：DataAgentService、TempFileStore、API schema helper、可选 FastAPI router、main app。
+- backend 支持 upload/profile/analyze 的最小本地流程，analyze 返回 run_id、response_version、warnings、errors 和 debug.trace_path。
+- 新增 Benchmark metrics 和 error_analysis 聚合，按 operation 和 error_type 输出通用能力缺口，不输出单题修复建议。
+- 扩展架构边界测试，确保 backend router 不 import Pandas / SQL / Verifier / Benchmark 核心逻辑。
+- 更新 MAIN_GOAL、BRANCH_RULES、API_CONTRACT、ARCHITECTURE、BENCHMARK_RULES、FEATURE_BACKLOG、PHASE_GATES，记录 Phase 1/2/3 当前完成边界。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/dabstep_phase123_dev_verify_after_sql_quote
+- source .env.local 后运行 /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/dabstep_phase123_dev_real_llm_verify_final
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- rg -n "^\\s*(from|import)\\s+(backend|ms_agent_framework_adapter|multi_agent_workflows|agent_framework)" data_agent_core
+- rg secret-pattern scan against repository files excluding outputs、storage 和 .env*
+
+### 测试结果
+
+- unittest 通过：Ran 17 tests in 9.145s，OK。
+- DABstep dev 前 10 题 mock LLM 路径：total=10，scored=10，correct=8，accuracy=0.8。
+- DABstep dev 前 10 题真实 LLM 路径：total=10，scored=10，correct=8，accuracy=0.8。
+- 真实 LLM 输出文件：outputs/dabstep_phase123_dev_real_llm_verify_final/dev_1_to_10_predictions.jsonl。
+- compileall 通过。
+- data_agent_core 禁止 import 边界检查未发现实际 import 匹配。
+- secret 扫描未发现 API key 进入仓库文件；.env.local 仍为 ignored 文件。
+
+### 遗留问题
+
+- 当前 TempFileStore 只适合 Phase 1 本地测试，进程重启后不会恢复 DataFrame tables。
+- Excel 多 sheet、编码识别、复杂表头识别、趋势/对比/复杂过滤仍需后续增强。
+- public all.jsonl 的 answer 字段为空，不能本地计算完整 450 题官方准确率。
+- DABstep dev 前 10 的 2 个失败点需要后续做通用 top_count 和 best_fraud_aci_choice 能力分析，禁止按题号或题面特判。
+- 当前 SQL 路径是 sqlite fallback，后续需要接入 DuckDB runtime。
+
+### 是否影响主流程
+
+否。未修改旧 BigCat / VDS 主流程，未修改前端或复杂后端业务。
+
+### 是否涉及 Benchmark
+
+是。新增 Benchmark metrics 和 error_analysis，并用 DABstep dev 前 10 做 mock 和真实 LLM 验证；标准答案只在 evaluator 评分阶段使用，不进入核心分析链路或 LLM 输入。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未安装、未 import、未实现 Microsoft Agent Framework workflow。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。当前 UploadedDatasetAgent、backend service、Benchmark 聚合都保持框架无关，未来可映射到 agent_runtime 和 Microsoft adapter。
+
+### 是否修改核心数据契约
+
+否。未新增或破坏 contracts dataclass 字段；新增 ParsedDataset 是 file_parser 内部返回结构。
+
+### 是否修改 API 契约
+
+是。最小 backend upload/profile/analyze 响应已落地并同步 docs/API_CONTRACT.md，保持 response_version、run_id、warnings、errors。
+
+### 是否新增或修改错误类型
+
+否。未新增错误类型；backend service 使用既有 FILE_PARSE_ERROR 和 LOGIC_FORM_ERROR，Benchmark 归因使用既有 BENCHMARK_EVALUATION_ERROR 和 VERIFICATION_FAILED。
+
+### 是否新增或修改运行追踪逻辑
+
+是。UploadedDatasetAgent 生成 RunTrace，backend service 写入 storage/runs/{run_id}/trace.json，并在 debug.trace_path 中暴露调试路径；trace 不记录完整 Chain of Thought。
+
+---
