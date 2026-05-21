@@ -15,16 +15,31 @@
 ## 未来映射关系
 
 agent_runtime.AgentRole.PLANNER
-→ Microsoft Agent Framework Planner Agent
+→ Microsoft Agent Framework Planner Agent，LLM 为主
 
 agent_runtime.AgentRole.PANDAS_EXECUTOR
-→ Microsoft Agent Framework Tool / Function Step
+→ Microsoft Agent Framework Tool / Function Step，代码为主
 
 agent_runtime.AgentRole.SQL_EXECUTOR
-→ Microsoft Agent Framework Tool / Function Step
+→ Microsoft Agent Framework Tool / Function Step，代码为主
 
 agent_runtime.AgentRole.VERIFIER
-→ Microsoft Agent Framework Verifier Agent / Workflow Step
+→ Microsoft Agent Framework Verifier Agent / Workflow Step，规则为主，LLM 辅助
+
+agent_runtime.AgentRole.DATA_ENGINEER
+→ Microsoft Agent Framework Tool / Agent Step，代码为主，LLM 辅助字段语义
+
+agent_runtime.AgentRole.CORRECTION
+→ Microsoft Agent Framework Agent / Workflow Step，LLM 生成修正方向，代码执行
+
+agent_runtime.AgentRole.INSIGHT
+→ Microsoft Agent Framework Insight Agent，LLM 为主
+
+agent_runtime.AgentRole.VISUALIZATION
+→ Microsoft Agent Framework Visualization Agent / Tool Step，规则 + LLM
+
+agent_runtime.AgentRole.BENCHMARK
+→ Microsoft Agent Framework Evaluation Step，代码为主，LLM 辅助错误归因
 
 agent_runtime.WorkflowState
 → Microsoft Agent Framework Workflow State / Session State

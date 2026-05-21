@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+outputs/
+.env
+.env.*
+!.env.example

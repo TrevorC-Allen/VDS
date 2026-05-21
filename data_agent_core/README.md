@@ -15,7 +15,23 @@
 
 ## 当前阶段
 
-当前只建立目录和模块边界，不实现复杂业务逻辑。
+当前已从目录骨架推进到核心算法测试 MVP，并加入 LLM 单 Agent 链路。
+
+当前单 Agent 链路：
+
+1. LLM：Intent Parser
+2. LLM + 规则：Column Mapping
+3. LLM：Analysis Planner
+4. 代码：Pandas Executor
+5. 代码：SQL / DuckDB Executor
+6. 代码：Result Normalizer
+7. 规则 + LLM：Verifier / Critic
+8. 规则 + LLM：Correction Planner
+9. LLM：Insight Generator
+10. LLM + 规则：Chart Planner
+11. 后端返回 JSON
+
+LLM API key 只能从环境变量读取，不能写入仓库、trace、文档或 CHANGELOG。LLM 阶段只记录 reasoning summary，不记录完整 Chain of Thought。
 
 ## TODO
 

@@ -20,6 +20,34 @@
 
 ## Backlog
 
+### DABstep 核心算法 MVP
+
+目标：支持把 payments.csv 作为业务数据库表，把 manual.md / fees.json / merchant_data.json 作为文档和规则知识库，运行 DABstep 前 10 题核心算法测试。
+
+影响模块：data_agent_core/core、data_agent_core/executors、data_agent_core/verifier、data_agent_core/output、data_agent_core/benchmark、tests/core。
+
+优先级：P0。
+
+验收标准：DABstep dev 前 10 题本地评测准确率不低于 80%，且分析链路不接收 task_id 或标准答案。
+
+风险：当前为规则引擎和通用意图解析 MVP，覆盖的是 DABstep 风格的主要费用规则、聚合、分组和 what-if 问题；尚未覆盖完整 450 题。
+
+状态：2026-05-21 已完成 MVP，dev 前 10 题验证结果为 8/10。
+
+### LLM Single Agent Chain
+
+目标：Agent 必须按固定链路调用 LLM 和代码模块：LLM Intent Parser、LLM + 规则 Column Mapping、LLM Analysis Planner、代码 Pandas Executor、代码 SQL / DuckDB Executor、代码 Result Normalizer、规则 + LLM Verifier / Critic、规则 + LLM Correction Planner、LLM Insight Generator、LLM + 规则 Chart Planner，最后由后端返回 JSON。
+
+影响模块：data_agent_core/llm、data_agent_core/prompts、data_agent_core/agent/single_agent.py、tracing、docs。
+
+优先级：P0。
+
+验收标准：没有环境变量 key 时真实 LLM 模式应失败；mock LLM 模式可用于单元测试；真实 key 只能通过环境变量提供，不进入 Git；trace/debug 中能看到各 LLM 阶段摘要；执行、标准化和评分仍由代码完成。
+
+风险：LLM 输出不稳定，必须通过本地 schema guardrail 限制到受支持 operation，不允许把标准答案或 task_id 传给 LLM。
+
+状态：2026-05-21 已完成 LLM client、stage helper、prompt 文件、单 Agent 阶段 trace 和 mock 测试 wiring。
+
 ### CSV / Excel 文件解析
 
 目标：支持上传文件解析并生成 DatasetProfile。
