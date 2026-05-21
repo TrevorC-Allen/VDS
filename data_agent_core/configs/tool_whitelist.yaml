@@ -11,6 +11,9 @@ result_policy: summary_only
 requires_schema_validation: true
 requires_role_whitelist: true
 requires_timeout: true
+execution_owner: agent_runtime.data_agent_tool_impl
+provider_adapters:
+  microsoft_agent_framework: ms_agent_framework_adapter.framework_tools
 blocked_operations:
   - network_request
   - external_file_access

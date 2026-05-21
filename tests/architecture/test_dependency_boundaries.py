@@ -33,12 +33,22 @@ class DependencyBoundaryTest(unittest.TestCase):
                         violations.append(f"{path.relative_to(REPO_ROOT)} imports {name}")
         self.assertEqual([], violations)
 
-    def test_adapter_does_not_import_microsoft_framework_yet(self) -> None:
+    def test_microsoft_framework_imports_stay_out_of_core(self) -> None:
         violations: list[str] = []
-        for path in (REPO_ROOT / "ms_agent_framework_adapter").rglob("*.py"):
-            source = path.read_text()
-            if "microsoft.agent" in source.lower() or "semantic_kernel" in source.lower():
-                violations.append(str(path.relative_to(REPO_ROOT)))
+        for path in REPO_ROOT.rglob("*.py"):
+            relative = path.relative_to(REPO_ROOT)
+            if relative.parts[0] in {".git", "outputs", "storage"}:
+                continue
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = [alias.name.split(".")[0] for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    names = [node.module.split(".")[0]]
+                else:
+                    continue
+                if "agent_framework" in names and relative.parts[0] not in {"ms_agent_framework_adapter", "tests"}:
+                    violations.append(f"{relative} imports agent_framework")
         self.assertEqual([], violations)
 
     def test_backend_router_stays_thin(self) -> None:

@@ -50,6 +50,7 @@
 11. public all.jsonl 的 answer 字段为空，不能本地计算完整 450 题官方准确率；dev 前 10 题仍用于本地可复现 smoke benchmark。
 12. Tool Calling 暂定为 Phase 5 后置能力；当前只保留 ToolRegistry / tool mapping 骨架，不在当前阶段启用模型原生工具循环或 thinking-mode 工具回填。
 13. 已补充 Phase 5 受控 Tool Calling 的 provider-neutral 契约骨架：ToolDefinition、ToolCall、ToolResult、ToolTraceEvent、ToolDispatcher、Data Agent tool catalog 和 Microsoft adapter tool mapping；当前仍不启用 provider 原生工具循环。
+14. 已开始实现 Microsoft Agent Framework adapter 和真实内部工具 callable：工具 callable 位于 agent_runtime，调用既有 data_agent_core 核心模块；Microsoft adapter 只做可选 function tool、agent factory 和 sequential workflow builder，不让 data_agent_core 依赖 Microsoft Agent Framework。
 
 ## 架构原则
 
@@ -85,23 +86,27 @@
 
 Microsoft Agent Framework 是后续多 Agent 编排的候选框架，但不是当前核心算法依赖。
 
-当前阶段只做：
+当前实现方式：
 
-1. 创建 ms_agent_framework_adapter/ 目录
-2. 创建适配层 README
-3. 创建空的 adapter 文件
-4. 在文档中说明未来如何把 Planner、Executor、Verifier、Insight、Visualization 等角色映射到 Microsoft Agent Framework workflow
-5. 不安装框架包
-6. 不实现复杂 workflow
-7. 不把核心逻辑写入 adapter
+1. ms_agent_framework_adapter/ 可以可选导入 `agent_framework`，但该依赖只允许出现在 adapter 内。
+2. data_agent_core/ 永远不能 import Microsoft Agent Framework。
+3. agent_runtime/ 定义 ToolDefinition、ToolCall、ToolResult、ToolDispatcher 和内部工具 callable。
+4. ms_agent_framework_adapter/framework_tools.py 将内部白名单工具包装成 Microsoft Agent Framework function tool。
+5. ms_agent_framework_adapter/framework_agents.py 将内部 AgentRole 映射成 Microsoft Agent Framework Agent。
+6. ms_agent_framework_adapter/framework_workflow.py 将角色顺序映射为 sequential workflow。
+7. 如果本地未安装 `agent-framework`，adapter 必须给出清晰错误；单测必须能用 fake framework 验证适配逻辑。
+8. requirements-ms-agent.txt 作为独立可选依赖入口，不合入核心依赖。
+9. 不把文件解析、Pandas、SQL、Verifier、Benchmark 或业务规则写入 adapter。
+10. 不把 Microsoft Agent Framework 作为 data_agent_core 或 backend 的强依赖。
 
 未来迁移方式：
 
 1. data_agent_core 提供稳定函数和类
 2. agent_runtime 定义 AgentRole、AgentTask、AgentResult、WorkflowState
-3. ms_agent_framework_adapter 将内部 AgentTask 映射为 Microsoft Agent Framework 的 agent / tool / workflow step
-4. multi_agent_workflows 负责组合 Planner、Executor、Verifier 等角色
-5. backend 仍然只调用统一服务入口，不直接依赖具体 Agent 框架
+3. agent_runtime 将字段画像、计划构建、Pandas / SQL 执行、校验、图表和解释包装为受控内部工具
+4. ms_agent_framework_adapter 将内部 AgentTask、ToolDefinition 和 WorkflowState 映射为 Microsoft Agent Framework 的 agent / tool / workflow step
+5. multi_agent_workflows 负责组合 Planner、Executor、Verifier 等角色
+6. backend 仍然只调用统一服务入口，不直接依赖具体 Agent 框架
 
 ## 当前不做
 
@@ -123,7 +128,7 @@ Microsoft Agent Framework 是后续多 Agent 编排的候选框架，但不是�
 14. 在本轮引入 Microsoft Agent Framework 作为强依赖
 15. 在本轮实现复杂 Agent workflow
 16. 在本轮实现完整业务逻辑
-17. 在本轮实现 provider 原生 Tool Calling、DeepSeek thinking mode 工具回填或 OpenAI Responses API 工具循环
+17. 在本轮实现 provider 原生 OpenAI / DeepSeek tool call loop、DeepSeek thinking mode 工具回填或 OpenAI Responses API 工具循环
 
 ## 核心工作流
 
@@ -190,6 +195,13 @@ Verifier / Response Builder 生成最终结构化 JSON
 2. 工具层必须先支持 mock provider 和本地单元测试，再接 OpenAI / DeepSeek provider adapter。
 3. DeepSeek thinking mode 或 OpenAI reasoning item 只能由 provider adapter 内部维护，不进入稳定 trace 或 API 响应。
 4. 工具调用失败必须进入 errors / warnings，不能由模型自然语言掩盖。
+
+当前实现状态：
+
+1. 内部工具 callable 已能调用 DatasetProfile 生成、AnalysisPlan 构建、Pandas 执行、SQL 执行、结果校验、ChartSpec 生成和 InsightResult 生成。
+2. ToolDispatcher 负责工具名、角色、JSON 参数和 trace-safe 摘要。
+3. Microsoft Agent Framework adapter 可以把内部工具包装为 function tool，但仅作为可选适配层。
+4. 仍未启用 provider 原生 OpenAI / DeepSeek tool loop，仍不允许模型获得 raw Python、raw SQL、shell、网络或任意文件访问。
 
 ## 未来多 Agent 工作流
 

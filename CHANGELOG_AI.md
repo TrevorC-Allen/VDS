@@ -181,6 +181,104 @@ YYYY-MM-DD HH:MM TZ
 
 ### 日期时间
 
+2026-05-21 13:52 CST
+
+### 本次目标
+
+实现受控内部工具 callable，并把 Microsoft Agent Framework 从声明式骨架推进到可选 adapter：支持 function tool 包装、按 AgentRole 创建 Microsoft Agent、按内部角色顺序构建 sequential workflow，同时保持 data_agent_core 框架无关。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- BRANCH_RULES.md
+- docs/API_CONTRACT.md
+- docs/ARCHITECTURE.md
+- docs/FEATURE_BACKLOG.md
+- docs/PHASE_GATES.md
+- requirements-ms-agent.txt
+- agent_runtime/README.md
+- agent_runtime/data_agent_tool_catalog.py
+- agent_runtime/data_agent_tool_impl.py
+- data_agent_core/configs/tool_whitelist.yaml
+- ms_agent_framework_adapter/README.md
+- ms_agent_framework_adapter/adapter.py
+- ms_agent_framework_adapter/framework_tools.py
+- ms_agent_framework_adapter/framework_agents.py
+- ms_agent_framework_adapter/framework_workflow.py
+- ms_agent_framework_adapter/tool_mapping.py
+- tests/agent_runtime/test_data_agent_tool_impl.py
+- tests/agent_runtime/test_runtime_contracts.py
+- tests/architecture/test_dependency_boundaries.py
+- tests/ms_agent_framework_adapter/__init__.py
+- tests/ms_agent_framework_adapter/test_framework_adapter.py
+
+### 修改内容
+
+- 新增 DataAgentToolRuntime 和真实内部工具 callable，覆盖 profile_schema、build_analysis_plan、execute_pandas_plan、execute_sql_plan、verify_results、build_chart_spec、generate_insight。
+- 工具 callable 只调用既有 data_agent_core 模块，不开放 raw Python、raw SQL、shell、网络或任意外部文件访问。
+- 新增 Microsoft Agent Framework 可选 adapter：framework_tools 负责 function tool 包装，framework_agents 负责按 AgentRole 创建 Agent，framework_workflow 负责 sequential workflow builder。
+- 新增 requirements-ms-agent.txt，作为独立可选依赖入口，未把 agent-framework 写入 core/backend 强依赖。
+- 更新架构边界测试：允许 agent_framework 只在 ms_agent_framework_adapter 或 tests 中出现，继续禁止 data_agent_core import Microsoft Framework。
+- 更新 MAIN_GOAL、BRANCH_RULES、ARCHITECTURE、API_CONTRACT、FEATURE_BACKLOG、PHASE_GATES 和 README，明确 Microsoft adapter 当前实现边界。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- rg -n "^\\s*(from|import)\\s+(backend|ms_agent_framework_adapter|multi_agent_workflows|agent_framework)" data_agent_core
+- rg -n "sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}" --glob '!outputs/**' --glob '!storage/**' --glob '!.env*' .
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/ms_tool_adapter_dev_verify_final
+
+### 测试结果
+
+- unittest 通过：Ran 25 tests in 8.760s，OK。
+- compileall 通过。
+- data_agent_core 禁止 import 边界检查未发现匹配。
+- secret 扫描未发现 sk-* 或 sk-proj-* key 进入仓库文件。
+- DABstep dev 前 10 题 mock LLM 路径：total=10，scored=10，correct=8，accuracy=0.8。
+
+### 遗留问题
+
+- 当前 Microsoft adapter 使用 fake framework 单测验证包装逻辑；未在本轮安装真实 agent-framework 包运行 Azure Foundry client。
+- 当前仍未启用 OpenAI / DeepSeek provider 原生 tool call loop。
+- requirements-ms-agent.txt 是可选依赖入口，服务器运行真实 Microsoft adapter 前需要单独安装。
+
+### 是否影响主流程
+
+否。未修改旧 BigCat / VDS 主流程，未修改前端或复杂后端业务。
+
+### 是否涉及 Benchmark
+
+是，仅运行 DABstep dev 前 10 题回归验证；未修改 Benchmark 数据，未把 task_id 或标准答案传入核心分析链路，未做单题特判。
+
+### 是否涉及 Microsoft Agent Framework
+
+是。新增 Microsoft Agent Framework 可选 adapter 和独立可选依赖文件；data_agent_core 不依赖 Microsoft Agent Framework。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。AgentRole、ToolDefinition、ToolDispatcher 和 WorkflowState 现在可以映射到 Microsoft function tool、Agent 和 sequential workflow，同时保留未来替换 LangGraph / CrewAI / 自研 runtime 的空间。
+
+### 是否修改核心数据契约
+
+是。新增可执行工具 callable 和 Microsoft adapter 映射测试，但未破坏既有 contracts dataclass 字段。
+
+### 是否修改 API 契约
+
+是。仅更新 docs/API_CONTRACT.md，说明 adapter 参与运行时只能写入 debug / trace 摘要；稳定 upload/analyze/profile 字段未改变。
+
+### 是否新增或修改错误类型
+
+否。未新增 data_agent_core/errors 错误类型；Microsoft adapter 缺包时使用 adapter-local MicrosoftAgentFrameworkUnavailable 异常。
+
+### 是否新增或修改运行追踪逻辑
+
+否。沿用既有 ToolTraceEvent / tool_call_summary 摘要策略；本轮未修改 RunTrace 字段。
+
+---
+
+### 日期时间
+
 2026-05-21 11:30 CST
 
 ### 本次目标

@@ -1,0 +1,3 @@
+# Optional Microsoft Agent Framework adapter dependency.
+# Install only when running ms_agent_framework_adapter against the real framework.
+agent-framework==1.5.0

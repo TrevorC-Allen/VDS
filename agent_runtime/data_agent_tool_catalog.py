@@ -29,6 +29,14 @@ def build_data_agent_tool_registry(overrides: dict[str, ToolCallable] | None = N
     return registry
 
 
+def build_runtime_data_agent_tool_registry(runtime: Any) -> ToolRegistry:
+    """Build the canonical registry bound to executable core tool callables."""
+
+    from agent_runtime.data_agent_tool_impl import build_data_agent_tool_overrides
+
+    return build_data_agent_tool_registry(build_data_agent_tool_overrides(runtime))
+
+
 def _tool_definitions(overrides: dict[str, ToolCallable]) -> list[ToolDefinition]:
     return [
         ToolDefinition(

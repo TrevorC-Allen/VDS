@@ -81,6 +81,8 @@
 3. 不引入任何 data_agent_core → adapter 的反向依赖。
 4. 同一 AgentTask 能由自研 runtime 或 Microsoft adapter 映射。
 
+当前状态（2026-05-21）：已新增 Microsoft Agent Framework 可选适配实现。adapter 可以包装内部工具为 function tool、创建按角色分配工具的 Agent，并按内部角色顺序构建 sequential workflow；本地没有 `agent-framework` 时返回清晰错误；requirements-ms-agent.txt 作为独立可选依赖入口；data_agent_core 仍不依赖 Microsoft Agent Framework。
+
 ## Phase 5：受控 Tool Calling 层
 
 目标：
@@ -99,7 +101,7 @@
 4. OpenAI / DeepSeek provider 差异被限制在 data_agent_core/llm 或 provider adapter 内，data_agent_core 核心契约保持 provider-neutral。
 5. 工具调用失败必须进入 errors / warnings，并可由 Verifier 或 Correction Planner 处理。
 
-当前状态（2026-05-21）：已完成 provider-neutral 契约骨架和本地 dispatcher 测试。当前包含 ToolDefinition、ToolCall、ToolResult、ToolTraceEvent、Data Agent tool catalog、tool whitelist 和 Microsoft adapter tool mapping；仍不得启用 provider 原生工具调用。
+当前状态（2026-05-21）：已完成 provider-neutral 契约、本地 dispatcher 和内部工具 callable 测试。当前包含 ToolDefinition、ToolCall、ToolResult、ToolTraceEvent、Data Agent tool catalog、tool whitelist、DataAgentToolRuntime 和 Microsoft adapter function tool mapping；仍不得启用 OpenAI / DeepSeek provider 原生工具调用。
 
 ## Phase 6+：多 Agent Workflow
 

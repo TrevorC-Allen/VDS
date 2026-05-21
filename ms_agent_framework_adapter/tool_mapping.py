@@ -1,4 +1,4 @@
-"""Tool mapping draft for future Microsoft Agent Framework integration."""
+"""Tool mapping for Microsoft Agent Framework integration."""
 
 from __future__ import annotations
 

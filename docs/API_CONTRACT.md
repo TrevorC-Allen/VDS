@@ -12,6 +12,8 @@
 
 2026-05-21 更新：Phase 5 工具调用 trace 契约已预留。API 稳定字段不变；debug 未来可包含 tool_call_summaries，但前端仍不能依赖 debug。
 
+2026-05-21 更新：内部工具 callable 和 Microsoft Agent Framework adapter 已开始实现。该变化不修改 upload/analyze/profile 的稳定 API 字段；如果 adapter 参与运行，只能把工具调用摘要放入 debug / trace，不允许新增前端必须依赖的字段。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
