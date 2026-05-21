@@ -17,6 +17,13 @@ PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "data_agent_syst
 
 SUPPORTED_OPERATIONS = {
     "aggregation",
+    "row_count",
+    "distinct_count",
+    "repeat_entity_percentage",
+    "null_check",
+    "outlier_count",
+    "top_k_share",
+    "filtered_metric_ranking",
     "top_count",
     "ranking",
     "filtering",
@@ -33,8 +40,14 @@ SUPPORTED_OPERATIONS = {
     "cheapest_card_scheme_for_transaction",
     "fee_restriction_affected_merchants",
     "fraud_rate_comparison",
+    "fraud_rate_filtered",
     "mcc_change_delta",
     "best_fraud_aci_choice",
+    "aci_fee_extreme",
+    "fee_extreme_by_dimension",
+    "field_values",
+    "boolean_percentage",
+    "duplicate_check",
     "not_applicable",
 }
 

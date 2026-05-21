@@ -131,5 +131,5 @@ agent_runtime/data_analysis_roles.py 提供 Phase 6 角色 handler：
 
 ## TODO
 
-- Phase 5 后续接入 provider-native OpenAI / DeepSeek tool call adapter，但保持内部 ToolDefinition 不变。
+- Phase 5 已新增 provider-native OpenAI / DeepSeek 兼容 tool call adapter 骨架，保持内部 ToolDefinition 不变；后续再接真实 provider 网络调用和更完整工具循环验证。
 - Phase 6 后续接真实 Microsoft Agent Framework cloud workflow、并行 executor 和更完整 Correction Loop。

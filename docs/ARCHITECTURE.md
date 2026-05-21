@@ -18,6 +18,10 @@
 
 2026-05-21 更新：下一阶段业务口径驱动校验已开始落地。LogicForm 预留 metric、metric_definition、numerator、denominator、group_by、objective 和 options；Verifier 不只检查 Pandas / SQL 一致性，也检查问题语义和指标定义是否一致；Correction 可输出结构化 corrected LogicForm 并触发受控重跑。
 
+2026-05-21 更新：`Not Applicable` 能力缺口闭环已继续推进。Response Builder、trace 和 Benchmark report 会区分 `true_unsupported` 与 `capability_gap`；基础通用能力族已新增 row_count、distinct_count、repeat_entity_percentage、outlier_count、top_k_share、filtered_metric_ranking、null_check、季度过滤、fraud likelihood 多维排名和 fee what-if candidate table，并优先用合成中英文用例验证泛化。
+
+2026-05-21 更新：Provider-native tool calling adapter 已建立在 `agent_runtime/provider_native_tool_adapter.py`。该层只把 OpenAI / DeepSeek 兼容 tool schema 和 tool_calls 映射到内部 ToolDefinition / ToolCall / ToolResult，再交给 ToolDispatcher；不实现 DatasetProfile、Pandas、SQL、Verifier、Chart、Insight 或 Benchmark 逻辑。
+
 ## 层次边界
 
 1. data_agent_core 是核心算法层。
@@ -39,6 +43,7 @@
 8. LLM client 位于 data_agent_core/llm，不依赖 Microsoft Agent Framework。
 9. prompt 位于 data_agent_core/prompts/data_agent_system_prompt.md。
 10. API key 只从环境变量读取，不进入 Git、trace、文档或 CHANGELOG。
+11. 中文问题理解、中文字段名、中文业务术语和中文输出格式是核心主路径；英文问题、英文字段和英文 Benchmark 必须兼容，但不能替代中文验收。
 
 ## 核心链路
 
@@ -152,6 +157,36 @@ OpenAI、DeepSeek、Microsoft Agent Framework 只能适配这些内部工具契�
 7. 新能力必须能解释迁移边界：适用于哪些数据形态、字段类型、候选项结构、问题表达方式和业务定义来源。
 8. 新能力必须用合成/非 Benchmark 用例和同类变体验证，不能只用当前失败 benchmark 题证明。
 9. 如果当前修复导致旧代表用例、上传文件场景或同类问题族退化，默认判定为架构方向错误，而不是局部测试波动。
+10. 新能力必须优先检查中文表达、中文字段、中文日期/金额/百分比格式和中文业务口径；英文能力必须保持回归，但不能作为唯一通过标准。
+
+## Not Applicable 归因
+
+1. `true_unsupported`：上传规则、manual、schema 或业务知识确实没有定义的问题，例如未定义 danger / fine 阈值，不允许模型臆造答案。
+2. `capability_gap`：问题原则上可以由数据或规则回答，但当前 Planner、Parser、Executor 或 Tool 能力族尚未覆盖。
+3. Response Builder 对 `capability_gap` 返回 `CAPABILITY_GAP` 错误，避免 benchmark report 把 unexpected Not Applicable 当成正常成功。
+4. trace / debug 只记录归因摘要，不记录完整 Chain of Thought、raw reasoning tokens、API key 或敏感原始数据。
+5. 新增能力族必须先通过合成或非 Benchmark 用例，再用 DABstep / proxy 作为后验回归观察。
+
+## 中文零售真实数据回归边界
+
+Microsoft 脱敏数据回归只用于暴露中文真实业务表能力缺口，不能把 task_id、标准答案、固定姓名、固定品类或固定输出写入核心链路。
+
+当前中文零售能力必须保持以下边界：
+
+1. Intent Parser 只把中文问题映射为 schema-backed `retail_*` LogicForm。
+2. Executor 只根据上传表字段、日期、人员、商品、客户和状态执行通用聚合、排名、计数、比例和字段枚举。
+3. 服务客户、目标达成率、拜访成功率、陈列记录、订单状态、今日分销和路线客户关联都必须作为能力族实现。
+4. Microsoft 标准答案只允许在离线 scorer 使用，不进入 prompt、Planner、Executor、Verifier、Correction、测试 fixture 或 trace。
+5. DABstep 100-130 的 public proxy observation 只能用于后验趋势观察，official 本地准确率仍因 public all answer 为空而不可计算。
+6. DABstep hour-of-day 能力作为通用分组能力实现：普通交易量用 `top_count`，离群交易先按 Z-Score / IQR 识别 outlier，再用 `top_outlier_group` 按小时或其他维度统计。
+
+## 语言优先级
+
+1. 产品使用场景以中文为主，中文理解和中文数据表分析能力优先级高于英文。
+2. 英文能力不能放松，DABstep 等英文 Benchmark 仍是回归和泛化观察的一部分。
+3. Intent Parser、Column Mapping、Planner、Verifier、Correction 和 Tool schema 必须能表达中英文别名、字段语义和输出格式差异。
+4. Executor 不能依赖散落的临时中英文关键词补丁；需要通过 schema/profile/alias/LogicForm 表达可复用语义。
+5. 任何能力类 PR 都必须说明中文场景如何验收；如果只覆盖英文，必须明确记录为阶段限制。
 
 ## Microsoft Agent Framework Adapter
 

@@ -16,6 +16,8 @@
 
 2026-05-21 更新：analyze 默认切换为 multi_agent。请求可选 agent_mode，支持 multi_agent / single_agent；该字段用于内部运行模式选择，不改变稳定响应字段。默认 multi_agent 不要求安装 Microsoft Agent Framework，不引入前端强依赖字段。
 
+2026-05-21 更新：`Not Applicable` 不再只作为普通字符串处理。analyze 的 debug / trace / benchmark report 可记录 not_applicable_attribution，用于区分 `true_unsupported` 和 `capability_gap`；如果属于 `capability_gap`，errors 必须包含 `CAPABILITY_GAP`，前端仍只依赖稳定的 answer、warnings、errors、verification 字段。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
@@ -24,6 +26,8 @@
 4. 所有警告必须进入 warnings 字段。
 5. 前端只能依赖稳定字段，不依赖 debug 字段。
 6. debug 字段仅用于调试，不作为稳定展示契约。
+7. API 稳定字段保持语言中立，但问题、answer、insight、chart title 和 warnings/errors 的可读文本必须优先支持中文使用场景，同时保留英文输入和英文输出兼容。
+8. 前端不能依赖 debug 中的英文/中文内部阶段摘要；稳定展示只能依赖 answer、result、verification、insight、chart、warnings、errors 等契约字段。
 
 ## POST /api/data-agent/upload
 
@@ -102,6 +106,7 @@ debug 当前可能包含：
 - sql_success
 - trace_path
 - tool_call_summaries
+- not_applicable_attribution
 - agent_mode
 - workflow_mode
 - multi_agent_roles
@@ -117,10 +122,13 @@ trace 当前可包含：
 - candidate_table_summary
 - selected_candidate
 - tool_call_summary
+- not_applicable_attribution
 
 llm_stage_summaries 只允许包含 structured analysis plan、reasoning summary、execution trace、verification notes 等摘要，不能包含完整 Chain of Thought。
 
 tool_call_summaries 只允许包含 tool_name、step_id、requested_by、arguments_summary、result_summary、success、latency_ms、error，不允许包含完整 Chain of Thought、raw reasoning tokens、API key 或敏感原始数据。
+
+not_applicable_attribution 只允许包含 category、reason、operation、message 等归因摘要。`true_unsupported` 表示上传规则、manual、schema 或业务知识没有定义；`capability_gap` 表示问题原则上可由数据或规则回答，但当前通用能力族还未覆盖。该字段仍属于 debug / trace 调试信息，前端展示应以 warnings / errors 为准。
 
 失败响应必须包含：
 

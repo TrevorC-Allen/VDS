@@ -12,11 +12,34 @@ from typing import Any
 import pandas as pd
 
 from data_agent_core.contracts.analysis_contracts import LogicForm
+from data_agent_core.core.chinese_retail_intent import parse_chinese_retail_question
 from data_agent_core.core.date_utils import MONTH_NAME_TO_NUMBER
 from data_agent_core.core.logic_form import make_logic_form
 
 
 CARD_SCHEMES = ("TransactPlus", "GlobalCard", "NexPay", "SwiftCharge")
+FIELD_ALIASES = {
+    "authorization characteristics indicator": "aci",
+    "authorization characteristic indicator": "aci",
+    "aci": "aci",
+    "card scheme": "card_scheme",
+    "device type": "device_type",
+    "device": "device_type",
+    "shopper interaction": "shopper_interaction",
+    "payment interaction": "shopper_interaction",
+    "issuing country": "issuing_country",
+    "issuing_country": "issuing_country",
+    "ip country": "ip_country",
+    "ip_country": "ip_country",
+    "merchant": "merchant",
+    "shopper": "email_address",
+    "customer": "email_address",
+    "email": "email_address",
+    "card number": "card_number",
+    "card bin": "card_bin",
+    "transaction": "psp_reference",
+    "credit": "is_credit",
+}
 
 
 def _extract_options(question: str) -> dict[str, str]:
@@ -41,7 +64,9 @@ def _extract_month(question: str) -> int | None:
 
 def _extract_month_range(question: str) -> tuple[int, int] | None:
     lowered = question.lower()
-    match = re.search(r"between\s+([a-z]+)\s+and\s+([a-z]+)", lowered)
+    match = re.search(r"(?:between|from)\s+([a-z]+)\s+(?:and|to|through)\s+([a-z]+)", lowered)
+    if not match:
+        match = re.search(r"\b([a-z]+)\s+(?:to|through|-)\s+([a-z]+)\b", lowered)
     if not match:
         return None
     start = MONTH_NAME_TO_NUMBER.get(match.group(1))
@@ -49,6 +74,45 @@ def _extract_month_range(question: str) -> tuple[int, int] | None:
     if start is None or end is None:
         return None
     return start, end
+
+
+def _extract_quarter_month_range(question: str) -> tuple[int, int] | None:
+    lowered = question.lower()
+    chinese_quarters = {
+        "第一季度": 1,
+        "一季度": 1,
+        "第1季度": 1,
+        "第二季度": 2,
+        "二季度": 2,
+        "第2季度": 2,
+        "第三季度": 3,
+        "三季度": 3,
+        "第3季度": 3,
+        "第四季度": 4,
+        "四季度": 4,
+        "第4季度": 4,
+        "最后一季度": 4,
+    }
+    for token, quarter in chinese_quarters.items():
+        if token in question:
+            return (quarter - 1) * 3 + 1, quarter * 3
+    aliases = {
+        "first quarter": 1,
+        "second quarter": 2,
+        "third quarter": 3,
+        "fourth quarter": 4,
+        "final quarter": 4,
+        "last quarter": 4,
+        "previous quarter": 4,
+    }
+    for token, quarter in aliases.items():
+        if token in lowered:
+            return (quarter - 1) * 3 + 1, quarter * 3
+    quarter_match = re.search(r"\bq([1-4])\b|quarter\s*([1-4])\b|([1-4])(?:st|nd|rd|th)?\s+quarter", lowered)
+    if quarter_match:
+        quarter = int(next(group for group in quarter_match.groups() if group))
+        return (quarter - 1) * 3 + 1, quarter * 3
+    return _extract_month_range(question)
 
 
 def _extract_day_of_year(question: str) -> int | None:
@@ -85,10 +149,26 @@ def _extract_aci(question: str) -> str | None:
     return match.group(1).upper() if match else None
 
 
+def _extract_credit_filter(question: str) -> bool | None:
+    lowered = question.lower()
+    if "credit" in lowered:
+        return True
+    if "debit" in lowered:
+        return False
+    return None
+
+
 def _extract_transaction_value(question: str) -> float | None:
-    match = re.search(r"transaction value of\s+(\d+(?:\.\d+)?)\s*EUR", question, re.I)
+    match = re.search(r"transaction value of\s+(\d+(?:\.\d+)?)\s*(?:EUR|euros?)", question, re.I)
     if not match:
-        match = re.search(r"(\d+(?:\.\d+)?)\s*EUR", question, re.I)
+        match = re.search(r"transaction of\s+(\d+(?:\.\d+)?)\s*(?:EUR|euros?)", question, re.I)
+    if not match:
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(?:EUR|euros?)", question, re.I)
+    return float(match.group(1)) if match else None
+
+
+def _extract_zscore_threshold(question: str) -> float | None:
+    match = re.search(r"z[- ]?score\s*>\s*(\d+(?:\.\d+)?)", question, re.I)
     return float(match.group(1)) if match else None
 
 
@@ -104,6 +184,8 @@ def _extract_group_by(question: str, default: str = "shopper_interaction") -> st
         "ip country": "ip_country",
         "device type": "device_type",
         "merchant": "merchant",
+        "hour of day": "hour_of_day",
+        "hour": "hour_of_day",
     }
     match = re.search(r"grouped by\s+([a-z_ ]+?)(?:\s+for|\s+between|\?|$)", lowered)
     candidate = match.group(1).strip() if match else ""
@@ -111,6 +193,50 @@ def _extract_group_by(question: str, default: str = "shopper_interaction") -> st
         if candidate == text or f"grouped by {text}" in lowered:
             return column
     return default
+
+
+def _extract_fraud_likelihood_dimension(question: str) -> str:
+    lowered = question.lower()
+    aliases = {
+        "authorization characteristics indicator": "aci",
+        "authorization characteristic indicator": "aci",
+        "aci": "aci",
+        "shopper interaction": "shopper_interaction",
+        "payment interaction": "shopper_interaction",
+        "card scheme": "card_scheme",
+        "issuing country": "issuing_country",
+        "ip country": "ip_country",
+        "device type": "device_type",
+        "device": "device_type",
+        "merchant": "merchant",
+        "credit": "is_credit",
+        "debit": "is_credit",
+    }
+    for text, column in aliases.items():
+        if text in lowered:
+            return column
+    return _extract_group_by(question, default="shopper_interaction")
+
+
+def _extract_field_name(question: str, context: dict[str, Any] | None = None) -> str | None:
+    """Resolve a natural-language field reference to a known column name."""
+
+    lowered = question.lower()
+    for alias, column in FIELD_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", lowered):
+            return column
+    for pattern in (r"field\s+([a-zA-Z_ ]+?)(?:\?|$|,|\s+in\s+)", r"column\s+([a-zA-Z_ ]+?)(?:\?|$|,|\s+in\s+)"):
+        match = re.search(pattern, question, re.I)
+        if match:
+            candidate = match.group(1).strip().replace(" ", "_").lower()
+            if candidate:
+                return candidate
+    payments = None if context is None else context.get("payments")
+    if payments is not None:
+        for column in payments.columns:
+            if str(column).lower() in lowered:
+                return str(column)
+    return None
 
 
 def _extract_mcc_description(question: str) -> str | None:
@@ -128,10 +254,12 @@ def _extract_new_mcc(question: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _comparison_values_for_fraud_rate(question: str) -> tuple[str, str] | None:
+def _comparison_spec_for_fraud_rate(question: str) -> dict[str, Any] | None:
     lowered = question.lower()
     if "ecommerce" in lowered and ("in-store" in lowered or "in store" in lowered):
-        return "Ecommerce", "POS"
+        return {"dimension": "shopper_interaction", "left_value": "Ecommerce", "right_value": "POS"}
+    if "credit" in lowered and "debit" in lowered:
+        return {"dimension": "is_credit", "left_value": True, "right_value": False}
     return None
 
 
@@ -142,6 +270,111 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
     lowered = question.lower()
     output_format = {"guidelines": guidelines}
 
+    if _is_top_outlier_group_question(lowered):
+        return make_logic_form(
+            task_type="ranking",
+            operation="top_outlier_group",
+            parameters={
+                "table": "payments",
+                "group_by": _extract_group_by(question, default="hour_of_day"),
+                "metric": _extract_field_name(question, context) or "eur_amount",
+                "method": "zscore" if "z-score" in lowered or "z score" in lowered else "iqr",
+                "z_threshold": _extract_zscore_threshold(question) or 3.0,
+            },
+            output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_top_group_count_question(lowered):
+        return make_logic_form(
+            task_type="ranking",
+            operation="top_count",
+            parameters={"group_by": _extract_group_by(question, default="hour_of_day")},
+            output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_row_count_question(lowered):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="row_count",
+            parameters={"table": "payments"},
+            output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_distinct_count_question(lowered):
+        return make_logic_form(
+            task_type="schema_query",
+            operation="distinct_count",
+            parameters={"table": "payments", "field": _extract_field_name(question, context)},
+            output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_repeat_entity_percentage_question(lowered):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="repeat_entity_percentage",
+            parameters={"table": "payments", "field": _extract_field_name(question, context) or "email_address"},
+            output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
+        )
+
+    if _is_outlier_count_question(lowered):
+        return make_logic_form(
+            task_type="data_quality",
+            operation="outlier_count",
+            parameters={
+                "table": "payments",
+                "metric": _extract_field_name(question, context) or "eur_amount",
+                "method": "zscore" if "z-score" in lowered or "z score" in lowered else "iqr",
+            },
+            output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_null_check_question(lowered):
+        return make_logic_form(
+            task_type="data_quality",
+            operation="null_check",
+            filters={"year": _extract_year(question) if re.search(r"\b20\d{2}\b", question) else None},
+            parameters={
+                "table": "payments",
+                "field": _extract_field_name(question, context),
+                "mode": _null_check_mode(lowered),
+            },
+            output_format=output_format | {"answer_type": "yes_no" if _null_check_mode(lowered) == "exists" else "number"},
+        )
+
+    if _is_top_k_share_question(lowered):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="top_k_share",
+            metric="eur_amount",
+            group_by=_extract_group_by(question, default="merchant"),
+            parameters={
+                "table": "payments",
+                "metric": "eur_amount",
+                "dimension": _extract_group_by(question, default="merchant"),
+                "aggregation": "sum",
+                "limit": _extract_limit(question, default=3),
+            },
+            output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
+        )
+
+    if ("possible values" in lowered or "unique values" in lowered or "distinct values" in lowered) and (
+        "field" in lowered or "column" in lowered
+    ):
+        return make_logic_form(
+            task_type="schema_query",
+            operation="field_values",
+            parameters={"table": "payments", "field": _extract_field_name(question, context)},
+            output_format=output_format | {"answer_type": "list"},
+        )
+
+    if "duplicate" in lowered and ("transaction" in lowered or "row" in lowered or "record" in lowered):
+        return make_logic_form(
+            task_type="data_quality",
+            operation="duplicate_check",
+            parameters={"table": "payments", "subset": "all"},
+            output_format=output_format | {"answer_type": "yes_no"},
+        )
+
     if re.search(r"\b(fine|fines|penalty|penalties|danger)\b", lowered):
         return make_logic_form(
             task_type="unsupported",
@@ -151,20 +384,154 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
         )
 
     if "fraud rate" in lowered and ("higher than" in lowered or "lower than" in lowered):
-        values = _comparison_values_for_fraud_rate(question)
-        if values:
+        spec = _comparison_spec_for_fraud_rate(question)
+        if spec:
             return make_logic_form(
                 task_type="comparison",
                 operation="fraud_rate_comparison",
                 filters={"year": _extract_year(question)},
                 parameters={
-                    "dimension": "shopper_interaction",
-                    "left_value": values[0],
-                    "right_value": values[1],
+                    "dimension": spec["dimension"],
+                    "left_value": spec["left_value"],
+                    "right_value": spec["right_value"],
                     "operator": "higher_than" if "higher than" in lowered else "lower_than",
                 },
                 output_format=output_format | {"answer_type": "yes_no"},
             )
+
+    if (
+        ("fraudulent dispute" in lowered or "fraud dispute" in lowered or "fraud likelihood" in lowered or "more likely" in lowered)
+        and "credit" in lowered
+        and "debit" in lowered
+    ):
+        return make_logic_form(
+            task_type="comparison",
+            operation="fraud_rate_comparison",
+            metric="fraud_transaction_rate",
+            metric_definition={
+                "name": "fraud_transaction_rate",
+                "description": "Fraudulent transaction count divided by total transaction count.",
+                "aggregation": "ratio",
+                "source": "payments.csv",
+            },
+            numerator={"column": "has_fraudulent_dispute", "filter": {"has_fraudulent_dispute": True}, "aggregation": "count"},
+            denominator={"aggregation": "count"},
+            filters={"year": _extract_year(question)},
+            parameters={
+                "dimension": "is_credit",
+                "left_value": True,
+                "right_value": False,
+                "operator": "higher_than" if "more likely" in lowered or "higher" in lowered else "lower_than",
+            },
+            output_format=output_format | {"answer_type": "yes_no"},
+        )
+
+    if _is_fraud_likelihood_ranking_question(lowered):
+        group_by = _extract_fraud_likelihood_dimension(question)
+        filters = {
+            "year": _extract_year(question) if re.search(r"\b20\d{2}\b", question) else None,
+            "merchant": _extract_merchant(question, context),
+            "card_scheme": None if group_by == "card_scheme" else _extract_card_scheme(question),
+            "is_credit": None if group_by == "is_credit" else _extract_credit_filter(question),
+            "shopper_interaction": None if group_by == "shopper_interaction" else _extract_shopper_interaction_filter(question),
+            "month_range": _extract_quarter_month_range(question),
+        }
+        filters = {key: value for key, value in filters.items() if value is not None}
+        objective = "minimum" if any(token in lowered for token in ("least likely", "less likely", "lowest likelihood")) else "maximum"
+        return make_logic_form(
+            task_type="ranking",
+            operation="rank_by_metric",
+            metric="fraud_transaction_rate",
+            metric_definition={
+                "name": "fraud_transaction_rate",
+                "description": "Fraud likelihood is defined as fraudulent transaction count divided by total transaction count.",
+                "aggregation": "ratio",
+                "source": "payments.csv",
+            },
+            numerator={"column": "has_fraudulent_dispute", "filter": {"has_fraudulent_dispute": True}, "aggregation": "count"},
+            denominator={"aggregation": "count"},
+            group_by=group_by,
+            objective=objective,
+            filters=filters,
+            options=_extract_options(question),
+            parameters={
+                "table": "payments",
+                "group_by": group_by,
+                "metric": "fraud_transaction_rate",
+                "objective": objective,
+                "options": _extract_options(question),
+            },
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "fraud rate" in lowered:
+        filters: dict[str, Any] = {"year": _extract_year(question)}
+        if "in-person" in lowered or "in person" in lowered or "in-store" in lowered or "in store" in lowered:
+            filters["shopper_interaction"] = "POS"
+        elif "ecommerce" in lowered or "e-commerce" in lowered:
+            filters["shopper_interaction"] = "Ecommerce"
+        return make_logic_form(
+            task_type="aggregation",
+            operation="fraud_rate_filtered",
+            metric="fraud_volume_rate",
+            metric_definition={
+                "name": "fraud_volume_rate",
+                "description": "Fraudulent volume divided by total volume, returned as a percentage.",
+                "aggregation": "ratio",
+                "source": "manual.md section 7 and payments.csv",
+            },
+            numerator={"column": "eur_amount", "filter": {"has_fraudulent_dispute": True}, "aggregation": "sum"},
+            denominator={"column": "eur_amount", "aggregation": "sum"},
+            filters=filters,
+            parameters={"table": "payments"},
+            output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 3)},
+        )
+
+    if ("percentage" in lowered or "proportion" in lowered or "share" in lowered) and (
+        "credit" in lowered or "debit" in lowered
+    ):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="boolean_percentage",
+            metric="row_percentage",
+            metric_definition={
+                "name": "row_percentage",
+                "description": "Percentage of rows matching a boolean field condition.",
+                "aggregation": "ratio",
+                "source": "payments.csv",
+            },
+            filters={"year": _extract_year(question) if re.search(r"\b20\d{2}\b", question) else None},
+            parameters={"table": "payments", "field": "is_credit", "value": _extract_credit_filter(question)},
+            output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 3)},
+        )
+
+    if _is_ranking_question(lowered) and ("transaction value" in lowered or "eur_amount" in lowered or "amount" in lowered):
+        group_by = _extract_field_name(question, context) or _extract_group_by(question, default="merchant")
+        if group_by in {"merchant", "card_scheme"} and "country" in lowered:
+            group_by = "ip_country" if "ip" in lowered else "issuing_country"
+        filters = {
+            "merchant": _extract_merchant(question, context),
+            "card_scheme": _extract_card_scheme(question),
+            "year": _extract_year(question),
+            "month_range": _extract_quarter_month_range(question),
+        }
+        filters = {key: value for key, value in filters.items() if value is not None}
+        return make_logic_form(
+            task_type="ranking",
+            operation="filtered_metric_ranking",
+            metric="eur_amount",
+            group_by=group_by,
+            filters=filters,
+            parameters={
+                "table": "payments",
+                "metric": "eur_amount",
+                "dimension": group_by,
+                "aggregation": _infer_aggregation(lowered, default="mean" if "avg" in lowered or "average" in lowered else "sum"),
+                "sort_order": "asc" if _is_bottom_question(lowered) else "desc",
+                "limit": _extract_limit(question, default=1),
+            },
+            output_format=output_format | {"answer_type": "table"},
+        )
 
     if "highest number of transactions" in lowered:
         group_by = "issuing_country" if "issuing country" in lowered else "ip_country"
@@ -182,6 +549,25 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             objective="maximum",
             parameters={"table": "payments", "group_by": group_by},
             output_format=output_format | {"answer_type": "country_code"},
+        )
+
+    if "fraudulent transactions" in lowered and ("most common" in lowered or "commonly used" in lowered or "most commonly" in lowered):
+        group_by = _extract_group_by(question, default="device_type" if "device" in lowered else "shopper_interaction")
+        return make_logic_form(
+            task_type="ranking",
+            operation="top_count",
+            metric="transaction_count",
+            metric_definition={
+                "name": "transaction_count",
+                "description": "Count of fraudulent transactions after applying filters.",
+                "aggregation": "count",
+                "source": "payments.csv",
+            },
+            group_by=group_by,
+            objective="maximum",
+            filters={"has_fraudulent_dispute": True, "year": _extract_year(question) if re.search(r"\b20\d{2}\b", question) else None},
+            parameters={"table": "payments", "group_by": group_by},
+            output_format=output_format | {"answer_type": "text"},
         )
 
     if "top country" in lowered and "fraud" in lowered:
@@ -214,7 +600,7 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
         )
 
     if "average transaction value grouped by" in lowered:
-        month_range = _extract_month_range(question)
+        month_range = _extract_quarter_month_range(question)
         return make_logic_form(
             task_type="aggregation",
             operation="group_average",
@@ -299,15 +685,30 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             output_format=output_format | {"answer_type": "scheme_fee", "decimals": 2},
         )
 
-    if ("cheapest fee" in lowered or "lowest fee" in lowered) and "transaction value" in lowered and "card scheme" in lowered:
+    if (
+        "card scheme" in lowered
+        and "transaction value" in lowered
+        and "aci" not in lowered
+        and ("cheapest fee" in lowered or "lowest fee" in lowered or "most expensive" in lowered or "highest fee" in lowered)
+    ):
+        objective = "maximum" if "most expensive" in lowered or "highest fee" in lowered else "minimum"
         return make_logic_form(
             task_type="fee_rule",
             operation="cheapest_card_scheme_for_transaction",
-            parameters={"transaction_value": _extract_transaction_value(question), "objective": "minimum"},
+            parameters={"transaction_value": _extract_transaction_value(question), "objective": objective},
             output_format=output_format | {"answer_type": "card_scheme"},
         )
 
     if "only applied to account type" in lowered and "merchants" in lowered:
+        return make_logic_form(
+            task_type="fee_rule",
+            operation="fee_restriction_affected_merchants",
+            filters={"year": _extract_year(question), "new_account_type": _extract_account_type(question)},
+            parameters={"fee_id": _extract_fee_id(question)},
+            output_format=output_format | {"answer_type": "list"},
+        )
+
+    if "merchants" in lowered and "affected by" in lowered and "fee" in lowered:
         return make_logic_form(
             task_type="fee_rule",
             operation="fee_restriction_affected_merchants",
@@ -333,6 +734,45 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             output_format=output_format | {"answer_type": "scheme_fee", "decimals": 2},
         )
 
+    if "aci" in lowered and ("transaction value" in lowered or re.search(r"transaction of\s+\d", lowered)) and (
+        "most expensive" in lowered or "highest fee" in lowered or "cheapest" in lowered or "lowest fee" in lowered
+    ):
+        objective = "maximum" if "most expensive" in lowered or "highest fee" in lowered else "minimum"
+        return make_logic_form(
+            task_type="fee_rule",
+            operation="aci_fee_extreme",
+            metric="hypothetical_fee",
+            metric_definition={
+                "name": "hypothetical_fee",
+                "description": "Sum of matching fee-rule components for one hypothetical transaction value under each ACI.",
+                "aggregation": "sum",
+                "source": "fees.json",
+            },
+            objective=objective,
+            filters={"card_scheme": _extract_card_scheme(question), "is_credit": _extract_credit_filter(question)},
+            parameters={"transaction_value": _extract_transaction_value(question), "objective": objective},
+            output_format=output_format | {"answer_type": "aci"},
+        )
+
+    if "mcc" in lowered and ("transaction value" in lowered or re.search(r"transaction of\s+\d", lowered)) and (
+        "most expensive" in lowered or "highest fee" in lowered or "cheapest" in lowered or "lowest fee" in lowered
+    ):
+        objective = "maximum" if "most expensive" in lowered or "highest fee" in lowered else "minimum"
+        return make_logic_form(
+            task_type="fee_rule",
+            operation="fee_extreme_by_dimension",
+            metric="fee",
+            group_by="merchant_category_code",
+            objective=objective,
+            parameters={
+                "table": "fees",
+                "dimension": "merchant_category_code",
+                "transaction_value": _extract_transaction_value(question),
+                "objective": objective,
+            },
+            output_format=output_format | {"answer_type": "list"},
+        )
+
     return make_logic_form(
         task_type="unsupported",
         operation="not_applicable",
@@ -349,17 +789,132 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
     uploaded table columns.
     """
 
+    retail_logic_form = parse_chinese_retail_question(question, tables, guidelines)
+    if retail_logic_form is not None:
+        return retail_logic_form
+
     lowered = question.lower()
     table_name, df = _select_primary_table(tables)
     metric = _find_metric_column(question, df)
     dimension = _find_dimension_column(question, df, metric)
+    filters = _infer_value_filters(question, df, exclude={metric, dimension})
     output_format = {"guidelines": guidelines}
+
+    if _is_top_outlier_group_question(lowered):
+        return make_logic_form(
+            task_type="ranking",
+            operation="top_outlier_group",
+            filters=filters,
+            parameters={
+                "table": table_name,
+                "group_by": _find_named_column(question, df) or _extract_group_by(question, default=dimension or "hour_of_day"),
+                "metric": metric,
+                "method": "zscore" if "z-score" in lowered or "z score" in lowered else "iqr",
+                "z_threshold": _extract_zscore_threshold(question) or 3.0,
+            },
+            output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_top_group_count_question(lowered):
+        return make_logic_form(
+            task_type="ranking",
+            operation="top_count",
+            filters=filters,
+            parameters={"group_by": _find_named_column(question, df) or _extract_group_by(question, default=dimension or "hour_of_day")},
+            output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_row_count_question(lowered):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="row_count",
+            filters=filters,
+            parameters={"table": table_name},
+            output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_distinct_count_question(lowered):
+        field = _find_named_column(question, df) or _find_entity_column(question, df) or dimension
+        return make_logic_form(
+            task_type="schema_query",
+            operation="distinct_count",
+            filters=filters,
+            parameters={"table": table_name, "field": field},
+            output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_repeat_entity_percentage_question(lowered):
+        field = _find_named_column(question, df) or _find_entity_column(question, df) or dimension
+        return make_logic_form(
+            task_type="aggregation",
+            operation="repeat_entity_percentage",
+            filters=filters,
+            parameters={"table": table_name, "field": field},
+            output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
+        )
+
+    if _is_outlier_count_question(lowered):
+        return make_logic_form(
+            task_type="data_quality",
+            operation="outlier_count",
+            filters=filters,
+            parameters={
+                "table": table_name,
+                "metric": metric,
+                "method": "zscore" if "z-score" in lowered or "z score" in lowered else "iqr",
+            },
+            output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_null_check_question(lowered):
+        field = _find_named_column(question, df)
+        return make_logic_form(
+            task_type="data_quality",
+            operation="null_check",
+            filters=filters,
+            parameters={"table": table_name, "field": field, "mode": _null_check_mode(lowered)},
+            output_format=output_format | {"answer_type": "yes_no" if _null_check_mode(lowered) == "exists" else "number"},
+        )
+
+    if _is_top_k_share_question(lowered) and dimension:
+        return make_logic_form(
+            task_type="aggregation",
+            operation="top_k_share",
+            metric=metric,
+            group_by=dimension,
+            filters=filters,
+            parameters={
+                "table": table_name,
+                "metric": metric,
+                "dimension": dimension,
+                "aggregation": _infer_aggregation(lowered, default="sum" if metric else "count"),
+                "limit": _extract_limit(question, default=3),
+            },
+            output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
+        )
+
+    if "possible values" in lowered or "unique values" in lowered or "distinct values" in lowered:
+        return make_logic_form(
+            task_type="schema_query",
+            operation="field_values",
+            parameters={"table": table_name, "field": _find_named_column(question, df)},
+            output_format=output_format | {"answer_type": "list"},
+        )
+
+    if "duplicate" in lowered and ("row" in lowered or "record" in lowered or "transaction" in lowered):
+        return make_logic_form(
+            task_type="data_quality",
+            operation="duplicate_check",
+            parameters={"table": table_name, "subset": "all"},
+            output_format=output_format | {"answer_type": "yes_no"},
+        )
 
     if _is_ranking_question(lowered) and dimension:
         aggregation = _infer_aggregation(lowered, default="sum" if metric else "count")
         return make_logic_form(
             task_type="ranking",
-            operation="ranking",
+            operation="filtered_metric_ranking" if filters else "ranking",
+            filters=filters,
             parameters={
                 "table": table_name,
                 "metric": metric,
@@ -463,6 +1018,40 @@ def _find_dimension_column(question: str, df: pd.DataFrame, metric: str | None) 
     return categorical[0] if categorical else None
 
 
+def _find_named_column(question: str, df: pd.DataFrame) -> str | None:
+    lowered = question.lower()
+    for column in df.columns:
+        name = str(column)
+        if name.lower() in lowered or name in question:
+            return name
+    return None
+
+
+def _find_entity_column(question: str, df: pd.DataFrame) -> str | None:
+    lowered = question.lower()
+    entity_terms = {
+        "merchant": ("merchant", "商户"),
+        "shopper": ("shopper", "customer", "email", "客户", "用户", "邮箱"),
+        "customer": ("customer", "cust", "store", "客户", "门店", "终端"),
+        "card": ("card", "卡"),
+        "city": ("city", "城市"),
+        "country": ("country", "国家"),
+        "device": ("device", "设备"),
+        "employee": ("employee", "emp", "业代", "员工"),
+    }
+    requested_terms: list[str] = []
+    for aliases in entity_terms.values():
+        if any(term in lowered or term in question for term in aliases):
+            requested_terms.extend(aliases)
+    if not requested_terms:
+        return None
+    for column in df.columns:
+        column_text = str(column).lower()
+        if any(term.lower() in column_text for term in requested_terms):
+            return str(column)
+    return None
+
+
 def _is_ranking_question(lowered: str) -> bool:
     return any(token in lowered for token in ("highest", "lowest", "top", "bottom", "max", "min", "最多", "最高", "最低", "最少", "前"))
 
@@ -483,6 +1072,109 @@ def _has_grouping_language(lowered: str) -> bool:
     return any(token in lowered for token in (" by ", "group", "per ", "each", "按", "各", "每"))
 
 
+def _is_row_count_question(lowered: str) -> bool:
+    if _is_ranking_question(lowered):
+        return False
+    return any(
+        token in lowered
+        for token in (
+            "how many rows",
+            "number of rows",
+            "row count",
+            "record count",
+            "how many records",
+            "total records",
+            "total transactions",
+            "number of transactions",
+            "总行数",
+            "多少行",
+            "记录数",
+            "多少条",
+            "交易数",
+            "总交易",
+        )
+    ) and not _is_distinct_count_question(lowered)
+
+
+def _is_distinct_count_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("distinct", "unique", "不同", "唯一", "去重")) and any(
+        token in lowered for token in ("count", "number", "how many", "多少", "数量", "个数")
+    )
+
+
+def _is_repeat_entity_percentage_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("repeat", "returning", "重复", "复购", "回头", "老客")) and any(
+        token in lowered for token in ("percentage", "proportion", "share", "rate", "占比", "比例", "百分比")
+    )
+
+
+def _is_top_group_count_question(lowered: str) -> bool:
+    if "outlier" in lowered or "anomaly" in lowered or "异常" in lowered or "离群" in lowered:
+        return False
+    return (
+        any(token in lowered for token in ("which hour", "during which hour", "哪个小时", "哪一小时"))
+        and any(token in lowered for token in ("most transactions", "most records", "最多交易", "记录最多"))
+    )
+
+
+def _is_top_outlier_group_question(lowered: str) -> bool:
+    return (
+        any(token in lowered for token in ("outlier", "anomaly", "anomalies", "异常", "离群"))
+        and any(token in lowered for token in ("which hour", "during which hour", "哪个小时", "哪一小时"))
+        and any(token in lowered for token in ("most", "最多"))
+    )
+
+
+def _is_outlier_count_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("outlier", "anomaly", "anomalies", "异常", "离群")) and any(
+        token in lowered for token in ("count", "number", "how many", "多少", "数量", "个数")
+    )
+
+
+def _is_null_check_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("null", "missing", "empty", "blank", "nan", "空值", "缺失", "空白")) and any(
+        token in lowered for token in ("count", "number", "how many", "any", "exist", "有", "多少", "数量", "个数")
+    )
+
+
+def _null_check_mode(lowered: str) -> str:
+    if any(token in lowered for token in ("percentage", "proportion", "rate", "占比", "比例", "百分比")):
+        return "rate"
+    if re.search(r"\b(any|exist|exists|existing)\b", lowered) or any(token in lowered for token in ("是否", "有没有", "有无")):
+        return "exists"
+    return "count"
+
+
+def _is_fraud_likelihood_ranking_question(lowered: str) -> bool:
+    likelihood_terms = (
+        "fraud likelihood",
+        "fraudulent dispute likelihood",
+        "likely to result in a fraudulent dispute",
+        "most likely to result in fraud",
+        "least likely to result in fraud",
+        "more likely to result in fraud",
+        "fraudulent transaction rate",
+    )
+    return any(term in lowered for term in likelihood_terms) and any(
+        token in lowered for token in ("which", "what", "highest", "lowest", "most likely", "least likely")
+    )
+
+
+def _extract_shopper_interaction_filter(question: str) -> str | None:
+    lowered = question.lower()
+    if "ecommerce" in lowered or "e-commerce" in lowered:
+        return "Ecommerce"
+    if "in-person" in lowered or "in person" in lowered or "in-store" in lowered or "in store" in lowered or "pos" in lowered:
+        return "POS"
+    return None
+
+
+def _is_top_k_share_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("top", "前")) and any(
+        token in lowered for token in ("share", "percentage", "proportion", "占比", "比例", "百分比")
+    )
+
+
 def _infer_aggregation(lowered: str, default: str) -> str:
     if any(token in lowered for token in ("average", "avg", "mean", "平均")):
         return "mean"
@@ -498,6 +1190,34 @@ def _infer_aggregation(lowered: str, default: str) -> str:
 def _extract_limit(question: str, default: int) -> int:
     match = re.search(r"(?:top|前)\s*(\d+)", question, re.I)
     return int(match.group(1)) if match else default
+
+
+def _infer_value_filters(question: str, df: pd.DataFrame, exclude: set[str | None] | None = None) -> dict[str, Any]:
+    lowered = question.lower()
+    excluded = {str(item) for item in (exclude or set()) if item}
+    filters: dict[str, Any] = {}
+    for column in df.columns:
+        name = str(column)
+        if name in excluded:
+            continue
+        series = df[column]
+        if pd.api.types.is_numeric_dtype(series):
+            continue
+        unique_values = [value for value in series.dropna().unique().tolist() if str(value)]
+        if len(unique_values) > 50:
+            continue
+        for value in sorted(unique_values, key=lambda item: len(str(item)), reverse=True):
+            text = str(value)
+            if text and _value_in_question(text, question, lowered):
+                filters[name] = value
+                break
+    return filters
+
+
+def _value_in_question(text: str, question: str, lowered: str) -> bool:
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return text in question
+    return bool(re.search(rf"(?<![A-Za-z0-9_]){re.escape(text.lower())}(?![A-Za-z0-9_])", lowered))
 
 
 def _extract_simple_conditions(question: str, df: pd.DataFrame) -> list[dict[str, Any]]:

@@ -56,6 +56,14 @@
 17. 当前 9/10 的主要瓶颈不是多 Agent 框架或 Microsoft adapter，而是 ACI incentive 类问题的 associated cost 费用口径仍未完全对齐；该问题必须按通用 fee what-if / ACI candidate table 能力继续修复，禁止只针对当前 DABstep 样本、当前字段值或当前问法补坑。
 18. DABstep all 前 50 题可运行 public split 执行覆盖；本地 public all.jsonl 的 answer 字段为空，因此只能验证执行率和 trace，不能本地计算官方准确率。
 19. 下一阶段正式调整为 Provider 原生 Tool Calling Adapter：先接 OpenAI 原生工具循环，再在同一内部工具契约上接 DeepSeek provider 特化；本地 ToolDispatcher 仍是唯一受控执行入口。
+20. 项目必须以中文数据分析体验为第一优先级，同时保留英文问题、英文字段和英文 Benchmark 的兼容能力；任何新能力、prompt、字段映射、测试和文档都不能只按英文设计。
+21. 已开始实现 `Not Applicable` 能力缺口闭环：FinalResponse / debug / trace / benchmark report 可区分 `true_unsupported` 和 `capability_gap`；新增基础通用能力族 `row_count`、`distinct_count`、`repeat_entity_percentage`、`outlier_count`、`top_k_share`、`filtered_metric_ranking`，并用中英文合成用例验证。
+22. 已补齐上一阶段遗留的第二批通用能力：`null_check`、英文/中文季度表达、fraud likelihood 多维排名、fee what-if candidate table，以及 OpenAI / DeepSeek 兼容的 provider-native tool calling adapter 骨架；真实执行仍经 ToolDispatcher，不允许 provider adapter 实现核心算法。
+23. DABstep all 100-130 真实 LLM 执行覆盖记录：`outputs/dabstep_all_100_130_real_llm_20260521_175125/all_100_to_130_report.json` 中 total=31、success_count=29、capability_gap=2；public all answer 为空，official accuracy 仍不能本地计算。public proxy 观察文件 `outputs/dabstep_all_100_130_real_llm_20260521_175125/all_100_to_130_public_proxy_observation.json` 仅 9 题可进入 accepted-answer pool，其中 3 题匹配，proxy accuracy=33.33%，该结果只能用于能力缺口归因，不能进入核心分析链路。
+24. Microsoft 脱敏数据 21-40 真实 LLM 基线记录：`outputs/microsoft_anonymized_21_40_real_llm_20260521_175247/report.json` 中 total=20、correct=5、accuracy=0.25，主要缺口是中文零售 `retail_target_lookup / aggregation / ranking / row_count` 及相关服务客户、目标达成率、拜访、陈列和字段枚举能力。下一步已明确为按中文零售能力族修复，不允许按题号、标准答案或固定输出优化。
+25. 已开始补齐 Microsoft 21-40 暴露的中文零售能力族：服务客户数、服务客户合约店占比、分销目标人数、分销目标达成率、今日分销排名、历史 SKU / 品类排名、拜访成功率、陈列/拜访记录数、冰柜客户数和历史字段枚举；配套合成中文测试，不使用 Microsoft 标准答案作为测试 fixture。
+26. 已补齐 DABstep 100-130 中两个 hour-of-day capability_gap：新增通用 `top_count` hour-of-day 解析和 `top_outlier_group` 能力，支持 “哪个小时交易最多” 和 “哪个小时离群交易最多（Z-Score > 3）”。mock 多 Agent 回归 `outputs/dabstep_all_100_130_mock_after_hour_group/all_100_to_130_report.json` 显示 total=31、success_count=31、unexpected_not_applicable=0、accuracy=null；accuracy 仍为 null 是因为 public all answer 为空。
+27. Microsoft 脱敏数据 21-40 已通过中文零售能力族自然覆盖：mock 回归 `outputs/microsoft_anonymized_21_40_mock_after_retail_20260521_204756/report.json` 为 20/20，真实 LLM 回归 `outputs/microsoft_anonymized_21_40_real_llm_after_retail_20260521_204819/report.json` 为 20/20；标准答案只用于离线 scorer，未传入 Agent workflow。
 
 ## 架构原则
 
@@ -88,6 +96,9 @@
 27. 工具调用 trace 只能记录工具名、参数摘要、结果摘要、错误和耗时，不记录完整 Chain of Thought、raw reasoning tokens、API key 或敏感数据
 28. OpenAI / DeepSeek / Microsoft Agent Framework 只能作为工具调用协议适配层；内部工具契约必须保持 provider-neutral
 29. Provider 原生工具循环只能把模型生成的 tool call 转换为内部 ToolCall；任何 OpenAI / DeepSeek tool call 都必须经过 ToolDispatcher 的白名单、角色、schema、超时和摘要校验后才能执行
+30. 中文优先是核心产品规则：中文问题理解、中文字段名、中文业务术语、中文日期表达、中文输出格式和中文表结构必须优先支持；英文能力不能放松，但不能以牺牲中文能力为代价。
+31. 新增或修改任何 Intent Parser、Column Mapping、Planner、Executor、Verifier、Correction、Insight、Chart、Benchmark 或 Tool 能力时，必须同时评估中文场景；如果只覆盖英文，必须明确记录为阶段性限制，不能标记为通用能力完成。
+32. 多语言能力必须通过稳定契约表达，不能靠在 prompt 或 executor 中散落的临时中英文关键词补丁冒充泛化。
 
 ## Microsoft Agent Framework 策略
 
@@ -135,7 +146,7 @@ Microsoft Agent Framework 是多 Agent 编排的候选承载框架，但不是�
 14. 在本轮引入 Microsoft Agent Framework 作为强依赖
 15. 在本轮实现复杂 Agent workflow
 16. 在本轮实现完整业务逻辑
-17. 在本轮实现 provider 原生 OpenAI / DeepSeek tool call loop、DeepSeek thinking mode 工具回填或 OpenAI Responses API 工具循环
+17. 在本轮把 provider-native adapter 作为生产默认链路、接入真实 OpenAI / DeepSeek 网络调用、启用 DeepSeek thinking mode 工具回填或 OpenAI Responses API 专有 reasoning 循环
 
 ## 核心工作流
 
@@ -294,6 +305,7 @@ Rule NO.1：
 5. 新能力必须至少有一个非 Benchmark 或合成通用用例验证其泛化边界；DABstep 只能作为后验回归观察。
 6. 新能力必须说明为什么能迁移到其他数据集、其他列名、其他候选值或其他同类问法；如果不能说明，只能记录为临时局限或实验假设，不能记为能力提升。
 7. 任何让当前题目变对但降低旧代表用例、上传文件场景或同类 benchmark slice 通过率的改动，默认视为泛化能力下降，必须回滚或重新设计。
+8. 中文能力优先级高于英文能力：中文问题、中文字段名、中文业务口径和中文输出格式不能被英文 Benchmark 或英文 prompt 设计挤出主路径；英文能力必须保留并持续回归，但不能成为唯一验收口径。
 
 阶段目标：
 
@@ -363,6 +375,78 @@ Rule NO.1：
    - Fee restriction 影响分析能力：回答 fee rule 限制条件变化会影响哪些 merchant，必须基于通用 rule matching 和 period simulation，不允许写固定 merchant 列表。
    - Public proxy 回归报告能力：报告必须清楚标注 proxy score 不是 official hidden ground truth，并输出按能力族聚合的缺口，而不是只列题号。
 
+## 下一阶段目标：`Not Applicable` 能力缺口闭环
+
+该阶段目标不是简单减少 `Not Applicable` 字面输出，也不是换更强 LLM 后期待自动解决，而是把 `Not Applicable` 拆成可审计的真实不适用和可补齐的通用能力缺口。LLM planner 可以理解问题，但最终执行仍必须落到结构化 LogicForm、受控 Executor、Verifier 和 Response Builder，不能直接根据自然语言生成最终答案。
+
+1. `Not Applicable` 归因改造
+   - 将 `Not Applicable` 至少区分为 `true_unsupported` 和 `capability_gap`。
+   - `true_unsupported` 只用于上传规则、manual、schema 或业务知识确实没有定义的问题，例如未定义 fine / danger 阈值时不能臆造答案。
+   - `capability_gap` 用于问题本身可以由数据或规则回答，但当前 Planner / Parser / Executor 还没有通用能力覆盖的情况。
+   - Trace、debug 和 benchmark report 必须记录归因原因、命中的 parser 分支、LLM proposed operation、最终 selected operation，以及是否被 guardrail 降级。
+
+2. Benchmark 和报告语义修正
+   - all split 没有 expected answer 时，不能因为 `response.success=true` 就把 `Not Applicable` 当成无问题结果。
+   - 报告必须单独统计 unexpected `Not Applicable`、true unsupported、capability gap，并按能力族聚合。
+   - Public proxy / hidden scorer 只能用于观察趋势；不能把题号、固定题面、固定答案或当前输出写进核心链路。
+
+3. Planner 与 guardrail 协同升级
+   - Guardrail parser 继续作为安全边界，但不能把所有未命中的可回答问题直接吞成普通 `not_applicable`。
+   - 当 LLM planner 给出受支持 operation、字段能由 schema/profile 映射、参数可验证时，可以进入受控候选 LogicForm 验证流程，而不是无条件回退到 guardrail 兜底。
+   - 如果 LLM proposed operation 不在受支持集合或缺少必要字段，必须输出结构化 capability gap，而不是伪装成真实不适用。
+
+4. 基础表分析能力补齐
+   - 新增或扩展通用 `row_count`：回答总行数、总交易数、record count。
+   - 新增或扩展通用 `distinct_count`：回答唯一 merchant、唯一 shopper、唯一字段值数量。
+   - 新增可配置 `repeat_entity_percentage`：按 email、shopper id、customer id 等字段计算 repeat customer / repeat shopper 占比。
+   - 这些能力必须适用于上传表和 DABstep payments，不依赖固定列值；列名只能通过 schema/profile/alias 映射解析。
+
+5. 通用统计和数据质量能力补齐
+   - 新增 `outlier_count`：支持 Z-Score、IQR 等明确方法，必须输出 metric、threshold、target column 和 count。
+   - 数据质量问题必须优先落到 `duplicate_check`、`null_check`、`distinct_count`、`outlier_count` 等通用能力，不应直接落入 `Not Applicable`。
+
+6. Top-K 占比和过滤排名能力补齐
+   - 新增 `top_k_share`：支持“top N group by metric volume 占整体百分比”，例如 top merchants by amount volume share。
+   - 新增或扩展 `filtered_metric_ranking`：支持在 merchant、card scheme、country、quarter、last quarter 等过滤条件下按 average / sum / count 排名。
+   - 时间解析必须支持 quarter、last quarter of year、month range，并以结构化 filters 写入 LogicForm。
+
+7. 布尔维度比例和 fraud likelihood 比较
+   - 扩展 `fraud_rate_comparison`，不只支持 Ecommerce vs POS，也要支持 credit vs debit、device type、country、merchant 等布尔或枚举维度。
+   - 必须明确 fraud likelihood 的口径是 fraudulent transaction rate 还是 fraudulent volume rate，并由 question / manual / guidelines 决定。
+   - Verifier 必须检查 numerator、denominator、group_by 和输出 yes/no 是否与问题一致。
+
+8. Fee 极值维度扩展
+   - 将 ACI 极值能力抽象为更通用的 `fee_extreme_by_dimension`，支持 ACI、MCC、card scheme 等维度。
+   - 支持 cheapest / most expensive、average scenario、transaction value、credit/debit、card scheme 过滤和 tie list 输出。
+   - 输出必须包含候选表或候选摘要，记录每个候选的 matched fee IDs、fee components、total fee 和 tie-break 规则。
+
+9. 泛化验收标准
+   - 每个新增能力族至少包含一个合成或非 Benchmark 用例、一个同类问法变体、一个已有代表回归用例。
+   - DABstep all 51-100 暴露出的 `Not Applicable` 只能作为后验回归观察，不能作为单题修复入口。
+   - 如果一个改动只让当前失败样本变对，但无法迁移到其他表、其他列名、其他候选值或同类自然语言问法，不能计入能力提升。
+   - 验收报告必须给出 capability family、supported examples、unsupported examples、remaining gaps 和 trace 证据。
+
+## 下一阶段目标：DABstep 100-130 与中文零售 21-40 能力闭环
+
+该阶段目标是把真实回归暴露的问题归纳为可复用能力族，继续提高泛化能力，而不是按题号、标准答案、public proxy 或当前脱敏数据固定值优化。
+
+1. DABstep 100-130
+   - official 本地准确率仍不可计算，因为 public all answer 为空。
+   - public proxy 只能作为后验观察，不能进入 Planner、Executor、Verifier、Correction、prompt、测试 fixture 或核心逻辑。
+   - 100-130 暴露的问题必须归为能力族，例如 capability_gap 归因、数据质量、过滤聚合、费用 what-if 和字段语义，而不是题号列表。
+
+2. 中文零售 21-40
+   - 优先补齐中文真实数据能力族：`retail_target_lookup`、`aggregation`、`ranking`、`row_count`、服务客户、目标达成率、拜访成功率、陈列记录、订单状态枚举、今日分销和路线客户关联。
+   - 所有实现必须基于 schema、字段语义、LogicForm 和受控 Executor，不能把 Microsoft 标准答案、task_id、固定姓名、固定品类或固定输出写入核心链路。
+   - 新能力必须配套合成或非 Benchmark 中文用例，并保留 DABstep 英文回归，确保中文优先和英文兼容同时成立。
+
+3. 验收标准
+   - Microsoft 21-40 的改进必须来自通用中文零售能力自然覆盖。
+   - DABstep 100-130 的报告必须继续区分 official unknown、public proxy observation 和真实执行覆盖。
+   - secret scan 必须确认 LLM key 未进入仓库文件。
+   - hardcoding scan 必须确认没有 task_id / expected_answer / proxy answer / accepted answer 进入核心源码或测试 fixture。
+   - data_agent_core 仍不得 import backend、ms_agent_framework_adapter、multi_agent_workflows 或 agent_framework。
+
 ## 最小 API 目标
 
 当前后端至少需要支持：
@@ -399,3 +483,6 @@ Rule NO.1：
 16. 不允许工程文档要求输出完整 Chain of Thought
 17. CHANGELOG_AI.md 新增记录必须写日期时间，格式为 YYYY-MM-DD HH:MM TZ，精确到分钟
 18. 不允许为了补齐格式而给历史 CHANGELOG 记录编造分钟级时间
+19. 不允许把中文支持当作可选增强；中文问题理解、字段映射、业务术语、日期/金额/百分比格式和最终回答必须作为主路径能力设计。
+20. 不允许只用英文样例、英文字段或英文 Benchmark 声称能力完成；英文必须持续支持，但中文必须优先验收。
+21. 不允许为中文能力写只适配当前脱敏数据、当前字段值或当前问法的伪泛化补丁；中文能力同样必须抽象为可复用能力族并有合成/非 Benchmark 验证。

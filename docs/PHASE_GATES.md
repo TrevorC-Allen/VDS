@@ -14,6 +14,8 @@
 6. 所有能力提升必须归入通用模块，例如字段画像、意图识别、执行器、结果标准化、校验、自纠和解释。
 7. 每个能力提升必须说明可迁移边界，并至少用一个非 Benchmark 或合成用例证明泛化能力没有下降。
 8. 禁止把 Tool Calling 变成任意代码、任意 SQL、shell、网络请求或外部文件访问入口；工具只能来自内部白名单和受控执行器。
+9. 中文优先是阶段门槛：中文问题、中文字段名、中文业务术语、中文日期/金额/百分比格式和中文最终回答必须作为主路径验收；英文能力必须保留回归，但不能替代中文验收。
+10. 禁止只用英文 Benchmark、英文 prompt 或英文字段证明能力完成；中英文能力都必须纳入可复现测试或明确记录阶段限制。
 
 ## Phase 1：核心算法 + 最小 API
 
@@ -128,4 +130,4 @@
 4. 可替换为 LangGraph、CrewAI 或自研 runtime，而不重写 data_agent_core。
 5. 业务能力改动必须通过泛化验收：合成/非 Benchmark 用例、同类变体用例和旧代表回归用例都不能退化。
 
-当前状态（2026-05-21）：Phase 6 最小可运行状态已完成，并开始业务口径驱动校验增强。backend analyze 默认使用 multi_agent；DABstep 多 Agent runner 可运行 dev 前 10 题并保持 9/10；agent_runtime 负责角色执行和工具调用；multi_agent_workflows 负责编排；data_agent_core 不 import multi_agent_workflows 或 Microsoft Agent Framework。下一步继续按通用能力补齐 ACI associated cost、fee what-if candidate table、字段枚举、比例和数据质量检查能力。
+当前状态（2026-05-21）：Phase 6 最小可运行状态已完成，并开始业务口径驱动校验增强。backend analyze 默认使用 multi_agent；DABstep 多 Agent runner 可运行 dev 前 10 题并保持 9/10；agent_runtime 负责角色执行和工具调用；multi_agent_workflows 负责编排；data_agent_core 不 import multi_agent_workflows 或 Microsoft Agent Framework。Not Applicable 归因已开始区分 true_unsupported / capability_gap，并补齐 row_count、distinct_count、repeat_entity_percentage、outlier_count、top_k_share、filtered_metric_ranking、null_check、季度过滤、fraud likelihood 多维比较和 fee what-if candidate table。Provider-native tool calling adapter 已具备 OpenAI / DeepSeek 兼容 schema、tool call 解析、ToolDispatcher 分发和 mock loop 测试。DABstep 100-130 与 Microsoft 脱敏数据 21-40 的回归结论已进入 MAIN_GOAL；本轮已补齐 DABstep hour-of-day top group / outlier group 和中文零售服务客户、目标达成率、今日分销、拜访/陈列记录、字段枚举、路线品类贡献能力。Microsoft 21-40 mock/真实 LLM 回归均为 20/20；DABstep 100-130 mock 多 Agent 执行覆盖为 31/31、unexpected_not_applicable=0，official accuracy 仍因 public all answer 为空而不可本地计算。下一步继续用更大规模中英文真实数据验证泛化稳定性。

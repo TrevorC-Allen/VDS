@@ -28,7 +28,23 @@ from data_agent_core.verifier.result_normalizer import normalize_value
 from data_agent_core.verifier.rule_checker import verify_execution
 
 
-SQL_COMPATIBLE_OPERATIONS = {"aggregation", "ranking", "rank_by_metric", "top_count", "group_average", "not_applicable"}
+SQL_COMPATIBLE_OPERATIONS = {
+    "aggregation",
+    "ranking",
+    "row_count",
+    "distinct_count",
+    "repeat_entity_percentage",
+    "null_check",
+    "top_k_share",
+    "filtered_metric_ranking",
+    "rank_by_metric",
+    "top_count",
+    "group_average",
+    "field_values",
+    "boolean_percentage",
+    "fraud_rate_filtered",
+    "not_applicable",
+}
 
 
 class DataAnalysisRoleRuntime:

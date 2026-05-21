@@ -70,7 +70,11 @@ def run_dabstep_benchmark(
         prediction = {
             "task_id": task["task_id"],
             "agent_answer": response.answer,
-            "reasoning_trace": f"structured analysis plan: {response.debug.get('operation')}; agent_mode: {response.debug.get('agent_mode', agent_mode)}; trace: {trace_path}",
+            "reasoning_trace": (
+                f"structured analysis plan: {response.debug.get('operation')}; "
+                f"agent_mode: {response.debug.get('agent_mode', agent_mode)}; "
+                f"not_applicable: {_not_applicable_category(response)}; trace: {trace_path}"
+            ),
         }
         predictions.append(prediction)
 
@@ -90,6 +94,7 @@ def run_dabstep_benchmark(
                 "expected_available": expected_available,
                 "correct": is_correct,
                 "operation": response.debug.get("operation"),
+                "not_applicable_category": _not_applicable_category(response),
                 "success": response.success,
                 "error_type": error_type,
             }
@@ -137,6 +142,16 @@ def _benchmark_error_type(response: Any, correct: bool | None) -> str | None:
     if correct is False:
         return BENCHMARK_EVALUATION_ERROR
     return None
+
+
+def _not_applicable_category(response: Any) -> str | None:
+    debug = getattr(response, "debug", {}) or {}
+    if not isinstance(debug, dict):
+        return None
+    attribution = debug.get("not_applicable_attribution")
+    if not isinstance(attribution, dict):
+        return None
+    return attribution.get("category")
 
 
 def main() -> None:
