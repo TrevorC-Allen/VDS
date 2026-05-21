@@ -261,7 +261,7 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否修改核心数据契约
 
-是。新增可执行工具 callable 和 Microsoft adapter 映射测试，但未破坏既有 contracts dataclass 字段。
+否。未修改 data_agent_core/contracts 中的稳定 dataclass 字段；本轮新增的是 agent_runtime 工具 callable 和 Microsoft adapter 映射测试。
 
 ### 是否修改 API 契约
 
