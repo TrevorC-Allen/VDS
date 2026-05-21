@@ -141,14 +141,17 @@ OpenAI、DeepSeek、Microsoft Agent Framework 只能适配这些内部工具契�
 
 ## 业务口径校验
 
-下一阶段的质量提升必须围绕通用业务口径能力，不围绕 Benchmark 单题：
+下一阶段的质量提升必须围绕通用业务口径能力，不围绕 Benchmark 单题，也不围绕当前错误样本做伪泛化补丁：
 
 1. Planner 输出的 LogicForm 必须携带指标定义、分子、分母、维度、候选项和目标方向。
 2. Data Engineer 负责把 manual / schema profile / guidelines 中的业务定义落入结构化字段。
-3. Executor 只执行 LogicForm，不根据题号、标准答案或固定题面分支。
+3. Executor 只执行 LogicForm，不根据题号、标准答案、固定题面、固定字段值、固定候选项或当前错误样本分支。
 4. Verifier 必须检查业务口径，例如 fraud ranking 应区分 raw count、transaction rate、volume rate 和 monthly fraud level。
 5. Correction 只能输出结构化修正动作，修正后仍要经过 Executor、Comparator 和 Verifier。
 6. Trace 记录 metric_definition、candidate_table_summary、selected_candidate 和 semantic_verification_notes，不记录完整 Chain of Thought。
+7. 新能力必须能解释迁移边界：适用于哪些数据形态、字段类型、候选项结构、问题表达方式和业务定义来源。
+8. 新能力必须用合成/非 Benchmark 用例和同类变体验证，不能只用当前失败 benchmark 题证明。
+9. 如果当前修复导致旧代表用例、上传文件场景或同类问题族退化，默认判定为架构方向错误，而不是局部测试波动。
 
 ## Microsoft Agent Framework Adapter
 

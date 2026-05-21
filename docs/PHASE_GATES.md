@@ -2,7 +2,7 @@
 
 ## 目标
 
-本文件定义从 Phase 1 到 Phase 6+ 的推进门槛，避免为了 Benchmark 单题得分牺牲泛化能力。
+本文件定义从 Phase 1 到 Phase 6+ 的推进门槛，避免为了 Benchmark 单题得分牺牲泛化能力。这里的“特调”不仅指题号、答案或固定题面硬编码，也包括只能修当前数据集、当前字段值、当前问法或当前错误样本的伪泛化补丁。
 
 ## 总红线
 
@@ -10,8 +10,10 @@
 2. 禁止把标准答案传入 Intent Parser、Column Mapping、Planner、Executor、Verifier、Correction、Insight 或 Chart Planner。
 3. 禁止让 Microsoft Agent Framework 成为 data_agent_core 的依赖。
 4. 禁止把核心算法写进 backend、ms_agent_framework_adapter 或 multi_agent_workflows。
-5. 所有能力提升必须归入通用模块，例如字段画像、意图识别、执行器、结果标准化、校验、自纠和解释。
-6. 禁止把 Tool Calling 变成任意代码、任意 SQL、shell、网络请求或外部文件访问入口；工具只能来自内部白名单和受控执行器。
+5. 禁止伪泛化补丁：不允许用固定字段值、固定候选项、固定问法、固定错误形态或当前数据分布来冒充通用能力。
+6. 所有能力提升必须归入通用模块，例如字段画像、意图识别、执行器、结果标准化、校验、自纠和解释。
+7. 每个能力提升必须说明可迁移边界，并至少用一个非 Benchmark 或合成用例证明泛化能力没有下降。
+8. 禁止把 Tool Calling 变成任意代码、任意 SQL、shell、网络请求或外部文件访问入口；工具只能来自内部白名单和受控执行器。
 
 ## Phase 1：核心算法 + 最小 API
 
@@ -55,13 +57,14 @@
 
 1. Benchmark runner 支持分段运行、报告、trace、错误类型统计。
 2. evaluator 对齐官方 scorer。
-3. 错误归因输出通用模块缺口，而不是单题补丁。
+3. 错误归因输出通用模块缺口，而不是单题补丁或只适配当前错误样本的伪泛化补丁。
 
 进入下一阶段前必须满足：
 
 1. runner 不把 task_id、question_id、answer、expected_answer 传入 agent.analyze。
 2. 报告按 operation、error_type、backend、verification issue 聚合。
 3. 修复项必须指向通用能力，例如字段映射、日期解析、聚合口径、TopN 排序、费用规则执行。
+4. 修复项必须至少附带一个非 Benchmark 或合成通用用例；只在当前失败题目上变好不算通过。
 
 当前状态（2026-05-21）：已达到最小可测状态。runner 支持 limit/offset、predictions、trace、metrics、error_analysis；dev 前 10 题可本地评分，public all split 因 answer 为空不能本地计算官方准确率。
 
@@ -123,5 +126,6 @@
 2. 每个 Agent 可独立测试。
 3. WorkflowState 可序列化、可追踪、可回归。
 4. 可替换为 LangGraph、CrewAI 或自研 runtime，而不重写 data_agent_core。
+5. 业务能力改动必须通过泛化验收：合成/非 Benchmark 用例、同类变体用例和旧代表回归用例都不能退化。
 
 当前状态（2026-05-21）：Phase 6 最小可运行状态已完成，并开始业务口径驱动校验增强。backend analyze 默认使用 multi_agent；DABstep 多 Agent runner 可运行 dev 前 10 题并保持 9/10；agent_runtime 负责角色执行和工具调用；multi_agent_workflows 负责编排；data_agent_core 不 import multi_agent_workflows 或 Microsoft Agent Framework。下一步继续按通用能力补齐 ACI associated cost、fee what-if candidate table、字段枚举、比例和数据质量检查能力。

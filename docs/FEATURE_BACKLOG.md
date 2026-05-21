@@ -13,10 +13,11 @@
 3. 优先级
 4. 验收标准
 5. 风险
-6. 是否影响 contracts
-7. 是否影响 API_CONTRACT
-8. 是否影响 tracing
-9. 是否影响 errors
+6. 泛化验证方式
+7. 是否影响 contracts
+8. 是否影响 API_CONTRACT
+9. 是否影响 tracing
+10. 是否影响 errors
 
 ## Backlog
 
@@ -28,7 +29,7 @@
 
 优先级：P0。
 
-验收标准：DABstep dev 前 10 题本地评测准确率不低于 80%，且分析链路不接收 task_id 或标准答案。
+验收标准：DABstep dev 前 10 题本地评测准确率不低于 80%，且分析链路不接收 task_id、标准答案、固定题面或只适配当前样本的条件分支。
 
 风险：当前为规则引擎和通用意图解析 MVP，覆盖的是 DABstep 风格的主要费用规则、聚合、分组和 what-if 问题；尚未覆盖完整 450 题。
 
@@ -86,7 +87,7 @@
 
 验收标准：输出按错误类型统计的评测报告。
 
-风险：禁止标准答案泄漏和单题硬编码。
+风险：禁止标准答案泄漏、单题硬编码和伪泛化补丁；Benchmark 失败只能转成能力族缺口，不能转成当前样本专用逻辑。
 
 状态：2026-05-21 已支持分段运行、dev 前 10 题评分、all offset 预测、metrics 和 error_analysis 聚合；public all.jsonl answer 为空，不能本地计算完整 450 题官方准确率。
 
@@ -134,13 +135,13 @@
 
 ### Phase Gate And Multi-Agent Migration
 
-目标：按 Phase 1 到 Phase 6+ 的门槛推进，先补核心泛化能力和防硬编码测试，再接 Microsoft Agent Framework adapter、Phase 5 受控 Tool Calling 和 Phase 6+ 多 Agent workflow。
+目标：按 Phase 1 到 Phase 6+ 的门槛推进，先补核心泛化能力、防硬编码测试和防伪泛化验收，再接 Microsoft Agent Framework adapter、Phase 5 受控 Tool Calling 和 Phase 6+ 多 Agent workflow。
 
 影响模块：docs、agent_runtime、ms_agent_framework_adapter、multi_agent_workflows、tests/architecture。
 
 优先级：P0。
 
-验收标准：docs/PHASE_GATES.md 明确每个阶段的进入/退出条件；agent_runtime 提供框架无关 AgentTask / AgentResult / WorkflowState；adapter 映射不 import Microsoft Agent Framework；防 Benchmark 硬编码测试通过。
+验收标准：docs/PHASE_GATES.md 明确每个阶段的进入/退出条件；agent_runtime 提供框架无关 AgentTask / AgentResult / WorkflowState；adapter 映射不 import Microsoft Agent Framework；防 Benchmark 硬编码测试通过；新能力必须用合成/非 Benchmark 用例证明不是只修当前样本。
 
 风险：如果跳过 Phase gate 直接做 Microsoft workflow，容易把核心算法绑死在具体框架里。
 
@@ -170,9 +171,11 @@
 
 验收标准：LogicForm 能表达 metric_definition、numerator、denominator、group_by、objective 和 options；Verifier 能识别业务口径错误并输出 correction_action；Correction 能生成 corrected LogicForm 并触发受控重跑；trace 能记录 semantic_verification_notes、candidate_table_summary 和 selected_candidate。
 
-风险：如果把 Benchmark dev 题面或答案写入判断，会破坏泛化能力；如果只比较 Pandas / SQL 一致性，可能出现两条路径一致但业务口径错误。
+风险：如果把 Benchmark dev 题面、答案、固定字段值、固定候选项或当前错误形态写入判断，会破坏泛化能力；如果只比较 Pandas / SQL 一致性，可能出现两条路径一致但业务口径错误。
 
-状态：2026-05-21 已完成 fraud volume rate ranking、Verifier semantic correction action、受控重跑 wiring 和合成能力测试；DABstep dev 前 10 回归为 9/10。ACI associated cost 仍需继续按通用 fee what-if candidate table 能力增强。
+泛化验证方式：每个新业务语义能力必须至少包含一个合成/非 Benchmark 用例、一个同类变体用例和一个旧代表回归用例；DABstep 只能作为后验回归观察。
+
+状态：2026-05-21 已完成 fraud volume rate ranking、Verifier semantic correction action、受控重跑 wiring 和合成能力测试；DABstep dev 前 10 回归为 9/10。ACI associated cost 仍需继续按通用 fee what-if candidate table 能力增强，不能只修当前失败样本。
 
 ## TODO
 

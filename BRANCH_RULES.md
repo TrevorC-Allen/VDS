@@ -32,14 +32,15 @@ refactor/*：重构分支，只用于结构调整，不允许混入新功能。
 4. 禁止没有测试就合并 dev
 5. 禁止没有说明就解决冲突
 6. 禁止把 Benchmark 单题逻辑写死到代码里
-7. 禁止为了快速通过测试破坏系统通用性
-8. 禁止在未确认影响范围时大范围重构旧代码
-9. 禁止在 feature/data-agent-core 中引入具体 Agent 框架强依赖
-10. 禁止在 ms_agent_framework_adapter 中实现核心算法
-11. 禁止 data_agent_core import backend
-12. 禁止 data_agent_core import ms_agent_framework_adapter
-13. 禁止 data_agent_core import multi_agent_workflows
-14. 禁止 data_agent_core import agent_framework
+7. 禁止写只适配当前数据集、当前字段值、当前问法或当前错误样本的伪泛化补丁
+8. 禁止为了快速通过测试破坏系统通用性
+9. 禁止在未确认影响范围时大范围重构旧代码
+10. 禁止在 feature/data-agent-core 中引入具体 Agent 框架强依赖
+11. 禁止在 ms_agent_framework_adapter 中实现核心算法
+12. 禁止 data_agent_core import backend
+13. 禁止 data_agent_core import ms_agent_framework_adapter
+14. 禁止 data_agent_core import multi_agent_workflows
+15. 禁止 data_agent_core import agent_framework
 
 ## 推荐分支结构
 
@@ -118,8 +119,10 @@ git checkout -b feature/project-rules-and-data-agent-skeleton
 7. 建议 commit message
 8. 是否建议发起 PR
 9. PR 合并目标分支
-10. 是否影响未来多 Agent 迁移
-11. 是否引入或修改 Microsoft Agent Framework 相关内容
+10. 是否存在硬编码或伪泛化风险
+11. 泛化验证方式
+12. 是否影响未来多 Agent 迁移
+13. 是否引入或修改 Microsoft Agent Framework 相关内容
 
 ## CHANGELOG 时间规则
 
@@ -165,9 +168,10 @@ test(executor): add pandas executor unit tests
 6. 风险
 7. 是否影响旧 VDS / BigCat 逻辑
 8. 是否涉及 Benchmark
-9. 是否存在硬编码风险
-10. 是否涉及 Microsoft Agent Framework
-11. 是否影响未来多 Agent 迁移
+9. 是否存在硬编码或伪泛化风险
+10. 泛化验证方式
+11. 是否涉及 Microsoft Agent Framework
+12. 是否影响未来多 Agent 迁移
 
 ## PR 模板
 
@@ -219,9 +223,13 @@ pytest
 
 说明是否读取、修改或依赖 Benchmark。
 
-## 是否存在硬编码
+## 是否存在硬编码或伪泛化
 
-明确说明没有针对 Benchmark 单题做特判。
+明确说明没有针对 Benchmark 单题做特判，也没有写只适配当前数据集、固定字段值、固定候选项、固定问法或当前错误样本的伪泛化补丁。
+
+## 泛化验证方式
+
+说明本次能力是否有合成/非 Benchmark 用例、同类变体用例和旧代表回归用例；如果没有，必须说明为什么本次不是能力提升或为什么只属于文档/接口变更。
 
 ## 是否涉及 Microsoft Agent Framework
 

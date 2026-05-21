@@ -67,6 +67,79 @@ YYYY-MM-DD HH:MM TZ
 
 ### 日期时间
 
+2026-05-21 15:35 CST
+
+### 本次目标
+
+按用户纠正更新项目口径：把“禁止特调”从只禁止题号、标准答案和固定题面硬编码，扩展为禁止任何只适配当前数据集、当前字段值、当前问法或当前错误样本的伪泛化补丁。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- README.md
+- BRANCH_RULES.md
+- docs/PHASE_GATES.md
+- docs/BENCHMARK_RULES.md
+- docs/ARCHITECTURE.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 在 MAIN_GOAL 中重写 Rule NO.1：特调不仅包括 Benchmark task_id / 题号 / 标准答案 / public proxy answer pool，也包括不能迁移到同类业务问题和其他数据集的伪泛化补丁。
+- 在下一阶段规则中新增泛化验收：新能力必须说明迁移边界，并至少用非 Benchmark 或合成通用用例、同类变体和旧代表回归证明不是只修当前失败样本。
+- 在 PHASE_GATES、BENCHMARK_RULES、ARCHITECTURE、FEATURE_BACKLOG 中同步“伪泛化补丁”红线，要求错误归因写成能力族缺口和泛化验证方式。
+- 在 BRANCH_RULES 和 PR 模板中新增“硬编码或伪泛化风险”和“泛化验证方式”输出要求。
+- 在 README 中把 Phase 6 当前状态同步为 dev 前 10 可复现 9/10，并把后续 TODO 改为 ACI associated cost / fee what-if candidate table 的通用能力增强。
+
+### 测试方式
+
+- 文档口径变更，未运行 Python 自动化测试。
+- 检查 git diff，确认改动范围只包含项目文档和 CHANGELOG。
+
+### 测试结果
+
+- 未运行自动化测试；本次未修改 Python、API、contracts、tracing 或 runtime 逻辑。
+
+### 遗留问题
+
+- 当前仓库仍存在本次之前已有的 Python 和文档未提交变更；本次没有回滚或覆盖这些改动。
+- 后续实现任何 benchmark 暴露问题时，必须配套合成/非 Benchmark 泛化用例，不能只依赖当前失败题目。
+
+### 是否影响主流程
+
+否。仅文档和项目规则口径变更。
+
+### 是否涉及 Benchmark
+
+是。仅调整 Benchmark 使用边界和泛化验收口径；未修改 Benchmark 数据、runner、evaluator 或标准答案。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 Microsoft adapter 或框架接入逻辑。
+
+### 是否影响未来多 Agent 迁移
+
+是。明确多 Agent 质量提升必须以可迁移能力族为目标，禁止用伪泛化补丁替代 Planner / Data Engineer / Verifier / Correction 的真实能力建设。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 日期时间
+
 2026-05-21 15:09 CST
 
 ### 本次目标
