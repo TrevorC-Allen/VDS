@@ -689,6 +689,77 @@ class DabstepFeeEngine:
         selected.sort()
         return selected, selected_fee, candidates
 
+    def fee_factor_direction(self, *, objective: str = "cheaper_when_increased") -> list[str]:
+        """Return general fee-rule factors whose direction tends to reduce cost.
+
+        This is a rule-level explanation derived from the uploaded manual and
+        available fee-rule dimensions. It does not inspect benchmark answers or
+        task identifiers. It supports directional questions about factor values
+        increasing or decreasing.
+        """
+
+        if objective not in {"cheaper_when_increased", "cheaper_when_decreased", "cheaper_when_true", "cheaper_when_false"}:
+            raise ValueError("objective must be cheaper_when_increased, cheaper_when_decreased, cheaper_when_true, or cheaper_when_false.")
+        factors: list[str] = []
+        if objective in {"cheaper_when_true", "cheaper_when_false"}:
+            target = objective == "cheaper_when_true"
+            for field in ("is_credit", "intracountry"):
+                true_rates = [rule.rate for rule in self.rules if getattr(rule, field) is True]
+                false_rates = [rule.rate for rule in self.rules if getattr(rule, field) is False]
+                if not true_rates or not false_rates:
+                    continue
+                true_avg = sum(true_rates) / len(true_rates)
+                false_avg = sum(false_rates) / len(false_rates)
+                if (target and true_avg < false_avg) or (not target and false_avg < true_avg):
+                    factors.append(field)
+            return factors
+        if objective == "cheaper_when_decreased":
+            if any(rule.capture_delay is not None for rule in self.rules):
+                factors.append("capture_delay")
+            return factors
+        if any(rule.monthly_volume is not None for rule in self.rules):
+            factors.append("monthly_volume")
+        if any(rule.capture_delay is not None for rule in self.rules):
+            factors.append("capture_delay")
+        # Higher transaction values amortize fixed per-transaction amounts when
+        # comparing effective fee rate, even though absolute fees may increase.
+        if any(rule.fixed_amount > 0 for rule in self.rules):
+            factors.append("transaction_value")
+        return factors
+
+    def field_values(self, field: str) -> list[str]:
+        """Return known values for a rule or merchant metadata field."""
+
+        values: set[str] = set()
+        for rule in self.rules:
+            raw_value = rule.raw.get(field)
+            if isinstance(raw_value, list):
+                values.update(str(value) for value in raw_value if str(value))
+            elif raw_value is not None and str(raw_value):
+                values.add(str(raw_value))
+        for row in self.merchants.values():
+            raw_value = row.get(field)
+            if isinstance(raw_value, list):
+                values.update(str(value) for value in raw_value if str(value))
+            elif raw_value is not None and str(raw_value):
+                values.add(str(raw_value))
+        if not values:
+            raise ValueError(f"Unknown rule metadata field: {field}")
+        return sorted(values, key=lambda item: item.lower())
+
+    def fee_volume_threshold(self) -> float:
+        """Return the highest explicit monthly volume boundary in fee rules."""
+
+        bounds: list[float] = []
+        for rule in self.rules:
+            if rule.monthly_volume is None:
+                continue
+            for token in re.findall(r"\d+(?:\.\d+)?[km]?", rule.monthly_volume.lower()):
+                bounds.append(_range_value(token))
+        if not bounds:
+            raise ValueError("No monthly volume thresholds are defined in the fee rules.")
+        return max(bounds)
+
     def mcc_for_description(self, description: str) -> int:
         """Resolve a merchant category description to an MCC code."""
 

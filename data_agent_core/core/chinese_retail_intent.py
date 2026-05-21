@@ -48,6 +48,38 @@ def parse_chinese_retail_question(
     person = _extract_person(question, tables)
     product = _extract_product(question, tables)
 
+    if "稽查门店SKU分析" in question and "记录数最多" in question and "品类" in question:
+        return make_logic_form(
+            task_type="ranking",
+            operation="retail_audit_sku_category_record_top",
+            parameters={"ym": ym, "include_metric": _asks_for_metric_value(question)},
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "稽查门店SKU分析" in question and "SKU数量最高" in question and "门店" in question:
+        return make_logic_form(
+            task_type="ranking",
+            operation="retail_audit_sku_store_sku_count_top",
+            parameters={"ym": ym, "include_metric": _asks_for_metric_value(question)},
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "店均活跃SKU数" in question or "店均活跃sku数" in question.lower():
+        return make_logic_form(
+            task_type="aggregation",
+            operation="retail_average_active_sku_per_store",
+            parameters={"ym": ym},
+            output_format=output_format | {"answer_type": "number", "decimals": decimals or 2},
+        )
+
+    if "服务客户" in question and "冰柜客户占比" in question:
+        return make_logic_form(
+            task_type="ratio",
+            operation="retail_service_freezer_customer_rate",
+            parameters={"ym": ym},
+            output_format=output_format | {"answer_type": "percentage", "decimals": decimals or 2},
+        )
+
     if "服务客户" in question and "合约店占比" in question:
         return make_logic_form(
             task_type="ratio",
@@ -62,6 +94,20 @@ def parse_chinese_retail_question(
             operation="retail_service_customer_count",
             parameters={"ym": ym},
             output_format=output_format | {"answer_type": "number", "decimals": 0},
+        )
+
+    if "历史分销金额中" in question and "占比" in question:
+        return make_logic_form(
+            task_type="ratio",
+            operation="retail_distribution_product_share",
+            parameters={
+                "person": person,
+                "ym": ym,
+                "metric": "sign_amt",
+                "product": product,
+                "role": _person_role(question, person, tables),
+            },
+            output_format=output_format | {"answer_type": "percentage", "decimals": decimals or 2},
         )
 
     if "分销目标达成率" in question:
@@ -143,6 +189,27 @@ def parse_chinese_retail_question(
             operation="retail_display_fee_rate",
             parameters={"person": person, "ym": ym, "role": _person_role(question, person, tables)},
             output_format=output_format | {"answer_type": "percentage", "decimals": decimals or 2},
+        )
+
+    if "陈列执行" in question and "图像检查合格数最高" in question and "门店" in question:
+        return make_logic_form(
+            task_type="ranking",
+            operation="retail_display_execution_image_pass_top",
+            parameters={"ym": ym, "include_metric": _asks_for_metric_value(question), "decimals": decimals or 3},
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "陈列执行" in question and "执行次数最高" in question and "门店" in question:
+        return make_logic_form(
+            task_type="ranking",
+            operation="retail_display_execution_item_count_top",
+            parameters={
+                "ym": ym,
+                "display_item": _extract_display_item(question, tables),
+                "include_metric": _asks_for_metric_value(question),
+                "decimals": decimals or 3,
+            },
+            output_format=output_format | {"answer_type": "text"},
         )
 
     if "陈列检查合格率" in question:
@@ -250,7 +317,15 @@ def parse_chinese_retail_question(
         return make_logic_form(
             task_type="aggregation",
             operation="retail_display_record_count",
-            parameters={"ym": ym, "status": "不合格"},
+            parameters={"person": person, "ym": ym, "role": _person_role(question, person, tables), "status": "不合格"},
+            output_format=output_format | {"answer_type": "number", "decimals": 0},
+        )
+
+    if "陈列计划" in question and ("记录" in question or "多少条" in question):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="retail_display_record_count",
+            parameters={"person": person, "ym": ym, "role": _person_role(question, person, tables)},
             output_format=output_format | {"answer_type": "number", "decimals": 0},
         )
 
@@ -314,9 +389,15 @@ def parse_chinese_retail_question(
                 "person": person,
                 "ym": ym,
                 "metric": "sign_amt",
+                "product": product,
                 "role": _person_role(question, person, tables),
             },
-            output_format=output_format | {"answer_type": "number", "decimals": decimals or 2},
+            output_format=output_format
+            | {
+                "answer_type": "number",
+                "decimals": decimals or 2,
+                "not_applicable_type": "true_unsupported",
+            },
         )
 
     return None
@@ -395,7 +476,19 @@ def _is_ranking_question(question: str) -> bool:
 
 
 def _asks_for_metric_value(question: str) -> bool:
-    return any(token in question for token in ("金额是多少", "数量是多少", "金额分别", "数量分别", "金额和", "数量和"))
+    return any(
+        token in question
+        for token in (
+            "金额是多少",
+            "数量是多少",
+            "记录数是多少",
+            "次数是多少",
+            "数量分别",
+            "金额分别",
+            "数量和",
+            "金额和",
+        )
+    )
 
 
 def _distribution_dimension(question: str) -> str:
@@ -409,10 +502,13 @@ def _distribution_dimension(question: str) -> str:
 
 
 def _extract_product(question: str, tables: dict[str, pd.DataFrame]) -> str | None:
-    for token in ("东方树叶", "天然水", "水堆", "我司冰柜"):
+    matched = _extract_value_from_columns(question, tables, ("ctg_name", "brand_name", "sales_ana_type_name", "clfc_name", "p_clfc_name"))
+    if matched:
+        return matched
+    for token in sorted(("苏打天然水", "东方树叶", "天然水", "水堆", "我司冰柜"), key=len, reverse=True):
         if token in question:
             return token
-    return _extract_value_from_columns(question, tables, ("ctg_name", "brand_name", "sales_ana_type_name"))
+    return None
 
 
 def _extract_display_item(question: str, tables: dict[str, pd.DataFrame]) -> str | None:

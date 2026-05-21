@@ -16,7 +16,11 @@ from data_agent_core.contracts.analysis_contracts import LogicForm
 
 CHINESE_RETAIL_OPERATIONS = {
     "retail_distribution_sum",
+    "retail_distribution_product_share",
     "retail_distribution_ranking",
+    "retail_audit_sku_category_record_top",
+    "retail_audit_sku_store_sku_count_top",
+    "retail_average_active_sku_per_store",
     "retail_target_lookup",
     "retail_target_entity_count",
     "retail_target_achievement_rate",
@@ -26,6 +30,7 @@ CHINESE_RETAIL_OPERATIONS = {
     "retail_contract_store_count",
     "retail_service_customer_count",
     "retail_service_contract_store_rate",
+    "retail_service_freezer_customer_rate",
     "retail_today_partial_sign_exists",
     "retail_today_category_top",
     "retail_today_distribution_ranking",
@@ -38,6 +43,8 @@ CHINESE_RETAIL_OPERATIONS = {
     "retail_new_contract_store_names",
     "retail_display_signed_store_count",
     "retail_display_record_count",
+    "retail_display_execution_image_pass_top",
+    "retail_display_execution_item_count_top",
     "retail_display_fee_rate",
     "retail_display_pass_rate",
     "retail_multi_metric_summary",
@@ -62,8 +69,16 @@ def execute_chinese_retail_operation(logic: LogicForm, context: dict[str, Any]) 
     tables = context["tables"]
     if op == "retail_distribution_sum":
         return _retail_distribution_sum(tables, params)
+    if op == "retail_distribution_product_share":
+        return _retail_distribution_product_share(tables, params)
     if op == "retail_distribution_ranking":
         return _retail_distribution_ranking(tables, params)
+    if op == "retail_audit_sku_category_record_top":
+        return _retail_audit_sku_category_record_top(tables, params)
+    if op == "retail_audit_sku_store_sku_count_top":
+        return _retail_audit_sku_store_sku_count_top(tables, params)
+    if op == "retail_average_active_sku_per_store":
+        return _retail_average_active_sku_per_store(tables, params)
     if op == "retail_target_lookup":
         return _retail_target_lookup(tables, params)
     if op == "retail_target_entity_count":
@@ -82,6 +97,8 @@ def execute_chinese_retail_operation(logic: LogicForm, context: dict[str, Any]) 
         return _retail_service_customer_count(tables, params)
     if op == "retail_service_contract_store_rate":
         return _retail_service_contract_store_rate(tables, params)
+    if op == "retail_service_freezer_customer_rate":
+        return _retail_service_freezer_customer_rate(tables, params)
     if op == "retail_today_partial_sign_exists":
         return _retail_today_partial_sign_exists(tables, params)
     if op == "retail_today_category_top":
@@ -106,6 +123,10 @@ def execute_chinese_retail_operation(logic: LogicForm, context: dict[str, Any]) 
         return _retail_display_signed_store_count(tables, params)
     if op == "retail_display_record_count":
         return _retail_display_record_count(tables, params)
+    if op == "retail_display_execution_image_pass_top":
+        return _retail_display_execution_image_pass_top(tables, params)
+    if op == "retail_display_execution_item_count_top":
+        return _retail_display_execution_item_count_top(tables, params)
     if op == "retail_display_fee_rate":
         return _retail_display_fee_rate(tables, params)
     if op == "retail_display_pass_rate":
@@ -127,9 +148,25 @@ def _retail_distribution_sum(tables: dict[str, pd.DataFrame], params: dict[str, 
     hist = _history_table(tables)
     data = _filter_ym(hist, "sign_time", params.get("ym"))
     data = _filter_person(data, params.get("person"), params.get("role"))
+    data = _filter_product(data, params.get("product"))
     if data.empty:
         return "Not Applicable"
     return _sum(data, str(params.get("metric") or "sign_amt"))
+
+
+def _retail_distribution_product_share(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
+    product = params.get("product")
+    if not product:
+        return "Not Applicable"
+    hist = _history_table(tables)
+    data = _filter_ym(hist, "sign_time", params.get("ym"))
+    data = _filter_person(data, params.get("person"), params.get("role"))
+    metric = str(params.get("metric") or "sign_amt")
+    denominator = _sum(data, metric)
+    if denominator == 0:
+        return "Not Applicable"
+    numerator = _sum(_filter_product(data, product), metric)
+    return numerator / denominator * 100
 
 
 def _retail_distribution_ranking(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> str:
@@ -150,6 +187,44 @@ def _retail_distribution_ranking(tables: dict[str, pd.DataFrame], params: dict[s
     if not params.get("include_metric"):
         return ", ".join(str(name) for name in ranking.head(limit).index)
     return ", ".join(f"{name}:{value:.2f}" for name, value in ranking.head(limit).items())
+
+
+def _retail_audit_sku_category_record_top(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> str:
+    audit = _filter_audit_ym(_audit_sku_table(tables), params.get("ym"))
+    category_column = _first_existing_column(audit, "ctg_name", ("clfc_name", "p_clfc_name", "category_name", "品类"))
+    if audit.empty or category_column not in audit.columns:
+        return "Not Applicable"
+    counts = audit[category_column].dropna().astype(str).value_counts()
+    if counts.empty:
+        return "Not Applicable"
+    name = str(counts.index[0])
+    return f"{name}:{int(counts.iloc[0])}" if params.get("include_metric") else name
+
+
+def _retail_audit_sku_store_sku_count_top(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> str:
+    audit = _filter_audit_ym(_audit_sku_table(tables), params.get("ym"))
+    store_column = _first_existing_column(audit, "cust_name", ("终端客户", "store_name", "客户名称"))
+    sku_column = _first_existing_column(audit, "sku_code", ("sku_name", "cmdt_code", "cmdt_name", "商品编码"))
+    if audit.empty or store_column not in audit.columns or sku_column not in audit.columns:
+        return "Not Applicable"
+    counts = audit.groupby(store_column, dropna=True)[sku_column].apply(_nunique_with_missing_bucket).sort_values(ascending=False)
+    if counts.empty:
+        return "Not Applicable"
+    name = str(counts.index[0])
+    return f"{name}:{int(counts.iloc[0])}" if params.get("include_metric") else name
+
+
+def _retail_average_active_sku_per_store(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
+    hist = _filter_ym(_history_table(tables), "sign_time", params.get("ym"))
+    data = _active_sku_rows(hist)
+    store_column = _first_existing_column(data, "cust_code", ("cust_name", "终端客户", "客户名称"))
+    sku_column = _first_existing_column(data, "sku_code", ("sku_name", "cmdt_code", "cmdt_name"))
+    if data.empty or store_column not in data.columns or sku_column not in data.columns:
+        return "Not Applicable"
+    counts = data.groupby(store_column, dropna=True)[sku_column].nunique()
+    if counts.empty:
+        return "Not Applicable"
+    return float(counts.mean())
 
 
 def _retail_target_lookup(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
@@ -240,6 +315,22 @@ def _retail_service_contract_store_rate(tables: dict[str, pd.DataFrame], params:
     service_codes = set(customer["终端客户编码"].dropna().astype(str))
     contract_codes = set(customer.loc[customer["是否合约店"].astype(str) == "是", "终端客户编码"].dropna().astype(str))
     return 0.0 if not service_codes else len(contract_codes) / len(service_codes) * 100
+
+
+def _retail_service_freezer_customer_rate(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
+    customer = _service_customer_rows(tables, params.get("ym"))
+    if customer.empty:
+        return "Not Applicable"
+    freezer_column = _first_existing_column(customer, "是否冰柜客户", ("是否我司冰柜客户", "是否冰柜"))
+    if freezer_column not in customer.columns:
+        return "Not Applicable"
+    service_codes = set(customer["终端客户编码"].dropna().astype(str))
+    freezer_codes = set(
+        customer.loc[customer[freezer_column].fillna("").astype(str) == "是", "终端客户编码"]
+        .dropna()
+        .astype(str)
+    )
+    return 0.0 if not service_codes else len(freezer_codes) / len(service_codes) * 100
 
 
 def _retail_today_partial_sign_exists(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> str:
@@ -362,10 +453,79 @@ def _retail_display_signed_store_count(tables: dict[str, pd.DataFrame], params: 
 
 def _retail_display_record_count(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> int:
     display = _filter_execute_ym(_display_plan_table(tables), params.get("ym"))
+    display = _filter_person(display, params.get("person"), params.get("role"))
     status = params.get("status")
     if status and "check_result_name" in display.columns:
         display = display[display["check_result_name"].astype(str) == str(status)]
     return int(len(display))
+
+
+def _retail_display_execution_image_pass_top(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> str:
+    execute = _safe_display_execute_table(tables)
+    if execute is not None:
+        data = _filter_execute_ym(execute, params.get("ym"))
+        store_column = _first_existing_column(data, "cust_name", ("终端客户", "客户名称", "store_name", "cust_code"))
+        metric_column = _first_existing_column(data, "zx_img_check_hg_cnt", ("img_check_hg_cnt", "image_check_pass_count", "图像检查合格数"))
+        if not data.empty and store_column in data.columns and metric_column in data.columns:
+            ranking = _numeric(data[metric_column]).groupby(data[store_column]).sum().sort_values(ascending=False)
+            ranking = ranking[ranking > 0]
+            if not ranking.empty:
+                name = str(ranking.index[0])
+                if not params.get("include_metric"):
+                    return name
+                decimals = int(params.get("decimals") if params.get("decimals") is not None else 3)
+                return f"{name}:{_format_decimal(float(ranking.iloc[0]), decimals)}"
+
+    display = _filter_execute_ym(_display_plan_table(tables), params.get("ym"))
+    store_column = _first_existing_column(display, "cust_name", ("终端客户", "客户名称", "store_name", "cust_code"))
+    result_column = _first_existing_column(display, "check_result_name", ("img_dsp_result_name", "dsp_result_name", "检查结果"))
+    if display.empty or store_column not in display.columns or result_column not in display.columns:
+        return "Not Applicable"
+    result_text = display[result_column].fillna("").astype(str)
+    passed = display[result_text.str.contains("合格", regex=False) & ~result_text.str.contains("不合格", regex=False)]
+    counts = passed[store_column].dropna().astype(str).value_counts()
+    if counts.empty:
+        return "Not Applicable"
+    name = str(counts.index[0])
+    if not params.get("include_metric"):
+        return name
+    decimals = params.get("decimals")
+    value = float(counts.iloc[0])
+    return f"{name}:{_format_decimal(value, int(decimals))}" if decimals is not None else f"{name}:{int(value)}"
+
+
+def _retail_display_execution_item_count_top(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> str:
+    execute = _safe_display_execute_table(tables)
+    if execute is not None:
+        data = _filter_execute_ym(execute, params.get("ym"))
+        store_column = _first_existing_column(data, "cust_name", ("终端客户", "客户名称", "store_name", "cust_code"))
+        metric_column = _display_execute_metric_column(data, params.get("display_item"))
+        if not data.empty and store_column in data.columns and metric_column in data.columns:
+            ranking = _numeric(data[metric_column]).groupby(data[store_column]).sum().sort_values(ascending=False)
+            ranking = ranking[ranking > 0]
+            if not ranking.empty:
+                name = str(ranking.index[0])
+                if not params.get("include_metric"):
+                    return name
+                decimals = int(params.get("decimals") if params.get("decimals") is not None else 3)
+                return f"{name}:{_format_decimal(float(ranking.iloc[0]), decimals)}"
+
+    display = _filter_execute_ym(_display_plan_table(tables), params.get("ym"))
+    item = params.get("display_item")
+    if item:
+        display = display[display["dsp_name"].astype(str) == str(item)]
+    store_column = _first_existing_column(display, "cust_name", ("终端客户", "客户名称", "store_name", "cust_code"))
+    if display.empty or store_column not in display.columns:
+        return "Not Applicable"
+    counts = display[store_column].dropna().astype(str).value_counts()
+    if counts.empty:
+        return "Not Applicable"
+    name = str(counts.index[0])
+    if not params.get("include_metric"):
+        return name
+    decimals = params.get("decimals")
+    value = float(counts.iloc[0])
+    return f"{name}:{_format_decimal(value, int(decimals))}" if decimals is not None else f"{name}:{int(value)}"
 
 
 def _retail_display_fee_rate(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
@@ -415,11 +575,9 @@ def _retail_multi_metric_summary(tables: dict[str, pd.DataFrame], params: dict[s
 
 def _retail_active_sku_top(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> str:
     hist = _filter_ym(_history_table(tables), "sign_time", params.get("ym"))
-    data = hist[
-        (_numeric(hist["sign_box_cnt"]) > 0)
-        & (hist["cmdt_tag_name"].astype(str).isin({"活动本品", "普通本品", "特价商品"}))
-        & (~hist["ord_type_name"].astype(str).isin({"分销退货", "库存盘点"}))
-    ]
+    data = _active_sku_rows(hist)
+    if data.empty or "cust_name" not in data.columns or "sku_code" not in data.columns:
+        return "Not Applicable"
     counts = data.groupby("cust_name", dropna=True)["sku_code"].nunique().sort_values(ascending=False)
     if counts.empty:
         return "Not Applicable"
@@ -493,22 +651,50 @@ def _service_customer_rows(tables: dict[str, pd.DataFrame], ym: Any) -> pd.DataF
     customer = _filter_customer_ym(_customer_table(tables), ym)
     status_column = _first_existing_column(customer, "终端客户状态", ("客户状态", "cust_status_name"))
     if status_column in customer.columns:
-        inactive_tokens = ("停用", "终止", "无效", "失效", "关闭", "取消")
+        inactive_tokens = ("停用", "终止", "无效", "失效", "关闭", "取消", "不合作")
         status = customer[status_column].fillna("").astype(str)
         active_mask = ~status.apply(lambda value: any(token in value for token in inactive_tokens))
         customer = customer[active_mask]
     return customer
 
 
+def _active_sku_rows(hist: pd.DataFrame) -> pd.DataFrame:
+    if hist.empty or "sign_box_cnt" not in hist.columns:
+        return hist.iloc[0:0]
+    mask = _numeric(hist["sign_box_cnt"]) > 0
+    if "cmdt_tag_name" in hist.columns:
+        active_tags = {"活动本品", "普通本品", "特价商品"}
+        mask = mask & hist["cmdt_tag_name"].fillna("").astype(str).isin(active_tags)
+    if "ord_type_name" in hist.columns:
+        excluded_order_types = {"分销退货", "库存盘点"}
+        mask = mask & ~hist["ord_type_name"].fillna("").astype(str).isin(excluded_order_types)
+    return hist[mask]
+
+
+def _nunique_with_missing_bucket(series: pd.Series) -> int:
+    text = series.fillna("").astype(str).str.strip()
+    non_missing = text[text.str.len() > 0]
+    return int(non_missing.nunique() + (1 if (text.str.len() == 0).any() else 0))
+
+
 def _filter_product(data: pd.DataFrame, product: Any) -> pd.DataFrame:
     if not product:
         return data
     text = str(product)
-    product_columns = [column for column in ("ctg_name", "brand_name", "sales_ana_type_name", "cmdt_name", "sku_name") if column in data.columns]
-    if not product_columns:
+    exact_columns = [
+        column
+        for column in ("ctg_name", "brand_name", "sales_ana_type_name", "clfc_name", "p_clfc_name", "p2_clfc_name", "item_name")
+        if column in data.columns
+    ]
+    contains_columns = [column for column in ("cmdt_name", "sku_name", "cmdt_sname") if column in data.columns]
+    if not exact_columns and not contains_columns:
         return data
+    for column in exact_columns:
+        mask = data[column].fillna("").astype(str).eq(text)
+        if mask.any():
+            return data[mask]
     mask = pd.Series(False, index=data.index)
-    for column in product_columns:
+    for column in contains_columns:
         mask = mask | data[column].fillna("").astype(str).str.contains(text, regex=False)
     return data[mask]
 
@@ -561,6 +747,18 @@ def _filter_customer_ym(data: pd.DataFrame, ym: Any) -> pd.DataFrame:
     return data[data["年月"].astype(int) == int(ym)]
 
 
+def _filter_audit_ym(data: pd.DataFrame, ym: Any) -> pd.DataFrame:
+    if not ym:
+        return data
+    for column in ("ym", "stat_month", "年月", "month_id"):
+        if column in data.columns:
+            return data[pd.to_numeric(data[column], errors="coerce").fillna(0).astype(int) == int(ym)]
+    for column in ("audit_date", "stat_date", "biz_date", "date"):
+        if column in data.columns:
+            return _filter_ym(data, column, ym)
+    return data
+
+
 def _split_ym(ym: Any) -> tuple[int | None, int | None]:
     if ym is None:
         return None, None
@@ -594,6 +792,48 @@ def _route_table(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
 
 def _customer_table(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return _table_with_columns(tables, {"年月", "终端客户编码", "终端客户", "是否合约店"}, ("终端客户月度维表",))
+
+
+def _audit_sku_table(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    return _table_with_columns(
+        tables,
+        {"ctg_name", "cust_name", "sku_code"},
+        ("v_chl_jc_cust_sku_mi", "稽查门店SKU分析"),
+    )
+
+
+def _safe_display_execute_table(tables: dict[str, pd.DataFrame]) -> pd.DataFrame | None:
+    try:
+        return _display_execute_table(tables)
+    except ValueError:
+        return None
+
+
+def _display_execute_table(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    return _table_with_columns(tables, {"execute_ym", "cust_name"}, ("v_mkt_dsp_execute_mi", "陈列执行"))
+
+
+def _display_execute_metric_column(data: pd.DataFrame, display_item: Any) -> str:
+    item = str(display_item or "")
+    item_candidates: list[str]
+    if "货架" in item:
+        item_candidates = ["hj_exec_act_times", "hj_act_exec_nums", "hj_exec_act_hg_times"]
+    elif "水堆" in item:
+        item_candidates = ["sd_exec_act_times", "sd_act_exec_nums", "sd_exec_act_hg_times"]
+    elif "冰柜" in item:
+        item_candidates = ["bdh_exec_act_times", "bdh_exec_act_times_2", "free_bdh_hg_cnt", "free_bdh_hg_cnt_2"]
+    elif "堆箱" in item or "地堆" in item:
+        item_candidates = ["dd_exec_act_times", "dd_act_exec_nums", "dd_exec_act_hg_times"]
+    else:
+        item_candidates = [
+            column
+            for column in data.columns
+            if column.endswith("_exec_act_times") or column.endswith("_act_exec_nums") or column.endswith("_exec_nums")
+        ]
+    for column in item_candidates:
+        if column in data.columns:
+            return column
+    return item_candidates[0] if item_candidates else "execute_count"
 
 
 def _display_plan_table(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:

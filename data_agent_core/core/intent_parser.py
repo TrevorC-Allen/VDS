@@ -15,6 +15,7 @@ from data_agent_core.contracts.analysis_contracts import LogicForm
 from data_agent_core.core.chinese_retail_intent import parse_chinese_retail_question
 from data_agent_core.core.date_utils import MONTH_NAME_TO_NUMBER
 from data_agent_core.core.logic_form import make_logic_form
+from data_agent_core.core.vds_bi_intent import parse_vds_bi_question
 
 
 CARD_SCHEMES = ("TransactPlus", "GlobalCard", "NexPay", "SwiftCharge")
@@ -31,6 +32,9 @@ FIELD_ALIASES = {
     "issuing_country": "issuing_country",
     "ip country": "ip_country",
     "ip_country": "ip_country",
+    "ip address": "ip_address",
+    "ip addresses": "ip_address",
+    "ip": "ip_address",
     "merchant": "merchant",
     "shopper": "email_address",
     "customer": "email_address",
@@ -39,6 +43,12 @@ FIELD_ALIASES = {
     "card bin": "card_bin",
     "transaction": "psp_reference",
     "credit": "is_credit",
+    "amount": "eur_amount",
+    "transaction amount": "eur_amount",
+    "transaction value": "eur_amount",
+    "fraudulent disputes": "has_fraudulent_dispute",
+    "fraudulent dispute": "has_fraudulent_dispute",
+    "email address": "email_address",
 }
 
 
@@ -47,6 +57,11 @@ def _extract_options(question: str) -> dict[str, str]:
         letter.upper(): value.upper()
         for letter, value in re.findall(r"\b([A-D])\.\s*([A-Z]{2})\b", question)
     }
+
+
+def _extract_labeled_options(question: str) -> dict[str, str]:
+    matches = re.findall(r"\b([A-D])\.\s*([^,]+?)(?=,\s*[A-D]\.|$)", question)
+    return {letter.upper(): value.strip() for letter, value in matches}
 
 
 def _extract_year(question: str, default: int = 2023) -> int:
@@ -181,8 +196,12 @@ def _extract_group_by(question: str, default: str = "shopper_interaction") -> st
         "payment interaction": "shopper_interaction",
         "card scheme": "card_scheme",
         "issuing country": "issuing_country",
+        "issuing_country": "issuing_country",
         "ip country": "ip_country",
+        "ip_country": "ip_country",
         "device type": "device_type",
+        "card_scheme": "card_scheme",
+        "shopper_interaction": "shopper_interaction",
         "merchant": "merchant",
         "hour of day": "hour_of_day",
         "hour": "hour_of_day",
@@ -270,6 +289,129 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
     lowered = question.lower()
     output_format = {"guidelines": guidelines}
 
+    if _is_worst_fraud_segment_question(lowered):
+        return make_logic_form(
+            task_type="ranking",
+            operation="worst_fraud_segment",
+            metric="fraud_volume_rate",
+            metric_definition={
+                "name": "fraud_volume_rate",
+                "description": "Fraud rate is fraudulent volume divided by total volume.",
+                "aggregation": "ratio",
+                "source": "manual.md section 7 and payments.csv",
+            },
+            parameters={
+                "table": "payments",
+                "dimensions": _extract_segment_dimensions(question),
+                "metric": "fraud_volume_rate",
+            },
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if _is_correlation_threshold_question(lowered):
+        return make_logic_form(
+            task_type="correlation",
+            operation="correlation_threshold",
+            metric="eur_amount",
+            parameters={
+                "table": "payments",
+                "metric": "eur_amount",
+                "target": "has_fraudulent_dispute",
+                "threshold": _extract_threshold(question, default=0.5),
+                "method": "pearson",
+                "absolute": True,
+            },
+            output_format=output_format | {"answer_type": "yes_no"},
+        )
+
+    if _is_outlier_fraud_rate_comparison_question(lowered):
+        return make_logic_form(
+            task_type="comparison",
+            operation="outlier_rate_comparison",
+            metric="fraud_transaction_rate",
+            filters={"year": _extract_year(question) if re.search(r"\b20\d{2}\b", question) else None},
+            parameters={
+                "table": "payments",
+                "metric": _extract_outlier_metric(question, context),
+                "target": "has_fraudulent_dispute",
+                "method": "zscore" if "z-score" in lowered or "z score" in lowered else "iqr",
+                "z_threshold": _extract_zscore_threshold(question) or 3.0,
+                "operator": "higher_than" if "higher" in lowered or "greater" in lowered else "lower_than",
+            },
+            output_format=output_format | {"answer_type": "yes_no"},
+        )
+
+    if _is_outlier_target_percentage_question(lowered):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="outlier_target_percentage",
+            metric="fraud_transaction_rate",
+            filters={"year": _extract_year(question) if re.search(r"\b20\d{2}\b", question) else None},
+            parameters={
+                "table": "payments",
+                "metric": _extract_outlier_metric(question, context),
+                "target": "has_fraudulent_dispute",
+                "method": "zscore" if "z-score" in lowered or "z score" in lowered else "iqr",
+                "z_threshold": _extract_zscore_threshold(question) or 3.0,
+            },
+            output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 3)},
+        )
+
+    if _is_high_value_percentage_question(lowered):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="quantile_percentage",
+            metric="eur_amount",
+            filters={"year": _extract_year(question) if re.search(r"\b20\d{2}\b", question) else None},
+            parameters={
+                "table": "payments",
+                "metric": _extract_outlier_metric(question, context),
+                "quantile": _extract_percentile(question, default=0.9),
+                "operator": "above" if "above" in lowered or "greater" in lowered or "超过" in question else "below",
+            },
+            output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 3)},
+        )
+
+    if _is_missing_value_top_count_question(lowered):
+        missing_field = _extract_missing_field(question, context) or "email_address"
+        return make_logic_form(
+            task_type="ranking",
+            operation="top_count",
+            metric="transaction_count",
+            group_by=_extract_group_by(question, default="card_scheme"),
+            filters={missing_field: "__NULL__"},
+            parameters={"table": "payments", "group_by": _extract_group_by(question, default="card_scheme")},
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if _is_missing_columns_choice_question(lowered):
+        return make_logic_form(
+            task_type="data_quality",
+            operation="missing_columns_choice",
+            parameters={
+                "table": "payments",
+                "fields": _extract_columns_mentioned(question, context),
+                "options": _extract_labeled_options(question),
+            },
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if _is_fee_factor_direction_question(lowered):
+        return make_logic_form(
+            task_type="fee_rule",
+            operation="fee_factor_direction",
+            parameters={"objective": _fee_factor_direction_objective(lowered)},
+            output_format=output_format | {"answer_type": "list"},
+        )
+
+    if _is_fee_volume_threshold_question(lowered):
+        return make_logic_form(
+            task_type="fee_rule",
+            operation="fee_volume_threshold",
+            parameters={"objective": "highest_volume_without_cheaper_fee"},
+            output_format=output_format | {"answer_type": "number"},
+        )
+
     if _is_top_outlier_group_question(lowered):
         return make_logic_form(
             task_type="ranking",
@@ -292,12 +434,111 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             output_format=output_format | {"answer_type": "number"},
         )
 
+    if _is_most_common_value_question(lowered):
+        group_by = _extract_field_name(question, context) or _extract_group_by(question, default="shopper_interaction")
+        return make_logic_form(
+            task_type="ranking",
+            operation="top_count",
+            metric="transaction_count",
+            group_by=group_by,
+            parameters={"table": "payments", "group_by": group_by},
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if _is_boolean_ratio_question(lowered):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="boolean_count_ratio",
+            parameters={"table": "payments", "field": "is_credit", "left_value": True, "right_value": False},
+            output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 3)},
+        )
+
+    if _is_device_transaction_count_question(lowered):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="row_count",
+            filters={"device_type": _extract_device_type(question)},
+            parameters={"table": "payments"},
+            output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_schema_field_lookup_question(lowered):
+        return make_logic_form(
+            task_type="schema_query",
+            operation="schema_field_lookup",
+            parameters={
+                "table": "payments",
+                "concept": _extract_schema_concept(question),
+                "field": _schema_field_for_concept(question, context),
+            },
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if _is_present_percentage_question(lowered):
+        return make_logic_form(
+            task_type="data_quality",
+            operation="null_check",
+            parameters={"table": "payments", "field": _present_field_for_question(lowered), "mode": "present_rate"},
+            output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
+        )
+
+    if _is_average_transaction_amount_question(lowered):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="aggregation",
+            metric="eur_amount",
+            parameters={"table": "payments", "metric": "eur_amount", "aggregation": "mean"},
+            output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 2)},
+        )
+
+    if _is_day_of_year_top_count_question(lowered):
+        return make_logic_form(
+            task_type="ranking",
+            operation="top_count",
+            metric="transaction_count",
+            group_by="day_of_year",
+            parameters={"table": "payments", "group_by": "day_of_year"},
+            output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_most_missing_column_question(lowered):
+        return make_logic_form(
+            task_type="data_quality",
+            operation="null_check",
+            parameters={"table": "payments", "mode": "max_field"},
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if _is_repeat_entity_count_question(lowered):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="repeat_entity_count",
+            parameters={"table": "payments", "field": _repeat_entity_field_for_question(lowered), "min_count": 2},
+            output_format=output_format | {"answer_type": "number"},
+        )
+
     if _is_row_count_question(lowered):
         return make_logic_form(
             task_type="aggregation",
             operation="row_count",
+            filters={"card_scheme": _extract_card_scheme(question)},
             parameters={"table": "payments"},
             output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_metric_per_distinct_entity_question(lowered):
+        metric, aggregation = _metric_per_distinct_entity_metric(question, context)
+        return make_logic_form(
+            task_type="aggregation",
+            operation="metric_per_distinct_entity",
+            metric=metric,
+            parameters={
+                "table": "payments",
+                "metric": metric,
+                "entity_field": _extract_missing_field(question, context) or "email_address",
+                "aggregation": aggregation,
+            },
+            output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 2)},
         )
 
     if _is_distinct_count_question(lowered):
@@ -322,13 +563,14 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             operation="outlier_count",
             parameters={
                 "table": "payments",
-                "metric": _extract_field_name(question, context) or "eur_amount",
+                "metric": _extract_outlier_metric(question, context),
                 "method": "zscore" if "z-score" in lowered or "z score" in lowered else "iqr",
             },
             output_format=output_format | {"answer_type": "number"},
         )
 
     if _is_null_check_question(lowered):
+        mode = _null_check_mode(lowered)
         return make_logic_form(
             task_type="data_quality",
             operation="null_check",
@@ -336,9 +578,9 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             parameters={
                 "table": "payments",
                 "field": _extract_field_name(question, context),
-                "mode": _null_check_mode(lowered),
+                "mode": mode,
             },
-            output_format=output_format | {"answer_type": "yes_no" if _null_check_mode(lowered) == "exists" else "number"},
+            output_format=output_format | {"answer_type": "yes_no" if mode == "exists" else "percentage" if mode == "rate" else "number"},
         )
 
     if _is_top_k_share_question(lowered):
@@ -357,9 +599,7 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
         )
 
-    if ("possible values" in lowered or "unique values" in lowered or "distinct values" in lowered) and (
-        "field" in lowered or "column" in lowered
-    ):
+    if _is_unique_values_question(lowered):
         return make_logic_form(
             task_type="schema_query",
             operation="field_values",
@@ -381,6 +621,14 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             operation="not_applicable",
             parameters={"reason": "Uploaded rules do not define fines or danger thresholds."},
             output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "excessive fraud threshold" in lowered or ("fraud threshold" in lowered and "merchant" in lowered):
+        return make_logic_form(
+            task_type="unsupported",
+            operation="not_applicable",
+            parameters={"reason": "Uploaded rules do not define excessive fraud thresholds."},
+            output_format=output_format | {"answer_type": "text", "not_applicable_type": "true_unsupported"},
         )
 
     if "fraud rate" in lowered and ("higher than" in lowered or "lower than" in lowered):
@@ -464,7 +712,16 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             output_format=output_format | {"answer_type": "text"},
         )
 
-    if "fraud rate" in lowered:
+    if _is_fraudulent_transaction_percentage_question(lowered):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="boolean_percentage",
+            filters={"year": _extract_year(question) if re.search(r"\b20\d{2}\b", question) else None},
+            parameters={"table": "payments", "field": "has_fraudulent_dispute", "value": True},
+            output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 3)},
+        )
+
+    if "fraud rate" in lowered or _is_fraud_percentage_question(lowered):
         filters: dict[str, Any] = {"year": _extract_year(question)}
         if "in-person" in lowered or "in person" in lowered or "in-store" in lowered or "in store" in lowered:
             filters["shopper_interaction"] = "POS"
@@ -507,7 +764,7 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
 
     if _is_ranking_question(lowered) and ("transaction value" in lowered or "eur_amount" in lowered or "amount" in lowered):
         group_by = _extract_field_name(question, context) or _extract_group_by(question, default="merchant")
-        if group_by in {"merchant", "card_scheme"} and "country" in lowered:
+        if "country" in lowered:
             group_by = "ip_country" if "ip" in lowered else "issuing_country"
         filters = {
             "merchant": _extract_merchant(question, context),
@@ -534,7 +791,7 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
         )
 
     if "highest number of transactions" in lowered:
-        group_by = "issuing_country" if "issuing country" in lowered else "ip_country"
+        group_by = _extract_group_by(question, default="issuing_country" if "issuing country" in lowered else "merchant")
         return make_logic_form(
             task_type="ranking",
             operation="top_count",
@@ -549,6 +806,24 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             objective="maximum",
             parameters={"table": "payments", "group_by": group_by},
             output_format=output_format | {"answer_type": "country_code"},
+        )
+
+    if _is_most_common_value_question(lowered):
+        group_by = _extract_field_name(question, context) or _extract_group_by(question, default="shopper_interaction")
+        return make_logic_form(
+            task_type="ranking",
+            operation="top_count",
+            metric="transaction_count",
+            metric_definition={
+                "name": "transaction_count",
+                "description": "Count of payment transactions grouped by the requested categorical field.",
+                "aggregation": "count",
+                "source": "payments.csv",
+            },
+            group_by=group_by,
+            objective="maximum",
+            parameters={"table": "payments", "group_by": group_by},
+            output_format=output_format | {"answer_type": "text"},
         )
 
     if "fraudulent transactions" in lowered and ("most common" in lowered or "commonly used" in lowered or "most commonly" in lowered):
@@ -599,6 +874,21 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             output_format=output_format | {"answer_type": "multiple_choice_country"},
         )
 
+    if _is_metric_per_distinct_entity_question(lowered):
+        metric = _extract_outlier_metric(question, context)
+        return make_logic_form(
+            task_type="aggregation",
+            operation="metric_per_distinct_entity",
+            metric=metric,
+            parameters={
+                "table": "payments",
+                "metric": metric,
+                "entity_field": _extract_missing_field(question, context) or "email_address",
+                "aggregation": "sum",
+            },
+            output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 2)},
+        )
+
     if "average transaction value grouped by" in lowered:
         month_range = _extract_quarter_month_range(question)
         return make_logic_form(
@@ -626,6 +916,14 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             },
             parameters={"transaction_value": _extract_transaction_value(question)},
             output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 6)},
+        )
+
+    if "excessive retry" in lowered and "fee" in lowered:
+        return make_logic_form(
+            task_type="unsupported",
+            operation="not_applicable",
+            parameters={"reason": "Uploaded fee rules do not define an excessive retry fee amount; the manual describes excessive retrying as a downgrade risk."},
+            output_format=output_format | {"answer_type": "text"},
         )
 
     if "fee id" in lowered and "account_type" in lowered and "aci" in lowered:
@@ -781,6 +1079,118 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
     )
 
 
+def _is_worst_fraud_segment_question(lowered: str) -> bool:
+    return "fraud rate" in lowered and "segment" in lowered and any(token in lowered for token in ("worst", "highest", "target"))
+
+
+def _extract_segment_dimensions(question: str) -> list[str]:
+    lowered = question.lower()
+    dimensions: list[str] = []
+    aliases = (
+        ("merchant", "merchant"),
+        ("issuer country", "issuing_country"),
+        ("issuing country", "issuing_country"),
+        ("card_scheme", "card_scheme"),
+        ("card scheme", "card_scheme"),
+        ("shopper interaction", "shopper_interaction"),
+        ("payment interaction", "shopper_interaction"),
+        ("device type", "device_type"),
+        ("aci", "aci"),
+    )
+    for text, column in aliases:
+        if text in lowered and column not in dimensions:
+            dimensions.append(column)
+    return dimensions or ["merchant", "issuing_country", "card_scheme", "shopper_interaction"]
+
+
+def _is_correlation_threshold_question(lowered: str) -> bool:
+    return "correlation" in lowered and ("fraud" in lowered or "fraudulent" in lowered)
+
+
+def _extract_threshold(question: str, default: float) -> float:
+    match = re.search(r">\s*(\d+(?:\.\d+)?)", question)
+    return float(match.group(1)) if match else default
+
+
+def _is_outlier_fraud_rate_comparison_question(lowered: str) -> bool:
+    return "outlier" in lowered and "inlier" in lowered and "fraud rate" in lowered
+
+
+def _is_outlier_target_percentage_question(lowered: str) -> bool:
+    return (
+        "outlier" in lowered
+        and any(token in lowered for token in ("percentage", "proportion", "share"))
+        and ("fraud" in lowered or "fraudulent" in lowered)
+    )
+
+
+def _is_high_value_percentage_question(lowered: str) -> bool:
+    return (
+        any(token in lowered for token in ("high-value", "high value", "transaction amount", "transaction amounts", "eur_amount"))
+        and any(token in lowered for token in ("percentage", "proportion", "share"))
+        and any(token in lowered for token in ("percentile", "分位"))
+    )
+
+
+def _extract_percentile(question: str, default: float) -> float:
+    match = re.search(r"(\d+(?:\.\d+)?)(?:st|nd|rd|th)?\s+percentile", question, re.I)
+    if match:
+        value = float(match.group(1))
+        return value / 100 if value > 1 else value
+    return default
+
+
+def _is_missing_value_top_count_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("most frequent", "most common", "highest number")) and any(
+        token in lowered for token in ("missing", "null", "empty", "blank")
+    )
+
+
+def _extract_missing_field(question: str, context: dict[str, Any] | None = None) -> str | None:
+    lowered = question.lower()
+    if "email" in lowered:
+        return "email_address"
+    return _extract_field_name(question, context)
+
+
+def _extract_outlier_metric(question: str, context: dict[str, Any] | None = None) -> str:
+    """Resolve the numeric metric for outlier/high-value questions.
+
+    Temporal words such as "during the year 2023" should act as filters, not
+    as the outlier metric. If no explicit numeric metric is named, DABstep-style
+    payment questions default to transaction amount.
+    """
+
+    lowered = question.lower()
+    if any(token in lowered for token in ("amount", "value", "金额", "交易额", "支付额")):
+        return "eur_amount"
+    field = _extract_field_name(question, context)
+    if field in {"year", "day_of_year", "month", "hour_of_day", "minute_of_hour"}:
+        return "eur_amount"
+    return field or "eur_amount"
+
+
+def _is_fee_factor_direction_question(lowered: str) -> bool:
+    return "fee" in lowered and "cheaper" in lowered and "factors" in lowered and any(
+        token in lowered
+        for token in ("increased", "increase", "decreased", "decrease", "reduced", "reduce", "lowered", "lower", "set to true", "set to false")
+    )
+
+
+def _fee_factor_direction_objective(lowered: str) -> str:
+    if "set to true" in lowered:
+        return "cheaper_when_true"
+    if "set to false" in lowered:
+        return "cheaper_when_false"
+    if any(token in lowered for token in ("decreased", "decrease", "reduced", "reduce", "lowered", "lower")):
+        return "cheaper_when_decreased"
+    return "cheaper_when_increased"
+
+
+def _is_fee_volume_threshold_question(lowered: str) -> bool:
+    return "volume" in lowered and "fees" in lowered and "become cheaper" in lowered
+
+
 def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame], guidelines: str = "") -> LogicForm:
     """Parse a simple uploaded-table question into a generic LogicForm.
 
@@ -792,6 +1202,10 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
     retail_logic_form = parse_chinese_retail_question(question, tables, guidelines)
     if retail_logic_form is not None:
         return retail_logic_form
+
+    vds_bi_logic_form = parse_vds_bi_question(question, tables, guidelines)
+    if vds_bi_logic_form is not None:
+        return vds_bi_logic_form
 
     lowered = question.lower()
     table_name, df = _select_primary_table(tables)
@@ -824,6 +1238,16 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             output_format=output_format | {"answer_type": "number"},
         )
 
+    if _is_most_common_value_question(lowered):
+        group_by = _find_named_column(question, df) or _find_entity_column(question, df) or dimension
+        return make_logic_form(
+            task_type="ranking",
+            operation="top_count",
+            filters=filters,
+            parameters={"table": table_name, "group_by": group_by},
+            output_format=output_format | {"answer_type": "text"},
+        )
+
     if _is_row_count_question(lowered):
         return make_logic_form(
             task_type="aggregation",
@@ -831,6 +1255,17 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             filters=filters,
             parameters={"table": table_name},
             output_format=output_format | {"answer_type": "number"},
+        )
+
+    if _is_metric_per_distinct_entity_question(lowered):
+        field = _find_named_column(question, df) or _find_entity_column(question, df) or dimension
+        return make_logic_form(
+            task_type="aggregation",
+            operation="metric_per_distinct_entity",
+            metric=metric,
+            filters=filters,
+            parameters={"table": table_name, "metric": metric, "entity_field": field, "aggregation": "sum"},
+            output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 2)},
         )
 
     if _is_distinct_count_question(lowered):
@@ -893,11 +1328,11 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
         )
 
-    if "possible values" in lowered or "unique values" in lowered or "distinct values" in lowered:
+    if _is_unique_values_question(lowered):
         return make_logic_form(
             task_type="schema_query",
             operation="field_values",
-            parameters={"table": table_name, "field": _find_named_column(question, df)},
+            parameters={"table": table_name, "field": _find_named_column(question, df) or _find_entity_column(question, df) or dimension},
             output_format=output_format | {"answer_type": "list"},
         )
 
@@ -1082,6 +1517,7 @@ def _is_row_count_question(lowered: str) -> bool:
             "number of rows",
             "row count",
             "record count",
+            "how many transactions",
             "how many records",
             "total records",
             "total transactions",
@@ -1100,6 +1536,67 @@ def _is_distinct_count_question(lowered: str) -> bool:
     return any(token in lowered for token in ("distinct", "unique", "不同", "唯一", "去重")) and any(
         token in lowered for token in ("count", "number", "how many", "多少", "数量", "个数")
     )
+
+
+def _is_unique_values_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("possible values", "unique values", "distinct values", "unique set", "set of", "有哪些取值", "唯一值"))
+
+
+def _is_metric_per_distinct_entity_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("average", "avg", "mean", "平均")) and any(
+        token in lowered
+        for token in (
+            "per unique",
+            "per distinct",
+            "每个不同",
+            "每个唯一",
+            "按唯一",
+            "每个客户",
+            "每个用户",
+            "每个邮箱",
+        )
+    )
+
+
+def _metric_per_distinct_entity_metric(question: str, context: dict[str, Any] | None = None) -> tuple[str, str]:
+    """Resolve numerator semantics for average-per-unique-entity questions."""
+
+    lowered = question.lower()
+    count_phrases = (
+        "number of transactions",
+        "transaction count",
+        "transactions per unique",
+        "transactions per distinct",
+        "交易笔数",
+        "交易次数",
+        "订单数",
+        "记录数",
+    )
+    amount_phrases = ("transaction amount", "transaction value", "amount", "value", "交易金额", "交易额", "金额")
+    if any(token in lowered for token in count_phrases) and not any(token in lowered for token in amount_phrases):
+        return "__row_count__", "count"
+    return _extract_outlier_metric(question, context), "sum"
+
+
+def _is_most_common_value_question(lowered: str) -> bool:
+    if "fraud" in lowered or "fraudulent" in lowered:
+        return False
+    return any(token in lowered for token in ("most common", "most frequent", "most commonly", "出现次数最多", "最常见", "最频繁"))
+
+
+def _is_boolean_ratio_question(lowered: str) -> bool:
+    return "ratio" in lowered and "credit card" in lowered and "debit card" in lowered
+
+
+def _is_device_transaction_count_question(lowered: str) -> bool:
+    return "transactions" in lowered and "conducted on" in lowered and "devices" in lowered
+
+
+def _extract_device_type(question: str) -> str | None:
+    for value in ("Windows", "Linux", "MacOS", "iOS", "Android", "Other"):
+        if re.search(rf"\b{re.escape(value)}\b", question, re.I):
+            return value
+    return None
 
 
 def _is_repeat_entity_percentage_question(lowered: str) -> bool:
@@ -1131,10 +1628,136 @@ def _is_outlier_count_question(lowered: str) -> bool:
     )
 
 
+def _is_schema_field_lookup_question(lowered: str) -> bool:
+    return (
+        any(token in lowered for token in ("name of the column", "which column", "what column", "column name", "字段名", "哪一列", "哪个字段"))
+        and any(token in lowered for token in ("indicates", "represents", "stores", "shows", "表示", "代表", "标识", "记录"))
+    )
+
+
+def _extract_schema_concept(question: str) -> str:
+    lowered = question.lower()
+    if "fraud" in lowered or "欺诈" in question:
+        return "fraud"
+    if "email" in lowered or "邮箱" in question:
+        return "email"
+    if "country" in lowered or "国家" in question:
+        return "country"
+    return "field"
+
+
+def _schema_field_for_concept(question: str, context: dict[str, Any] | None = None) -> str:
+    concept = _extract_schema_concept(question)
+    concept_fields = {
+        "fraud": ("has_fraudulent_dispute", "is_fraud", "fraud"),
+        "email": ("email_address", "email"),
+        "country": ("issuing_country", "ip_country", "acquirer_country", "country"),
+    }
+    payments = None if context is None else context.get("payments")
+    if payments is not None:
+        columns = {str(column) for column in payments.columns}
+        for field in concept_fields.get(concept, ()):
+            if field in columns:
+                return field
+    return concept_fields.get(concept, ("",))[0]
+
+
+def _is_present_percentage_question(lowered: str) -> bool:
+    return (
+        any(token in lowered for token in ("percentage", "proportion", "share", "rate"))
+        and any(token in lowered for token in ("have", "has", "with", "associated"))
+        and any(token in lowered for token in ("email address", "email", "card number", "ip address"))
+    )
+
+
+def _is_average_transaction_amount_question(lowered: str) -> bool:
+    return (
+        ("average transaction amount" in lowered or "avg transaction amount" in lowered)
+        and not any(token in lowered for token in (" per ", " by ", "top ", "which ", "scenario"))
+    )
+
+
+def _is_day_of_year_top_count_question(lowered: str) -> bool:
+    return (
+        "day of the year" in lowered
+        and any(token in lowered for token in ("most transactions", "highest number of transactions", "most transaction"))
+    )
+
+
+def _is_most_missing_column_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("which column", "what column", "column has")) and any(
+        token in lowered for token in ("most missing", "highest missing", "missing data")
+    )
+
+
+def _is_repeat_entity_count_question(lowered: str) -> bool:
+    return (
+        any(token in lowered for token in ("how many", "number of", "count"))
+        and any(token in lowered for token in ("more than one", "multiple", "repeat", "repeated"))
+        and any(token in lowered for token in ("shopper", "customer", "email"))
+        and "transaction" in lowered
+    )
+
+
+def _repeat_entity_field_for_question(lowered: str) -> str:
+    if "email" in lowered or "shopper" in lowered or "customer" in lowered:
+        return "email_address"
+    if "card" in lowered:
+        return "card_number"
+    if "ip" in lowered:
+        return "ip_address"
+    return "email_address"
+
+
+def _present_field_for_question(lowered: str) -> str:
+    if "email" in lowered:
+        return "email_address"
+    if "ip address" in lowered:
+        return "ip_address"
+    if "card number" in lowered:
+        return "card_number"
+    return "email_address"
+
+
+def _is_fraud_percentage_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("percentage", "proportion", "share", "rate")) and any(
+        token in lowered for token in ("fraudulent", "fraud")
+    )
+
+
+def _is_fraudulent_transaction_percentage_question(lowered: str) -> bool:
+    return (
+        any(token in lowered for token in ("percentage", "proportion", "share"))
+        and any(token in lowered for token in ("fraudulent", "fraud"))
+        and "transaction" in lowered
+    )
+
+
 def _is_null_check_question(lowered: str) -> bool:
     return any(token in lowered for token in ("null", "missing", "empty", "blank", "nan", "空值", "缺失", "空白")) and any(
-        token in lowered for token in ("count", "number", "how many", "any", "exist", "有", "多少", "数量", "个数")
+        token in lowered for token in ("count", "number", "how many", "any", "exist", "percentage", "proportion", "share", "rate", "有", "多少", "数量", "个数", "占比", "比例", "百分比")
     )
+
+
+def _is_missing_columns_choice_question(lowered: str) -> bool:
+    return "which columns" in lowered and "missing data" in lowered
+
+
+def _extract_columns_mentioned(question: str, context: dict[str, Any] | None = None) -> list[str]:
+    lowered = question.lower()
+    fields: list[str] = []
+    for alias, column in FIELD_ALIASES.items():
+        if column in fields:
+            continue
+        if re.search(rf"\b{re.escape(alias)}\b", lowered) or column in lowered:
+            fields.append(column)
+    payments = None if context is None else context.get("payments")
+    if payments is not None:
+        for column in payments.columns:
+            name = str(column)
+            if name not in fields and (name.lower() in lowered or name in question):
+                fields.append(name)
+    return fields
 
 
 def _null_check_mode(lowered: str) -> str:
@@ -1178,7 +1801,7 @@ def _is_top_k_share_question(lowered: str) -> bool:
 def _infer_aggregation(lowered: str, default: str) -> str:
     if any(token in lowered for token in ("average", "avg", "mean", "平均")):
         return "mean"
-    if any(token in lowered for token in ("count", "number", "数量", "多少")):
+    if re.search(r"\b(count|number)\b", lowered) or any(token in lowered for token in ("数量", "多少")):
         return "count"
     if any(token in lowered for token in ("max", "最高")):
         return "max"

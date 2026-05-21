@@ -68,7 +68,7 @@
 3. 修复项必须指向通用能力，例如字段映射、日期解析、聚合口径、TopN 排序、费用规则执行。
 4. 修复项必须至少附带一个非 Benchmark 或合成通用用例；只在当前失败题目上变好不算通过。
 
-当前状态（2026-05-21）：已达到最小可测状态。runner 支持 limit/offset、predictions、trace、metrics、error_analysis；dev 前 10 题可本地评分，public all split 因 answer 为空不能本地计算官方准确率。
+当前状态（2026-05-22）：已达到可回归状态。runner 支持 limit/offset、predictions、trace、metrics、error_analysis；dev 前 10 题可本地评分并保持 9/10；DABstep public all 1-450 mock 多 Agent 执行覆盖为 450/450，public all split 因 answer 为空不能本地计算 hidden official accuracy。
 
 ## Phase 4：Microsoft Agent Framework Adapter 实验
 
@@ -130,4 +130,4 @@
 4. 可替换为 LangGraph、CrewAI 或自研 runtime，而不重写 data_agent_core。
 5. 业务能力改动必须通过泛化验收：合成/非 Benchmark 用例、同类变体用例和旧代表回归用例都不能退化。
 
-当前状态（2026-05-22）：Phase 6 最小可运行状态已完成，并开始业务口径驱动校验增强。backend analyze 默认使用 multi_agent；DABstep 多 Agent runner 可运行 dev 前 10 题并保持 9/10；agent_runtime 负责角色执行和工具调用；multi_agent_workflows 负责编排；data_agent_core 不 import multi_agent_workflows 或 Microsoft Agent Framework。Not Applicable 归因已区分 true_unsupported / capability_gap，并补齐 row_count、distinct_count、repeat_entity_percentage、outlier_count、top_k_share、filtered_metric_ranking、null_check、季度过滤、fraud likelihood 多维比较和 fee what-if candidate table。Provider-native tool calling adapter 已具备 OpenAI / DeepSeek 兼容 schema、tool call 解析、ToolDispatcher 分发和 mock loop 测试。DABstep 100-130 与 Microsoft 脱敏数据 21-40 的回归结论已进入 MAIN_GOAL；已补齐 DABstep hour-of-day top group / outlier group 和中文零售服务客户、目标达成率、今日分销、拜访/陈列记录、字段枚举、路线品类贡献能力。Microsoft 21-40 mock/真实 LLM 回归均为 20/20；DABstep 100-130 mock 多 Agent 执行覆盖为 31/31、unexpected_not_applicable=0，official accuracy 仍因 public all answer 为空而不可本地计算。tracked-file secret scan、扩大后的 Benchmark 硬编码扫描和 data_agent_core import 边界测试已纳入架构测试。下一步继续用更大规模中英文真实数据验证泛化稳定性。
+当前状态（2026-05-22）：Phase 6 最小可运行状态已完成，并开始业务口径驱动校验增强。backend analyze 默认使用 multi_agent；DABstep 多 Agent runner 可运行 dev 前 10 题并保持 9/10；agent_runtime 负责角色执行和工具调用；multi_agent_workflows 负责编排；data_agent_core 不 import multi_agent_workflows 或 Microsoft Agent Framework。Not Applicable 归因已区分 true_unsupported / capability_gap，并补齐 row_count、distinct_count、repeat_entity_percentage、outlier_count、top_k_share、filtered_metric_ranking、null_check、季度过滤、fraud likelihood 多维比较、fee what-if candidate table、DABstep 131-180 的 outlier/null-filter 缺口、Microsoft 41-60 的中文零售过滤缺口和 VDS 中文 BI 周期比较第一批能力。Provider-native tool calling adapter 已具备 OpenAI / DeepSeek 兼容 schema、tool call 解析、ToolDispatcher 分发和 mock loop 测试。Microsoft 脱敏数据 1-300 mock 离线 scorer 为 300/300；DABstep public all 1-450 mock 多 Agent 执行覆盖为 450/450，official accuracy 仍因 public all answer 为空而不可本地计算；VDS 桌面 `问题汇总.xlsx` 五域全部 95 题 smoke 为 95/95 成功。tracked-file secret scan、扩大后的 Benchmark 硬编码扫描和 data_agent_core import 边界测试已纳入架构测试。下一步继续用真实 LLM 大规模回归、更多中文真实数据和复杂 BI 问法验证泛化稳定性。

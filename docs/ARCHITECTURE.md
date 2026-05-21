@@ -182,6 +182,22 @@ Microsoft 脱敏数据回归只用于暴露中文真实业务表能力缺口，�
 5. DABstep 100-130 的 public proxy observation 只能用于后验趋势观察，official 本地准确率仍因 public all answer 为空而不可计算。
 6. DABstep hour-of-day 能力作为通用分组能力实现：普通交易量用 `top_count`，离群交易先按 Z-Score / IQR 识别 outlier，再用 `top_outlier_group` 按小时或其他维度统计。
 
+2026-05-22 更新：Microsoft 脱敏数据 41-60 已通过离线 runner 回归到 20/20。该 runner 只在 response 生成后使用标准答案评分，不向 Agent workflow 传入 task_id 或 answer。
+
+## VDS 中文 BI 周期比较边界
+
+VDS 桌面测试数据用于暴露中文 BI 周环比、阈值、异常和多行业指标能力缺口，不能把题号、标准答案、固定文件名或固定实体值写入核心链路。
+
+当前 VDS BI 能力边界：
+
+1. `vds_bi_intent` 只根据上传表 schema、中文实体词和指标 `_row` 字段生成 `vds_*` LogicForm。
+2. `vds_bi_executor` 只执行周期比较、排名变化、TopN delta、增长数量占比、阈值计数、同圈层异常和维度环比增长率。
+3. 同一套能力必须能迁移到门店、校区、院区、站点和客户，不允许只服务某一个 Excel 文件。
+4. LLM stage payload 必须 JSON-safe，pandas Timestamp 等对象必须转为可序列化摘要，不能因复杂表格值中断 Verifier / Insight。
+5. VDS 标准答案或人工答案只能用于后验评分或人工检查，不进入 prompt、Planner、Executor、Verifier、Correction、测试 fixture 或 trace。
+
+当前验证：桌面 VDS `问题汇总.xlsx` 五域全部 95 题 smoke 为 95/95 成功；该结果是执行覆盖 smoke，不等同于完整人工答案准确率。
+
 ## 语言优先级
 
 1. 产品使用场景以中文为主，中文理解和中文数据表分析能力优先级高于英文。
@@ -230,4 +246,4 @@ Microsoft 脱敏数据回归只用于暴露中文真实业务表能力缺口，�
 - 扩展 CSV / Excel 表头识别和多 sheet 策略。
 - 将 sqlite fallback 替换或扩展为 DuckDB runtime，但保持核心框架无关。
 - 后续再把 provider 原生 OpenAI / DeepSeek 工具循环接入真实网络 smoke；当前已有 schema / tool call 解析 / mock loop，但不作为生产默认链路。
-- Phase 6 后续再扩展真实 Microsoft Agent Framework demo、并行 executor、更完整 Correction Loop 和 ACI associated cost 通用口径，不把核心算法写进 workflow。
+- Phase 6 后续再扩展真实 Microsoft Agent Framework demo、并行 executor、更完整 Correction Loop、ACI associated cost 通用口径、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 能力，不把核心算法写进 workflow。

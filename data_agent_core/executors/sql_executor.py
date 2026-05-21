@@ -59,13 +59,16 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         "ranking",
         "row_count",
         "distinct_count",
+        "metric_per_distinct_entity",
         "repeat_entity_percentage",
+        "repeat_entity_count",
         "top_k_share",
         "null_check",
         "filtered_metric_ranking",
         "rank_by_metric",
         "field_values",
         "boolean_percentage",
+        "boolean_count_ratio",
         "fraud_rate_filtered",
     }:
         raise ValueError(f"Operation {op} is not SQL-compatible in the MVP.")
@@ -88,8 +91,12 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
             return _row_count_sql(conn, plan)
         if op == "distinct_count":
             return _distinct_count_sql(conn, plan)
+        if op == "metric_per_distinct_entity":
+            return _metric_per_distinct_entity_sql(conn, plan)
         if op == "repeat_entity_percentage":
             return _repeat_entity_percentage_sql(conn, plan)
+        if op == "repeat_entity_count":
+            return _repeat_entity_count_sql(conn, plan)
         if op == "top_k_share":
             return _top_k_share_sql(conn, plan)
         if op == "null_check":
@@ -102,6 +109,8 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
             return _field_values_sql(conn, plan)
         if op == "boolean_percentage":
             return _boolean_percentage_sql(conn, plan)
+        if op == "boolean_count_ratio":
+            return _boolean_count_ratio_sql(conn, plan)
         if op == "fraud_rate_filtered":
             return _fraud_rate_filtered_sql(conn, plan)
     finally:
@@ -132,14 +141,7 @@ def _table(tables: dict[str, Any], name: str | None = None) -> Any:
 
 def _top_count_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> Any:
     params = plan.logic_form.parameters
-    filters = plan.logic_form.filters
-    where = []
-    values: list[Any] = []
-    for column, expected in filters.items():
-        if expected is not None:
-            where.append(f"{_quote_identifier(str(column))} = ?")
-            values.append(expected)
-    where_sql = " WHERE " + " AND ".join(where) if where else ""
+    where_sql, values = _where_from_filters(plan.logic_form.filters)
     group_by = params["group_by"]
     q_group_by = _quote_identifier(group_by)
     sql = f"SELECT {q_group_by}, COUNT(*) AS n FROM analysis_table{where_sql} GROUP BY {q_group_by} ORDER BY n DESC LIMIT 1"
@@ -311,6 +313,25 @@ def _distinct_count_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> int:
     )
 
 
+def _metric_per_distinct_entity_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float | str:
+    metric = str(plan.logic_form.parameters.get("metric") or "")
+    entity_field = str(plan.logic_form.parameters.get("entity_field") or plan.logic_form.parameters.get("field") or "")
+    aggregation = str(plan.logic_form.parameters.get("aggregation") or "sum")
+    if not metric or not entity_field:
+        raise ValueError("metric_per_distinct_entity requires metric and entity_field.")
+    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    numerator_sql = "COUNT(*)" if metric in {"__row_count__", "row_count", "transaction_count"} or aggregation == "count" else f"SUM(CAST({_quote_identifier(metric)} AS REAL))"
+    row = conn.execute(
+        f"SELECT {numerator_sql}, "
+        f"COUNT(DISTINCT {_quote_identifier(entity_field)}) FROM analysis_table{where_sql}",
+        values,
+    ).fetchone()
+    entity_count = int(row[1] or 0)
+    if entity_count == 0:
+        return "Not Applicable"
+    return float(row[0] or 0.0) / entity_count
+
+
 def _repeat_entity_percentage_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float:
     field = str(plan.logic_form.parameters["field"])
     where_sql, values = _where_from_filters(plan.logic_form.filters)
@@ -326,6 +347,21 @@ def _repeat_entity_percentage_sql(conn: sqlite3.Connection, plan: AnalysisPlan) 
     if entity_count == 0:
         return 0.0
     return float(rows[1] or 0) / entity_count * 100
+
+
+def _repeat_entity_count_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> int:
+    field = str(plan.logic_form.parameters["field"])
+    min_count = int(plan.logic_form.parameters.get("min_count") or 2)
+    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    q_field = _quote_identifier(field)
+    null_clause = f"({q_field} IS NOT NULL AND TRIM(LOWER(CAST({q_field} AS TEXT))) NOT IN ('', 'nan', 'none', 'null'))"
+    filtered_sql = f"{where_sql} AND {null_clause}" if where_sql else f" WHERE {null_clause}"
+    row = conn.execute(
+        f"SELECT COUNT(*) FROM (SELECT {q_field}, COUNT(*) AS n FROM analysis_table{filtered_sql} "
+        f"GROUP BY {q_field} HAVING n >= ?)",
+        values + [min_count],
+    ).fetchone()
+    return int(row[0] or 0)
 
 
 def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float:
@@ -386,8 +422,21 @@ def _null_check_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> int | float
         checked_field = None
     if mode == "exists":
         return {"answer": "yes" if null_count else "no", "null_count": null_count, "checked_field": checked_field}
+    if mode == "max_field":
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(analysis_table)").fetchall()]
+        if not columns:
+            return "Not Applicable"
+        counts: list[tuple[str, int]] = []
+        for column in columns:
+            null_expr = f"({_quote_identifier(column)} IS NULL OR TRIM(LOWER(CAST({_quote_identifier(column)} AS TEXT))) IN ('', 'nan', 'none', 'null'))"
+            count = int(conn.execute(f"SELECT SUM(CASE WHEN {null_expr} THEN 1 ELSE 0 END) FROM analysis_table").fetchone()[0] or 0)
+            counts.append((column, count))
+        counts.sort(key=lambda item: (-item[1], item[0]))
+        return counts[0][0]
     if mode == "rate":
         return 0.0 if denominator == 0 else null_count / denominator * 100
+    if mode == "present_rate":
+        return 0.0 if denominator == 0 else (denominator - null_count) / denominator * 100
     return null_count
 
 
@@ -432,6 +481,25 @@ def _boolean_percentage_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> flo
     if total_rows == 0:
         return 0.0
     return float(rows[1] or 0) / total_rows * 100
+
+
+def _boolean_count_ratio_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float | str:
+    params = plan.logic_form.parameters
+    field = str(params["field"])
+    left_value = bool(params.get("left_value", True))
+    right_value = bool(params.get("right_value", False))
+    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    rows = conn.execute(
+        f"SELECT "
+        f"SUM(CASE WHEN LOWER(CAST({_quote_identifier(field)} AS TEXT)) IN ({_bool_literals_sql(left_value)}) THEN 1 ELSE 0 END), "
+        f"SUM(CASE WHEN LOWER(CAST({_quote_identifier(field)} AS TEXT)) IN ({_bool_literals_sql(right_value)}) THEN 1 ELSE 0 END) "
+        f"FROM analysis_table{where_sql}",
+        values,
+    ).fetchone()
+    right_count = int(rows[1] or 0)
+    if right_count == 0:
+        return "Not Applicable"
+    return float(rows[0] or 0) / right_count
 
 
 def _fraud_rate_filtered_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float | str:
@@ -481,6 +549,14 @@ def _where_from_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
     values: list[Any] = []
     for column, expected in filters.items():
         if expected is None:
+            continue
+        if expected == "__NULL__":
+            q_column = _quote_identifier(str(column))
+            where.append(f"({q_column} IS NULL OR TRIM(LOWER(CAST({q_column} AS TEXT))) IN ('', 'nan', 'none', 'null'))")
+            continue
+        if expected == "__NOT_NULL__":
+            q_column = _quote_identifier(str(column))
+            where.append(f"({q_column} IS NOT NULL AND TRIM(LOWER(CAST({q_column} AS TEXT))) NOT IN ('', 'nan', 'none', 'null'))")
             continue
         if column == "month_range":
             start, end = expected

@@ -32,31 +32,25 @@ API key 只允许通过环境变量提供，不写入仓库、文档、trace 或
 
 ## Core Test
 
-当前可用 Codex bundled Python 运行核心测试：
+当前可用 Codex bundled Python 运行完整核心测试：
 
 ```bash
-VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_dabstep_core
+VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
 ```
 
-当前可用 mock LLM 跑 DABstep dev 前 10 题，验证核心算法和链路字段：
+当前可用 mock LLM 跑 DABstep public all 1-450 执行覆盖，验证多 Agent 链路、trace 和能力路由：
 
 ```bash
-VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --output-dir outputs/dabstep_core_mvp_llm_chain
+VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split all --limit 450 --offset 0 --output-dir outputs/dabstep_all_1_450_mock_current_verify_20260522
 ```
 
-当前可用 mock LLM 跑 DABstep dev 前 10 题的多 Agent 链路：
+当前可用 mock LLM 跑 Microsoft 脱敏数据 1-300 离线 scorer；标准答案只在 response 生成后评分，不进入 Agent workflow：
 
 ```bash
-VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/phase6_multi_agent_dev_verify_final
+VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root /Users/trevorcui/Desktop/微软脱敏数据 --limit 300 --offset 0 --output-dir outputs/microsoft_anonymized_1_300_mock_current_verify_20260522
 ```
 
 真实 LLM 运行时，先在本地 shell export 环境变量，再执行同一命令。不要把真实 key 写进命令示例、文档或 Git。
-
-按 BM 要求生成 all.jsonl 前 10 题预测：
-
-```bash
-VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split all --limit 10 --output-dir outputs/dabstep_core_mvp_llm_chain
-```
 
 ## Phase Status
 
@@ -65,7 +59,7 @@ VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runti
 - Phase 3：Benchmark runner、metrics、error_analysis 已可测；禁止单题硬编码和伪泛化补丁，标准答案只用于评分。
 - Phase 4：Microsoft Agent Framework adapter 已作为可选承载层验证，不污染 `data_agent_core`。
 - Phase 5：受控 Tool Calling 契约、ToolDispatcher timeout 边界、tool trace 摘要、内部工具 catalog 和 provider-native mock loop 已建立。
-- Phase 6：最小多 Agent workflow 已启用，backend 默认 `multi_agent`，DABstep dev 前 10 当前可复现 9/10。
+- Phase 6：最小多 Agent workflow 已启用，backend 默认 `multi_agent`；DABstep dev 前 10 当前可复现 9/10，DABstep public all 1-450 mock 执行覆盖 450/450，Microsoft 脱敏数据 1-300 mock 离线 scorer 300/300，桌面 VDS `问题汇总.xlsx` 五个真实问题 sheet 共 95 题 smoke 95/95。
 
 后续 TODO：
 

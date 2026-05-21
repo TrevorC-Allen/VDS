@@ -13,6 +13,7 @@ from data_agent_core.core.dabstep_fee_engine import DabstepFeeEngine
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import PANDAS_EXECUTION_ERROR
 from data_agent_core.executors.chinese_retail_executor import execute_chinese_retail_operation, is_chinese_retail_operation
+from data_agent_core.executors.vds_bi_executor import execute_vds_bi_operation, is_vds_bi_operation
 
 
 def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult:
@@ -56,13 +57,19 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
 
     if is_chinese_retail_operation(op):
         return execute_chinese_retail_operation(logic, context)
+    if is_vds_bi_operation(op):
+        return execute_vds_bi_operation(logic, context)
     if op == "not_applicable":
         return "Not Applicable"
+    if op == "schema_field_lookup":
+        return _schema_field_lookup(_analysis_dataframe(context, params), params)
     if op == "detail_lookup":
         return _detail_lookup(context["tables"], params)
     if op == "filtering":
         return _filtering(context["tables"], params)
     if op == "aggregation":
+        if "tables" not in context:
+            return _aggregation_dataframe(_analysis_dataframe(context, params), params)
         return _aggregation(context["tables"], params)
     if op == "ranking":
         return _ranking(context["tables"], params)
@@ -70,24 +77,48 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         return _row_count(_analysis_dataframe(context, params), filters)
     if op == "distinct_count":
         return _distinct_count(_analysis_dataframe(context, params), filters, params)
+    if op == "metric_per_distinct_entity":
+        return _metric_per_distinct_entity(_analysis_dataframe(context, params), filters, params)
     if op == "repeat_entity_percentage":
         return _repeat_entity_percentage(_analysis_dataframe(context, params), filters, params)
+    if op == "repeat_entity_count":
+        return _repeat_entity_count(_analysis_dataframe(context, params), filters, params)
     if op == "outlier_count":
         return _outlier_count(_analysis_dataframe(context, params), filters, params)
     if op == "top_outlier_group":
         return _top_outlier_group(_analysis_dataframe(context, params), filters, params)
     if op == "null_check":
         return _null_check(_analysis_dataframe(context, params), filters, params)
+    if op == "missing_columns_choice":
+        return _missing_columns_choice(_analysis_dataframe(context, params), params)
     if op == "top_k_share":
         return _top_k_share(_analysis_dataframe(context, params), filters, params)
+    if op == "quantile_percentage":
+        return _quantile_percentage(_analysis_dataframe(context, params), filters, params)
+    if op == "outlier_target_percentage":
+        return _outlier_target_percentage(_analysis_dataframe(context, params), filters, params)
+    if op == "outlier_rate_comparison":
+        return _outlier_rate_comparison(_analysis_dataframe(context, params), filters, params)
+    if op == "correlation_threshold":
+        return _correlation_threshold(_analysis_dataframe(context, params), filters, params)
+    if op == "worst_fraud_segment":
+        return _worst_fraud_segment(_analysis_dataframe(context, params), filters, params)
     if op == "filtered_metric_ranking":
         return _filtered_metric_ranking(_analysis_dataframe(context, params), filters, params)
     if op == "rank_by_metric":
         return _rank_by_metric(context["payments"] if "payments" in context else _table(context["tables"], params.get("table")), logic)
     if op == "field_values":
-        return _field_values(_analysis_dataframe(context, params), params)
+        df = _analysis_dataframe(context, params)
+        field = str(params.get("field") or "")
+        if field in df.columns:
+            return _field_values(df, params)
+        if "context_dir" in context:
+            return _fee_engine(context).field_values(field)
+        return _field_values(df, params)
     if op == "boolean_percentage":
         return _boolean_percentage(_analysis_dataframe(context, params), filters, params)
+    if op == "boolean_count_ratio":
+        return _boolean_count_ratio(_analysis_dataframe(context, params), filters, params)
     if op == "duplicate_check":
         return _duplicate_check(_analysis_dataframe(context, params), params)
     if op == "top_count":
@@ -216,6 +247,10 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
             "objective": str(params.get("objective") or logic.objective or "maximum"),
             "candidate_table": candidates,
         }
+    if op == "fee_factor_direction":
+        return engine.fee_factor_direction(objective=str(params.get("objective") or "cheaper_when_increased"))
+    if op == "fee_volume_threshold":
+        return engine.fee_volume_threshold()
     raise ValueError(f"Unsupported operation: {op}")
 
 
@@ -263,6 +298,15 @@ def _filtering(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> list[
 
 def _aggregation(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> Any:
     data = _table(tables, params.get("table"))
+    metric = params.get("metric")
+    dimension = params.get("dimension")
+    aggregation = str(params.get("aggregation") or "sum")
+    if dimension:
+        return _aggregate_grouped(data, str(dimension), None if metric is None else str(metric), aggregation)
+    return _aggregate_series(data, None if metric is None else str(metric), aggregation)
+
+
+def _aggregation_dataframe(data: pd.DataFrame, params: dict[str, Any]) -> Any:
     metric = params.get("metric")
     dimension = params.get("dimension")
     aggregation = str(params.get("aggregation") or "sum")
@@ -361,6 +405,30 @@ def _field_values(df: pd.DataFrame, params: dict[str, Any]) -> list[str]:
     return sorted(values, key=lambda item: item.lower())
 
 
+def _missing_columns_choice(df: pd.DataFrame, params: dict[str, Any]) -> str:
+    fields = [field for field in (params.get("fields") or []) if field in df.columns]
+    if not fields:
+        return "Not Applicable"
+    missing_fields = [
+        field
+        for field in fields
+        if _null_mask(df[field]).any()
+    ]
+    options = params.get("options") or {}
+    if options:
+        normalized_missing = {field.lower() for field in missing_fields}
+        for letter, text in options.items():
+            lowered = str(text).lower()
+            if "neither" in lowered and not missing_fields:
+                return f"{letter}. {text}"
+            if "both" in lowered and len(normalized_missing) == len(fields) and all(field.lower() in lowered for field in fields):
+                return f"{letter}. {text}"
+            option_fields = {field.lower() for field in fields if field.lower() in lowered}
+            if option_fields and option_fields == normalized_missing:
+                return f"{letter}. {text}"
+    return ", ".join(missing_fields)
+
+
 def _row_count(df: pd.DataFrame, filters: dict[str, Any]) -> int:
     return int(len(_apply_dataframe_filters(df, filters)))
 
@@ -373,6 +441,43 @@ def _distinct_count(df: pd.DataFrame, filters: dict[str, Any], params: dict[str,
     return int(data[field].dropna().nunique())
 
 
+def _boolean_count_ratio(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> float | str:
+    data = _apply_dataframe_filters(df, filters)
+    field = str(params.get("field") or "")
+    if field not in data.columns:
+        raise ValueError("boolean_count_ratio requires a known boolean field.")
+    values = _bool_series(data[field])
+    left_value = bool(params.get("left_value", True))
+    right_value = bool(params.get("right_value", False))
+    left_count = int((values == left_value).sum())
+    right_count = int((values == right_value).sum())
+    if right_count == 0:
+        return "Not Applicable"
+    return left_count / right_count
+
+
+def _metric_per_distinct_entity(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> float | str:
+    data = _apply_dataframe_filters(df, filters)
+    metric = str(params.get("metric") or "")
+    entity_field = str(params.get("entity_field") or params.get("field") or "")
+    aggregation = str(params.get("aggregation") or "sum")
+    is_row_count_metric = metric in {"__row_count__", "row_count", "transaction_count"} or aggregation == "count"
+    if (not is_row_count_metric and metric not in data.columns) or entity_field not in data.columns:
+        raise ValueError("metric_per_distinct_entity requires known metric and entity columns.")
+    entity_count = int(data[entity_field].dropna().nunique())
+    if entity_count == 0:
+        return "Not Applicable"
+    if is_row_count_metric:
+        numerator = float(len(data))
+    else:
+        values = pd.to_numeric(data[metric], errors="coerce").fillna(0)
+        if aggregation == "mean":
+            numerator = float(values.mean())
+        else:
+            numerator = float(values.sum())
+    return numerator / entity_count
+
+
 def _repeat_entity_percentage(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> float:
     data = _apply_dataframe_filters(df, filters)
     field = str(params.get("field") or params.get("entity_field") or "")
@@ -383,6 +488,17 @@ def _repeat_entity_percentage(df: pd.DataFrame, filters: dict[str, Any], params:
         return 0.0
     repeat_entities = int((counts > 1).sum())
     return repeat_entities / int(len(counts)) * 100
+
+
+def _repeat_entity_count(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> int:
+    data = _apply_dataframe_filters(df, filters)
+    field = str(params.get("field") or params.get("entity_field") or "")
+    if field not in data.columns:
+        raise ValueError("repeat_entity_count requires a known entity field column.")
+    min_count = int(params.get("min_count") or 2)
+    values = data.loc[~_null_mask(data[field]), field].astype(str)
+    counts = values.value_counts()
+    return int((counts >= min_count).sum())
 
 
 def _outlier_count(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> int:
@@ -468,6 +584,110 @@ def _top_k_share(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, An
     return float(grouped.head(limit).sum()) / denominator * 100
 
 
+def _quantile_percentage(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> float:
+    data = _apply_dataframe_filters(df, filters)
+    metric = str(params.get("metric") or "")
+    if metric not in data.columns:
+        raise ValueError("quantile_percentage requires a known numeric metric column.")
+    series = pd.to_numeric(data[metric], errors="coerce").dropna()
+    if series.empty:
+        return 0.0
+    quantile = float(params.get("quantile") or 0.9)
+    threshold = float(series.quantile(quantile))
+    if str(params.get("operator") or "above") == "below":
+        selected = series < threshold
+    else:
+        selected = series > threshold
+    return float(selected.mean() * 100)
+
+
+def _outlier_target_percentage(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> float | str:
+    data = _apply_dataframe_filters(df, filters)
+    metric = str(params.get("metric") or "")
+    target = str(params.get("target") or "")
+    if metric not in data.columns or target not in data.columns:
+        raise ValueError("outlier_target_percentage requires known metric and target columns.")
+    outliers = data[_outlier_mask(data, metric, params)]
+    if outliers.empty:
+        return "Not Applicable"
+    return float(_bool_series(outliers[target]).mean() * 100)
+
+
+def _outlier_rate_comparison(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> str:
+    data = _apply_dataframe_filters(df, filters)
+    metric = str(params.get("metric") or "")
+    target = str(params.get("target") or "")
+    if metric not in data.columns or target not in data.columns:
+        raise ValueError("outlier_rate_comparison requires known metric and target columns.")
+    mask = _outlier_mask(data, metric, params)
+    outliers = data[mask]
+    inliers = data[~mask]
+    if outliers.empty or inliers.empty:
+        return "Not Applicable"
+    outlier_rate = float(_bool_series(outliers[target]).mean())
+    inlier_rate = float(_bool_series(inliers[target]).mean())
+    higher = outlier_rate > inlier_rate
+    expected = higher if str(params.get("operator") or "higher_than") == "higher_than" else not higher
+    return "yes" if expected else "no"
+
+
+def _correlation_threshold(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    data = _apply_dataframe_filters(df, filters)
+    metric = str(params.get("metric") or "")
+    target = str(params.get("target") or "")
+    if metric not in data.columns or target not in data.columns:
+        raise ValueError("correlation_threshold requires known metric and target columns.")
+    metric_series = pd.to_numeric(data[metric], errors="coerce")
+    target_series = _bool_series(data[target]).astype(float)
+    valid = pd.DataFrame({"metric": metric_series, "target": target_series}).dropna()
+    if len(valid) < 2 or valid["metric"].nunique() < 2 or valid["target"].nunique() < 2:
+        return "Not Applicable"
+    coefficient = float(valid["metric"].corr(valid["target"]))
+    threshold = float(params.get("threshold") or 0.5)
+    value = abs(coefficient) if params.get("absolute", True) else coefficient
+    return {
+        "answer": "yes" if value > threshold else "no",
+        "correlation": coefficient,
+        "threshold": threshold,
+    }
+
+
+def _worst_fraud_segment(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    data = _apply_dataframe_filters(df, filters)
+    dimensions = [str(item) for item in (params.get("dimensions") or []) if str(item) in data.columns]
+    if not dimensions:
+        raise ValueError("worst_fraud_segment requires at least one known dimension.")
+    rows: list[dict[str, Any]] = []
+    for dimension in dimensions:
+        for value, group in data.groupby(dimension, dropna=True):
+            total_volume = float(pd.to_numeric(group["eur_amount"], errors="coerce").fillna(0).sum()) if "eur_amount" in group.columns else float(len(group))
+            if total_volume == 0:
+                continue
+            fraud_mask = _bool_series(group["has_fraudulent_dispute"])
+            fraud_volume = float(pd.to_numeric(group.loc[fraud_mask, "eur_amount"], errors="coerce").fillna(0).sum()) if "eur_amount" in group.columns else float(fraud_mask.sum())
+            rows.append(
+                {
+                    "segment": dimension,
+                    "value": str(value),
+                    "fraud_rate": 0.0 if total_volume == 0 else fraud_volume / total_volume * 100,
+                    "fraudulent_volume": fraud_volume,
+                    "total_volume": total_volume,
+                    "transaction_count": int(len(group)),
+                }
+            )
+    if not rows:
+        return "Not Applicable"
+    rows.sort(key=lambda row: (-float(row["fraud_rate"]), row["segment"], row["value"]))
+    selected = rows[0]
+    return {
+        "answer": f"{selected['segment']}={selected['value']}",
+        "segment": selected["segment"],
+        "value": selected["value"],
+        "fraud_rate": selected["fraud_rate"],
+        "candidate_table": rows,
+    }
+
+
 def _filtered_metric_ranking(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:
     data = _apply_dataframe_filters(df, filters)
     dimension = str(params.get("dimension") or "")
@@ -536,9 +756,32 @@ def _null_check(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any
             "null_count": null_count,
             "checked_field": field_name,
         }
+    if mode == "max_field":
+        missing_by_field = data.apply(lambda column: int(_null_mask(column).sum()))
+        if missing_by_field.empty:
+            return "Not Applicable"
+        return str(missing_by_field.sort_values(ascending=False).index[0])
     if mode == "rate":
         return 0.0 if denominator == 0 else null_count / denominator * 100
+    if mode == "present_rate":
+        return 0.0 if denominator == 0 else (denominator - null_count) / denominator * 100
     return null_count
+
+
+def _schema_field_lookup(df: pd.DataFrame, params: dict[str, Any]) -> str:
+    field = str(params.get("field") or "")
+    if field in df.columns:
+        return field
+    concept = str(params.get("concept") or "")
+    concept_fields = {
+        "fraud": ("has_fraudulent_dispute", "is_fraud", "fraud"),
+        "email": ("email_address", "email"),
+        "country": ("issuing_country", "ip_country", "acquirer_country", "country"),
+    }
+    for candidate in concept_fields.get(concept, ()):
+        if candidate in df.columns:
+            return candidate
+    return "Not Applicable"
 
 
 def _rank_by_metric(df: pd.DataFrame, logic: Any) -> dict[str, Any]:
@@ -704,6 +947,12 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
             data = data[months == int(expected)]
             continue
         if column not in data.columns:
+            continue
+        if expected == "__NULL__":
+            data = data[_null_mask(data[column])]
+            continue
+        if expected == "__NOT_NULL__":
+            data = data[~_null_mask(data[column])]
             continue
         data = data[_series_equals(data[column], expected)]
     return data

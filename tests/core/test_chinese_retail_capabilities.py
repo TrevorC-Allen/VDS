@@ -11,8 +11,10 @@ import pandas as pd
 
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.core.intent_parser import parse_generic_table_question
+from data_agent_core.contracts.analysis_contracts import UserQuestion
+from data_agent_core.contracts.verification_contracts import VerificationResult
 from data_agent_core.executors.pandas_executor import execute_plan
-from data_agent_core.output.response_builder import format_answer
+from data_agent_core.output.response_builder import build_response, format_answer
 
 
 class ChineseRetailCapabilitiesTest(unittest.TestCase):
@@ -91,6 +93,19 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
                     {"execute_ym": 202605, "dsp_name": "水堆", "cust_code": "C1", "cust_name": "一号店", "confirm_amt": 10.0, "p_emp_name": "赵经理", "check_result_name": "合格"},
                     {"execute_ym": 202605, "dsp_name": "水堆", "cust_code": "C2", "cust_name": "二号店", "confirm_amt": 5.0, "p_emp_name": "赵经理", "check_result_name": "不合格"},
                     {"execute_ym": 202605, "dsp_name": "我司冰柜", "cust_code": "C2", "cust_name": "二号店", "confirm_amt": 8.0, "p_emp_name": "赵经理", "check_result_name": "合格"},
+                    {"execute_ym": 202605, "dsp_name": "货架", "cust_code": "C1", "cust_name": "一号店", "confirm_amt": 6.0, "p_emp_name": "赵经理", "check_result_name": "合格"},
+                    {"execute_ym": 202605, "dsp_name": "货架", "cust_code": "C1", "cust_name": "一号店", "confirm_amt": 4.0, "p_emp_name": "赵经理", "check_result_name": "合格"},
+                    {"execute_ym": 202605, "dsp_name": "货架", "cust_code": "C2", "cust_name": "二号店", "confirm_amt": 3.0, "p_emp_name": "赵经理", "check_result_name": "未检查"},
+                ]
+            ),
+            "v_chl_jc_cust_sku_mi": pd.DataFrame(
+                [
+                    {"ym": 202605, "ctg_name": "天然水", "cust_name": "一号店", "sku_code": "S1"},
+                    {"ym": 202605, "ctg_name": "天然水", "cust_name": "一号店", "sku_code": "S2"},
+                    {"ym": 202605, "ctg_name": "天然水", "cust_name": "一号店", "sku_code": None},
+                    {"ym": 202605, "ctg_name": "东方树叶", "cust_name": "二号店", "sku_code": "S3"},
+                    {"ym": 202605, "ctg_name": "天然水", "cust_name": "二号店", "sku_code": "S3"},
+                    {"ym": 202604, "ctg_name": "东方树叶", "cust_name": "三号店", "sku_code": "S9"},
                 ]
             ),
             "v_chl_visit_dtl": pd.DataFrame(
@@ -120,6 +135,90 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.assertEqual(answer, "李四")
         money = self._answer("张三在2026年5月的历史分销金额是多少？", "答案只返回数字，保留2位小数。")
         self.assertEqual(money, "100.01")
+        product_money = self._answer("2026年5月东方树叶的历史分销金额是多少？", "答案只返回数字，保留2位小数。")
+        self.assertEqual(product_money, "200.00")
+
+    def test_product_mapping_prefers_long_schema_value_over_short_substring(self) -> None:
+        original = self.tables["v_trd_dist_ord_dtl"]
+        self.tables["v_trd_dist_ord_dtl"] = pd.concat(
+            [
+                original,
+                pd.DataFrame(
+                    [
+                        {
+                            "sign_time": "2026-05-04",
+                            "sign_amt": 80.0,
+                            "sign_box_cnt": 1.0,
+                            "emp_name": "王五",
+                            "p_emp_name": "赵经理",
+                            "cust_code": "C3",
+                            "cust_name": "三号店",
+                            "ctg_name": "苏打天然水",
+                            "brand_name": "农夫山泉",
+                            "sales_ana_type_name": "苏打天然水",
+                            "cmdt_tag_name": "普通本品",
+                            "ord_type_name": "业代订单",
+                            "sku_code": "S4",
+                            "sku_name": "苏打SKU",
+                            "ord_status_name": "已签收",
+                        },
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+
+        answer = self._answer("2026年5月苏打天然水的历史分销金额是多少？", "答案只返回数字，保留2位小数。")
+
+        self.assertEqual(answer, "80.00")
+        self.tables["v_trd_dist_ord_dtl"] = original
+
+    def test_distribution_sum_not_applicable_is_true_unsupported_when_filtered_data_missing(self) -> None:
+        original = self.tables["v_trd_dist_ord_dtl"]
+        self.tables["v_trd_dist_ord_dtl"] = pd.concat(
+            [
+                original,
+                pd.DataFrame(
+                    [
+                        {
+                            "sign_time": "2026-04-04",
+                            "sign_amt": 80.0,
+                            "sign_box_cnt": 1.0,
+                            "emp_name": "王五",
+                            "p_emp_name": "赵经理",
+                            "cust_code": "C3",
+                            "cust_name": "三号店",
+                            "ctg_name": "苏打天然水",
+                            "cmdt_tag_name": "普通本品",
+                            "ord_type_name": "业代订单",
+                            "sku_code": "S4",
+                            "sku_name": "苏打SKU",
+                            "ord_status_name": "已签收",
+                        },
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+        logic = parse_generic_table_question(
+            "2026年5月苏打天然水的历史分销金额是多少？",
+            self.tables,
+            "答案只返回数字，保留2位小数。",
+        )
+        plan = build_analysis_plan(logic)
+        result = execute_plan(plan, {"tables": self.tables})
+        response = build_response(
+            run_id="run_test",
+            user_question=UserQuestion(dataset_id="retail_test", question="2026年5月苏打天然水的历史分销金额是多少？"),
+            plan=plan,
+            execution_result=result,
+            verification=VerificationResult(passed=True),
+        )
+
+        self.assertEqual("Not Applicable", response.answer)
+        self.assertTrue(response.success)
+        self.assertEqual("true_unsupported", response.debug["not_applicable_attribution"]["category"])
+        self.tables["v_trd_dist_ord_dtl"] = original
 
     def test_route_contract_product_quantity_uses_store_set_join(self) -> None:
         answer = self._answer("张三在2026-05-19计划拜访线路上的合约店，2026年5月东方树叶分销数量是多少？", "答案只返回数字，保留3位小数。")
@@ -145,11 +244,38 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         contract_rate = self._answer("2026年5月服务客户中合约店占比是多少？", "答案只返回百分比，保留2位小数。")
         self.assertEqual(contract_rate, "50.00%")
 
+        original = self.tables["终端客户月度维表"]
+        self.tables["终端客户月度维表"] = pd.concat(
+            [
+                original,
+                pd.DataFrame(
+                    [
+                        {
+                            "年月": 202605,
+                            "终端客户编码": "C3",
+                            "终端客户": "三号店",
+                            "是否合约店": "否",
+                            "是否冰柜客户": "否",
+                            "终端客户状态": "已不合作",
+                            "主任": "赵经理",
+                            "业代": "张三",
+                            "合作开始日期": "2026-05-01",
+                        }
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+        self.assertEqual(self._answer("2026年5月服务客户数是多少？", "答案只返回整数。"), "2")
+        self.tables["终端客户月度维表"] = original
+
     def test_retail_record_counts_field_values_and_feature_count(self) -> None:
         freezer_count = self._answer("2026年5月终端客户月度维表中冰柜客户有多少家？", "答案只返回整数。")
         self.assertEqual(freezer_count, "1")
         display_count = self._answer("2026年5月陈列计划中不合格记录有多少条？", "答案只返回整数。")
         self.assertEqual(display_count, "1")
+        manager_display_count = self._answer("赵经理在2026年5月有多少条陈列计划记录？", "答案只返回整数。")
+        self.assertEqual(manager_display_count, "6")
         visit_count = self._answer("2026年5月计划拜访记录有多少条？", "答案只返回整数。")
         self.assertEqual(visit_count, "2")
         statuses = self._answer("2026年5月历史分销明细中出现了哪些订单状态？", "答案只返回列表。")
@@ -164,6 +290,22 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.assertEqual(category, "东方树叶")
         success_rate = self._answer("张三在2026年5月的拜访成功率是多少？", "答案只返回百分比，保留2位小数。")
         self.assertEqual(success_rate, "50.00%")
+
+    def test_retail_high_level_chinese_capabilities_from_schema(self) -> None:
+        category = self._answer("2026年5月稽查门店SKU分析中记录数最多的品类是什么？", "答案只返回品类。")
+        self.assertEqual(category, "天然水")
+        store = self._answer("2026年5月稽查门店SKU分析中SKU数量最高的门店是哪家，数量是多少？", "答案必须使用格式：门店名称:数量。")
+        self.assertEqual(store, "一号店:3")
+        average_active = self._answer("2026年5月店均活跃SKU数是多少？", "答案只返回数字，保留2位小数。")
+        self.assertEqual(average_active, "1.00")
+        share = self._answer("2026年5月历史分销金额中天然水占比是多少？", "答案只返回百分比，保留2位小数。")
+        self.assertEqual(share, "33.33%")
+        freezer_rate = self._answer("2026年5月服务客户中冰柜客户占比是多少？", "答案只返回百分比，保留2位小数。")
+        self.assertEqual(freezer_rate, "50.00%")
+        image_pass = self._answer("2026年5月陈列执行中图像检查合格数最高的门店是哪家？", "答案只返回门店名称。")
+        self.assertEqual(image_pass, "一号店")
+        item_count = self._answer("2026年5月陈列执行中货架执行次数最高的门店是哪家？", "答案只返回门店名称。")
+        self.assertEqual(item_count, "一号店")
 
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@
 2. 已新增可运行的核心算法 MVP，用于本地核心算法测试。
 3. 已支持 DABstep 风格的业务表和规则知识库输入：payments.csv 作为业务数据库表，manual.md / fees.json / merchant_data.json 作为文档和规则知识库。
 4. 已支持 DABstep dev 前 10 题本地评测，当前验证结果为 9/10，准确率 90%。
-5. all.jsonl 可生成前 10 题预测文件，但本地 all.jsonl 的 answer 字段为空，因此不能本地计算准确率。
+5. all.jsonl 已可生成 1-450 题预测文件；本地 all.jsonl 的 answer 字段为空，因此只能验证执行覆盖，不能本地计算 hidden official accuracy。
 6. 该实现不使用 task_id、标准答案、固定题面、固定数据值或只适配当前失败样本的补丁进入分析链路。
 7. 已新增 LLM 单 Agent 链路，Intent Parser、Column Mapping、Analysis Planner、Verifier / Critic、Correction Planner、Insight Generator 和 Chart Planner 均预留 LLM 参与；确定性代码负责文件/规则读取、执行、结果标准化、规则校验和评分。
 8. LLM key 只能通过环境变量提供，禁止写入仓库、文档、trace 或 CHANGELOG。
@@ -55,7 +55,7 @@
 15. 已切换到 Phase 6 最小可运行多 Agent workflow：backend analyze 默认走 multi_agent；DABstep 多 Agent runner 可运行 dev 前 10 题并保持 9/10；data_agent_core 仍不依赖 multi_agent_workflows。
 16. 已开始把多 Agent 从顺序角色编排升级为业务口径驱动的计划、校验和自纠闭环：LogicForm 支持 metric、metric_definition、numerator、denominator、group_by、objective 和 options；Verifier 能识别 top fraud 使用 raw count 的语义错误，并要求修正为 fraud_volume_rate。
 17. 当前 9/10 的主要瓶颈不是多 Agent 框架或 Microsoft adapter，而是 ACI incentive 类问题的 associated cost 费用口径仍未完全对齐；该问题必须按通用 fee what-if / ACI candidate table 能力继续修复，禁止只针对当前 DABstep 样本、当前字段值或当前问法补坑。
-18. DABstep all 前 50 题可运行 public split 执行覆盖；本地 public all.jsonl 的 answer 字段为空，因此只能验证执行率和 trace，不能本地计算官方准确率。
+18. DABstep public all 1-450 已可运行 mock 多 Agent 执行覆盖；本地 public all.jsonl 的 answer 字段为空，因此只能验证执行率和 trace，不能本地计算官方准确率。
 19. Provider 原生 Tool Calling Adapter 已完成 OpenAI / DeepSeek 兼容 schema、tool call 解析和 mock/fake client loop；下一步是真实 OpenAI / DeepSeek 网络 tool loop smoke，不改变本地 ToolDispatcher 作为唯一受控执行入口。
 20. 项目必须以中文数据分析体验为第一优先级，同时保留英文问题、英文字段和英文 Benchmark 的兼容能力；任何新能力、prompt、字段映射、测试和文档都不能只按英文设计。
 21. 已开始实现 `Not Applicable` 能力缺口闭环：FinalResponse / debug / trace / benchmark report 可区分 `true_unsupported` 和 `capability_gap`；新增基础通用能力族 `row_count`、`distinct_count`、`repeat_entity_percentage`、`outlier_count`、`top_k_share`、`filtered_metric_ranking`，并用中英文合成用例验证。
@@ -66,6 +66,12 @@
 26. 已补齐 DABstep 100-130 中两个 hour-of-day capability_gap：新增通用 `top_count` hour-of-day 解析和 `top_outlier_group` 能力，支持 “哪个小时交易最多” 和 “哪个小时离群交易最多（Z-Score > 3）”。mock 多 Agent 回归 `outputs/dabstep_all_100_130_mock_after_hour_group/all_100_to_130_report.json` 显示 total=31、success_count=31、unexpected_not_applicable=0、accuracy=null；accuracy 仍为 null 是因为 public all answer 为空。
 27. Microsoft 脱敏数据 21-40 已通过中文零售能力族自然覆盖：mock 回归 `outputs/microsoft_anonymized_21_40_mock_after_retail_20260521_204756/report.json` 为 20/20，真实 LLM 回归 `outputs/microsoft_anonymized_21_40_real_llm_after_retail_20260521_204819/report.json` 为 20/20；标准答案只用于离线 scorer，未传入 Agent workflow。
 28. 已补安全治理缺口：ToolDispatcher 对工具 timeout_seconds 执行 POSIX timeout 边界；架构测试新增 tracked-file secret scan，并扩大 Benchmark 硬编码扫描到 agent_runtime、backend、ms_agent_framework_adapter 和 multi_agent_workflows 的核心源码范围。
+29. 已补齐 DABstep all 131-180 暴露的下一批执行能力缺口：missing/null 过滤 Top count 的 SQL fallback 与 Pandas 一致，outlier / high-value 问题能把年份识别为过滤条件而不是指标列；mock 多 Agent 回归 `outputs/dabstep_all_131_180_mock_after_gap_fix_20260522/all_131_to_180_report.json` 为 total=50、success_count=50、unexpected_not_applicable=0、accuracy=null，accuracy 仍因 public all answer 为空不可本地计算。
+30. 已新增 Microsoft 脱敏数据离线 runner `multi_agent_workflows/microsoft_anonymized_benchmark_runner.py`，标准答案只在 response 生成后用于 scorer，不进入 Agent workflow；Microsoft 41-60 mock 回归 `outputs/microsoft_anonymized_41_60_mock_after_fix_20260522/report.json` 为 20/20。
+31. 已新增 VDS 中文 BI 周期比较能力族 `vds_period_rank_change`、`vds_period_delta_top`、`vds_period_growth_count_share`、`vds_period_threshold_count`、`vds_period_rate_top`、`vds_current_threshold_top`、`vds_peer_anomaly`，覆盖销售、教育、医疗、物流、SaaS 五域的周环比排名、TopN、增长数量占比、阈值筛选、同圈层异常和城市维度环比增长率；桌面 VDS `问题汇总.xlsx` 五域全部 95 题 smoke 为 95/95 成功，输出 `outputs/vds_desktop_question_summary_full_mock_20260522.json`。
+32. 已补齐 DABstep public all 1-450 的剩余执行失败：`metric_per_distinct_entity` 能区分“平均交易金额 / unique entity”和“平均交易次数 / unique entity”，Pandas 与 SQL 双路径一致；mock 多 Agent 全量回归 `outputs/dabstep_all_1_450_mock_after_metric_per_entity_fix_20260522/all_1_to_450_report.json` 为 total=450、success_count=450、unexpected_not_applicable=0、failure_count=0、accuracy=null。
+33. Microsoft 脱敏数据 1-300 已通过离线 scorer 全量回归：`outputs/microsoft_anonymized_1_300_mock_after_true_unsupported_fix_20260522/report.json` 为 total=300、correct=300、accuracy=1.0、success_count=300；标准答案只在 response 生成后用于 scorer，未进入 Agent workflow。
+34. 桌面 VDS `问题汇总.xlsx` 五域全部 95 题已通过 mock 多 Agent 执行覆盖：`outputs/vds_desktop_question_summary_full_mock_20260522.json` 为 total=95、success_count=95、failure_count=0；该结果验证问题理解、能力路由和执行成功，不使用标准答案优化。
 
 ## 架构原则
 
@@ -341,7 +347,7 @@ Rule NO.1：
 3. Provider-native adapter 已有 mock/fake client loop，但真实 OpenAI / DeepSeek 网络 tool loop 尚未作为生产默认链路启用。
 4. 多 Agent 当前是内部顺序 workflow，复杂并行 executor、真实 Microsoft cloud workflow 和多轮代码级自纠仍属后续增强。
 5. DABstep public all answer 为空，all 100-130 / 131+ 的 official 本地准确率仍不可计算；public proxy 只能后验观察，不能进入核心链路。
-6. 更大范围 DABstep 131+、Microsoft 41+ 和更多中文真实数据仍需继续按能力族验证。
+6. 已完成 DABstep public all 1-450 mock 执行覆盖、Microsoft 脱敏数据 1-300 mock 离线 scorer 和桌面 VDS 95 题 smoke；仍需继续做真实 LLM 大规模回归、更多中文真实业务表、更多字段别名、多表场景和更复杂中文 BI 能力验证。
 7. 真实 LLM 多 Agent 评测耗时仍偏长，后续可优化 provider 调用次数和 stage 缓存，但不能牺牲 trace、Verifier 和受控工具边界。
 
 ## `Not Applicable` 能力缺口闭环状态
@@ -399,7 +405,7 @@ Rule NO.1：
 
 ## DABstep 100-130 与中文零售 21-40 能力闭环状态
 
-该闭环目标是把真实回归暴露的问题归纳为可复用能力族，继续提高泛化能力，而不是按题号、标准答案、public proxy 或当前脱敏数据固定值优化。当前 DABstep 100-130 的 hour-of-day capability_gap 已按通用能力族修复；Microsoft 21-40 的第一批中文零售能力族已通过 mock 和真实 LLM 回归。仍不能把这两组回归等同于完整 450 题或全部微软数据能力完成。
+该闭环目标是把真实回归暴露的问题归纳为可复用能力族，继续提高泛化能力，而不是按题号、标准答案、public proxy 或当前脱敏数据固定值优化。当前 DABstep 100-130 的 hour-of-day capability_gap 已按通用能力族修复；Microsoft 21-40 的第一批中文零售能力族已通过 mock 和真实 LLM 回归，并已扩展到 Microsoft 脱敏数据 1-300 mock 离线 scorer 全量通过。仍不能把这些回归等同于 hidden benchmark 官方满分或全部未来真实业务表能力完成。
 
 1. DABstep 100-130
    - official 本地准确率仍不可计算，因为 public all answer 为空。
@@ -410,7 +416,7 @@ Rule NO.1：
    - 已补齐第一批中文真实数据能力族：`retail_target_lookup`、`aggregation`、`ranking`、`row_count`、服务客户、目标达成率、拜访成功率、陈列记录、订单状态枚举、今日分销和路线客户关联。
    - 所有实现必须基于 schema、字段语义、LogicForm 和受控 Executor，不能把 Microsoft 标准答案、task_id、固定姓名、固定品类或固定输出写入核心链路。
    - 新能力必须配套合成或非 Benchmark 中文用例，并保留 DABstep 英文回归，确保中文优先和英文兼容同时成立。
-   - 后续 Microsoft 41+ 和更多中文真实表仍需继续验证；如果扩展到更多字段别名、多表 join 或跨数据源，必须走 schema/业务术语泛化。
+   - 已通过 Microsoft 脱敏数据 1-300 mock 离线 scorer 回归；后续更多中文真实表、真实 LLM 大规模回归、更多字段别名、多表 join 或跨数据源仍必须走 schema/业务术语泛化。
 
 3. 验收标准
    - Microsoft 21-40 的改进必须来自通用中文零售能力自然覆盖。

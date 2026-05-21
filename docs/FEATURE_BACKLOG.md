@@ -31,9 +31,9 @@
 
 验收标准：DABstep dev 前 10 题本地评测准确率不低于 80%，且分析链路不接收 task_id、标准答案、固定题面或只适配当前样本的条件分支。
 
-风险：当前为规则引擎和通用意图解析 MVP，覆盖的是 DABstep 风格的主要费用规则、聚合、分组和 what-if 问题；尚未覆盖完整 450 题。
+风险：当前已覆盖 DABstep public all 1-450 的 mock 执行路径，但 public all answer 为空，不能据此宣称 hidden official accuracy；剩余公开 dev 失败仍是 ACI associated cost 通用语义缺口。
 
-状态：2026-05-21 已完成 MVP 并开始业务口径增强，dev 前 10 题当前验证结果为 9/10。
+状态：2026-05-22 已完成 MVP 并进入 Phase 6+ 业务口径增强；dev 前 10 题当前验证结果为 9/10，DABstep public all 1-450 mock 执行覆盖为 450/450。
 
 ### LLM Single Agent Chain
 
@@ -89,7 +89,7 @@
 
 风险：禁止标准答案泄漏、单题硬编码和伪泛化补丁；Benchmark 失败只能转成能力族缺口，不能转成当前样本专用逻辑。
 
-状态：2026-05-21 已支持分段运行、dev 前 10 题评分、all offset 预测、metrics 和 error_analysis 聚合；public all.jsonl answer 为空，不能本地计算完整 450 题官方准确率。
+状态：2026-05-22 已支持分段运行、dev 前 10 题评分、all offset 预测、metrics 和 error_analysis 聚合；DABstep public all 1-450 mock 多 Agent 执行覆盖为 450/450，public all.jsonl answer 为空，不能本地计算 hidden official accuracy。
 
 ### Minimal Backend API Shell
 
@@ -209,6 +209,8 @@
 
 状态：2026-05-22 已完成第一批能力族、Not Applicable 归因、CAPABILITY_GAP 错误类型、trace/debug/report 摘要和合成中英文测试。已继续补齐 null_check、更多英文/中文季度表达、fraud likelihood 多维排名、fee what-if candidate table 和 provider-native tool calling adapter 骨架。DABstep official 本地准确率仍不可计算，public proxy 仅用于后验观察；DABstep 100-130 暴露的 hour-of-day top group / outlier group 已按通用能力族补齐。Microsoft 21-40 中文零售 target / aggregation / ranking / row_count 等能力缺口已用中文零售能力族和合成中文用例闭环。
 
+2026-05-22 追加状态：DABstep all 131-180 的 `outlier_rate_comparison` 和 null-filtered `top_count` 执行缺口已按通用能力族修复，mock 多 Agent 回归 total=50、success_count=50、unexpected_not_applicable=0；official accuracy 仍因 public all answer 为空不可本地计算。
+
 ### Chinese Retail 21-40 Capability Closure
 
 目标：修复 Microsoft 脱敏数据 21-40 暴露的中文零售能力缺口，并把能力沉淀为可复用 operation，而不是围绕题号、标准答案或固定字段值优化。
@@ -224,6 +226,24 @@
 泛化验证方式：使用合成中文零售表验证同类操作，并保留英文 DABstep / 通用能力回归；Microsoft 21-40 只作为后验回归观察。
 
 状态：2026-05-21 已新增 executor 能力和合成测试；Microsoft 21-40 mock 与真实 LLM 回归均为 20/20。标准答案只用于离线 scorer，未进入 Agent workflow。
+
+2026-05-22 追加状态：已新增 Microsoft 脱敏数据离线 runner，可按 offset / limit 复跑问题切片；Microsoft 41-60 mock 回归为 20/20。新增能力包括陈列计划记录按人员过滤、服务客户排除“已不合作”、历史分销金额按商品/品类过滤，均有合成中文测试覆盖。
+
+### VDS Chinese BI Period Comparison
+
+目标：补齐桌面 VDS 测试数据中销售、教育、医疗、物流、SaaS 五域的中文周环比 BI 问题能力族。
+
+影响模块：data_agent_core/core/vds_bi_intent.py、data_agent_core/executors/vds_bi_executor.py、data_agent_core/llm/planner.py、tests/core/test_vds_bi_capabilities.py、multi_agent_workflows。
+
+优先级：P0，阶段：Phase 6+。
+
+验收标准：支持本周/上周/上上周周期比较；支持周环比排名下降/上升、TopN 增加/减少、增长数量和占比、环比阈值计数、城市/区域等维度环比增长率 Top、当前期阈值 Top、同圈层平均值倍数异常；同一能力族必须能迁移到门店、校区、院区、站点、客户等实体。
+
+风险：如果把 O01/E01 等题号、固定文件名、固定门店/校区/客户或标准答案写入 parser/executor，会形成伪泛化补丁；如果只按单一销售域实现，会削弱中文泛化能力。
+
+泛化验证方式：使用合成 VDS BI 表覆盖销售和 SaaS/学习变体；用桌面真实 VDS `问题汇总.xlsx` 五域全部 95 题做 smoke，只检查执行成功与能力路由，不使用标准答案优化。
+
+状态：2026-05-22 已完成第一批 VDS BI 周期比较能力族；合成测试通过；桌面真实 VDS `问题汇总.xlsx` 五域全部 95 题 smoke 为 95/95 成功。后续继续扩展趋势排名、状态影响、毛利率、支付/配送/付费方式排名等更复杂业务问法。
 
 ### DABstep Hour-Of-Day Group Capability
 
@@ -244,4 +264,4 @@
 ## TODO
 
 - 新功能进入开发前，先确认是否影响 contracts / API_CONTRACT / tracing / errors。
-- 真实 OpenAI / DeepSeek provider-native tool loop、DuckDB runtime、ACI associated cost 通用口径、复杂并行/多轮自纠、DABstep 131+、Microsoft 41+ 和更多中文真实数据仍需按能力族推进。
+- 真实 OpenAI / DeepSeek provider-native tool loop、DuckDB runtime、ACI associated cost 通用口径、复杂并行/多轮自纠、更多真实 LLM 大规模回归、更多中文真实业务表、多表场景、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 问法仍需按能力族推进。

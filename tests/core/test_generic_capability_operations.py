@@ -79,6 +79,80 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertEqual(2, pandas_result.value)
         self.assertEqual(pandas_result.value, sql_result.value)
 
+    def test_present_percentage_and_schema_field_lookup_are_generic(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "email_address": ["a@example.com", None, "", "b@example.com"],
+                "has_fraudulent_dispute": [False, True, False, False],
+            }
+        )
+        present_logic = parse_question("What percentage of transactions have an associated email address?")
+        present_plan = build_analysis_plan(present_logic)
+        pandas_present = pandas_executor.execute_plan(present_plan, {"payments": payments})
+        sql_present = sql_executor.execute_plan(present_plan, {"payments": payments})
+
+        self.assertEqual("null_check", present_logic.operation)
+        self.assertEqual("present_rate", present_logic.parameters["mode"])
+        self.assertTrue(pandas_present.success, pandas_present.errors)
+        self.assertTrue(sql_present.success, sql_present.errors)
+        self.assertEqual("50.00%", format_answer(pandas_present.value, present_logic.output_format))
+        self.assertEqual(pandas_present.value, sql_present.value)
+
+        field_logic = parse_question("What is the name of the column that indicates fraud?", context={"payments": payments})
+        field_result = pandas_executor.execute_plan(build_analysis_plan(field_logic), {"payments": payments})
+
+        self.assertEqual("schema_field_lookup", field_logic.operation)
+        self.assertTrue(field_result.success, field_result.errors)
+        self.assertEqual("has_fraudulent_dispute", field_result.value)
+
+    def test_basic_profile_questions_cover_average_top_missing_and_repeats(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "eur_amount": [10.0, 20.0, 30.0, 40.0],
+                "day_of_year": [2, 2, 3, 4],
+                "card_scheme": ["NexPay", "GlobalCard", "NexPay", "NexPay"],
+                "email_address": ["a@example.com", "a@example.com", None, "b@example.com"],
+                "ip_address": ["1.1.1.1", None, None, None],
+            }
+        )
+
+        avg_logic = parse_question("What is the average transaction amount (in EUR)?")
+        avg_plan = build_analysis_plan(avg_logic)
+        avg_pandas = pandas_executor.execute_plan(avg_plan, {"payments": payments})
+        avg_sql = sql_executor.execute_plan(avg_plan, {"payments": payments})
+        self.assertEqual("aggregation", avg_logic.operation)
+        self.assertAlmostEqual(25.0, float(avg_pandas.value))
+        self.assertAlmostEqual(float(avg_pandas.value), float(avg_sql.value))
+
+        top_day_logic = parse_question("On which day of the year are the most transactions recorded?")
+        top_day_plan = build_analysis_plan(top_day_logic)
+        self.assertEqual("top_count", top_day_logic.operation)
+        self.assertEqual("2", pandas_executor.execute_plan(top_day_plan, {"payments": payments}).value)
+        self.assertEqual("2", sql_executor.execute_plan(top_day_plan, {"payments": payments}).value)
+
+        missing_logic = parse_question("Which column has the most missing data in the payments dataset?")
+        missing_plan = build_analysis_plan(missing_logic)
+        self.assertEqual("null_check", missing_logic.operation)
+        self.assertEqual("ip_address", pandas_executor.execute_plan(missing_plan, {"payments": payments}).value)
+        self.assertEqual("ip_address", sql_executor.execute_plan(missing_plan, {"payments": payments}).value)
+
+        count_logic = parse_question("How many transactions were made using NexPay cards?")
+        count_plan = build_analysis_plan(count_logic)
+        self.assertEqual("row_count", count_logic.operation)
+        self.assertEqual({"card_scheme": "NexPay"}, count_logic.filters)
+        self.assertEqual(3, pandas_executor.execute_plan(count_plan, {"payments": payments}).value)
+        self.assertEqual(3, sql_executor.execute_plan(count_plan, {"payments": payments}).value)
+
+        repeat_logic = parse_question("How many shoppers have made more than one transaction based on email addresses?")
+        repeat_plan = build_analysis_plan(repeat_logic)
+        self.assertEqual("repeat_entity_count", repeat_logic.operation)
+        self.assertEqual(1, pandas_executor.execute_plan(repeat_plan, {"payments": payments}).value)
+        self.assertEqual(1, sql_executor.execute_plan(repeat_plan, {"payments": payments}).value)
+
+        threshold_logic = parse_question("Are there any merchants under the excessive fraud threshold?")
+        self.assertEqual("not_applicable", threshold_logic.operation)
+        self.assertEqual("true_unsupported", threshold_logic.output_format["not_applicable_type"])
+
     def test_chinese_null_check_detects_exists_mode(self) -> None:
         table = pd.DataFrame([{"客户": "A"}, {"客户": ""}])
         logic = parse_generic_table_question("客户字段有没有空值？", {"sales": table})
@@ -118,6 +192,25 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertTrue(pandas_result.success)
         self.assertTrue(sql_result.success)
         self.assertAlmostEqual(10.0, float(pandas_result.value))
+        self.assertAlmostEqual(float(pandas_result.value), float(sql_result.value))
+
+    def test_fraudulent_percentage_wording_routes_to_fraud_rate(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "year": [2023, 2023, 2023, 2024],
+                "eur_amount": [100.0, 300.0, 100.0, 999.0],
+                "has_fraudulent_dispute": [True, False, False, True],
+            }
+        )
+        logic = parse_question("What percentage of transactions are fraudulent in year 2023?")
+        plan = build_analysis_plan(logic)
+        pandas_result = pandas_executor.execute_plan(plan, {"payments": payments})
+        sql_result = sql_executor.execute_plan(plan, {"payments": payments})
+
+        self.assertEqual("boolean_percentage", logic.operation)
+        self.assertTrue(pandas_result.success, pandas_result.errors)
+        self.assertTrue(sql_result.success, sql_result.errors)
+        self.assertAlmostEqual(33.333333, float(pandas_result.value), places=5)
         self.assertAlmostEqual(float(pandas_result.value), float(sql_result.value))
 
     def test_aci_fee_extreme_uses_fee_rules_and_tie_breaks_alphabetically(self) -> None:
@@ -238,6 +331,80 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertEqual("1", format_answer(count.value, count_logic.output_format))
         self.assertEqual("5", format_answer(outlier.value, outlier_logic.output_format))
 
+    def test_common_value_unique_set_and_average_per_unique_entity_are_generic(self) -> None:
+        payments = pd.DataFrame(
+            [
+                {"merchant": "A", "shopper_interaction": "POS", "email_address": "u1", "eur_amount": 10.0},
+                {"merchant": "B", "shopper_interaction": "POS", "email_address": "u1", "eur_amount": 20.0},
+                {"merchant": "A", "shopper_interaction": "Ecommerce", "email_address": "u2", "eur_amount": 30.0},
+            ]
+        )
+        common_logic = parse_question("What is the most common shopper interaction type?", context={"payments": payments})
+        set_logic = parse_question("What is the unique set of merchants in the dataset?", context={"payments": payments})
+        per_unique_logic = parse_question("What is the average transaction amount per unique email?", context={"payments": payments})
+        count_per_unique_logic = parse_question(
+            "What is the average number of transactions per unique shopper based on email addresses?",
+            context={"payments": payments},
+        )
+
+        common = pandas_executor.execute_plan(build_analysis_plan(common_logic), {"payments": payments})
+        values = pandas_executor.execute_plan(build_analysis_plan(set_logic), {"payments": payments})
+        per_unique_pandas = pandas_executor.execute_plan(build_analysis_plan(per_unique_logic), {"payments": payments})
+        per_unique_sql = sql_executor.execute_plan(build_analysis_plan(per_unique_logic), {"payments": payments})
+        count_per_unique_pandas = pandas_executor.execute_plan(build_analysis_plan(count_per_unique_logic), {"payments": payments})
+        count_per_unique_sql = sql_executor.execute_plan(build_analysis_plan(count_per_unique_logic), {"payments": payments})
+
+        self.assertEqual("top_count", common_logic.operation)
+        self.assertEqual("field_values", set_logic.operation)
+        self.assertEqual("metric_per_distinct_entity", per_unique_logic.operation)
+        self.assertEqual("metric_per_distinct_entity", count_per_unique_logic.operation)
+        self.assertEqual("__row_count__", count_per_unique_logic.parameters["metric"])
+        self.assertEqual("count", count_per_unique_logic.parameters["aggregation"])
+        self.assertTrue(common.success, common.errors)
+        self.assertTrue(values.success, values.errors)
+        self.assertTrue(per_unique_pandas.success, per_unique_pandas.errors)
+        self.assertTrue(per_unique_sql.success, per_unique_sql.errors)
+        self.assertTrue(count_per_unique_pandas.success, count_per_unique_pandas.errors)
+        self.assertTrue(count_per_unique_sql.success, count_per_unique_sql.errors)
+        self.assertEqual("POS", common.value)
+        self.assertEqual(["A", "B"], values.value)
+        self.assertAlmostEqual(30.0, float(per_unique_pandas.value))
+        self.assertAlmostEqual(float(per_unique_pandas.value), float(per_unique_sql.value))
+        self.assertAlmostEqual(1.5, float(count_per_unique_pandas.value))
+        self.assertAlmostEqual(float(count_per_unique_pandas.value), float(count_per_unique_sql.value))
+
+    def test_boolean_ratio_device_count_ip_distinct_and_missing_columns_are_generic(self) -> None:
+        payments = pd.DataFrame(
+            [
+                {"is_credit": True, "device_type": "iOS", "ip_address": "", "email_address": "u1"},
+                {"is_credit": True, "device_type": "Android", "ip_address": "ip2", "email_address": ""},
+                {"is_credit": False, "device_type": "iOS", "ip_address": "ip2", "email_address": "u3"},
+            ]
+        )
+        ratio_logic = parse_question("What is the ratio of credit card transactions to debit card transactions?", context={"payments": payments})
+        device_logic = parse_question("How many transactions were conducted on iOS devices?", context={"payments": payments})
+        ip_logic = parse_question("How many unique IP addresses are present in the payments dataset?", context={"payments": payments})
+        missing_logic = parse_question(
+            "Which columns in the payments dataset contain missing data? A. ip_address, B. email_address, C. both ip_address and email_address, D. neither",
+            context={"payments": payments},
+        )
+
+        ratio = pandas_executor.execute_plan(build_analysis_plan(ratio_logic), {"payments": payments})
+        ratio_sql = sql_executor.execute_plan(build_analysis_plan(ratio_logic), {"payments": payments})
+        device_count = pandas_executor.execute_plan(build_analysis_plan(device_logic), {"payments": payments})
+        ip_count = pandas_executor.execute_plan(build_analysis_plan(ip_logic), {"payments": payments})
+        missing = pandas_executor.execute_plan(build_analysis_plan(missing_logic), {"payments": payments})
+
+        self.assertEqual("boolean_count_ratio", ratio_logic.operation)
+        self.assertEqual("row_count", device_logic.operation)
+        self.assertEqual("distinct_count", ip_logic.operation)
+        self.assertEqual("missing_columns_choice", missing_logic.operation)
+        self.assertAlmostEqual(2.0, float(ratio.value))
+        self.assertAlmostEqual(float(ratio.value), float(ratio_sql.value))
+        self.assertEqual(2, device_count.value)
+        self.assertEqual(2, ip_count.value)
+        self.assertEqual("C. both ip_address and email_address", missing.value)
+
     def test_sql_matches_generic_count_share_and_filtered_ranking(self) -> None:
         table = pd.DataFrame(
             [
@@ -351,6 +518,26 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertEqual([{"ip_country": "BE", "eur_amount": 300.0}], pandas_result.value)
         self.assertEqual(pandas_result.value, sql_result.value)
 
+    def test_country_associated_with_highest_total_amount_uses_country_dimension(self) -> None:
+        payments = pd.DataFrame(
+            [
+                {"issuing_country": "NL", "eur_amount": 100.0, "psp_reference": "p1", "year": 2023},
+                {"issuing_country": "BE", "eur_amount": 350.0, "psp_reference": "p2", "year": 2023},
+                {"issuing_country": "NL", "eur_amount": 50.0, "psp_reference": "p3", "year": 2023},
+            ]
+        )
+        logic = parse_question("Which country is associated with the highest transaction amount in total?", context={"payments": payments})
+        plan = build_analysis_plan(logic)
+        pandas_result = pandas_executor.execute_plan(plan, {"payments": payments})
+        sql_result = sql_executor.execute_plan(plan, {"payments": payments})
+
+        self.assertEqual("filtered_metric_ranking", logic.operation)
+        self.assertEqual("issuing_country", logic.parameters["dimension"])
+        self.assertTrue(pandas_result.success, pandas_result.errors)
+        self.assertTrue(sql_result.success, sql_result.errors)
+        self.assertEqual([{"issuing_country": "BE", "eur_amount": 350.0}], pandas_result.value)
+        self.assertEqual(pandas_result.value, sql_result.value)
+
     def test_quarter_parser_supports_named_and_chinese_quarters(self) -> None:
         self.assertEqual((1, 3), parse_question("Which card scheme has highest fraud likelihood in first quarter of 2023?").filters["month_range"])
         self.assertEqual((7, 9), parse_question("Which card scheme has highest fraud likelihood in Q3 2023?").filters["month_range"])
@@ -414,6 +601,190 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertEqual("fee_extreme_by_dimension", logic.operation)
         self.assertTrue(result.success, result.errors)
         self.assertEqual(["2222", "3333"], result.value["answer"])
+
+    def test_highest_transaction_count_defaults_to_merchant(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "merchant": ["A", "A", "A", "B", "B"],
+                "issuing_country": ["NL", "BE", "FR", "NL", "NL"],
+            }
+        )
+        logic = parse_question("Which merchant has the highest number of transactions?")
+        result = pandas_executor.execute_plan(build_analysis_plan(logic), {"payments": payments})
+
+        self.assertEqual("top_count", logic.operation)
+        self.assertEqual("merchant", logic.group_by)
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual("A", result.value)
+
+    def test_missing_value_top_count_uses_null_filter_and_dimension(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "card_scheme": ["GlobalCard", "GlobalCard", "NexPay", "NexPay"],
+                "email_address": ["", None, "", "person@example.com"],
+            }
+        )
+        logic = parse_question("What is the most frequent card scheme among transactions with missing email addresses?")
+        plan = build_analysis_plan(logic)
+        result = pandas_executor.execute_plan(plan, {"payments": payments})
+        sql_result = sql_executor.execute_plan(plan, {"payments": payments})
+
+        self.assertEqual("top_count", logic.operation)
+        self.assertEqual("card_scheme", logic.group_by)
+        self.assertEqual({"email_address": "__NULL__"}, logic.filters)
+        self.assertTrue(result.success, result.errors)
+        self.assertTrue(sql_result.success, sql_result.errors)
+        self.assertEqual("GlobalCard", result.value)
+        self.assertEqual(result.value, sql_result.value)
+
+    def test_dabstep_null_check_percentage_mode_is_generic(self) -> None:
+        payments = pd.DataFrame({"psp_reference": ["a", "b", "c", ""], "email_address": ["x@example.com", "", None, "z@example.com"]})
+        logic = parse_question("What percentage of payments dataset is missing email address?")
+        result = pandas_executor.execute_plan(build_analysis_plan(logic), {"payments": payments})
+
+        self.assertEqual("null_check", logic.operation)
+        self.assertEqual("rate", logic.parameters["mode"])
+        self.assertEqual("percentage", logic.output_format["answer_type"])
+        self.assertTrue(result.success, result.errors)
+        self.assertAlmostEqual(50.0, float(result.value))
+
+    def test_outlier_fraud_percentage_and_rate_comparison_are_generic(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "year": [2023] * 51,
+                "eur_amount": [10.0] * 50 + [1000.0],
+                "has_fraudulent_dispute": [False] * 50 + [True],
+            }
+        )
+        context = {"payments": payments}
+        percentage_logic = parse_question("What percentage of outlier transactions identified using Z-Score > 3 are fraudulent during the year 2023?", context=context)
+        comparison_logic = parse_question("Do outlier transactions have a higher fraud rate than inlier transactions using Z-Score > 3 during the year 2023?", context=context)
+        percentage = pandas_executor.execute_plan(build_analysis_plan(percentage_logic), {"payments": payments})
+        comparison = pandas_executor.execute_plan(build_analysis_plan(comparison_logic), {"payments": payments})
+
+        self.assertEqual("outlier_target_percentage", percentage_logic.operation)
+        self.assertEqual("outlier_rate_comparison", comparison_logic.operation)
+        self.assertEqual("eur_amount", percentage_logic.parameters["metric"])
+        self.assertEqual("eur_amount", comparison_logic.parameters["metric"])
+        self.assertEqual({"year": 2023}, percentage_logic.filters)
+        self.assertTrue(percentage.success, percentage.errors)
+        self.assertTrue(comparison.success, comparison.errors)
+        self.assertAlmostEqual(100.0, float(percentage.value))
+        self.assertEqual("yes", comparison.value)
+
+    def test_correlation_threshold_and_quantile_percentage_are_generic(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "eur_amount": [1.0, 2.0, 3.0, 4.0, 100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
+                "has_fraudulent_dispute": [False, False, False, False, True, True, True, True, True, True],
+            }
+        )
+        correlation_logic = parse_question("Is correlation between transaction amount and fraudulent disputes > 0.5?")
+        quantile_logic = parse_question("What percentage of high-value transactions are above the 90th percentile?")
+        correlation = pandas_executor.execute_plan(build_analysis_plan(correlation_logic), {"payments": payments})
+        quantile = pandas_executor.execute_plan(build_analysis_plan(quantile_logic), {"payments": payments})
+
+        self.assertEqual("correlation_threshold", correlation_logic.operation)
+        self.assertEqual("quantile_percentage", quantile_logic.operation)
+        self.assertTrue(correlation.success, correlation.errors)
+        self.assertTrue(quantile.success, quantile.errors)
+        self.assertEqual("yes", correlation.value["answer"])
+        self.assertAlmostEqual(10.0, float(quantile.value))
+
+        below_logic = parse_question("What is the percentage of transactions below the 25th percentile of transaction amounts?")
+        below = pandas_executor.execute_plan(build_analysis_plan(below_logic), {"payments": payments})
+        self.assertEqual("quantile_percentage", below_logic.operation)
+        self.assertTrue(below.success, below.errors)
+        self.assertAlmostEqual(30.0, float(below.value))
+
+    def test_worst_fraud_segment_uses_volume_rate_across_dimensions(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "merchant": ["A", "A", "B", "B"],
+                "card_scheme": ["GlobalCard", "GlobalCard", "NexPay", "NexPay"],
+                "shopper_interaction": ["Ecommerce", "POS", "Ecommerce", "POS"],
+                "issuing_country": ["NL", "NL", "BE", "BE"],
+                "eur_amount": [100.0, 100.0, 50.0, 50.0],
+                "has_fraudulent_dispute": [False, False, True, False],
+            }
+        )
+        logic = parse_question("Which segment has the worst fraud rate?")
+        result = pandas_executor.execute_plan(build_analysis_plan(logic), {"payments": payments})
+
+        self.assertEqual("worst_fraud_segment", logic.operation)
+        self.assertEqual("fraud_volume_rate", logic.metric)
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual("card_scheme", result.value["segment"])
+        self.assertEqual("NexPay", result.value["value"])
+
+    def test_fee_factor_direction_and_volume_threshold_use_rule_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cheap_rule = _fee_rule(1, "GlobalCard", [], fixed_amount=0.10, rate=0)
+            cheap_rule["monthly_volume"] = "<10k"
+            cheap_rule["capture_delay"] = "manual"
+            cheap_rule["is_credit"] = None
+            volume_rule = _fee_rule(2, "GlobalCard", [], fixed_amount=0.05, rate=0)
+            volume_rule["monthly_volume"] = ">10k"
+            volume_rule["is_credit"] = None
+            credit_rule = _fee_rule(3, "GlobalCard", [], fixed_amount=0.01, rate=30)
+            credit_rule["is_credit"] = True
+            credit_rule["intracountry"] = None
+            debit_rule = _fee_rule(4, "GlobalCard", [], fixed_amount=0.01, rate=10)
+            debit_rule["is_credit"] = False
+            debit_rule["intracountry"] = None
+            intra_rule = _fee_rule(5, "GlobalCard", [], fixed_amount=0.01, rate=5)
+            intra_rule["is_credit"] = None
+            intra_rule["intracountry"] = True
+            cross_border_rule = _fee_rule(6, "GlobalCard", [], fixed_amount=0.01, rate=20)
+            cross_border_rule["is_credit"] = None
+            cross_border_rule["intracountry"] = False
+            (root / "fees.json").write_text(json.dumps([cheap_rule, volume_rule, credit_rule, debit_rule, intra_rule, cross_border_rule]))
+            (root / "merchant_data.json").write_text(
+                json.dumps([{"merchant": "SyntheticMerchant", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5411}])
+            )
+            (root / "merchant_category_codes.csv").write_text("mcc,description\n5411,Grocery Stores\n")
+            (root / "payments.csv").write_text(
+                "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+                "SyntheticMerchant,2023,1,0,0,10.0,true,false,false,A,GlobalCard,NL,NL\n"
+            )
+            factor_logic = parse_question("Which factors contribute to a cheaper fee rate if factors value is increased?")
+            decrease_logic = parse_question("Which factors contribute to a cheaper fee rate if the factors' value is decreased?")
+            true_logic = parse_question("What boolean factors contribute to a cheaper fee rate if set to True?")
+            false_logic = parse_question("What boolean factors contribute to a cheaper fee rate if set to False?")
+            volume_logic = parse_question("What is the highest volume where fees do not become cheaper?")
+            field_logic = parse_question("What are the possible values for the field account_type?")
+            factor_result = pandas_executor.execute_plan(build_analysis_plan(factor_logic), {"context_dir": root})
+            decrease_result = pandas_executor.execute_plan(build_analysis_plan(decrease_logic), {"context_dir": root})
+            true_result = pandas_executor.execute_plan(build_analysis_plan(true_logic), {"context_dir": root})
+            false_result = pandas_executor.execute_plan(build_analysis_plan(false_logic), {"context_dir": root})
+            volume_result = pandas_executor.execute_plan(build_analysis_plan(volume_logic), {"context_dir": root})
+            field_result = pandas_executor.execute_plan(build_analysis_plan(field_logic), {"payments": pd.DataFrame(), "context_dir": root})
+
+        self.assertEqual("fee_factor_direction", factor_logic.operation)
+        self.assertEqual("fee_factor_direction", decrease_logic.operation)
+        self.assertEqual("fee_factor_direction", true_logic.operation)
+        self.assertEqual("fee_factor_direction", false_logic.operation)
+        self.assertEqual("fee_volume_threshold", volume_logic.operation)
+        self.assertEqual("field_values", field_logic.operation)
+        self.assertTrue(factor_result.success, factor_result.errors)
+        self.assertTrue(decrease_result.success, decrease_result.errors)
+        self.assertTrue(true_result.success, true_result.errors)
+        self.assertTrue(false_result.success, false_result.errors)
+        self.assertTrue(volume_result.success, volume_result.errors)
+        self.assertTrue(field_result.success, field_result.errors)
+        self.assertEqual(["monthly_volume", "capture_delay", "transaction_value"], factor_result.value)
+        self.assertEqual(["capture_delay"], decrease_result.value)
+        self.assertEqual(["intracountry"], true_result.value)
+        self.assertEqual(["is_credit"], false_result.value)
+        self.assertEqual(10000.0, volume_result.value)
+        self.assertEqual(["A"], field_result.value)
+
+    def test_excessive_retry_fee_is_classified_as_true_unsupported(self) -> None:
+        logic = parse_question("How much, if exists, is the excessive retry fee?")
+
+        self.assertEqual("not_applicable", logic.operation)
+        self.assertIn("excessive retry", logic.parameters["reason"])
 
 
 def _fee_rule(fee_id: int, card_scheme: str, aci: list[str], *, fixed_amount: float, rate: int, mcc: list[int] | None = None) -> dict[str, object]:
