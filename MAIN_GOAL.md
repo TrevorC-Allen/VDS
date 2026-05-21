@@ -1,0 +1,191 @@
+# MAIN GOAL
+
+## 项目主目标
+
+本项目的核心目标是从头构建一个可评测、可复现、可扩展的数据分析 Agent 内核。
+
+系统需要支持用户上传 CSV / Excel 文件，Agent 自动解析文件结构和字段含义，根据用户自然语言问题生成分析计划，并通过 Pandas / NumPy 和 SQL / DuckDB 两条执行路径完成数据分析。
+
+执行结果需要经过自查、自纠和一致性校验。确认结果可信后，再生成解释、建议和可视化图表配置，最终通过后端 API 返回给前端展示。
+
+## 当前阶段目标
+
+当前阶段优先完成：
+
+1. 搭建 data_agent_core 核心算法目录
+2. 搭建 data_agent_core/contracts 数据契约目录
+3. 搭建 data_agent_core/errors 错误体系目录
+4. 搭建 data_agent_core/tracing 运行追踪目录
+5. 搭建最小 backend API 目录
+6. 搭建 agent_runtime 内部 Agent 抽象目录
+7. 搭建 ms_agent_framework_adapter 微软框架适配层目录
+8. 搭建 multi_agent_workflows 多 Agent 工作流预留目录
+9. 搭建 docs 工程文档目录
+10. 搭建 tests/architecture 架构边界测试目录
+11. 定义文件解析、字段画像、问题理解、分析计划、执行器、校验器、解释器、图表规划器的模块边界
+12. 支持未来 CSV / Excel 文件解析
+13. 支持未来 Pandas / NumPy 执行路径
+14. 支持未来 SQL / DuckDB 执行路径
+15. 支持未来 Pandas 与 SQL 结果对比
+16. 支持未来基础自查自纠
+17. 支持未来 Benchmark Runner
+18. 提供最小后端接口，供前端上传文件、提交问题、获取结构化结果
+19. 预留未来单 Agent 到多 Agent 的平滑迁移能力
+
+## 架构原则
+
+1. 核心算法必须放在 data_agent_core/ 中
+2. 后端 backend/ 只作为调用壳，不承载核心数据分析逻辑
+3. 前端只负责上传、提问和展示，不参与数据处理
+4. Agent Framework 只能作为后续 workflow 编排层，不允许污染核心算法
+5. Benchmark 只能用于评估、错误归因和回归测试，不允许针对单题硬编码
+6. 先做单 Agent，再考虑多 Agent
+7. 先保证核心算法稳定，再扩展外围工程
+8. 所有模块必须可测试、可复现、可回归
+9. 核心算法不依赖 Microsoft Agent Framework
+10. Microsoft Agent Framework 适配层可以调用核心算法
+11. 多 Agent 角色必须通过统一输入输出协议交互
+12. 后续替换 Agent 框架时，不应重写核心算法
+13. 所有核心模块必须基于 contracts 中的稳定契约交互
+14. 所有 analyze 请求未来必须生成 run_id
+15. 所有 API 响应未来必须包含 response_version
+16. 所有错误必须进入 errors 字段
+17. 所有警告必须进入 warnings 字段
+18. 工程文档中不要求模型输出完整 Chain of Thought，只保留 structured analysis plan、reasoning summary、execution trace、verification notes
+
+## Microsoft Agent Framework 策略
+
+Microsoft Agent Framework 是后续多 Agent 编排的候选框架，但不是当前核心算法依赖。
+
+当前阶段只做：
+
+1. 创建 ms_agent_framework_adapter/ 目录
+2. 创建适配层 README
+3. 创建空的 adapter 文件
+4. 在文档中说明未来如何把 Planner、Executor、Verifier、Insight、Visualization 等角色映射到 Microsoft Agent Framework workflow
+5. 不安装框架包
+6. 不实现复杂 workflow
+7. 不把核心逻辑写入 adapter
+
+未来迁移方式：
+
+1. data_agent_core 提供稳定函数和类
+2. agent_runtime 定义 AgentRole、AgentTask、AgentResult、WorkflowState
+3. ms_agent_framework_adapter 将内部 AgentTask 映射为 Microsoft Agent Framework 的 agent / tool / workflow step
+4. multi_agent_workflows 负责组合 Planner、Executor、Verifier 等角色
+5. backend 仍然只调用统一服务入口，不直接依赖具体 Agent 框架
+
+## 当前不做
+
+当前阶段不做：
+
+1. 用户登录
+2. 权限系统
+3. 多租户隔离
+4. 复杂前端页面
+5. 复杂后端业务系统
+6. 数据库持久化复杂设计
+7. WebSocket
+8. 异步任务队列
+9. 大规模部署工程
+10. 微服务拆分
+11. 旧 BigCat / VDS 主流程重构
+12. 针对 Benchmark 单题特判
+13. 一上来做复杂多 Agent 编排
+14. 在本轮引入 Microsoft Agent Framework 作为强依赖
+15. 在本轮实现复杂 Agent workflow
+16. 在本轮实现完整业务逻辑
+
+## 核心工作流
+
+用户上传 CSV / Excel
+↓
+文件解析
+↓
+字段画像
+↓
+用户问题理解
+↓
+生成统一分析计划
+↓
+Pandas / NumPy 路径执行
+↓
+SQL / DuckDB 路径执行
+↓
+结果标准化
+↓
+结果一致性对比
+↓
+自查自纠
+↓
+生成解释和建议
+↓
+生成图表配置
+↓
+后端 API 返回结构化 JSON
+↓
+前端展示
+
+## 未来多 Agent 工作流
+
+未来多 Agent 目标结构：
+
+用户问题
+↓
+Planner Agent：理解问题并生成分析计划
+↓
+Data Engineer Agent：检查数据结构、字段、类型和清洗需求
+↓
+Pandas Executor Agent：执行 Pandas / NumPy 路径
+↓
+SQL Executor Agent：执行 SQL / DuckDB 路径
+↓
+Verifier Agent：对比结果、自查、自纠
+↓
+Insight Agent：生成解释和建议
+↓
+Visualization Agent：生成图表配置
+↓
+Response Builder：生成最终结构化 JSON
+
+注意：
+
+1. 每个 Agent 必须只负责一个明确职责
+2. 每个 Agent 必须通过结构化输入输出交互
+3. 每个 Agent 必须能独立测试
+4. 多 Agent 只是编排方式，不改变核心算法位置
+5. Microsoft Agent Framework 只负责 workflow orchestration
+
+## 最小 API 目标
+
+当前后端至少需要支持：
+
+1. POST /api/data-agent/upload
+
+用于接收 CSV / Excel 文件，返回 dataset_id 和字段画像。
+
+2. POST /api/data-agent/analyze
+
+用于接收 dataset_id 和用户问题，返回分析结果、校验信息、解释建议和图表配置。
+
+3. GET /api/data-agent/datasets/{dataset_id}/profile
+
+用于返回指定数据集的文件信息、字段画像和状态。
+
+## 重要红线
+
+1. 不允许直接在 main 分支开发
+2. 不允许修改旧系统主流程，除非任务明确要求
+3. 不允许把核心算法写进 backend/router
+4. 不允许把 Benchmark 题目写成硬编码规则
+5. 不允许绕过 Verifier 直接输出最终结论
+6. 不允许一次任务混合多个无关目标
+7. 每次修改前必须读取 MAIN_GOAL.md、CHANGELOG_AI.md、BRANCH_RULES.md
+8. 每次修改后必须更新 CHANGELOG_AI.md
+9. 不允许核心算法依赖 Microsoft Agent Framework
+10. 不允许在适配层中实现核心业务逻辑
+11. 不允许每个模块随意返回不同结构的 dict
+12. 不允许没有 run_id 的 analyze 链路
+13. 不允许没有错误类型的失败结果
+14. 不允许没有 trace 的分析链路设计
+15. 不允许工程文档要求输出完整 Chain of Thought

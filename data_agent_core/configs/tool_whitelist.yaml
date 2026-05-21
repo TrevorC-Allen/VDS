@@ -1,0 +1,7 @@
+# Tool whitelist draft for future executor sandboxing.
+# TODO: Define allowed Pandas, NumPy, and DuckDB operations in Phase 1 or later.
+allowed_tools: []
+blocked_operations:
+  - network_request
+  - external_file_access
+  - shell_execution

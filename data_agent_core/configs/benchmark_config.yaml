@@ -1,0 +1,5 @@
+# Benchmark configuration draft.
+# TODO: Define benchmark dataset roots, report output paths, and metric toggles in Phase 3.
+benchmark_enabled: false
+cases_path: null
+reports_path: null

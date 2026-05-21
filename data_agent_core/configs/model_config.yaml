@@ -1,0 +1,4 @@
+# Model configuration draft.
+# TODO: Define model routing only after core contracts and deterministic execution paths are stable.
+models: []
+default_model: null
