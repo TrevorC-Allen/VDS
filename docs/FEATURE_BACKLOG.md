@@ -84,6 +84,20 @@
 
 风险：禁止标准答案泄漏和单题硬编码。
 
+### Phase Gate And Multi-Agent Migration
+
+目标：按 Phase 1 到 Phase 4+ 的门槛推进，先补核心泛化能力和防硬编码测试，再接 Microsoft Agent Framework adapter 和多 Agent workflow。
+
+影响模块：docs、agent_runtime、ms_agent_framework_adapter、multi_agent_workflows、tests/architecture。
+
+优先级：P0。
+
+验收标准：docs/PHASE_GATES.md 明确每个阶段的进入/退出条件；agent_runtime 提供框架无关 AgentTask / AgentResult / WorkflowState；adapter 映射不 import Microsoft Agent Framework；防 Benchmark 硬编码测试通过。
+
+风险：如果跳过 Phase gate 直接做 Microsoft workflow，容易把核心算法绑死在具体框架里。
+
+状态：2026-05-21 开始落地 Phase gate、内部 runtime 契约和 adapter 映射骨架。
+
 ## TODO
 
 - 新功能进入开发前，先确认是否影响 contracts / API_CONTRACT / tracing / errors。

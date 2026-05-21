@@ -1,7 +1,32 @@
-"""Internal workflow state draft.
+"""Internal workflow state contract."""
 
-TODO:
-- Define WorkflowState with dataset_id, question, schema_profile, logic_form,
-  analysis_plan, pandas_result, sql_result, verification, and final_response.
-- Keep state serializable for future framework adapters.
-"""
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Any
+
+
+@dataclass
+class WorkflowState:
+    """Serializable state shared across single-agent and multi-agent workflows."""
+
+    dataset_id: str
+    question: str
+    schema_profile: Any = None
+    logic_form: Any = None
+    analysis_plan: Any = None
+    pandas_result: Any = None
+    sql_result: Any = None
+    verification: Any = None
+    correction_attempts: list[Any] = field(default_factory=list)
+    insight: Any = None
+    chart: Any = None
+    final_response: Any = None
+    trace: Any = None
+    warnings: list[str] = field(default_factory=list)
+    errors: list[Any] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-ready workflow state dict."""
+
+        return asdict(self)

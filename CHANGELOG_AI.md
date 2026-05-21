@@ -69,6 +69,120 @@ YYYY-MM-DD HH:MM TZ
 
 ### 日期时间
 
+2026-05-21 11:59 CST
+
+### 本次目标
+
+按 Phase 计划继续推进到 Phase 4 前置状态：建立 Phase gate、补内部 Agent runtime 契约、补 Microsoft Agent Framework 适配层声明式映射、补多 Agent workflow 任务序列，并通过防 Benchmark 硬编码测试保证后续只提升泛化能力，不按题目优化。
+
+### 修改文件
+
+- docs/PHASE_GATES.md
+- docs/FEATURE_BACKLOG.md
+- agent_runtime/agent_role.py
+- agent_runtime/agent_task.py
+- agent_runtime/agent_result.py
+- agent_runtime/workflow_state.py
+- agent_runtime/runtime_interfaces.py
+- agent_runtime/tool_registry.py
+- data_agent_core/contracts/agent_contracts.py
+- data_agent_core/core/dabstep_fee_engine.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/llm/planner.py
+- data_agent_core/output/response_builder.py
+- ms_agent_framework_adapter/adapter.py
+- ms_agent_framework_adapter/agent_mapping.py
+- ms_agent_framework_adapter/workflow_mapping.py
+- ms_agent_framework_adapter/tool_mapping.py
+- ms_agent_framework_adapter/state_mapping.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- multi_agent_workflows/planner_workflow.py
+- multi_agent_workflows/dual_executor_workflow.py
+- multi_agent_workflows/verification_workflow.py
+- tests/architecture/test_dependency_boundaries.py
+- tests/architecture/test_no_benchmark_hardcoding.py
+- tests/agent_runtime/test_runtime_contracts.py
+- tests/__init__.py
+- tests/core/__init__.py
+- tests/architecture/__init__.py
+- tests/agent_runtime/__init__.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 docs/PHASE_GATES.md，明确 Phase 1 到 Phase 5+ 的进入/退出条件和禁止按 Benchmark 题目优化的红线。
+- 将 agent_runtime 从 docstring 草案推进为轻量 dataclass / Enum / Protocol 契约。
+- 将 Microsoft Agent Framework adapter 继续保持无框架依赖，只提供声明式 role / workflow / tool / state mapping。
+- 将 multi_agent_workflows 推进为 framework-neutral AgentTask 序列构建器，不承载核心算法。
+- 新增架构测试，检查 data_agent_core 不能 import 外层 adapter / workflow / backend，adapter 当前不能 import Microsoft 框架。
+- 新增防 Benchmark 硬编码测试，检查核心分析模块不引用 Benchmark 泄漏字段，并验证 runner 只把 question / guidelines / execution_mode 传给 agent。
+- 新增 agent_runtime 契约测试和 unittest discover 支持。
+- 补通用分析能力：fraud_rate_comparison、year-level best_fraud_aci_choice、cheapest_card_scheme_for_transaction、card_scheme 输出格式。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/dabstep_phase_gate_dev_1_10
+- source .env.local 后运行 /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/dabstep_phase_gate_real_dev_1_10
+- source .env.local 后运行 /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split all --limit 10 --offset 10 --output-dir outputs/dabstep_phase_gate_real_11_20
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- rg -n "^\\s*(from|import)\\s+(backend|ms_agent_framework_adapter|multi_agent_workflows|agent_framework)" data_agent_core
+- rg secret-pattern scan against repository files excluding outputs/
+
+### 测试结果
+
+- unittest discover 通过：Ran 11 tests in 8.738s，OK。
+- DABstep dev 1-10 mock：8/10，accuracy=0.8。
+- DABstep dev 1-10 真实 LLM：8/10，accuracy=0.8。
+- DABstep all 11-20 真实 LLM：可生成 10 条预测，public all.jsonl 无 answer，因此 accuracy=null。
+- DABstep all 11-20 真实 LLM 的 10 条预测均 success=True。
+- compileall 通过。
+- data_agent_core 禁止 import 边界检查未发现实际 import 匹配。
+- secret 扫描未发现提供过的 key 或 key 片段进入仓库文件；.env.local 仍为 ignored 文件。
+
+### 遗留问题
+
+- all.jsonl 没有本地标准答案，无法本地计算 11-20 的真实准确率。
+- Microsoft Agent Framework 仍未安装、未接入真实 workflow；当前只是 Phase 4 前置 adapter plan。
+- 后续进入 Phase 4 时仍必须保证 data_agent_core 不依赖 Microsoft Agent Framework。
+
+### 是否影响主流程
+
+否。未修改旧 BigCat / VDS 主流程，未修改前端或复杂后端业务。
+
+### 是否涉及 Benchmark
+
+是。使用 DABstep 进行分段验证，但新增了防硬编码测试，且标准答案只在 evaluator 评分阶段使用，不进入核心分析链路或 LLM。
+
+### 是否涉及 Microsoft Agent Framework
+
+是，但仅限适配层声明式映射和 Phase gate 文档；未安装、未 import、未实现真实 Microsoft Agent Framework workflow。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。新增 agent_runtime 契约、adapter mapping 和 multi_agent workflow task builders，为 Phase 4+ 多 Agent 编排做准备。
+
+### 是否修改核心数据契约
+
+是。agent_contracts.py 说明更新为与 agent_runtime 契约对齐；未修改 FinalResponse 稳定 API 字段。
+
+### 是否修改 API 契约
+
+否。本轮未修改 API 稳定字段。
+
+### 是否新增或修改错误类型
+
+否。本轮未新增错误类型。
+
+### 是否新增或修改运行追踪逻辑
+
+否。本轮未新增 trace 字段。
+
+---
+
+### 日期时间
+
 2026-05-21 11:30 CST
 
 ### 本次目标

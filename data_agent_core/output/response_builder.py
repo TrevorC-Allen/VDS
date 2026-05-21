@@ -62,6 +62,8 @@ def format_answer(value: Any, output_format: dict[str, Any]) -> str:
         return ", ".join(str(item) for item in value)
     if answer_type == "scheme_fee":
         return f"{value['card_scheme']}:{_format_number(float(value['fee']), decimals)}"
+    if answer_type == "card_scheme" and isinstance(value, dict):
+        return str(value["card_scheme"])
     if answer_type == "grouped_amounts":
         return _format_grouped_amounts(value, decimals)
     return str(value)

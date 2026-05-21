@@ -59,6 +59,8 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         return _top_count(context["payments"], filters, params)
     if op == "group_average":
         return _group_average(context["payments"], filters, params)
+    if op == "fraud_rate_comparison":
+        return _fraud_rate_comparison(context["payments"], filters, params)
 
     engine = _fee_engine(context)
     if op == "average_fee_for_filters":
@@ -105,6 +107,12 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
             objective=str(params["objective"]),
         )
         return {"card_scheme": scheme, "fee": total, "candidates": candidates}
+    if op == "cheapest_card_scheme_for_transaction":
+        scheme, fee, candidates = engine.cheapest_card_scheme_for_transaction_value(
+            transaction_value=float(params["transaction_value"]),
+            objective=str(params.get("objective") or "minimum"),
+        )
+        return {"card_scheme": scheme, "fee": fee, "candidates": candidates}
     if op == "fee_restriction_affected_merchants":
         return engine.fee_restriction_affected_merchants(
             fee_id=int(params["fee_id"]),
@@ -122,7 +130,7 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         aci, delta, candidates = engine.best_fraud_aci_choice(
             str(filters["merchant"]),
             year=int(filters.get("year") or 2023),
-            month=int(filters["month"]),
+            month=filters.get("month"),
         )
         return {"card_scheme": aci, "fee": delta, "candidates": candidates}
     raise ValueError(f"Unsupported operation: {op}")
@@ -163,6 +171,28 @@ def _group_average(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, 
     result = data.groupby(group_by, dropna=True)[metric].mean().reset_index()
     result = result.sort_values(metric, ascending=True)
     return result.to_dict(orient="records")
+
+
+def _fraud_rate_comparison(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> str:
+    data = df
+    if filters.get("year"):
+        data = data[data["year"] == int(filters["year"])]
+    dimension = str(params["dimension"])
+    left_value = params["left_value"]
+    right_value = params["right_value"]
+    operator = str(params.get("operator") or "higher_than")
+    left_rate = _fraud_rate(data[data[dimension] == left_value])
+    right_rate = _fraud_rate(data[data[dimension] == right_value])
+    if left_rate is None or right_rate is None:
+        return "Not Applicable"
+    result = left_rate > right_rate if operator == "higher_than" else left_rate < right_rate
+    return "yes" if result else "no"
+
+
+def _fraud_rate(data: pd.DataFrame) -> float | None:
+    if data.empty:
+        return None
+    return float(data["has_fraudulent_dispute"].astype(bool).mean())
 
 
 def _fee_engine(context: dict[str, Any]) -> DabstepFeeEngine:

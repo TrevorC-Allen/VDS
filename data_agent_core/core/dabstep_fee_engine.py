@@ -129,6 +129,7 @@ class DabstepFeeEngine:
         }
         self.mcc_descriptions = self._load_mcc_descriptions()
         self.payments = self._load_payments()
+        self.card_schemes = tuple(sorted({rule.card_scheme for rule in self.rules}))
 
     def _load_mcc_descriptions(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -513,7 +514,7 @@ class DabstepFeeEngine:
         merchant: str,
         *,
         year: int,
-        month: int,
+        month: int | None,
         allowed_acis: tuple[str, ...] = ECOMMERCE_ACIS,
     ) -> tuple[str, float, dict[str, float]]:
         """Return lower-cost alternative ACI for fraudulent ecommerce transactions."""
@@ -533,6 +534,28 @@ class DabstepFeeEngine:
             candidates[aci] = total - baseline
         best_aci = min(candidates, key=candidates.get)
         return best_aci, candidates[best_aci], candidates
+
+    def cheapest_card_scheme_for_transaction_value(
+        self,
+        *,
+        transaction_value: float,
+        objective: str = "minimum",
+    ) -> tuple[str, float, dict[str, float]]:
+        """Return the cheapest or most expensive card scheme for a generic transaction value."""
+
+        candidates: dict[str, float] = {}
+        for scheme in self.card_schemes:
+            try:
+                candidates[scheme] = self.average_fee_for_rule_filters(
+                    transaction_value=transaction_value,
+                    card_scheme=scheme,
+                )
+            except ValueError:
+                continue
+        if not candidates:
+            raise ValueError("No card scheme fee candidates available.")
+        selected = max(candidates, key=candidates.get) if objective == "maximum" else min(candidates, key=candidates.get)
+        return selected, candidates[selected], candidates
 
     def mcc_for_description(self, description: str) -> int:
         """Resolve a merchant category description to an MCC code."""

@@ -126,6 +126,13 @@ def _extract_new_mcc(question: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _comparison_values_for_fraud_rate(question: str) -> tuple[str, str] | None:
+    lowered = question.lower()
+    if "ecommerce" in lowered and ("in-store" in lowered or "in store" in lowered):
+        return "Ecommerce", "POS"
+    return None
+
+
 def parse_question(question: str, guidelines: str = "", context: dict[str, Any] | None = None) -> LogicForm:
     """Parse a natural language question into a framework-neutral LogicForm."""
 
@@ -140,6 +147,22 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             parameters={"reason": "Uploaded rules do not define fines or danger thresholds."},
             output_format=output_format | {"answer_type": "text"},
         )
+
+    if "fraud rate" in lowered and ("higher than" in lowered or "lower than" in lowered):
+        values = _comparison_values_for_fraud_rate(question)
+        if values:
+            return make_logic_form(
+                task_type="comparison",
+                operation="fraud_rate_comparison",
+                filters={"year": _extract_year(question)},
+                parameters={
+                    "dimension": "shopper_interaction",
+                    "left_value": values[0],
+                    "right_value": values[1],
+                    "operator": "higher_than" if "higher than" in lowered else "lower_than",
+                },
+                output_format=output_format | {"answer_type": "yes_no"},
+            )
 
     if "highest number of transactions" in lowered:
         group_by = "issuing_country" if "issuing country" in lowered else "ip_country"
@@ -244,6 +267,14 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             filters={"merchant": _extract_merchant(question, context), "year": _extract_year(question), "month": _extract_month(question)},
             parameters={"objective": objective},
             output_format=output_format | {"answer_type": "scheme_fee", "decimals": 2},
+        )
+
+    if ("cheapest fee" in lowered or "lowest fee" in lowered) and "transaction value" in lowered and "card scheme" in lowered:
+        return make_logic_form(
+            task_type="fee_rule",
+            operation="cheapest_card_scheme_for_transaction",
+            parameters={"transaction_value": _extract_transaction_value(question), "objective": "minimum"},
+            output_format=output_format | {"answer_type": "card_scheme"},
         )
 
     if "only applied to account type" in lowered and "merchants" in lowered:
