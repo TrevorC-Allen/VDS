@@ -32,6 +32,19 @@
 18. 提供最小后端接口，供前端上传文件、提交问题、获取结构化结果
 19. 预留未来单 Agent 到多 Agent 的平滑迁移能力
 
+## 当前实现状态
+
+2026-05-21 更新：
+
+1. 已建立 Phase 0 项目规则和目录骨架。
+2. 已新增可运行的核心算法 MVP，用于本地核心算法测试。
+3. 已支持 DABstep 风格的业务表和规则知识库输入：payments.csv 作为业务数据库表，manual.md / fees.json / merchant_data.json 作为文档和规则知识库。
+4. 已支持 DABstep dev 前 10 题本地评测，当前验证结果为 8/10，准确率 80%。
+5. all.jsonl 可生成前 10 题预测文件，但本地 all.jsonl 的 answer 字段为空，因此不能本地计算准确率。
+6. 该实现不使用 task_id、标准答案或单题硬编码进入分析链路。
+7. 已新增 LLM 单 Agent 链路，Intent Parser、Column Mapping、Analysis Planner、Verifier / Critic、Correction Planner、Insight Generator 和 Chart Planner 均预留 LLM 参与；确定性代码负责文件/规则读取、执行、结果标准化、规则校验和评分。
+8. LLM key 只能通过环境变量提供，禁止写入仓库、文档、trace 或 CHANGELOG。
+
 ## 架构原则
 
 1. 核心算法必须放在 data_agent_core/ 中
@@ -52,6 +65,10 @@
 16. 所有错误必须进入 errors 字段
 17. 所有警告必须进入 warnings 字段
 18. 工程文档中不要求模型输出完整 Chain of Thought，只保留 structured analysis plan、reasoning summary、execution trace、verification notes
+19. Agent 必须包含 LLM 单 Agent 链路；LLM 负责意图理解、字段语义映射、分析计划、校验辅助、修正方向、解释和图表语义规划，本地执行器负责确定性计算和校验
+20. LLM API key 必须从环境变量读取，不允许提交到 Git
+21. LLM 不能绕过代码执行器、Result Normalizer、Verifier 或 Correction Planner 直接输出最终结论
+22. DABstep / Benchmark 的 task_id 和标准答案不能进入 LLM 输入或核心分析链路
 
 ## Microsoft Agent Framework 策略
 
@@ -98,33 +115,36 @@ Microsoft Agent Framework 是后续多 Agent 编排的候选框架，但不是�
 
 ## 核心工作流
 
-用户上传 CSV / Excel
+用户问题
 ↓
-文件解析
+LLM：Intent Parser
 ↓
-字段画像
+LLM + 规则：Column Mapping
 ↓
-用户问题理解
+LLM：Analysis Planner
 ↓
-生成统一分析计划
+代码：Pandas Executor
 ↓
-Pandas / NumPy 路径执行
+代码：SQL / DuckDB Executor
 ↓
-SQL / DuckDB 路径执行
+代码：Result Normalizer
 ↓
-结果标准化
+规则 + LLM：Verifier / Critic
 ↓
-结果一致性对比
+规则 + LLM：Correction Planner
 ↓
-自查自纠
+LLM：Insight Generator
 ↓
-生成解释和建议
+LLM + 规则：Chart Planner
 ↓
-生成图表配置
-↓
-后端 API 返回结构化 JSON
-↓
-前端展示
+后端返回 JSON
+
+说明：
+
+1. LLM 负责语义理解、计划草案、解释和辅助校验，不负责绕过执行器直接编造答案。
+2. Pandas / SQL / DuckDB 执行、结果标准化、规则校验和 Benchmark 评分必须由代码完成。
+3. Correction Planner 只能给出修正方向，真实修正仍由受控代码路径执行。
+4. Trace 只记录 structured analysis plan、reasoning summary、execution trace、verification notes，不记录完整 Chain of Thought。
 
 ## 未来多 Agent 工作流
 
@@ -132,19 +152,23 @@ SQL / DuckDB 路径执行
 
 用户问题
 ↓
-Planner Agent：理解问题并生成分析计划
+Planner Agent：LLM 为主
 ↓
-Data Engineer Agent：检查数据结构、字段、类型和清洗需求
+Data Engineer Agent：代码为主，LLM 辅助字段语义
 ↓
-Pandas Executor Agent：执行 Pandas / NumPy 路径
+Pandas Executor Agent：代码为主
 ↓
-SQL Executor Agent：执行 SQL / DuckDB 路径
+SQL Executor Agent：代码为主
 ↓
-Verifier Agent：对比结果、自查、自纠
+Verifier Agent：规则为主，LLM 辅助
 ↓
-Insight Agent：生成解释和建议
+Correction Agent：LLM 生成修正方向，代码执行
 ↓
-Visualization Agent：生成图表配置
+Insight Agent：LLM 为主
+↓
+Visualization Agent：规则 + LLM
+↓
+Benchmark Agent：代码为主，LLM 辅助错误归因
 ↓
 Response Builder：生成最终结构化 JSON
 
@@ -189,3 +213,5 @@ Response Builder：生成最终结构化 JSON
 13. 不允许没有错误类型的失败结果
 14. 不允许没有 trace 的分析链路设计
 15. 不允许工程文档要求输出完整 Chain of Thought
+16. CHANGELOG_AI.md 新增记录必须写日期时间，格式为 YYYY-MM-DD HH:MM TZ，精确到分钟
+17. 不允许为了补齐格式而给历史 CHANGELOG 记录编造分钟级时间

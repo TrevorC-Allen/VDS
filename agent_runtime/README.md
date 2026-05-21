@@ -22,6 +22,18 @@ AgentRole:
 - VISUALIZATION
 - BENCHMARK
 
+## 未来角色职责
+
+1. PLANNER：Planner Agent，LLM 为主。
+2. DATA_ENGINEER：Data Engineer Agent，代码为主，LLM 辅助字段语义。
+3. PANDAS_EXECUTOR：Pandas Executor Agent，代码为主。
+4. SQL_EXECUTOR：SQL Executor Agent，代码为主。
+5. VERIFIER：Verifier Agent，规则为主，LLM 辅助。
+6. CORRECTION：Correction Agent，LLM 生成修正方向，代码执行。
+7. INSIGHT：Insight Agent，LLM 为主。
+8. VISUALIZATION：Visualization Agent，规则 + LLM。
+9. BENCHMARK：Benchmark Agent，代码为主，LLM 辅助错误归因。
+
 AgentTask:
 - task_id
 - role

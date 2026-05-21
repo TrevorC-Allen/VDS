@@ -1,14 +1,41 @@
-"""Dataset contract drafts for file, table, and column profiles.
+"""Dataset contracts for file, table, and column profiles."""
 
-TODO:
-- Define DatasetProfile, TableProfile, and ColumnProfile as stable contracts.
-- Keep these contracts independent from backend schemas and framework adapters.
-- Include dataset_id, file metadata, table metadata, column types, missing rates,
-  sample values, warnings, and errors.
+from __future__ import annotations
 
-Draft structures:
-- DatasetProfile: dataset_id, file_name, status, tables, created_at, warnings, errors
-- TableProfile: table_name, row_count, column_count, columns
-- ColumnProfile: name, inferred_type, missing_rate, unique_count, sample_values,
-  semantic_hints
-"""
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class ColumnProfile:
+    """Stable column profile exchanged by parser and profiler modules."""
+
+    name: str
+    inferred_type: str
+    missing_rate: float = 0.0
+    unique_count: int = 0
+    sample_values: list[Any] = field(default_factory=list)
+    semantic_hints: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TableProfile:
+    """Stable table profile for one CSV file or Excel sheet."""
+
+    table_name: str
+    row_count: int
+    column_count: int
+    columns: list[ColumnProfile] = field(default_factory=list)
+
+
+@dataclass
+class DatasetProfile:
+    """Stable dataset profile returned by file parsing and profiling."""
+
+    dataset_id: str
+    file_name: str
+    status: str
+    tables: list[TableProfile] = field(default_factory=list)
+    created_at: str | None = None
+    warnings: list[str] = field(default_factory=list)
+    errors: list[Any] = field(default_factory=list)
