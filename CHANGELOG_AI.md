@@ -67,6 +67,72 @@ YYYY-MM-DD HH:MM TZ
 
 ### 日期时间
 
+2026-05-21 15:53 CST
+
+### 本次目标
+
+按用户要求把 Provider 原生 Tool Calling Adapter 明确为 MAIN_GOAL 的下一阶段 Phase：先接 OpenAI 原生工具循环，再把 DeepSeek 作为 provider 协议差异特化接入，同时保留本地 ToolDispatcher 作为唯一受控执行入口。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 在当前实现状态中新增下一阶段方向：Provider 原生 Tool Calling Adapter，OpenAI 先行，DeepSeek 后续特化。
+- 在架构原则中新增 provider native tool call 必须转换为内部 ToolCall，并经过 ToolDispatcher 白名单、角色、schema、超时和 trace 摘要校验。
+- 新增 `下一阶段 Phase 7：Provider 原生 Tool Calling Adapter`，定义目标、阶段顺序、标准调用链和验收标准。
+- 将原来的“下一阶段：业务口径驱动的多 Agent 质量提升”改名为 Phase 6 质量提升，避免与新的下一阶段 Phase 冲突。
+
+### 测试方式
+
+- 文档口径变更，未运行 Python 自动化测试。
+- 执行 git diff 检查改动范围和文档一致性。
+
+### 测试结果
+
+- 未运行自动化测试；本次未修改 Python 逻辑、API、contracts、runtime 执行代码或测试代码。
+
+### 遗留问题
+
+- Phase 7 仍是目标文档，尚未实现 OpenAI / DeepSeek provider 原生 tool loop adapter。
+- 后续实现必须补 mock provider、OpenAI adapter、DeepSeek adapter 和回归测试。
+
+### 是否影响主流程
+
+否。仅文档目标和阶段定义变更。
+
+### 是否涉及 Benchmark
+
+否。未修改 Benchmark 数据、runner、evaluator 或评分逻辑；仅要求后续启用 provider-native tool loop 不能降低现有 smoke benchmark 可复现性。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 Microsoft adapter；仅保留其作为可选协议/框架适配层的边界。
+
+### 是否影响未来多 Agent 迁移
+
+是。明确下一阶段 provider-native tool loop 必须挂接到内部 ToolDispatcher，不能替代 multi_agent workflow 或把核心算法迁入 provider adapter。
+
+### 是否修改核心数据契约
+
+否。仅文档说明，未修改 ToolDefinition、ToolCall、ToolResult 或 ToolTraceEvent 代码。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 日期时间
+
 2026-05-21 15:35 CST
 
 ### 本次目标

@@ -55,6 +55,7 @@
 16. 已开始把多 Agent 从顺序角色编排升级为业务口径驱动的计划、校验和自纠闭环：LogicForm 支持 metric、metric_definition、numerator、denominator、group_by、objective 和 options；Verifier 能识别 top fraud 使用 raw count 的语义错误，并要求修正为 fraud_volume_rate。
 17. 当前 9/10 的主要瓶颈不是多 Agent 框架或 Microsoft adapter，而是 ACI incentive 类问题的 associated cost 费用口径仍未完全对齐；该问题必须按通用 fee what-if / ACI candidate table 能力继续修复，禁止只针对当前 DABstep 样本、当前字段值或当前问法补坑。
 18. DABstep all 前 50 题可运行 public split 执行覆盖；本地 public all.jsonl 的 answer 字段为空，因此只能验证执行率和 trace，不能本地计算官方准确率。
+19. 下一阶段正式调整为 Provider 原生 Tool Calling Adapter：先接 OpenAI 原生工具循环，再在同一内部工具契约上接 DeepSeek provider 特化；本地 ToolDispatcher 仍是唯一受控执行入口。
 
 ## 架构原则
 
@@ -86,6 +87,7 @@
 26. 模型可以选择工具和填写参数，但不能获得 raw Python、raw SQL、shell、网络访问或任意文件访问能力
 27. 工具调用 trace 只能记录工具名、参数摘要、结果摘要、错误和耗时，不记录完整 Chain of Thought、raw reasoning tokens、API key 或敏感数据
 28. OpenAI / DeepSeek / Microsoft Agent Framework 只能作为工具调用协议适配层；内部工具契约必须保持 provider-neutral
+29. Provider 原生工具循环只能把模型生成的 tool call 转换为内部 ToolCall；任何 OpenAI / DeepSeek tool call 都必须经过 ToolDispatcher 的白名单、角色、schema、超时和摘要校验后才能执行
 
 ## Microsoft Agent Framework 策略
 
@@ -208,6 +210,41 @@ Verifier / Response Builder 生成最终结构化 JSON
 3. Microsoft Agent Framework adapter 可以把内部工具包装为 function tool，但仅作为可选适配层。
 4. 仍未启用 provider 原生 OpenAI / DeepSeek tool loop，仍不允许模型获得 raw Python、raw SQL、shell、网络或任意文件访问。
 
+## 下一阶段 Phase 7：Provider 原生 Tool Calling Adapter
+
+下一阶段目标不是替换本地工具层，而是把 OpenAI / DeepSeek 的原生 tool calling 能力接到现有 provider-neutral 工具契约上。Provider 原生 tool loop 只负责让模型选择工具和填写参数；真实执行、权限、参数校验、超时、trace 摘要和错误归一化仍由本地 ToolDispatcher 负责。
+
+阶段顺序：
+
+1. 先实现 OpenAI 原生工具循环 adapter，把 OpenAI tool schema / tool call / tool result 映射到内部 ToolDefinition、ToolCall 和 ToolResult。
+2. OpenAI adapter 必须复用现有 ToolRegistry / ToolDispatcher / ToolTraceEvent，不允许在 provider adapter 中实现 DatasetProfile、Pandas、SQL、Verifier、Chart 或 Insight 逻辑。
+3. OpenAI adapter 跑通 mock provider、单元测试和至少一个本地 uploaded dataset smoke，再允许进入真实 OpenAI key 验证。
+4. DeepSeek 作为第二步 provider 特化接入，只处理 DeepSeek 与 OpenAI-compatible chat completions / tool calls 的协议差异；不得 fork 内部工具契约。
+5. DeepSeek thinking mode 或其他 reasoning 字段只能由 provider adapter 内部维护，用于必要的续传或工具回填，不进入稳定 trace、debug 或 API 响应。
+6. Provider 原生并行 tool calls 如后续启用，必须先证明不会破坏工具顺序依赖、WorkflowState 一致性和 trace 可复现性。
+
+Provider-native 调用链必须保持为：
+
+OpenAI / DeepSeek native tool loop
+↓
+provider adapter
+↓
+内部 ToolDefinition / ToolCall
+↓
+ToolDispatcher 白名单、角色、schema、超时和 trace-safe 校验
+↓
+受控本地工具 callable
+↓
+data_agent_core 确定性执行、Verifier 和 Response Builder
+
+验收标准：
+
+1. OpenAI 原生 tool loop 可在不改变 data_agent_core 核心算法的前提下完成 profile_schema、build_analysis_plan、execute_pandas_plan、execute_sql_plan、verify_results、build_chart_spec 和 generate_insight 的闭环。
+2. Tool call 失败必须进入 ToolResult.errors / warnings，并能被 Verifier 或 Correction Planner 消化，不能由模型自然语言掩盖。
+3. Trace 只记录工具名、step_id、requested_by、参数摘要、结果摘要、错误和耗时，不记录完整 Chain of Thought、raw reasoning tokens、API key 或敏感原始数据。
+4. OpenAI 和 DeepSeek 的差异必须限制在 data_agent_core/llm 或独立 provider adapter 内；内部 ToolDefinition、ToolCall、ToolResult、ToolTraceEvent 和 ToolDispatcher 不因 provider 改变。
+5. 本地固定流程仍可作为 fallback；启用 provider-native tool loop 不能降低现有 multi_agent smoke benchmark、uploaded-file API 和 mock provider 测试的可复现性。
+
 ## 当前多 Agent 工作流
 
 Phase 6 最小可运行多 Agent 结构：
@@ -244,9 +281,9 @@ Response Builder：生成最终结构化 JSON
 6. 当前 backend 默认走 multi_agent，single_agent 只作为 fallback
 7. 当前 DABstep 多 Agent runner 位于 multi_agent_workflows/dabstep_benchmark_runner.py
 
-## 下一阶段：业务口径驱动的多 Agent 质量提升
+## Phase 6 质量提升：业务口径驱动的多 Agent 泛化能力
 
-下一阶段不是继续更换 Agent 框架，也不是按 Benchmark 题号补规则，更不是把每次看到的错误补成只适配当前数据和当前问法的局部坑，而是让多 Agent 真正参与业务语义判断、计划修正、结果校验和跨数据集泛化能力建设。
+该阶段不是继续更换 Agent 框架，也不是按 Benchmark 题号补规则，更不是把每次看到的错误补成只适配当前数据和当前问法的局部坑，而是让多 Agent 真正参与业务语义判断、计划修正、结果校验和跨数据集泛化能力建设。
 
 Rule NO.1：
 
@@ -270,7 +307,7 @@ Rule NO.1：
 8. 将 all 21-50 public proxy 暴露出的 `Not Applicable` 缺口归纳为通用能力族补齐：字段可取值枚举、比例/百分比、重复行检测、欺诈交易维度排名、ACI 最贵/最便宜选择、fee restriction 影响商户解析。
 9. 每个能力族必须配套泛化验收：至少一个非 Benchmark 或合成数据用例、一个同类变体用例、一个已有代表回归用例；不能只用当前失败题目证明成功。
 
-## 下一阶段 TODO
+## Phase 6 质量提升 TODO
 
 1. Planner 语义指标增强
    - 为 ranking / top / highest / lowest 类问题增加 metric selection。
