@@ -45,6 +45,29 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertAlmostEqual(66.666666, float(pandas_result.value), places=5)
         self.assertAlmostEqual(float(pandas_result.value), float(sql_result.value), places=5)
 
+    def test_numeric_range_filters_are_shared_by_pandas_and_sql(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "day_of_year": [181, 182, 220, 273, 274],
+                "eur_amount": [10.0, 20.0, 30.0, 40.0, 50.0],
+            }
+        )
+        logic = LogicForm(
+            task_type="aggregation",
+            operation="row_count",
+            filters={"day_of_year": {"min": 182, "max": 273}},
+            parameters={"table": "payments"},
+            output_format={"answer_type": "number"},
+        )
+        plan = build_analysis_plan(logic)
+        pandas_result = pandas_executor.execute_plan(plan, {"payments": payments})
+        sql_result = sql_executor.execute_plan(plan, {"payments": payments})
+
+        self.assertTrue(pandas_result.success, pandas_result.errors)
+        self.assertTrue(sql_result.success, sql_result.errors)
+        self.assertEqual(3, pandas_result.value)
+        self.assertEqual(pandas_result.value, sql_result.value)
+
     def test_duplicate_check_reports_yes_without_exposing_rows(self) -> None:
         table = pd.DataFrame(
             [
@@ -397,7 +420,7 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertTrue(count_per_unique_sql.success, count_per_unique_sql.errors)
         self.assertEqual("POS", common.value)
         self.assertEqual(["A", "B"], values.value)
-        self.assertAlmostEqual(30.0, float(per_unique_pandas.value))
+        self.assertAlmostEqual(22.5, float(per_unique_pandas.value))
         self.assertAlmostEqual(float(per_unique_pandas.value), float(per_unique_sql.value))
         self.assertAlmostEqual(1.5, float(count_per_unique_pandas.value))
         self.assertAlmostEqual(float(count_per_unique_pandas.value), float(count_per_unique_sql.value))
@@ -744,6 +767,116 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertTrue(result.success, result.errors)
         self.assertAlmostEqual(50.0, float(result.value))
 
+    def test_dabstep_alias_row_count_and_boolean_filters_are_generic(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "ip_address": ["1.1.1.1", "", None, "2.2.2.2"],
+                "ip_country": ["NL", "BE", "BE", "BE"],
+                "has_fraudulent_dispute": [True, False, True, False],
+            }
+        )
+        context = {"payments": payments}
+        missing_logic = parse_question("How many transactions have missing IP addresses?", context=context)
+        fraud_logic = parse_question("How many transactions were flagged as fraudulent?", context=context)
+        country_logic = parse_question("Which IP country has the highest number of transactions?", context=context)
+
+        missing_plan = build_analysis_plan(missing_logic)
+        fraud_plan = build_analysis_plan(fraud_logic)
+        country_plan = build_analysis_plan(country_logic)
+        missing = pandas_executor.execute_plan(missing_plan, context)
+        fraud = pandas_executor.execute_plan(fraud_plan, context)
+        country = pandas_executor.execute_plan(country_plan, context)
+        missing_sql = sql_executor.execute_plan(missing_plan, context)
+        fraud_sql = sql_executor.execute_plan(fraud_plan, context)
+        country_sql = sql_executor.execute_plan(country_plan, context)
+
+        self.assertEqual("row_count", missing_logic.operation)
+        self.assertEqual({"ip_address": "__NULL__"}, missing_logic.filters)
+        self.assertEqual({"has_fraudulent_dispute": True}, fraud_logic.filters)
+        self.assertEqual("ip_country", country_logic.parameters["group_by"])
+        self.assertEqual(2, missing.value)
+        self.assertEqual(2, fraud.value)
+        self.assertEqual("BE", country.value)
+        self.assertEqual(missing.value, missing_sql.value)
+        self.assertEqual(fraud.value, fraud_sql.value)
+        self.assertEqual(country.value, country_sql.value)
+
+    def test_grouped_fraud_rate_metric_and_answer_targets_are_generic(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "year": [2023, 2023, 2023, 2023],
+                "day_of_year": [1, 1, 1, 1],
+                "merchant": ["M1", "M1", "M2", "M2"],
+                "card_scheme": ["AlphaPay", "AlphaPay", "BetaPay", "BetaPay"],
+                "eur_amount": [10.0, 90.0, 20.0, 80.0],
+                "has_fraudulent_dispute": [True, False, True, False],
+            }
+        )
+        context = {"payments": payments}
+        metric_logic = parse_question("What is the highest avg fraud rate for the year 2023? (by card_scheme)", context=context)
+        entity_logic = parse_question("Which payment method (card_scheme) has the lowest avg fraud rate for the year 2023?", context=context)
+        metric_result = pandas_executor.execute_plan(build_analysis_plan(metric_logic), context)
+        entity_result = pandas_executor.execute_plan(build_analysis_plan(entity_logic), context)
+
+        self.assertEqual("rank_by_metric", metric_logic.operation)
+        self.assertEqual("metric_only", metric_logic.answer_target)
+        self.assertEqual("entity_only", entity_logic.answer_target)
+        self.assertEqual("20.000", format_answer(metric_result.value, metric_logic.output_format))
+        self.assertEqual("AlphaPay", format_answer(entity_result.value, entity_logic.output_format))
+
+    def test_fraud_rate_fluctuation_uses_period_std_not_single_group_rate(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "year": [2023] * 8,
+                "day_of_year": [1, 1, 32, 32, 1, 1, 32, 32],
+                "merchant": ["Volatile", "Volatile", "Volatile", "Volatile", "Stable", "Stable", "Stable", "Stable"],
+                "eur_amount": [10.0, 90.0, 30.0, 70.0, 20.0, 80.0, 20.0, 80.0],
+                "has_fraudulent_dispute": [True, False, True, False, True, False, True, False],
+            }
+        )
+        logic = parse_question("Which merchant had the highest fluctuation (std) in fraud rate during the year 2023?")
+        result = pandas_executor.execute_plan(build_analysis_plan(logic), {"payments": payments})
+
+        self.assertEqual("fraud_rate_fluctuation", logic.operation)
+        self.assertEqual("merchant", logic.parameters["group_by"])
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual("Volatile", format_answer(result.value, logic.output_format))
+
+    def test_top_k_share_can_rank_by_amount_but_share_transaction_count(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "merchant": ["A", "A", "B", "C", "C", "C", "C", "C"],
+                "eur_amount": [100.0, 100.0, 80.0, 70.0, 70.0, 70.0, 70.0, 70.0],
+            }
+        )
+        logic = parse_question("What percentage of transactions came from the top 2 merchants in amount volume?")
+        plan = build_analysis_plan(logic)
+        pandas_result = pandas_executor.execute_plan(plan, {"payments": payments})
+        sql_result = sql_executor.execute_plan(plan, {"payments": payments})
+
+        self.assertEqual("top_k_share", logic.operation)
+        self.assertEqual("eur_amount", logic.parameters["ranking_metric"])
+        self.assertEqual("__row_count__", logic.parameters["share_metric"])
+        self.assertTrue(pandas_result.success, pandas_result.errors)
+        self.assertTrue(sql_result.success, sql_result.errors)
+        self.assertAlmostEqual(87.5, float(pandas_result.value))
+        self.assertAlmostEqual(float(pandas_result.value), float(sql_result.value))
+
+    def test_quantile_percentage_can_target_repeat_entities_with_changed_values(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "eur_amount": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+                "email_address": ["repeat@example.com", "b", "c", "d", "e", "f", "g", "h", "repeat@example.com", "single@example.com"],
+            }
+        )
+        logic = parse_question("What percentage of high-value transactions (above the 80th percentile of amount) are made by repeat customers?")
+        result = pandas_executor.execute_plan(build_analysis_plan(logic), {"payments": payments})
+
+        self.assertEqual("quantile_percentage", logic.operation)
+        self.assertEqual("repeat_entity", logic.parameters["target_mode"])
+        self.assertTrue(result.success, result.errors)
+        self.assertAlmostEqual(50.0, float(result.value))
+
     def test_outlier_fraud_percentage_and_rate_comparison_are_generic(self) -> None:
         payments = pd.DataFrame(
             {
@@ -825,6 +958,7 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
             volume_rule["is_credit"] = None
             credit_rule = _fee_rule(3, "GlobalCard", [], fixed_amount=0.01, rate=30)
             credit_rule["is_credit"] = True
+            credit_rule["monthly_fraud_level"] = ">8.3%"
             credit_rule["intracountry"] = None
             debit_rule = _fee_rule(4, "GlobalCard", [], fixed_amount=0.01, rate=10)
             debit_rule["is_credit"] = False
@@ -840,6 +974,13 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
                 json.dumps([{"merchant": "SyntheticMerchant", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5411}])
             )
             (root / "merchant_category_codes.csv").write_text("mcc,description\n5411,Grocery Stores\n")
+            (root / "manual.md").write_text(
+                "## 2. Account Type\n\n"
+                "| Account Type | Description |\n"
+                "|--------------|-------------|\n"
+                "| A | Alpha |\n"
+                "| O | Other |\n"
+            )
             (root / "payments.csv").write_text(
                 "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
                 "SyntheticMerchant,2023,1,0,0,10.0,true,false,false,A,GlobalCard,NL,NL\n"
@@ -869,12 +1010,12 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertTrue(false_result.success, false_result.errors)
         self.assertTrue(volume_result.success, volume_result.errors)
         self.assertTrue(field_result.success, field_result.errors)
-        self.assertEqual(["monthly_volume", "capture_delay", "transaction_value"], factor_result.value)
-        self.assertEqual(["capture_delay"], decrease_result.value)
+        self.assertEqual(["monthly_volume", "capture_delay"], factor_result.value)
+        self.assertEqual(["monthly_fraud_level"], decrease_result.value)
         self.assertEqual(["intracountry"], true_result.value)
         self.assertEqual(["is_credit"], false_result.value)
-        self.assertEqual(10000.0, volume_result.value)
-        self.assertEqual(["A"], field_result.value)
+        self.assertEqual(">10k", volume_result.value)
+        self.assertEqual(["A", "O"], field_result.value)
 
     def test_excessive_retry_fee_is_classified_as_true_unsupported(self) -> None:
         logic = parse_question("How much, if exists, is the excessive retry fee?")

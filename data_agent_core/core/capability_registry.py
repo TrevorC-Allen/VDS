@@ -333,6 +333,16 @@ _REGISTRY: dict[str, CapabilityMetadata] = {
         supports_chinese=False,
         supports_english=True,
     ),
+    "fraud_rate_fluctuation": CapabilityMetadata(
+        operation="fraud_rate_fluctuation",
+        capability_family="metric_definition",
+        input_contract="fraud metric definition, group_by, time period, objective, optional filters",
+        output_contract="selected entity plus auditable period-rate std candidate table",
+        supports_pandas=True,
+        sql_support=SQL_SUPPORT_UNSUPPORTED,
+        supports_chinese=False,
+        supports_english=True,
+    ),
     "fraud_rate_comparison": CapabilityMetadata(
         operation="fraud_rate_comparison",
         capability_family="metric_definition",

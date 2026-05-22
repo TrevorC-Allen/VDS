@@ -231,6 +231,7 @@ def _logic_form_from_payload(payload: dict[str, Any], column_mapping: dict[str, 
         options=dict(payload.get("options") or {}),
         filters=dict(payload.get("filters") or {}),
         parameters=parameters,
+        answer_target=payload.get("answer_target") or dict(payload.get("output_format") or {}).get("answer_target"),
         output_format=dict(payload.get("output_format") or {}),
         output_contract=dict(payload.get("output_contract") or {}),
     )

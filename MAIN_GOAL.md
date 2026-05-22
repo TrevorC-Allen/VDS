@@ -95,6 +95,7 @@
 37. Phase 7.3 首个代码落点已完成：新增最终答案 canonicalizer / output validator，Response Builder 会把最终答案统一收敛为提交安全字符串并记录 output_contract_validation；DABstep 和 Microsoft runner 已加入 output-contract validation-driven retry、submission provenance、prediction / report hash 和统一 risk taxonomy；RunTrace final_response 记录 output_contract_passed，用于后续真实 provider 分段回归。
 38. Phase 7.3 mock / 离线闭环已完成：DABstep dev 1-10 为 9/10，DABstep public all 1-450 为 success_count=450、failure_count=0，Microsoft 1-300 为 300/300，桌面 VDS 95 smoke 为 95/95；上述报告均输出 provenance、risk_taxonomy，且 format_risk、submission_risk、trace_redaction_risk 为 0。真实 provider representative / staged / full 回归仍需在存在 OpenAI 或 DeepSeek API key 时执行，不以 mock 结果冒充真实 provider 结果。
 39. Phase 7.2 泛化契约第一轮实现已完成：Planner 会补齐 metric_definition、numerator、denominator、entity_grain、time_window、candidate_set 和 output_contract；Verifier 已按业务语义识别显式 filter、grouped count、count vs sum、mode/top_count、Top-K share denominator，并修正中文零售业务 quantity / count / formula 误判。最终回归输出包括 `outputs/phase72_generalization_contract_dev_1_10_final_20260522/dev_1_to_10_report.json`、`outputs/phase72_generalization_contract_dabstep_all_1_450_final_20260522/all_1_to_450_report.json`、`outputs/phase72_generalization_contract_microsoft_1_300_final_20260522/report.json`、`outputs/phase72_generalization_contract_vds_question_summary_95_final_20260522.json`。
+40. 当前工作目标已切换到 DABstep Easy Accuracy Recovery，并按 Phase 职责拆分记录；这不是替换原 Phase 7.1 / 7.2 定义。Phase 7.1 记录 easy public proxy baseline `50/72 = 69.44%`、验收目标 `>=62/72 = 86.11%`、优先 `>=65/72 = 90.28%` 和 proxy policy；Phase 7.2 记录对应的泛化能力族实现。本轮真实 DeepSeek 后验 proxy 观察已达 `69/72 = 95.83%`（`outputs/dabstep_easy_proxy_20260522_deepseek_real_combined/all_1_to_72_public_proxy_observation.json`），mock 离线回归为 `72/72 = 100%`（`outputs/dabstep_easy_proxy_20260522_after_recovery/all_1_to_72_public_proxy_observation.json`）；public proxy 仍只作为 response 之后观察，不进入 Planner / Executor / Verifier / Correction / prompt / tests fixture。
 
 ## 架构原则
 
@@ -391,6 +392,16 @@ leaderboard 诊断：
 3. 外部 leaderboard 的 Easy / Hard 反馈是提交后反馈，不等同于本地可复现 hidden official accuracy。
 4. hidden official accuracy 只能由 Hugging Face leaderboard 返回；本地不能伪造、推断或把 public proxy 当作官方准确率。
 
+Phase 7.1 当前验收目标：DABstep Easy Accuracy Recovery（2026-05-22）：
+
+1. 以 `outputs/dabstep_easy_proxy_20260522_current_branch/all_1_to_72_public_proxy_observation.json` 记录的 `50/72 = 69.44% public proxy` 作为 Phase 7.1 easy recovery baseline；该数字不是 official hidden accuracy。
+2. Phase 7.1 验收目标：DABstep easy public proxy 后验观察必须达到 `>=62/72 = 86.11%`，优先达到 `>=65/72 = 90.28%`。
+3. 当前真实 provider 闭环结果：DeepSeek `deepseek-chat` 分片回归合并后，`outputs/dabstep_easy_proxy_20260522_deepseek_real_combined/all_1_to_72_public_proxy_observation.json` 为 `69/72 = 95.83% public proxy`，`success_count=65`、`unexpected_not_applicable=0`、`true_unsupported=3`、Pandas-SQL consistency `49/49`、`public_proxy_policy=not_used_in_core_chain`。
+4. 当前 mock 离线回归结果：`outputs/dabstep_easy_proxy_20260522_after_recovery/all_1_to_72_public_proxy_observation.json` 为 `72/72 = 100% public proxy`，用于确定性能力族回归，不冒充真实 DeepSeek 或 official hidden accuracy。
+5. public proxy 只能用于 response 生成后的后验评分、failure_by_operation、failure_by_capability_family 和 risk_taxonomy 观察；不能进入 Planner、Executor、Verifier、Correction、prompt、tests fixture 或核心源码。
+6. 本轮问题归因不是 Hard 能力强就整体没问题，而是 Easy 集中暴露基础表分析语义：schema / field binding、filter extraction、grouped metric semantics、denominator selection 和 final answer target contract。
+7. 仍需用 submission gate、dev 1-10、public all 1-450、Microsoft 1-300、桌面 VDS 95 和 Phase 7.2G uploaded-table 回归确认 easy 修复没有牺牲泛化。
+
 下一阶段必须按能力族修复，而不是按题号修复：
 
 1. counting
@@ -455,6 +466,8 @@ Phase 7.2 是 Phase 7 下的后续子目标，不替代、不阻塞 Phase 7.1 su
 4. DABstep final mock 回归保持不退化：dev 1-10 为 9/10，SQL covered=3/10，Pandas-SQL consistency=3/3，剩余 1 题仍归入 `best_fraud_aci_choice` / associated cost 语义口径；public all 1-450 为 success_count=450、unexpected_not_applicable=0、true_unsupported=3、SQL covered=70、Pandas-SQL consistency=70/70、coverage_gap=380。
 5. 桌面 VDS `问题汇总.xlsx` 五个真实问题 sheet 共 95 题 smoke 继续为 total=95、success_count=95、failure_count=0；本轮使用 `BI测试问题` 真问题列，不使用标准答案优化。
 6. 当前 SQL/Pandas 不等价仍主要是 coverage gap：DABstep all 的 skipped=380、Microsoft 1-300 的 skipped=300 都按 coverage gap 报告，不计为 SQL correctness failure；SQL covered 子集仍以 Pandas-SQL consistency 和未来独立 `sql_correct` 字段分开报告。
+7. Phase 7.2 当前实现目标：DABstep Easy Accuracy Recovery 的修复必须落到泛化能力族，而不是单题补丁；本轮已新增 `answer_target` 输出契约，区分 `metric_only`、`entity_only`、`entity_list_only`、`segment_vector`；字段 / filter 解析接入 alias 优先级和 missing / null / fraud boolean / IP country / account_type 规则上下文；fraud grouped metric 支持 max / min / std、merchant / card_scheme / country / shopper_interaction 维度和年 / 季度过滤；denominator / share / quantile 支持 per unique email、top-k count share selected by amount volume、repeat-customer subset；fee what-if 使用 deterministic fee engine 返回 monotonic factor 和 volume range label。
+8. 本轮借鉴 DA-agent 的边界只限 schema/tool-first evidence、DuckDB/read-only SQL guardrail、validation retry 和 deterministic rule engine；不引入 task_id、proxy answer、hidden answer、accepted answer，也不把 VDS 改成 SQL-first benchmark product framing。
 
 ### Phase 7.2G：Uploaded Table Generalization Gap Closure
 

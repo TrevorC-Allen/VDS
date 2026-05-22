@@ -94,6 +94,7 @@ def complete_generalization_contract(logic_form: LogicForm) -> LogicForm:
         logic_form.output_contract = {
             "answer_type": str(logic_form.output_format.get("answer_type") or "scalar"),
             "expected_result_shape": str(logic_form.output_format.get("answer_type") or "scalar"),
+            "answer_target": str(logic_form.answer_target or logic_form.output_format.get("answer_target") or ""),
             "capability_family": capability.capability_family,
             "format_guidelines": str(logic_form.output_format.get("guidelines") or ""),
         }
