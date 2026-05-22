@@ -59,6 +59,95 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertTrue(response["run_id"].startswith("run_"))
         self.assertEqual(response["errors"][0]["error_type"], "FILE_PARSE_ERROR")
 
+    def test_external_run_accepts_chinese_inline_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = DataAgentService(
+                file_store=TempFileStore(Path(temp_dir) / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            response = service.run_agent_with_inline_tables(
+                question="哪个城市销售额最高？",
+                request_id="external-001",
+                tables=[
+                    {
+                        "table_name": "销售",
+                        "rows": [
+                            {"城市": "上海", "销售额": 100},
+                            {"城市": "北京", "销售额": 150},
+                            {"城市": "上海", "销售额": 200},
+                        ],
+                    }
+                ],
+            )
+
+        self.assertTrue(response["success"])
+        self.assertEqual("v1", response["response_version"])
+        self.assertEqual("external-001", response["request_id"])
+        self.assertTrue(response["run_id"].startswith("run_"))
+        self.assertTrue(response["dataset_id"].startswith("ds_"))
+        self.assertEqual("multi_agent", response["debug"]["agent_mode"])
+        self.assertEqual("api_inline_tables", response["debug"]["api_source"])
+        self.assertEqual({"城市": "上海", "销售额": 200}, response["result"]["rows"][0])
+        self.assertEqual([], response["errors"])
+
+    def test_external_run_accepts_english_table_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = DataAgentService(
+                file_store=TempFileStore(Path(temp_dir) / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            response = service.run_agent_with_inline_tables(
+                question="Which city has the highest sales?",
+                tables={
+                    "sales": {
+                        "rows": [
+                            {"city": "Shanghai", "sales": 100},
+                            {"city": "Beijing", "sales": 150},
+                            {"city": "Shanghai", "sales": 200},
+                        ]
+                    }
+                },
+            )
+
+        self.assertTrue(response["success"])
+        self.assertEqual({"city": "Shanghai", "sales": 300}, response["result"]["rows"][0])
+        self.assertEqual("multi_agent", response["debug"]["agent_mode"])
+
+    def test_external_run_rejects_invalid_payloads_with_standard_errors(self) -> None:
+        cases = [
+            {"question": "", "tables": [{"table_name": "sales", "rows": [{"city": "Shanghai"}]}], "error_type": "LOGIC_FORM_ERROR"},
+            {"question": "Which city has highest sales?", "tables": [], "error_type": "FILE_PARSE_ERROR"},
+            {
+                "question": "Which city has highest sales?",
+                "tables": [{"table_name": "sales", "rows": [["Shanghai", 100]]}],
+                "error_type": "FILE_PARSE_ERROR",
+            },
+            {
+                "question": "Which city has highest sales?",
+                "tables": [
+                    {"table_name": "sales", "rows": [{"city": "Shanghai", "sales": 100}]},
+                    {"table_name": "sales", "rows": [{"city": "Beijing", "sales": 150}]},
+                ],
+                "error_type": "FILE_PARSE_ERROR",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = DataAgentService(
+                file_store=TempFileStore(Path(temp_dir) / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            for case in cases:
+                response = service.run_agent_with_inline_tables(
+                    question=case["question"],
+                    tables=case["tables"],
+                    request_id="external-error",
+                )
+                self.assertFalse(response["success"], case)
+                self.assertEqual("v1", response["response_version"])
+                self.assertTrue(response["run_id"].startswith("run_"))
+                self.assertEqual("external-error", response["request_id"])
+                self.assertEqual(case["error_type"], response["errors"][0]["error_type"])
+
 
 if __name__ == "__main__":
     unittest.main()
