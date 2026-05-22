@@ -26,6 +26,14 @@ class ParsedDataset:
 def read_csv(path: str | Path) -> pd.DataFrame:
     """Read a CSV file with conservative defaults."""
 
+    last_error: Exception | None = None
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk"):
+        try:
+            return pd.read_csv(path, encoding=encoding)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
     return pd.read_csv(path, encoding="utf-8-sig")
 
 

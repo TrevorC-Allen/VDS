@@ -41,6 +41,8 @@ refactor/*：重构分支，只用于结构调整，不允许混入新功能。
 13. 禁止 data_agent_core import ms_agent_framework_adapter
 14. 禁止 data_agent_core import multi_agent_workflows
 15. 禁止 data_agent_core import agent_framework
+16. 禁止把中文能力当作可选项；涉及自然语言理解、字段映射、业务术语、输出格式、Benchmark 或 Tool 的改动必须优先考虑中文，同时保持英文兼容。
+17. 禁止只用英文样例或英文 Benchmark 宣称能力完成；如果暂时只支持英文，必须在影响范围、风险和 backlog 中明确记录。
 
 ## 推荐分支结构
 
@@ -122,7 +124,8 @@ git checkout -b feature/project-rules-and-data-agent-skeleton
 10. 是否存在硬编码或伪泛化风险
 11. 泛化验证方式
 12. 是否影响未来多 Agent 迁移
-13. 是否引入或修改 Microsoft Agent Framework 相关内容
+13. 是否满足中文优先和英文兼容要求
+14. 是否引入或修改 Microsoft Agent Framework 相关内容
 
 ## CHANGELOG 时间规则
 
@@ -172,6 +175,7 @@ test(executor): add pandas executor unit tests
 10. 泛化验证方式
 11. 是否涉及 Microsoft Agent Framework
 12. 是否影响未来多 Agent 迁移
+13. 是否满足中文优先和英文兼容要求
 
 ## PR 模板
 
@@ -230,6 +234,10 @@ pytest
 ## 泛化验证方式
 
 说明本次能力是否有合成/非 Benchmark 用例、同类变体用例和旧代表回归用例；如果没有，必须说明为什么本次不是能力提升或为什么只属于文档/接口变更。
+
+## 中文优先与英文兼容
+
+说明本次改动是否影响中文问题、中文字段名、中文业务术语、中文输出格式和英文兼容能力；能力类改动必须优先验收中文场景，并保留英文回归。
 
 ## 是否涉及 Microsoft Agent Framework
 

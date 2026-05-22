@@ -16,15 +16,45 @@ from data_agent_core.core.intent_parser import parse_generic_table_question, par
 from data_agent_core.executors import pandas_executor, sql_executor
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMStageResult, complete_stage_with_llm, plan_with_llm
-from data_agent_core.output.response_builder import build_response
+from data_agent_core.output.response_builder import build_response, classify_not_applicable
 from data_agent_core.tracing.run_trace import RunTrace
 from data_agent_core.verifier.result_comparator import compare_results
 from data_agent_core.verifier.result_normalizer import normalize_value
 from data_agent_core.verifier.rule_checker import verify_execution
 
 
-SQL_COMPATIBLE_OPERATIONS = {"top_count", "group_average", "not_applicable"}
-GENERIC_SQL_COMPATIBLE_OPERATIONS = {"aggregation", "ranking", "not_applicable"}
+SQL_COMPATIBLE_OPERATIONS = {
+    "top_count",
+    "group_average",
+    "row_count",
+    "distinct_count",
+    "metric_per_distinct_entity",
+    "repeat_entity_percentage",
+    "repeat_entity_count",
+    "null_check",
+    "top_k_share",
+    "filtered_metric_ranking",
+    "boolean_percentage",
+    "boolean_count_ratio",
+    "fraud_rate_filtered",
+    "not_applicable",
+}
+GENERIC_SQL_COMPATIBLE_OPERATIONS = {
+    "aggregation",
+    "ranking",
+    "row_count",
+    "distinct_count",
+    "metric_per_distinct_entity",
+    "repeat_entity_percentage",
+    "repeat_entity_count",
+    "null_check",
+    "top_k_share",
+    "filtered_metric_ranking",
+    "boolean_percentage",
+    "boolean_count_ratio",
+    "fraud_rate_filtered",
+    "not_applicable",
+}
 
 SINGLE_AGENT_CHAIN = [
     "llm_intent_parser",
@@ -86,6 +116,7 @@ class DataAnalysisAgent:
         logic_form = self._validated_logic_form(llm_plan.logic_form, guardrail_logic_form)
         plan = build_analysis_plan(logic_form)
         pandas_result = pandas_executor.execute_plan(plan, self.context)
+        not_applicable_attribution = classify_not_applicable(pandas_result.value, plan)
         sql_result = None
         comparison = None
         if execution_mode in {"auto", "dual", "sql"} and logic_form.operation in SQL_COMPATIBLE_OPERATIONS:
@@ -186,6 +217,7 @@ class DataAnalysisAgent:
             result_normalizer_summary=normalizer_summary,
             verification_result=response.verification,
             verifier_critic_summary=stage_summaries["verifier_critic"],
+            not_applicable_attribution=response.debug.get("not_applicable_attribution") or not_applicable_attribution,
             correction_plan_summary=stage_summaries["correction_planner"],
             final_response={"answer": response.answer, "success": response.success},
             insight_summary=stage_summaries["insight_generator"],
@@ -535,6 +567,7 @@ class UploadedDatasetAgent(DataAnalysisAgent):
         logic_form = self._validated_logic_form(llm_plan.logic_form, guardrail_logic_form)
         plan = build_analysis_plan(logic_form)
         pandas_result = pandas_executor.execute_plan(plan, self.context)
+        not_applicable_attribution = classify_not_applicable(pandas_result.value, plan)
         sql_result = None
         comparison = None
         if execution_mode in {"auto", "dual", "sql"} and logic_form.operation in GENERIC_SQL_COMPATIBLE_OPERATIONS:
@@ -631,6 +664,7 @@ class UploadedDatasetAgent(DataAnalysisAgent):
             result_normalizer_summary=normalizer_summary,
             verification_result=response.verification,
             verifier_critic_summary=stage_summaries["verifier_critic"],
+            not_applicable_attribution=response.debug.get("not_applicable_attribution") or not_applicable_attribution,
             correction_plan_summary=stage_summaries["correction_planner"],
             insight_summary=stage_summaries["insight_generator"],
             chart_plan_summary=stage_summaries["chart_planner"],

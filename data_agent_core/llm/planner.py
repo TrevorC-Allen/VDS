@@ -17,6 +17,17 @@ PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "data_agent_syst
 
 SUPPORTED_OPERATIONS = {
     "aggregation",
+    "row_count",
+    "distinct_count",
+    "metric_per_distinct_entity",
+    "repeat_entity_percentage",
+    "repeat_entity_count",
+    "schema_field_lookup",
+    "null_check",
+    "missing_columns_choice",
+    "outlier_count",
+    "top_k_share",
+    "filtered_metric_ranking",
     "top_count",
     "ranking",
     "filtering",
@@ -33,9 +44,23 @@ SUPPORTED_OPERATIONS = {
     "cheapest_card_scheme_for_transaction",
     "fee_restriction_affected_merchants",
     "fraud_rate_comparison",
+    "fraud_rate_filtered",
     "mcc_change_delta",
     "best_fraud_aci_choice",
+    "aci_fee_extreme",
+    "fee_extreme_by_dimension",
+    "field_values",
+    "boolean_percentage",
+    "boolean_count_ratio",
+    "duplicate_check",
     "not_applicable",
+    "vds_period_rank_change",
+    "vds_period_delta_top",
+    "vds_period_growth_count_share",
+    "vds_period_threshold_count",
+    "vds_period_rate_top",
+    "vds_current_threshold_top",
+    "vds_peer_anomaly",
 }
 
 
@@ -93,6 +118,7 @@ def complete_stage_with_llm(
                     },
                 },
                 ensure_ascii=False,
+                default=_json_default,
             ),
         },
     ]
@@ -136,6 +162,7 @@ def plan_with_llm(
                     },
                 },
                 ensure_ascii=False,
+                default=_json_default,
             ),
         },
     ]
@@ -177,4 +204,14 @@ def _safe_stage_raw(value: Any) -> Any:
         return {key: _safe_stage_raw(item) for key, item in value.items() if key not in blocked}
     if isinstance(value, list):
         return [_safe_stage_raw(item) for item in value]
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
     return value
+
+
+def _json_default(value: Any) -> Any:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if hasattr(value, "item"):
+        return value.item()
+    return str(value)

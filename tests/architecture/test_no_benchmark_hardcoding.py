@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from multi_agent_workflows.dabstep_benchmark_runner import run_dabstep_multi_agent_benchmark
+from multi_agent_workflows.microsoft_anonymized_benchmark_runner import run_microsoft_anonymized_benchmark
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -24,6 +26,13 @@ class BenchmarkHardcodingBoundaryTest(unittest.TestCase):
             "expected_answer",
             "standard_answer",
             "hidden_answer",
+            "proxy answer",
+            "accepted answer",
+            "public proxy",
+        }
+        forbidden_patterns = {
+            "task_id equality": re.compile(r"\b(task_id|question_id)\s*==\s*['\"]"),
+            "task_id membership": re.compile(r"\b(task_id|question_id)\s+in\s+\{?[\['\"]"),
         }
         scan_roots = [
             REPO_ROOT / "data_agent_core" / "agent",
@@ -32,14 +41,27 @@ class BenchmarkHardcodingBoundaryTest(unittest.TestCase):
             REPO_ROOT / "data_agent_core" / "llm",
             REPO_ROOT / "data_agent_core" / "output",
             REPO_ROOT / "data_agent_core" / "verifier",
+            REPO_ROOT / "agent_runtime",
+            REPO_ROOT / "backend",
+            REPO_ROOT / "ms_agent_framework_adapter",
+            REPO_ROOT / "multi_agent_workflows",
         ]
+        excluded_paths = {
+            REPO_ROOT / "multi_agent_workflows" / "dabstep_benchmark_runner.py",
+            REPO_ROOT / "multi_agent_workflows" / "microsoft_anonymized_benchmark_runner.py",
+        }
         violations: list[str] = []
         for root in scan_roots:
             for path in root.rglob("*.py"):
+                if path in excluded_paths:
+                    continue
                 text = path.read_text().lower()
                 for term in forbidden_terms:
                     if term in text:
                         violations.append(f"{path.relative_to(REPO_ROOT)} contains {term}")
+                for label, pattern in forbidden_patterns.items():
+                    if pattern.search(text):
+                        violations.append(f"{path.relative_to(REPO_ROOT)} contains {label}")
         self.assertEqual([], violations)
 
     def test_benchmark_runner_does_not_pass_answer_or_task_id_to_agent(self) -> None:
@@ -89,11 +111,58 @@ class BenchmarkHardcodingBoundaryTest(unittest.TestCase):
             calls,
         )
 
+    def test_microsoft_runner_does_not_pass_answer_or_task_id_to_agent(self) -> None:
+        calls: list[dict[str, str]] = []
+
+        class FakeWorkflow:
+            @classmethod
+            def from_uploaded_tables(cls, tables, **_kwargs):
+                return cls()
+
+            def analyze(self, question: str, guidelines: str = "", execution_mode: str = "auto"):
+                calls.append(
+                    {
+                        "question": question,
+                        "guidelines": guidelines,
+                        "execution_mode": execution_mode,
+                    }
+                )
+                return _FakeResponse(), _FakeTrace()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset_root = pathlib.Path(temp_dir)
+            test_dir = dataset_root / "VDS_DAB风格测试集_20260521"
+            test_dir.mkdir(parents=True)
+            (dataset_root / "table.csv").write_text("col\n1\n")
+            (test_dir / "微软数据集_DAB风格问题和标准答案.jsonl").write_text(
+                json.dumps(
+                    {
+                        "task_id": "secret-ms-task",
+                        "question": "2026年5月服务客户数是多少？",
+                        "guidelines": "答案只返回整数。",
+                        "answer": "1",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+            with patch("multi_agent_workflows.microsoft_anonymized_benchmark_runner.DataAnalysisMultiAgentWorkflow", FakeWorkflow):
+                run_microsoft_anonymized_benchmark(dataset_root=dataset_root, limit=1, output_dir=dataset_root / "out")
+
+        self.assertEqual(
+            [{"question": "2026年5月服务客户数是多少？", "guidelines": "答案只返回整数。", "execution_mode": "auto"}],
+            calls,
+        )
+
 
 class _FakeResponse:
     answer = "NL"
     success = True
     debug = {"operation": "fake"}
+    verification = {}
+    warnings: list[str] = []
+    errors: list[str] = []
 
 
 class _FakeTrace:

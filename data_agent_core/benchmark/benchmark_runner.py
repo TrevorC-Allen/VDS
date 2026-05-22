@@ -70,7 +70,11 @@ def run_dabstep_benchmark(
         prediction = {
             "task_id": task["task_id"],
             "agent_answer": response.answer,
-            "reasoning_trace": f"structured analysis plan: {response.debug.get('operation')}; agent_mode: {response.debug.get('agent_mode', agent_mode)}; trace: {trace_path}",
+            "reasoning_trace": (
+                f"structured analysis plan: {response.debug.get('operation')}; "
+                f"agent_mode: {response.debug.get('agent_mode', agent_mode)}; "
+                f"not_applicable: {_not_applicable_category(response)}; trace: {trace_path}"
+            ),
         }
         predictions.append(prediction)
 
@@ -90,6 +94,7 @@ def run_dabstep_benchmark(
                 "expected_available": expected_available,
                 "correct": is_correct,
                 "operation": response.debug.get("operation"),
+                "not_applicable_category": _not_applicable_category(response),
                 "success": response.success,
                 "error_type": error_type,
             }
@@ -102,6 +107,7 @@ def run_dabstep_benchmark(
         for row in predictions:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
+    metrics = summarize_details(details)
     summary = {
         "split": split,
         "limit": limit,
@@ -111,11 +117,15 @@ def run_dabstep_benchmark(
         "scored": scored,
         "correct": correct,
         "accuracy": None if scored == 0 else correct / scored,
+        "success_count": metrics["success_count"],
+        "unexpected_not_applicable": metrics["unexpected_not_applicable"],
+        "true_unsupported": metrics["true_unsupported"],
+        "not_applicable_counts": metrics["not_applicable_counts"],
         "predictions_path": str(predictions_path),
         "trace_dir": str(trace_dir),
         "agent_mode": agent_mode,
         "details": details,
-        "metrics": summarize_details(details),
+        "metrics": metrics,
         "error_analysis": summarize_failures(details),
     }
     report_path = output_dir / f"{split}_{start_number}_to_{end_number}_report.json"
@@ -137,6 +147,16 @@ def _benchmark_error_type(response: Any, correct: bool | None) -> str | None:
     if correct is False:
         return BENCHMARK_EVALUATION_ERROR
     return None
+
+
+def _not_applicable_category(response: Any) -> str | None:
+    debug = getattr(response, "debug", {}) or {}
+    if not isinstance(debug, dict):
+        return None
+    attribution = debug.get("not_applicable_attribution")
+    if not isinstance(attribution, dict):
+        return None
+    return attribution.get("category")
 
 
 def main() -> None:
