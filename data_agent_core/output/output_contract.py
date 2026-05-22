@@ -46,7 +46,7 @@ def canonicalize_final_answer(value: Any, output_format: dict[str, Any] | None =
     output_format = dict(output_format or {})
     answer_type = str(output_format.get("answer_type") or "text")
     guidelines = str(output_format.get("guidelines") or "")
-    scalar = _coerce_value_for_answer(value, answer_type, guidelines)
+    scalar = _coerce_value_for_answer(value, answer_type, guidelines, output_format)
     answer = _format_scalar(scalar, answer_type, output_format, guidelines)
     validation = validate_final_answer(answer, output_format)
     return CanonicalAnswer(answer=answer, validation=validation, normalized_from=type(value).__name__)
@@ -101,22 +101,28 @@ def validate_final_answer(answer: Any, output_format: dict[str, Any] | None = No
     )
 
 
-def _coerce_value_for_answer(value: Any, answer_type: str, guidelines: str) -> Any:
+def _coerce_value_for_answer(value: Any, answer_type: str, guidelines: str, output_format: dict[str, Any] | None = None) -> Any:
+    output_format = dict(output_format or {})
     if value is None or value == "Not Applicable":
         return "Not Applicable"
     if answer_type in STRUCTURED_ANSWER_TYPES:
         return value
+    answer_target = str(output_format.get("answer_target") or "")
+    if answer_target:
+        targeted = _coerce_answer_target(value, answer_target, output_format)
+        if targeted is not None:
+            return targeted
     if isinstance(value, dict):
-        return _coerce_mapping(value, answer_type, guidelines)
+        return _coerce_mapping(value, answer_type, guidelines, output_format)
     if isinstance(value, (list, tuple)):
-        return _coerce_sequence(value, answer_type, guidelines)
+        return _coerce_sequence(value, answer_type, guidelines, output_format)
     return value
 
 
-def _coerce_mapping(value: dict[str, Any], answer_type: str, guidelines: str) -> Any:
+def _coerce_mapping(value: dict[str, Any], answer_type: str, guidelines: str, output_format: dict[str, Any] | None = None) -> Any:
     for key in ("answer", "selected", "selected_option", "value"):
         if key in value and value[key] is not None:
-            return _coerce_value_for_answer(value[key], answer_type, guidelines)
+            return _coerce_value_for_answer(value[key], answer_type, guidelines, output_format)
     if answer_type in {"number", "percentage"} or _guidelines_request_plain_number(guidelines):
         numeric = _preferred_numeric(value)
         if numeric is not None:
@@ -142,17 +148,116 @@ def _coerce_mapping(value: dict[str, Any], answer_type: str, guidelines: str) ->
     return "Not Applicable"
 
 
-def _coerce_sequence(value: list[Any] | tuple[Any, ...], answer_type: str, guidelines: str) -> Any:
+def _coerce_sequence(value: list[Any] | tuple[Any, ...], answer_type: str, guidelines: str, output_format: dict[str, Any] | None = None) -> Any:
     if not value:
         return "Not Applicable"
     if answer_type in {"number", "percentage"} or _guidelines_request_plain_number(guidelines):
         first_numeric = _first_numeric_from_sequence(value)
         if first_numeric is not None:
             return first_numeric
-    coerced = [_coerce_value_for_answer(item, answer_type, guidelines) for item in value]
+    coerced = [_coerce_value_for_answer(item, answer_type, guidelines, output_format) for item in value]
     if answer_type not in {"list", "table"} and len(coerced) == 1:
         return coerced[0]
     return [item for item in coerced if item not in {None, ""}]
+
+
+def _coerce_answer_target(value: Any, answer_target: str, output_format: dict[str, Any]) -> Any:
+    if answer_target == "metric_only":
+        return _extract_metric_only(value, output_format)
+    if answer_target == "entity_only":
+        return _extract_entity_only(value, output_format)
+    if answer_target == "entity_list_only":
+        return _extract_entity_list_only(value, output_format)
+    if answer_target == "segment_vector":
+        return _extract_segment_vector(value, output_format)
+    return None
+
+
+def _extract_metric_only(value: Any, output_format: dict[str, Any]) -> Any:
+    metric_field = str(output_format.get("metric_field") or "")
+    metric_keys = tuple(
+        key
+        for key in (
+            "selected_metric",
+            "metric_value",
+            metric_field,
+            "value",
+            "fraud_volume_rate",
+            "fraud_transaction_rate",
+            "fraud_rate_std",
+            "rate",
+            "percentage",
+            "eur_amount",
+            "amount",
+            "fee",
+            "count",
+            "total",
+        )
+        if key
+    )
+    if isinstance(value, dict):
+        for key in metric_keys:
+            if key in value and _is_numeric(value[key]):
+                return value[key]
+        table = value.get("candidate_table")
+        selected = value.get("selected")
+        group_by = str(output_format.get("entity_field") or value.get("group_by") or "")
+        if isinstance(table, list):
+            for row in table:
+                if not isinstance(row, dict):
+                    continue
+                if selected is not None and group_by and str(row.get(group_by)) != str(selected):
+                    continue
+                for key in metric_keys:
+                    if key in row and _is_numeric(row[key]):
+                        return row[key]
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            metric = _extract_metric_only(item, output_format)
+            if metric is not None:
+                return metric
+    return None
+
+
+def _extract_entity_only(value: Any, output_format: dict[str, Any]) -> Any:
+    entity_field = str(output_format.get("entity_field") or "")
+    if isinstance(value, dict):
+        for key in (entity_field, "selected", "entity", "answer", "merchant", "merchant_name", "country_code", "issuing_country", "ip_country", "card_scheme"):
+            if key and key in value and value[key] not in {None, ""}:
+                return value[key]
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            entity = _extract_entity_only(item, output_format)
+            if entity is not None:
+                return entity
+    if _is_scalar(value):
+        return value
+    return None
+
+
+def _extract_entity_list_only(value: Any, output_format: dict[str, Any]) -> Any:
+    if isinstance(value, dict) and isinstance(value.get("candidate_table"), list):
+        value = value["candidate_table"]
+    if isinstance(value, (list, tuple)):
+        entities = [_extract_entity_only(item, output_format) for item in value]
+        return [entity for entity in entities if entity not in {None, ""}]
+    entity = _extract_entity_only(value, output_format)
+    return [entity] if entity not in {None, ""} else None
+
+
+def _extract_segment_vector(value: Any, output_format: dict[str, Any]) -> Any:
+    if isinstance(value, dict):
+        values = value.get("values") or value.get("segment_values")
+        if isinstance(values, (list, tuple)):
+            return list(values)
+        dimensions = output_format.get("dimensions") or value.get("dimensions") or []
+        if isinstance(dimensions, (list, tuple)):
+            extracted = [value.get(str(dimension)) for dimension in dimensions if value.get(str(dimension)) not in {None, ""}]
+            if extracted:
+                return extracted
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return None
 
 
 def _format_scalar(value: Any, answer_type: str, output_format: dict[str, Any], guidelines: str) -> str:

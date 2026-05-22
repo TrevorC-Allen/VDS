@@ -536,6 +536,7 @@ def _logic_form_from_payload(payload: dict[str, Any]) -> LogicForm:
         options=dict(payload.get("options") or {}),
         filters=dict(payload.get("filters") or {}),
         parameters=dict(payload.get("parameters") or {}),
+        answer_target=payload.get("answer_target") or dict(payload.get("output_format") or {}).get("answer_target"),
         output_format=dict(payload.get("output_format") or {}),
         output_contract=dict(payload.get("output_contract") or {}),
     )

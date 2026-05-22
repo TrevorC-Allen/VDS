@@ -35,6 +35,7 @@ class LogicForm:
     options: dict[str, Any] = field(default_factory=dict)
     filters: dict[str, Any] = field(default_factory=dict)
     parameters: dict[str, Any] = field(default_factory=dict)
+    answer_target: str | None = None
     output_format: dict[str, Any] = field(default_factory=dict)
     output_contract: dict[str, Any] = field(default_factory=dict)
 

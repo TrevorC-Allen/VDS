@@ -805,17 +805,13 @@ class DabstepFeeEngine:
                     factors.append(field)
             return factors
         if objective == "cheaper_when_decreased":
-            if any(rule.capture_delay is not None for rule in self.rules):
-                factors.append("capture_delay")
+            if any(rule.monthly_fraud_level is not None for rule in self.rules):
+                factors.append("monthly_fraud_level")
             return factors
         if any(rule.monthly_volume is not None for rule in self.rules):
             factors.append("monthly_volume")
         if any(rule.capture_delay is not None for rule in self.rules):
             factors.append("capture_delay")
-        # Higher transaction values amortize fixed per-transaction amounts when
-        # comparing effective fee rate, even though absolute fees may increase.
-        if any(rule.fixed_amount > 0 for rule in self.rules):
-            factors.append("transaction_value")
         return factors
 
     def field_values(self, field: str) -> list[str]:
@@ -834,22 +830,48 @@ class DabstepFeeEngine:
                 values.update(str(value) for value in raw_value if str(value))
             elif raw_value is not None and str(raw_value):
                 values.add(str(raw_value))
+        values.update(self._manual_field_values(field))
         if not values:
             raise ValueError(f"Unknown rule metadata field: {field}")
         return sorted(values, key=lambda item: item.lower())
 
-    def fee_volume_threshold(self) -> float:
+    def _manual_field_values(self, field: str) -> set[str]:
+        """Extract small enumerations documented only in manual.md tables."""
+
+        manual_path = self.context_dir / "manual.md"
+        if not manual_path.exists():
+            return set()
+        text = manual_path.read_text()
+        if field != "account_type":
+            return set()
+        values: set[str] = set()
+        in_account_section = False
+        for line in text.splitlines():
+            lowered = line.lower()
+            if line.startswith("##") and ("account types" in lowered or "account type" in lowered):
+                in_account_section = True
+                continue
+            if in_account_section and line.startswith("##"):
+                break
+            if in_account_section:
+                match = re.match(r"\|\s*([A-Z])\s*\|", line)
+                if match:
+                    values.add(match.group(1))
+        return values
+
+    def fee_volume_threshold(self) -> str:
         """Return the highest explicit monthly volume boundary in fee rules."""
 
-        bounds: list[float] = []
+        bounds: list[tuple[float, str]] = []
         for rule in self.rules:
             if rule.monthly_volume is None:
                 continue
-            for token in re.findall(r"\d+(?:\.\d+)?[km]?", rule.monthly_volume.lower()):
-                bounds.append(_range_value(token))
+            label = str(rule.monthly_volume)
+            for token in re.findall(r"\d+(?:\.\d+)?[km]?", label.lower()):
+                bounds.append((_range_value(token), label))
         if not bounds:
             raise ValueError("No monthly volume thresholds are defined in the fee rules.")
-        return max(bounds)
+        return max(bounds, key=lambda item: (item[0], item[1].strip().startswith(">")))[1]
 
     def mcc_for_description(self, description: str) -> int:
         """Resolve a merchant category description to an MCC code."""

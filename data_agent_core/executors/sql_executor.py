@@ -212,6 +212,7 @@ def _rank_by_metric_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> dict[st
         values.extend(str(value) for value in options.values())
     q_group_by = _quote_identifier(group_by)
     if metric == "fraud_volume_rate":
+        metric_column = "fraud_volume_rate"
         rows = conn.execute(
             f"SELECT {q_group_by}, "
             "SUM(CASE WHEN LOWER(CAST(has_fraudulent_dispute AS TEXT)) IN ('true', '1', 'yes', 'y') THEN eur_amount ELSE 0 END) AS fraudulent_volume, "
@@ -230,6 +231,7 @@ def _rank_by_metric_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> dict[st
             for row in rows
         ]
     else:
+        metric_column = "fraud_transaction_rate"
         rows = conn.execute(
             f"SELECT {q_group_by}, "
             "SUM(CASE WHEN LOWER(CAST(has_fraudulent_dispute AS TEXT)) IN ('true', '1', 'yes', 'y') THEN 1 ELSE 0 END) AS fraudulent_transactions, "
@@ -262,6 +264,7 @@ def _rank_by_metric_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> dict[st
         "answer": answer,
         "selected": selected_value,
         "selected_option": selected_option,
+        "selected_metric": float(selected[metric_column]) * 100.0,
         "metric": metric,
         "metric_definition": logic.metric_definition,
         "group_by": group_by,
@@ -302,10 +305,21 @@ def _metric_per_distinct_entity_sql(conn: sqlite3.Connection, plan: AnalysisPlan
     if not metric or not entity_field:
         raise ValueError("metric_per_distinct_entity requires metric and entity_field.")
     where_sql, values = _where_from_filters(plan.logic_form.filters)
+    q_entity = _quote_identifier(entity_field)
+    not_null_entity = f"({q_entity} IS NOT NULL AND TRIM(LOWER(CAST({q_entity} AS TEXT))) NOT IN ('', 'nan', 'none', 'null'))"
+    filtered_sql = f"{where_sql} AND {not_null_entity}" if where_sql else f" WHERE {not_null_entity}"
+    if aggregation == "mean" and metric not in {"__row_count__", "row_count", "transaction_count"}:
+        q_metric = _quote_identifier(metric)
+        row = conn.execute(
+            f"SELECT AVG(entity_mean) FROM (SELECT {q_entity}, AVG(CAST({q_metric} AS REAL)) AS entity_mean "
+            f"FROM analysis_table{filtered_sql} GROUP BY {q_entity})",
+            values,
+        ).fetchone()
+        return "Not Applicable" if row[0] is None else float(row[0])
     numerator_sql = "COUNT(*)" if metric in {"__row_count__", "row_count", "transaction_count"} or aggregation == "count" else f"SUM(CAST({_quote_identifier(metric)} AS REAL))"
     row = conn.execute(
         f"SELECT {numerator_sql}, "
-        f"COUNT(DISTINCT {_quote_identifier(entity_field)}) FROM analysis_table{where_sql}",
+        f"COUNT(DISTINCT {q_entity}) FROM analysis_table{filtered_sql}",
         values,
     ).fetchone()
     entity_count = int(row[1] or 0)
@@ -349,37 +363,56 @@ def _repeat_entity_count_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> in
 def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float:
     params = plan.logic_form.parameters
     dimension = str(params["dimension"])
-    metric = params.get("metric")
+    ranking_metric = params.get("ranking_metric", params.get("metric"))
+    share_metric = params.get("share_metric", params.get("metric"))
     aggregation = str(params.get("aggregation") or "sum")
     limit = int(params.get("limit") or 3)
     where_sql, values = _where_from_filters(plan.logic_form.filters)
-    if aggregation == "count" or not metric:
-        denominator = float(conn.execute(f"SELECT COUNT(*) FROM analysis_table{where_sql}", values).fetchone()[0] or 0)
+    q_dimension = _quote_identifier(dimension)
+    if aggregation == "count" or not ranking_metric or ranking_metric in {"__row_count__", "row_count", "transaction_count"}:
         rows = conn.execute(
-            f"SELECT COUNT(*) AS n FROM analysis_table{where_sql} GROUP BY {_quote_identifier(dimension)} ORDER BY n DESC LIMIT ?",
+            f"SELECT {q_dimension} FROM analysis_table{where_sql} GROUP BY {q_dimension} ORDER BY COUNT(*) DESC LIMIT ?",
             values + [limit],
         ).fetchall()
     else:
-        metric_name = str(metric)
-        denominator = float(conn.execute(f"SELECT SUM({_quote_identifier(metric_name)}) FROM analysis_table{where_sql}", values).fetchone()[0] or 0)
+        ranking_metric_name = str(ranking_metric)
         rows = conn.execute(
-            f"SELECT SUM({_quote_identifier(metric_name)}) AS n FROM analysis_table{where_sql} "
-            f"GROUP BY {_quote_identifier(dimension)} ORDER BY n DESC LIMIT ?",
+            f"SELECT {q_dimension} FROM analysis_table{where_sql} "
+            f"GROUP BY {q_dimension} ORDER BY SUM({_quote_identifier(ranking_metric_name)}) DESC LIMIT ?",
             values + [limit],
         ).fetchall()
+    selected_values = [row[0] for row in rows]
+    if not selected_values:
+        return 0.0
+    placeholders = ", ".join("?" for _ in selected_values)
+    selected_clause = f"{q_dimension} IN ({placeholders})"
+    selected_where = f"{where_sql} AND {selected_clause}" if where_sql else f" WHERE {selected_clause}"
+    if share_metric in {None, "__row_count__", "row_count", "transaction_count"}:
+        denominator = float(conn.execute(f"SELECT COUNT(*) FROM analysis_table{where_sql}", values).fetchone()[0] or 0)
+        numerator = float(conn.execute(f"SELECT COUNT(*) FROM analysis_table{selected_where}", values + selected_values).fetchone()[0] or 0)
+    else:
+        share_metric_name = str(share_metric)
+        q_share_metric = _quote_identifier(share_metric_name)
+        denominator = float(conn.execute(f"SELECT SUM({q_share_metric}) FROM analysis_table{where_sql}", values).fetchone()[0] or 0)
+        numerator = float(conn.execute(f"SELECT SUM({q_share_metric}) FROM analysis_table{selected_where}", values + selected_values).fetchone()[0] or 0)
     if denominator == 0.0:
         return 0.0
-    return float(sum(float(row[0] or 0) for row in rows)) / denominator * 100
+    return numerator / denominator * 100
 
 
 def _null_check_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> int | float | dict[str, Any]:
     params = plan.logic_form.parameters
     field = params.get("field")
     mode = str(params.get("mode") or "count")
+    target_field = params.get("target_field")
+    target_value = bool(params.get("target_value", True))
     where_sql, values = _where_from_filters(plan.logic_form.filters)
     if field:
         field_name = str(field)
         null_expr = f"({_quote_identifier(field_name)} IS NULL OR TRIM(LOWER(CAST({_quote_identifier(field_name)} AS TEXT))) IN ('', 'nan', 'none', 'null'))"
+        if target_field:
+            target_expr = f"LOWER(CAST({_quote_identifier(str(target_field))} AS TEXT)) IN ({_bool_literals_sql(target_value)})"
+            null_expr = f"({null_expr} AND {target_expr})"
         row = conn.execute(
             f"SELECT COUNT(*) AS total_rows, SUM(CASE WHEN {null_expr} THEN 1 ELSE 0 END) AS null_count FROM analysis_table{where_sql}",
             values,
@@ -544,6 +577,15 @@ def _where_from_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
             start, end = expected
             where.append("CAST(strftime('%m', date(year || '-01-01', '+' || (day_of_year - 1) || ' days')) AS INTEGER) BETWEEN ? AND ?")
             values.extend([int(start), int(end)])
+            continue
+        if isinstance(expected, dict) and ("min" in expected or "max" in expected):
+            q_column = _quote_identifier(str(column))
+            if expected.get("min") is not None:
+                where.append(f"CAST({q_column} AS REAL) >= ?")
+                values.append(float(expected["min"]))
+            if expected.get("max") is not None:
+                where.append(f"CAST({q_column} AS REAL) <= ?")
+                values.append(float(expected["max"]))
             continue
         where.append(f"{_quote_identifier(str(column))} = ?")
         values.append(expected)

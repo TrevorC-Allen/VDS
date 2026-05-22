@@ -129,6 +129,8 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         return _fraud_rate_comparison(context["payments"], filters, params)
     if op == "fraud_rate_filtered":
         return _fraud_rate_filtered(context["payments"], filters)
+    if op == "fraud_rate_fluctuation":
+        return _fraud_rate_fluctuation(context["payments"], filters, params)
 
     engine = _fee_engine(context)
     if op == "average_fee_for_filters":
@@ -464,17 +466,20 @@ def _metric_per_distinct_entity(df: pd.DataFrame, filters: dict[str, Any], param
     is_row_count_metric = metric in {"__row_count__", "row_count", "transaction_count"} or aggregation == "count"
     if (not is_row_count_metric and metric not in data.columns) or entity_field not in data.columns:
         raise ValueError("metric_per_distinct_entity requires known metric and entity columns.")
-    entity_count = int(data[entity_field].dropna().nunique())
+    entity_present = data[~_null_mask(data[entity_field])]
+    entity_count = int(entity_present[entity_field].nunique())
     if entity_count == 0:
         return "Not Applicable"
     if is_row_count_metric:
-        numerator = float(len(data))
+        numerator = float(len(entity_present))
+    elif aggregation == "mean":
+        grouped_means = pd.to_numeric(entity_present[metric], errors="coerce").groupby(entity_present[entity_field]).mean().dropna()
+        if grouped_means.empty:
+            return "Not Applicable"
+        return float(grouped_means.mean())
     else:
-        values = pd.to_numeric(data[metric], errors="coerce").fillna(0)
-        if aggregation == "mean":
-            numerator = float(values.mean())
-        else:
-            numerator = float(values.sum())
+        values = pd.to_numeric(entity_present[metric], errors="coerce").fillna(0)
+        numerator = float(values.sum())
     return numerator / entity_count
 
 
@@ -568,20 +573,32 @@ def _top_k_share(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, An
     if dimension not in data.columns:
         raise ValueError("top_k_share requires a known dimension column.")
     aggregation = str(params.get("aggregation") or "sum")
-    metric = params.get("metric")
-    if aggregation == "count" or not metric:
-        grouped = data.groupby(dimension, dropna=True).size().sort_values(ascending=False)
-        denominator = float(len(data))
+    ranking_metric = params.get("ranking_metric", params.get("metric"))
+    share_metric = params.get("share_metric", params.get("metric"))
+    limit = int(params.get("limit") or 3)
+    if aggregation == "count" or not ranking_metric or ranking_metric in {"__row_count__", "row_count", "transaction_count"}:
+        ranking_grouped = data.groupby(dimension, dropna=True).size().sort_values(ascending=False)
     else:
-        metric_name = str(metric)
-        if metric_name not in data.columns:
+        ranking_metric_name = str(ranking_metric)
+        if ranking_metric_name not in data.columns:
             raise ValueError("top_k_share requires a known metric column.")
-        grouped = pd.to_numeric(data[metric_name], errors="coerce").fillna(0).groupby(data[dimension]).sum().sort_values(ascending=False)
-        denominator = float(pd.to_numeric(data[metric_name], errors="coerce").fillna(0).sum())
+        ranking_grouped = (
+            pd.to_numeric(data[ranking_metric_name], errors="coerce").fillna(0).groupby(data[dimension]).sum().sort_values(ascending=False)
+        )
+    selected_groups = set(ranking_grouped.head(limit).index)
+    selected_rows = data[data[dimension].isin(selected_groups)]
+    if share_metric in {None, "__row_count__", "row_count", "transaction_count"}:
+        denominator = float(len(data))
+        numerator = float(len(selected_rows))
+    else:
+        share_metric_name = str(share_metric)
+        if share_metric_name not in data.columns:
+            raise ValueError("top_k_share requires a known share metric column.")
+        denominator = float(pd.to_numeric(data[share_metric_name], errors="coerce").fillna(0).sum())
+        numerator = float(pd.to_numeric(selected_rows[share_metric_name], errors="coerce").fillna(0).sum())
     if denominator == 0.0:
         return 0.0
-    limit = int(params.get("limit") or 3)
-    return float(grouped.head(limit).sum()) / denominator * 100
+    return numerator / denominator * 100
 
 
 def _quantile_percentage(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> float:
@@ -589,16 +606,30 @@ def _quantile_percentage(df: pd.DataFrame, filters: dict[str, Any], params: dict
     metric = str(params.get("metric") or "")
     if metric not in data.columns:
         raise ValueError("quantile_percentage requires a known numeric metric column.")
-    series = pd.to_numeric(data[metric], errors="coerce").dropna()
-    if series.empty:
+    metric_series = pd.to_numeric(data[metric], errors="coerce")
+    valid = data.loc[metric_series.notna()].copy()
+    series = metric_series.loc[metric_series.notna()]
+    if valid.empty:
         return 0.0
     quantile = float(params.get("quantile") or 0.9)
     threshold = float(series.quantile(quantile))
     if str(params.get("operator") or "above") == "below":
-        selected = series < threshold
+        selected = valid.loc[series < threshold]
     else:
-        selected = series > threshold
-    return float(selected.mean() * 100)
+        selected = valid.loc[series > threshold]
+    target_mode = str(params.get("target_mode") or "")
+    target_field = str(params.get("target_field") or "")
+    if target_mode == "repeat_entity" and target_field:
+        if target_field not in data.columns:
+            raise ValueError("quantile_percentage repeat_entity target requires a known target field.")
+        if selected.empty:
+            return 0.0
+        entity_values = data.loc[~_null_mask(data[target_field]), target_field].astype(str)
+        entity_counts = entity_values.value_counts()
+        repeat_entities = set(entity_counts[entity_counts > 1].index)
+        matches = selected[target_field].astype(str).isin(repeat_entities)
+        return float(matches.mean() * 100)
+    return 0.0 if len(valid) == 0 else float(len(selected) / len(valid) * 100)
 
 
 def _outlier_target_percentage(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> float | str:
@@ -657,6 +688,40 @@ def _worst_fraud_segment(df: pd.DataFrame, filters: dict[str, Any], params: dict
     dimensions = [str(item) for item in (params.get("dimensions") or []) if str(item) in data.columns]
     if not dimensions:
         raise ValueError("worst_fraud_segment requires at least one known dimension.")
+    if params.get("combine_dimensions"):
+        rows: list[dict[str, Any]] = []
+        for keys, group in data.groupby(dimensions, dropna=True):
+            key_tuple = keys if isinstance(keys, tuple) else (keys,)
+            total_volume = float(pd.to_numeric(group["eur_amount"], errors="coerce").fillna(0).sum()) if "eur_amount" in group.columns else float(len(group))
+            if total_volume == 0:
+                continue
+            fraud_mask = _bool_series(group["has_fraudulent_dispute"])
+            fraud_volume = float(pd.to_numeric(group.loc[fraud_mask, "eur_amount"], errors="coerce").fillna(0).sum()) if "eur_amount" in group.columns else float(fraud_mask.sum())
+            row = {
+                dimension: str(value)
+                for dimension, value in zip(dimensions, key_tuple)
+            }
+            row.update(
+                {
+                    "fraud_rate": 0.0 if total_volume == 0 else fraud_volume / total_volume * 100,
+                    "fraudulent_volume": fraud_volume,
+                    "total_volume": total_volume,
+                    "transaction_count": int(len(group)),
+                }
+            )
+            rows.append(row)
+        if not rows:
+            return "Not Applicable"
+        rows.sort(key=lambda row: (-float(row["fraud_rate"]), tuple(str(row[dimension]) for dimension in dimensions)))
+        selected = rows[0]
+        values = [str(selected[dimension]) for dimension in dimensions]
+        return {
+            "answer": ", ".join(values),
+            "values": values,
+            "dimensions": dimensions,
+            "fraud_rate": selected["fraud_rate"],
+            "candidate_table": rows,
+        }
     rows: list[dict[str, Any]] = []
     for dimension in dimensions:
         for value, group in data.groupby(dimension, dropna=True):
@@ -738,11 +803,18 @@ def _null_check(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any
     data = _apply_dataframe_filters(df, filters)
     field = params.get("field")
     mode = str(params.get("mode") or "count")
+    target_field = params.get("target_field")
+    target_value = params.get("target_value", True)
     if field:
         field_name = str(field)
         if field_name not in data.columns:
             raise ValueError(f"Unknown field column: {field_name}")
         mask = _null_mask(data[field_name])
+        if target_field:
+            target_name = str(target_field)
+            if target_name not in data.columns:
+                raise ValueError(f"Unknown target field column: {target_name}")
+            mask = mask & (_bool_series(data[target_name]) == bool(target_value))
         denominator = len(data)
         null_count = int(mask.sum())
     else:
@@ -795,9 +867,11 @@ def _rank_by_metric(df: pd.DataFrame, logic: Any) -> dict[str, Any]:
     if metric == "fraud_volume_rate":
         candidate_table = _fraud_volume_rate_by_dimension(data, group_by, options)
         metric_column = "fraud_volume_rate"
+        metric_scale = 100.0
     elif metric == "fraud_transaction_rate":
         candidate_table = _fraud_transaction_rate_by_dimension(data, group_by, options)
         metric_column = "fraud_transaction_rate"
+        metric_scale = 100.0
     else:
         return {"answer": _top_count(df, logic.filters, {"group_by": group_by, "options": options}), "candidate_table": []}
     if not candidate_table:
@@ -816,6 +890,7 @@ def _rank_by_metric(df: pd.DataFrame, logic: Any) -> dict[str, Any]:
         "answer": answer,
         "selected": selected_value,
         "selected_option": selected_option,
+        "selected_metric": float(selected[metric_column]) * metric_scale,
         "metric": metric,
         "metric_definition": logic.metric_definition,
         "group_by": group_by,
@@ -918,6 +993,49 @@ def _fraud_rate_filtered(df: pd.DataFrame, filters: dict[str, Any]) -> float | s
     return float(fraud_mask.mean() * 100)
 
 
+def _fraud_rate_fluctuation(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    data = _apply_dataframe_filters(df, filters)
+    group_by = str(params.get("group_by") or "")
+    if data.empty:
+        return "Not Applicable"
+    if group_by not in data.columns:
+        raise ValueError("fraud_rate_fluctuation requires a known group_by column.")
+    if "month" in data.columns:
+        month_values = pd.to_numeric(data["month"], errors="coerce")
+    elif {"year", "day_of_year"}.issubset(data.columns):
+        year = int(filters.get("year") or 2023)
+        month_values = pd.to_datetime(data["day_of_year"].astype(int) - 1, unit="D", origin=f"{year}-01-01").dt.month
+    else:
+        raise ValueError("fraud_rate_fluctuation requires month or day_of_year columns.")
+    working = data.assign(__month=month_values)
+    rows: list[dict[str, Any]] = []
+    for value, group in working.groupby(group_by, dropna=True):
+        rates: list[float] = []
+        for _, period_group in group.groupby("__month", dropna=True):
+            total_volume = float(pd.to_numeric(period_group["eur_amount"], errors="coerce").fillna(0).sum()) if "eur_amount" in period_group.columns else float(len(period_group))
+            if total_volume == 0:
+                continue
+            fraud_mask = _bool_series(period_group["has_fraudulent_dispute"])
+            fraud_volume = float(pd.to_numeric(period_group.loc[fraud_mask, "eur_amount"], errors="coerce").fillna(0).sum()) if "eur_amount" in period_group.columns else float(fraud_mask.sum())
+            rates.append(fraud_volume / total_volume * 100)
+        if not rates:
+            continue
+        std = float(pd.Series(rates).std(ddof=0))
+        rows.append({group_by: str(value), "fraud_rate_std": std, "period_count": len(rates)})
+    if not rows:
+        return "Not Applicable"
+    reverse = str(params.get("objective") or "maximum") != "minimum"
+    rows.sort(key=lambda row: (float(row["fraud_rate_std"]), str(row[group_by])), reverse=reverse)
+    selected = rows[0]
+    return {
+        "answer": selected[group_by],
+        "selected": selected[group_by],
+        "selected_metric": selected["fraud_rate_std"],
+        "group_by": group_by,
+        "candidate_table": rows,
+    }
+
+
 def _fraud_rate(data: pd.DataFrame) -> float | None:
     if data.empty:
         return None
@@ -953,6 +1071,15 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
             continue
         if expected == "__NOT_NULL__":
             data = data[~_null_mask(data[column])]
+            continue
+        if isinstance(expected, dict) and ("min" in expected or "max" in expected):
+            values = pd.to_numeric(data[column], errors="coerce")
+            mask = values.notna()
+            if expected.get("min") is not None:
+                mask &= values >= float(expected["min"])
+            if expected.get("max") is not None:
+                mask &= values <= float(expected["max"])
+            data = data[mask]
             continue
         data = data[_series_equals(data[column], expected)]
     return data
