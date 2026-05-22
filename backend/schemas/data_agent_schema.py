@@ -25,6 +25,20 @@ class AnalyzeRequest:
     agent_mode: str = "multi_agent"
 
 
+@dataclass
+class AgentRunRequest:
+    """External one-shot agent run request with inline tabular data."""
+
+    question: str
+    tables: list[dict[str, Any]] | dict[str, Any]
+    execution_mode: str = "dual"
+    guidelines: str = ""
+    agent_mode: str = "multi_agent"
+    dataset_id: str | None = None
+    request_id: str | None = None
+    source_name: str = "api_inline_tables"
+
+
 def dataset_profile_response(profile: DatasetProfile | dict[str, Any]) -> dict[str, Any]:
     """Build the stable profile response returned by upload/profile endpoints."""
 

@@ -19,6 +19,7 @@ from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.contracts.response_contracts import ChartSpec, FinalResponse, InsightResult
 from data_agent_core.contracts.verification_contracts import VerificationResult
 from data_agent_core.core.analysis_planner import build_analysis_plan
+from data_agent_core.core.capability_registry import coverage_summary_for_logic_form
 from data_agent_core.core.intent_parser import parse_generic_table_question, parse_question
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMStageResult, complete_stage_with_llm, plan_with_llm
@@ -26,27 +27,6 @@ from data_agent_core.output.response_builder import build_response
 from data_agent_core.verifier.result_comparator import compare_results
 from data_agent_core.verifier.result_normalizer import normalize_value
 from data_agent_core.verifier.rule_checker import verify_execution
-
-
-SQL_COMPATIBLE_OPERATIONS = {
-    "aggregation",
-    "ranking",
-    "row_count",
-    "distinct_count",
-    "metric_per_distinct_entity",
-    "repeat_entity_percentage",
-    "repeat_entity_count",
-    "null_check",
-    "top_k_share",
-    "filtered_metric_ranking",
-    "rank_by_metric",
-    "top_count",
-    "group_average",
-    "boolean_percentage",
-    "boolean_count_ratio",
-    "fraud_rate_filtered",
-    "not_applicable",
-}
 
 
 class DataAnalysisRoleRuntime:
@@ -203,8 +183,15 @@ class DataAnalysisRoleRuntime:
         """Run SQL executor when the plan is SQL-compatible."""
 
         operation = str((state.logic_form or {}).get("operation") or "")
-        if execution_mode not in {"auto", "dual", "sql"} or operation not in SQL_COMPATIBLE_OPERATIONS:
-            output = {"skipped": True, "reason": f"Operation {operation} is not SQL-compatible in the current MVP."}
+        coverage = coverage_summary_for_logic_form(
+            state.logic_form or {},
+            available_columns=_available_columns_for_logic_form(self.context, state.logic_form),
+        )
+        if execution_mode not in {"auto", "dual", "sql"} or not coverage["native_sql_supported"]:
+            reason = coverage.get("reason") or f"Operation {operation} is not SQL-compatible in the current MVP."
+            if execution_mode not in {"auto", "dual", "sql"}:
+                reason = f"Execution mode {execution_mode} does not request SQL execution."
+            output = {"skipped": True, "reason": reason, **coverage}
             state.sql_result = output
             return _agent_result(task, True, output, confidence=1.0)
         result = self.dispatcher.dispatch(
@@ -386,6 +373,10 @@ class DataAnalysisRoleRuntime:
                 "agent_mode": "multi_agent",
                 "workflow_mode": "phase6_internal_multi_agent",
                 "operation": plan.logic_form.operation,
+                "capability": coverage_summary_for_logic_form(
+                    state.logic_form or {},
+                    available_columns=_available_columns_for_logic_form(self.context, state.logic_form),
+                ),
                 "multi_agent_roles": _roles_with_response_builder(task_results),
                 "agent_task_results": [_agent_summary(result) for result in task_results],
                 "tool_call_summaries": state.tool_call_trace,
@@ -449,6 +440,20 @@ class DataAnalysisRoleRuntime:
         return "payments"
 
 
+def _available_columns_for_logic_form(context: dict[str, Any], logic_form: Any) -> list[str] | None:
+    params = (logic_form or {}).get("parameters") if isinstance(logic_form, dict) else {}
+    table_name = str((params or {}).get("table") or context.get("primary_table") or "payments")
+    if table_name == "payments" and "payments" in context:
+        return [str(column) for column in context["payments"].columns]
+    tables = context.get("tables")
+    if isinstance(tables, dict) and table_name in tables:
+        return [str(column) for column in tables[table_name].columns]
+    if isinstance(tables, dict) and tables:
+        table = next(iter(tables.values()))
+        return [str(column) for column in table.columns]
+    return None
+
+
 def _agent_result(
     task: AgentTask,
     success: bool,
@@ -474,9 +479,34 @@ def _append_tool_trace(state: WorkflowState, trace_event: ToolTraceEvent | None)
 
 def _validated_logic_form(llm_logic_form: LogicForm, guardrail_logic_form: LogicForm) -> LogicForm:
     if llm_logic_form.operation == guardrail_logic_form.operation:
+        _merge_optional_contract_fields(guardrail_logic_form, llm_logic_form)
         for key, value in llm_logic_form.output_format.items():
             guardrail_logic_form.output_format.setdefault(key, value)
     return guardrail_logic_form
+
+
+def _merge_optional_contract_fields(target: LogicForm, source: LogicForm) -> None:
+    for field_name in (
+        "metric_definition",
+        "numerator",
+        "denominator",
+        "entity_grain",
+        "time_window",
+        "candidate_set",
+        "output_contract",
+        "options",
+        "filters",
+        "parameters",
+        "output_format",
+    ):
+        source_value = getattr(source, field_name)
+        target_value = getattr(target, field_name)
+        if isinstance(source_value, dict) and isinstance(target_value, dict):
+            for key, value in source_value.items():
+                target_value.setdefault(key, value)
+    for field_name in ("metric", "group_by", "objective"):
+        if getattr(target, field_name) is None and getattr(source, field_name) is not None:
+            setattr(target, field_name, getattr(source, field_name))
 
 
 def _analysis_plan_from_payload(payload: dict[str, Any]) -> AnalysisPlan:
@@ -498,12 +528,16 @@ def _logic_form_from_payload(payload: dict[str, Any]) -> LogicForm:
         metric_definition=dict(payload.get("metric_definition") or {}),
         numerator=dict(payload.get("numerator") or {}),
         denominator=dict(payload.get("denominator") or {}),
+        entity_grain=dict(payload.get("entity_grain") or {}),
+        time_window=dict(payload.get("time_window") or {}),
+        candidate_set=dict(payload.get("candidate_set") or {}),
         group_by=payload.get("group_by"),
         objective=payload.get("objective"),
         options=dict(payload.get("options") or {}),
         filters=dict(payload.get("filters") or {}),
         parameters=dict(payload.get("parameters") or {}),
         output_format=dict(payload.get("output_format") or {}),
+        output_contract=dict(payload.get("output_contract") or {}),
     )
 
 

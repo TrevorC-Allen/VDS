@@ -11,6 +11,7 @@ from typing import Any
 from data_agent_core.contracts.analysis_contracts import UserQuestion
 from data_agent_core.contracts.response_contracts import ChartSpec, FinalResponse, InsightResult
 from data_agent_core.core.analysis_planner import build_analysis_plan
+from data_agent_core.core.capability_registry import coverage_summary_for_logic_form
 from data_agent_core.core.file_parser import load_dabstep_context
 from data_agent_core.core.intent_parser import parse_generic_table_question, parse_question
 from data_agent_core.executors import pandas_executor, sql_executor
@@ -22,39 +23,6 @@ from data_agent_core.verifier.result_comparator import compare_results
 from data_agent_core.verifier.result_normalizer import normalize_value
 from data_agent_core.verifier.rule_checker import verify_execution
 
-
-SQL_COMPATIBLE_OPERATIONS = {
-    "top_count",
-    "group_average",
-    "row_count",
-    "distinct_count",
-    "metric_per_distinct_entity",
-    "repeat_entity_percentage",
-    "repeat_entity_count",
-    "null_check",
-    "top_k_share",
-    "filtered_metric_ranking",
-    "boolean_percentage",
-    "boolean_count_ratio",
-    "fraud_rate_filtered",
-    "not_applicable",
-}
-GENERIC_SQL_COMPATIBLE_OPERATIONS = {
-    "aggregation",
-    "ranking",
-    "row_count",
-    "distinct_count",
-    "metric_per_distinct_entity",
-    "repeat_entity_percentage",
-    "repeat_entity_count",
-    "null_check",
-    "top_k_share",
-    "filtered_metric_ranking",
-    "boolean_percentage",
-    "boolean_count_ratio",
-    "fraud_rate_filtered",
-    "not_applicable",
-}
 
 SINGLE_AGENT_CHAIN = [
     "llm_intent_parser",
@@ -119,11 +87,15 @@ class DataAnalysisAgent:
         not_applicable_attribution = classify_not_applicable(pandas_result.value, plan)
         sql_result = None
         comparison = None
-        if execution_mode in {"auto", "dual", "sql"} and logic_form.operation in SQL_COMPATIBLE_OPERATIONS:
+        sql_coverage = coverage_summary_for_logic_form(
+            logic_form,
+            available_columns=self._available_columns_for_logic_form(logic_form),
+        )
+        if execution_mode in {"auto", "dual", "sql"} and sql_coverage["native_sql_supported"]:
             sql_result = sql_executor.execute_plan(plan, self.context)
             comparison = compare_results(pandas_result, sql_result)
         normalizer_summary = self._result_normalizer_summary(pandas_result, sql_result, comparison)
-        verification = verify_execution(pandas_result, comparison)
+        verification = verify_execution(pandas_result, comparison, plan=plan, user_question=user_question)
         llm_verifier_critic = self._llm_verifier_critic_stage(
             question=question,
             guidelines=guidelines,
@@ -183,6 +155,7 @@ class DataAnalysisAgent:
                 "pandas_success": pandas_result.success,
                 "sql_success": None if sql_result is None else sql_result.success,
                 "operation": logic_form.operation,
+                "capability": sql_coverage,
                 "llm_used": True,
                 "llm_operation": llm_plan.logic_form.operation,
                 "llm_confidence": llm_plan.confidence,
@@ -204,6 +177,13 @@ class DataAnalysisAgent:
             },
             analysis_planner_summary=stage_summaries["analysis_planner"],
             logic_form=response.logic_form,
+            metric_definition=logic_form.metric_definition,
+            numerator=logic_form.numerator,
+            denominator=logic_form.denominator,
+            entity_grain=logic_form.entity_grain,
+            time_window=logic_form.time_window,
+            candidate_set=logic_form.candidate_set,
+            output_contract=logic_form.output_contract,
             analysis_plan={"plan_id": plan.plan_id, "steps": plan.steps},
             llm_plan_summary={
                 "llm_operation": llm_plan.logic_form.operation,
@@ -213,13 +193,17 @@ class DataAnalysisAgent:
                 "reasoning_summary": self._short_text(llm_plan.reasoning_summary),
             },
             pandas_result_summary={"success": pandas_result.success, "value": pandas_result.value},
-            sql_result_summary=None if sql_result is None else {"success": sql_result.success, "value": sql_result.value},
+            sql_result_summary=_sql_trace_summary(sql_result, sql_coverage, execution_mode),
             result_normalizer_summary=normalizer_summary,
             verification_result=response.verification,
             verifier_critic_summary=stage_summaries["verifier_critic"],
             not_applicable_attribution=response.debug.get("not_applicable_attribution") or not_applicable_attribution,
             correction_plan_summary=stage_summaries["correction_planner"],
-            final_response={"answer": response.answer, "success": response.success},
+            final_response={
+                "answer": response.answer,
+                "success": response.success,
+                "output_contract_passed": response.debug.get("output_contract_validation", {}).get("passed"),
+            },
             insight_summary=stage_summaries["insight_generator"],
             chart_plan_summary=stage_summaries["chart_planner"],
             latency_ms=(time.perf_counter() - start) * 1000,
@@ -241,6 +225,19 @@ class DataAnalysisAgent:
             "knowledge_files": ["manual.md", "fees.json", "merchant_data.json"],
             "merchant_names": [row["merchant"] for row in merchants if isinstance(row, dict) and "merchant" in row],
         }
+
+    def _available_columns_for_logic_form(self, logic_form: Any) -> list[str] | None:
+        params = getattr(logic_form, "parameters", {}) or {}
+        table_name = str(params.get("table") or self.context.get("primary_table") or "payments")
+        if table_name == "payments" and "payments" in self.context:
+            return [str(column) for column in self.context["payments"].columns]
+        tables = self.context.get("tables")
+        if isinstance(tables, dict) and table_name in tables:
+            return [str(column) for column in tables[table_name].columns]
+        if isinstance(tables, dict) and tables:
+            table = next(iter(tables.values()))
+            return [str(column) for column in table.columns]
+        return None
 
     def _llm_intent_stage(
         self,
@@ -427,6 +424,7 @@ class DataAnalysisAgent:
 
         if llm_logic_form.operation == guardrail_logic_form.operation:
             merged = guardrail_logic_form
+            _merge_optional_contract_fields(merged, llm_logic_form)
             for key, value in llm_logic_form.output_format.items():
                 merged.output_format.setdefault(key, value)
             return merged
@@ -570,11 +568,15 @@ class UploadedDatasetAgent(DataAnalysisAgent):
         not_applicable_attribution = classify_not_applicable(pandas_result.value, plan)
         sql_result = None
         comparison = None
-        if execution_mode in {"auto", "dual", "sql"} and logic_form.operation in GENERIC_SQL_COMPATIBLE_OPERATIONS:
+        sql_coverage = coverage_summary_for_logic_form(
+            logic_form,
+            available_columns=self._available_columns_for_logic_form(logic_form),
+        )
+        if execution_mode in {"auto", "dual", "sql"} and sql_coverage["native_sql_supported"]:
             sql_result = sql_executor.execute_plan(plan, self.context)
             comparison = compare_results(pandas_result, sql_result)
         normalizer_summary = self._result_normalizer_summary(pandas_result, sql_result, comparison)
-        verification = verify_execution(pandas_result, comparison)
+        verification = verify_execution(pandas_result, comparison, plan=plan, user_question=user_question)
         llm_verifier_critic = self._llm_verifier_critic_stage(
             question=question,
             guidelines=guidelines,
@@ -633,6 +635,7 @@ class UploadedDatasetAgent(DataAnalysisAgent):
                 "pandas_success": pandas_result.success,
                 "sql_success": None if sql_result is None else sql_result.success,
                 "operation": logic_form.operation,
+                "capability": sql_coverage,
                 "llm_used": True,
                 "llm_operation": llm_plan.logic_form.operation,
                 "llm_confidence": llm_plan.confidence,
@@ -651,6 +654,13 @@ class UploadedDatasetAgent(DataAnalysisAgent):
             column_mapping_summary={"rule_mapping": column_mapping, "llm_summary": stage_summaries["column_mapping"]},
             analysis_planner_summary=stage_summaries["analysis_planner"],
             logic_form=response.logic_form,
+            metric_definition=logic_form.metric_definition,
+            numerator=logic_form.numerator,
+            denominator=logic_form.denominator,
+            entity_grain=logic_form.entity_grain,
+            time_window=logic_form.time_window,
+            candidate_set=logic_form.candidate_set,
+            output_contract=logic_form.output_contract,
             analysis_plan={"plan_id": plan.plan_id, "steps": plan.steps},
             llm_plan_summary={
                 "llm_operation": llm_plan.logic_form.operation,
@@ -660,7 +670,7 @@ class UploadedDatasetAgent(DataAnalysisAgent):
                 "reasoning_summary": self._short_text(llm_plan.reasoning_summary),
             },
             pandas_result_summary={"success": pandas_result.success, "value": pandas_result.value},
-            sql_result_summary=None if sql_result is None else {"success": sql_result.success, "value": sql_result.value},
+            sql_result_summary=_sql_trace_summary(sql_result, sql_coverage, execution_mode),
             result_normalizer_summary=normalizer_summary,
             verification_result=response.verification,
             verifier_critic_summary=stage_summaries["verifier_critic"],
@@ -668,7 +678,11 @@ class UploadedDatasetAgent(DataAnalysisAgent):
             correction_plan_summary=stage_summaries["correction_planner"],
             insight_summary=stage_summaries["insight_generator"],
             chart_plan_summary=stage_summaries["chart_planner"],
-            final_response={"answer": response.answer, "success": response.success},
+            final_response={
+                "answer": response.answer,
+                "success": response.success,
+                "output_contract_passed": response.debug.get("output_contract_validation", {}).get("passed"),
+            },
             latency_ms=(time.perf_counter() - start) * 1000,
             errors=response.errors,
             warnings=response.warnings,
@@ -706,3 +720,55 @@ class UploadedDatasetAgent(DataAnalysisAgent):
         if not tables:
             raise ValueError("UploadedDatasetAgent requires at least one table.")
         return max(tables.items(), key=lambda item: (len(item[1]), len(item[1].columns)))[0]
+
+
+def _sql_trace_summary(sql_result: Any, coverage: dict[str, Any], execution_mode: str) -> dict[str, Any]:
+    base = {
+        "sql_support": coverage.get("sql_support"),
+        "capability_family": coverage.get("capability_family"),
+        "coverage_gap": coverage.get("coverage_gap"),
+        "native_sql_supported": coverage.get("native_sql_supported"),
+    }
+    if sql_result is not None:
+        return {
+            "success": sql_result.success,
+            "backend": sql_result.backend,
+            "value": sql_result.value,
+            "skipped": False,
+            **base,
+        }
+    reason = coverage.get("reason") or "Operation is not covered by the current native SQL path."
+    if execution_mode not in {"auto", "dual", "sql"}:
+        reason = f"Execution mode {execution_mode} does not request SQL execution."
+    return {
+        "success": None,
+        "backend": None,
+        "value": None,
+        "skipped": True,
+        "reason": reason,
+        **base,
+    }
+
+
+def _merge_optional_contract_fields(target: Any, source: Any) -> None:
+    for field_name in (
+        "metric_definition",
+        "numerator",
+        "denominator",
+        "entity_grain",
+        "time_window",
+        "candidate_set",
+        "output_contract",
+        "options",
+        "filters",
+        "parameters",
+        "output_format",
+    ):
+        source_value = getattr(source, field_name, None)
+        target_value = getattr(target, field_name, None)
+        if isinstance(source_value, dict) and isinstance(target_value, dict):
+            for key, value in source_value.items():
+                target_value.setdefault(key, value)
+    for field_name in ("metric", "group_by", "objective"):
+        if getattr(target, field_name, None) is None and getattr(source, field_name, None) is not None:
+            setattr(target, field_name, getattr(source, field_name))

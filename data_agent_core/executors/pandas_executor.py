@@ -122,7 +122,7 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
     if op == "duplicate_check":
         return _duplicate_check(_analysis_dataframe(context, params), params)
     if op == "top_count":
-        return _top_count(context["payments"], filters, params)
+        return _top_count(_analysis_dataframe(context, params), filters, params)
     if op == "group_average":
         return _group_average(context["payments"], filters, params)
     if op == "fraud_rate_comparison":

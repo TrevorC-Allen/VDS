@@ -12,7 +12,8 @@ from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.contracts.response_contracts import ChartSpec, FinalResponse, InsightResult
 from data_agent_core.contracts.verification_contracts import VerificationResult
 from data_agent_core.errors.error_result import ErrorResult
-from data_agent_core.errors.error_types import CAPABILITY_GAP
+from data_agent_core.errors.error_types import CAPABILITY_GAP, OUTPUT_CONTRACT_VALIDATION_FAILED
+from data_agent_core.output.output_contract import canonicalize_final_answer
 
 
 def build_response(
@@ -26,11 +27,40 @@ def build_response(
 ) -> FinalResponse:
     """Build a FinalResponse with stable fields and formatted answer."""
 
-    answer = format_answer(execution_result.value, plan.logic_form.output_format)
+    canonical_answer = canonicalize_final_answer(execution_result.value, plan.logic_form.output_format)
+    answer = canonical_answer.answer
     not_applicable_attribution = classify_not_applicable(execution_result.value, plan)
-    success = execution_result.success and verification.passed and not_applicable_attribution.get("category") != "capability_gap"
+    success = (
+        execution_result.success
+        and verification.passed
+        and canonical_answer.validation.passed
+        and not_applicable_attribution.get("category") != "capability_gap"
+    )
     warnings = list(execution_result.warnings)
     errors = list(execution_result.errors)
+    debug_payload = dict(debug or {})
+    debug_payload["output_contract_validation"] = canonical_answer.validation.to_dict()
+    debug_payload["canonical_answer"] = {
+        "normalized_from": canonical_answer.normalized_from,
+        "answer_type": canonical_answer.validation.answer_type,
+    }
+    debug_payload["validation_driven_retry"] = {
+        "output_contract_retryable": canonical_answer.validation.retryable,
+        "output_contract_action": "none" if canonical_answer.validation.passed else "controlled_failure",
+        "output_contract_issues": list(canonical_answer.validation.issues),
+    }
+    if not canonical_answer.validation.passed:
+        message = "Final answer failed output contract validation: " + ", ".join(canonical_answer.validation.issues)
+        warnings.append(message)
+        errors.append(
+            ErrorResult(
+                error_type=OUTPUT_CONTRACT_VALIDATION_FAILED,
+                error_message=message,
+                failed_step=plan.logic_form.operation,
+                recoverable=canonical_answer.validation.retryable,
+                suggested_fix="Trigger controlled retry or return a contract-safe final answer string.",
+            ).to_dict()
+        )
     if not_applicable_attribution.get("category") == "capability_gap":
         warnings.append(str(not_applicable_attribution["message"]))
         errors.append(
@@ -42,7 +72,6 @@ def build_response(
                 suggested_fix="Add or route to a reusable capability family instead of returning plain Not Applicable.",
             ).to_dict()
         )
-    debug_payload = dict(debug or {})
     if not_applicable_attribution.get("category"):
         debug_payload["not_applicable_attribution"] = not_applicable_attribution
     return FinalResponse(
@@ -68,35 +97,7 @@ def build_response(
 def format_answer(value: Any, output_format: dict[str, Any]) -> str:
     """Format a raw execution value according to benchmark/API guidelines."""
 
-    answer_type = output_format.get("answer_type")
-    decimals = output_format.get("decimals")
-    if value is None:
-        return "Not Applicable"
-    if value == "Not Applicable":
-        return "Not Applicable"
-    if isinstance(value, dict) and "answer" in value:
-        if isinstance(value["answer"], list):
-            return ", ".join(str(item) for item in value["answer"])
-        return str(value["answer"])
-    if answer_type == "number":
-        return _format_number(float(value), decimals)
-    if answer_type == "percentage":
-        return _format_percentage(float(value), decimals)
-    if answer_type == "list":
-        if isinstance(value, str):
-            return value
-        return ", ".join(str(item) for item in value)
-    if answer_type == "scheme_fee":
-        return f"{value['card_scheme']}:{_format_number(float(value['fee']), decimals)}"
-    if answer_type == "aci" and isinstance(value, dict):
-        return str(value.get("aci") or value.get("answer") or "Not Applicable")
-    if answer_type == "aci_fee" and isinstance(value, dict):
-        return f"{value['aci']}:{_format_number(float(value['fee']), decimals)}"
-    if answer_type == "card_scheme" and isinstance(value, dict):
-        return str(value["card_scheme"])
-    if answer_type == "grouped_amounts":
-        return _format_grouped_amounts(value, decimals)
-    return str(value)
+    return canonicalize_final_answer(value, output_format).answer
 
 
 def classify_not_applicable(value: Any, plan: AnalysisPlan) -> dict[str, Any]:
