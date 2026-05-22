@@ -2,7 +2,7 @@
 
 ## 使用规则
 
-每次 Codex 修改代码后，必须追加一条记录。
+每次 Codex 修改代码、文档或项目规则后，必须追加一条记录。
 
 本文件只记录真实发生过的修改，不允许虚构历史记录，不允许补写不存在的修改。
 
@@ -23,6 +23,7 @@
 13. 是否修改 API 契约
 14. 是否新增或修改错误类型
 15. 是否新增或修改运行追踪逻辑
+16. 是否已同步 README
 
 日期时间规则：
 
@@ -64,6 +65,8 @@ YYYY-MM-DD HH:MM TZ
 ### 是否新增或修改错误类型
 
 ### 是否新增或修改运行追踪逻辑
+
+### 是否已同步 README
 
 ### 日期
 
@@ -3381,5 +3384,81 @@ YYYY-MM-DD HH:MM TZ
 ### 是否新增或修改运行追踪逻辑
 
 否。
+
+---
+
+### 日期时间
+
+2026-05-22 14:57 CST
+
+### 本次目标
+
+按用户要求把 README 同步写入项目规则：以后阶段、状态、主目标、项目规则、API、Benchmark 口径或用户可见能力变更时，必须同步检查并更新 GitHub 首页读取的根 README；同时补齐当前 README 对 Phase 7.2 / 7.2G / 7.3 的摘要。
+
+### 修改文件
+
+- README.md
+- MAIN_GOAL.md
+- BRANCH_RULES.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- README 首屏同步 Phase 7.2、Phase 7.2G、Phase 7.3 当前状态，避免 GitHub 首页只停留在 Phase 7.1。
+- README 新增同步规则说明，明确 README 是 GitHub 默认首页状态摘要。
+- MAIN_GOAL 架构原则新增 README 同步治理规则。
+- BRANCH_RULES 新增 README 同步规则，并把 README 同步状态加入修改完成输出项和 PR 检查项。
+- CHANGELOG_AI 使用规则和模板新增“是否已同步 README”字段，覆盖代码、文档和项目规则修改。
+
+### 测试方式
+
+- rg -n "Phase 7\\.2|Phase 7\\.2G|Phase 7\\.3|README 同步|是否已同步 README" README.md MAIN_GOAL.md BRANCH_RULES.md CHANGELOG_AI.md
+- git diff --check
+
+### 测试结果
+
+- README / MAIN_GOAL / BRANCH_RULES / CHANGELOG_AI 中 README 同步规则和 Phase 7.2 / 7.2G / 7.3 摘要均有预期命中。
+- git diff --check 通过。
+
+### 遗留问题
+
+- 本轮是文档和规则同步，不执行核心算法、Benchmark 或真实 provider 回归。
+- 该变更需要合并到 dev，再由 dev 合并到 main 后，GitHub 默认首页 README 才会直接显示更新后的内容。
+
+### 是否影响主流程
+
+否。仅修改项目文档、治理规则和 README 摘要。
+
+### 是否涉及 Benchmark
+
+是。仅同步 Benchmark 状态和 README 同步规则；未修改 Benchmark 数据、runner、scorer、标准答案隔离或核心分析链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。仅增强文档治理，避免未来多 Agent / provider / benchmark 状态只写入 MAIN_GOAL 或 CHANGELOG 而未同步 README。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 已同步 Phase 7.2、Phase 7.2G、Phase 7.3 当前摘要，并写入后续每次状态类变更必须检查和更新 README 的规则。
 
 ---
