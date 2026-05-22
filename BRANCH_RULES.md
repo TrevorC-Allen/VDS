@@ -126,6 +126,7 @@ git checkout -b feature/project-rules-and-data-agent-skeleton
 12. 是否影响未来多 Agent 迁移
 13. 是否满足中文优先和英文兼容要求
 14. 是否引入或修改 Microsoft Agent Framework 相关内容
+15. README.md 是否已同步更新；如果未更新，必须说明为什么本轮不影响 GitHub 首页摘要
 
 ## CHANGELOG 时间规则
 
@@ -133,6 +134,13 @@ git checkout -b feature/project-rules-and-data-agent-skeleton
 2. 新增记录的时间必须精确到分钟，格式为 `YYYY-MM-DD HH:MM TZ`。
 3. 禁止只写日期。
 4. 禁止为了统一格式而给历史记录编造分钟级时间。
+
+## README 同步规则
+
+1. README.md 是 GitHub 默认首页状态摘要；不能只更新 MAIN_GOAL.md、CHANGELOG_AI.md 或 docs 后让 README 停留在旧阶段。
+2. 每次修改阶段定义、当前状态、主目标、项目规则、API 契约、Benchmark 口径、验证结果、用户可见能力或重大遗留问题时，必须同步更新根 README.md。
+3. 如果本轮修改确认不影响 README.md，必须在 CHANGELOG_AI.md 的记录中写明 README 无需更新的原因。
+4. 发起 PR 前必须检查 README.md、MAIN_GOAL.md、CHANGELOG_AI.md 和相关 docs 的阶段口径是否一致。
 
 ## Commit Message 规范
 
@@ -176,6 +184,7 @@ test(executor): add pandas executor unit tests
 11. 是否涉及 Microsoft Agent Framework
 12. 是否影响未来多 Agent 迁移
 13. 是否满足中文优先和英文兼容要求
+14. README.md 是否已同步更新；如果未更新，必须说明原因
 
 ## PR 模板
 

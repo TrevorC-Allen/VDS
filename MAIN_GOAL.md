@@ -130,6 +130,7 @@
 30. 中文优先是核心产品规则：中文问题理解、中文字段名、中文业务术语、中文日期表达、中文输出格式和中文表结构必须优先支持；英文能力不能放松，但不能以牺牲中文能力为代价。
 31. 新增或修改任何 Intent Parser、Column Mapping、Planner、Executor、Verifier、Correction、Insight、Chart、Benchmark 或 Tool 能力时，必须同时评估中文场景；如果只覆盖英文，必须明确记录为阶段性限制，不能标记为通用能力完成。
 32. 多语言能力必须通过稳定契约表达，不能靠在 prompt 或 executor 中散落的临时中英文关键词补丁冒充泛化。
+33. README.md 是 GitHub 默认首页状态摘要；任何阶段、主目标、项目规则、API、Benchmark 口径、验证状态或用户可见能力变化，都必须同步检查并更新根 README.md。如果本轮确认 README 不需要修改，必须在 CHANGELOG_AI.md 写明原因。
 
 ## Microsoft Agent Framework 策略
 
