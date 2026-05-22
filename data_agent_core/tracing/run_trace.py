@@ -28,6 +28,7 @@ class RunTrace:
     verification_result: Any = None
     verifier_critic_summary: Any = None
     semantic_verification_notes: list[str] = field(default_factory=list)
+    not_applicable_attribution: Any = None
     correction_plan_summary: Any = None
     correction_attempts: list[Any] = field(default_factory=list)
     candidate_table_summary: Any = None

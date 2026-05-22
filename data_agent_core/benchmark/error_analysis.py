@@ -12,10 +12,12 @@ def summarize_failures(details: list[dict[str, Any]]) -> dict[str, Any]:
     failures = [row for row in details if row.get("correct") is False or row.get("success") is False]
     operation_counts = Counter(str(row.get("operation") or "unknown") for row in failures)
     error_type_counts = Counter(str(row.get("error_type") or "none") for row in failures)
+    not_applicable_counts = Counter(str(row.get("not_applicable_category") or "none") for row in failures)
     return {
         "failure_count": len(failures),
         "by_operation": dict(sorted(operation_counts.items())),
         "by_error_type": dict(sorted(error_type_counts.items())),
+        "by_not_applicable_category": dict(sorted(not_applicable_counts.items())),
         "general_gap_notes": _general_gap_notes(operation_counts, error_type_counts),
     }
 

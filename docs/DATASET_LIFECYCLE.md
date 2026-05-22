@@ -2,11 +2,11 @@
 
 ## 当前阶段
 
-当前只定义数据集生命周期和存储位置草案，不实现真实存储逻辑。
+当前已实现最小本地临时存储：上传文件会生成 dataset_id，写入 source_file 和 profile.json，并在当前进程内保存 DataFrame tables；进程重启恢复、自动清理和生产持久化仍未实现。
 
 ## dataset_id
 
-dataset_id 未来由后端上传接口生成，建议格式为 `ds_YYYYMMDD_sequence` 或等价的可追踪唯一 ID。
+dataset_id 当前由后端上传接口生成，格式为 `ds_` 加唯一标识；后续可调整为 `ds_YYYYMMDD_sequence` 或等价的可追踪唯一 ID。
 
 ## 建议存储路径
 
@@ -25,6 +25,6 @@ dataset_id 未来由后端上传接口生成，建议格式为 `ds_YYYYMMDD_sequ
 
 ## TODO
 
-- Phase 1 明确 dataset_id 生成器。
-- Phase 1 明确临时文件清理策略。
-- Phase 1 明确多 sheet 文件的表名规则。
+- 明确生产级临时文件清理策略。
+- 明确多 sheet 文件的表名规则和冲突处理。
+- 明确进程重启后的 profile / tables 重新加载策略。

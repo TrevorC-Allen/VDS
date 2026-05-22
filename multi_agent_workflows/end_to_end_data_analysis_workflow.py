@@ -218,6 +218,7 @@ def _build_trace(
         verification_result=state.verification,
         verifier_critic_summary=verifier_output.get("verifier_critic"),
         semantic_verification_notes=[] if not isinstance(state.verification, dict) else list(state.verification.get("semantic_verification_notes") or []),
+        not_applicable_attribution=response.debug.get("not_applicable_attribution"),
         correction_plan_summary=state.correction_attempts[-1] if state.correction_attempts else None,
         correction_attempts=state.correction_attempts,
         candidate_table_summary=_candidate_table_summary(state.pandas_result),

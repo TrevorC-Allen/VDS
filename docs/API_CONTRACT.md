@@ -2,19 +2,21 @@
 
 ## 当前阶段
 
-当前只定义 API 契约骨架，不实现完整接口业务逻辑。
+当前已实现最小 API 调用壳和稳定响应契约，尚未实现复杂后端业务系统。
 
-2026-05-21 更新：核心算法 MVP 已能返回 FinalResponse dataclass。后端 API 仍未实现业务接口，但未来 response schema 应与 FinalResponse 对齐。
+2026-05-21 更新：核心算法 MVP 已能返回 FinalResponse dataclass。后端 API 已有最小 upload / analyze / profile 调用壳，response schema 与 FinalResponse 对齐；复杂部署、权限、持久化和任务队列仍不在当前范围。
 
 2026-05-21 更新：Agent 已新增 LLM 单 Agent 链路。API 响应的 debug 可包含 llm_used、llm_operation、llm_confidence、single_agent_chain、llm_stage_summaries 等调试字段，但前端不能依赖 debug 字段作为稳定契约。
 
 2026-05-21 更新：Phase 1 最小后端调用壳已落地。backend 通过 DataAgentService 调用 data_agent_core，支持上传 CSV / Excel 后返回 DatasetProfile、按 dataset_id 分析问题、获取 profile。router 仍只做请求转发，不包含 Pandas / SQL / Verifier 核心逻辑。
 
-2026-05-21 更新：Phase 5 工具调用 trace 契约已预留。API 稳定字段不变；debug 未来可包含 tool_call_summaries，但前端仍不能依赖 debug。
+2026-05-21 更新：Phase 5 工具调用 trace 契约已落地。API 稳定字段不变；debug 可包含 tool_call_summaries，但前端仍不能依赖 debug。
 
 2026-05-21 更新：内部工具 callable 和 Microsoft Agent Framework adapter 已开始实现。该变化不修改 upload/analyze/profile 的稳定 API 字段；如果 adapter 参与运行，只能把工具调用摘要放入 debug / trace，不允许新增前端必须依赖的字段。
 
 2026-05-21 更新：analyze 默认切换为 multi_agent。请求可选 agent_mode，支持 multi_agent / single_agent；该字段用于内部运行模式选择，不改变稳定响应字段。默认 multi_agent 不要求安装 Microsoft Agent Framework，不引入前端强依赖字段。
+
+2026-05-21 更新：`Not Applicable` 不再只作为普通字符串处理。analyze 的 debug / trace / benchmark report 可记录 not_applicable_attribution，用于区分 `true_unsupported` 和 `capability_gap`；如果属于 `capability_gap`，errors 必须包含 `CAPABILITY_GAP`，前端仍只依赖稳定的 answer、warnings、errors、verification 字段。
 
 ## 全局响应规则
 
@@ -24,6 +26,8 @@
 4. 所有警告必须进入 warnings 字段。
 5. 前端只能依赖稳定字段，不依赖 debug 字段。
 6. debug 字段仅用于调试，不作为稳定展示契约。
+7. API 稳定字段保持语言中立，但问题、answer、insight、chart title 和 warnings/errors 的可读文本必须优先支持中文使用场景，同时保留英文输入和英文输出兼容。
+8. 前端不能依赖 debug 中的英文/中文内部阶段摘要；稳定展示只能依赖 answer、result、verification、insight、chart、warnings、errors 等契约字段。
 
 ## POST /api/data-agent/upload
 
@@ -102,6 +106,7 @@ debug 当前可能包含：
 - sql_success
 - trace_path
 - tool_call_summaries
+- not_applicable_attribution
 - agent_mode
 - workflow_mode
 - multi_agent_roles
@@ -117,10 +122,13 @@ trace 当前可包含：
 - candidate_table_summary
 - selected_candidate
 - tool_call_summary
+- not_applicable_attribution
 
 llm_stage_summaries 只允许包含 structured analysis plan、reasoning summary、execution trace、verification notes 等摘要，不能包含完整 Chain of Thought。
 
 tool_call_summaries 只允许包含 tool_name、step_id、requested_by、arguments_summary、result_summary、success、latency_ms、error，不允许包含完整 Chain of Thought、raw reasoning tokens、API key 或敏感原始数据。
+
+not_applicable_attribution 只允许包含 category、reason、operation、message 等归因摘要。`true_unsupported` 表示上传规则、manual、schema 或业务知识没有定义；`capability_gap` 表示问题原则上可由数据或规则回答，但当前通用能力族还未覆盖。该字段仍属于 debug / trace 调试信息，前端展示应以 warnings / errors 为准。
 
 失败响应必须包含：
 

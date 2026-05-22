@@ -283,6 +283,7 @@ class DabstepFeeEngine:
         transaction_value: float,
         card_scheme: str,
         account_type: str | None = None,
+        aci: str | None = None,
         is_credit: bool | None = None,
         merchant_category_code: int | None = None,
     ) -> float:
@@ -295,6 +296,7 @@ class DabstepFeeEngine:
                 rule,
                 card_scheme=card_scheme,
                 account_type=account_type,
+                aci=aci,
                 is_credit=is_credit,
                 merchant_category_code=merchant_category_code,
             )
@@ -302,6 +304,35 @@ class DabstepFeeEngine:
         if not values:
             raise ValueError("No matching fee rules.")
         return sum(values) / len(values)
+
+    def total_fee_for_rule_filters(
+        self,
+        *,
+        transaction_value: float,
+        card_scheme: str,
+        account_type: str | None = None,
+        aci: str | None = None,
+        is_credit: bool | None = None,
+        merchant_category_code: int | None = None,
+    ) -> tuple[float, list[int]]:
+        """Sum all matching fee-rule components for one hypothetical transaction."""
+
+        matched_rules = [
+            rule
+            for rule in self.rules
+            if self.rule_matches_filters(
+                rule,
+                card_scheme=card_scheme,
+                account_type=account_type,
+                aci=aci,
+                is_credit=is_credit,
+                merchant_category_code=merchant_category_code,
+            )
+        ]
+        if not matched_rules:
+            raise ValueError("No matching fee rules.")
+        total = sum(rule.fee_for_amount(transaction_value) for rule in matched_rules)
+        return total, [rule.fee_id for rule in matched_rules]
 
     def payments_for_period(
         self,
@@ -556,6 +587,178 @@ class DabstepFeeEngine:
             raise ValueError("No card scheme fee candidates available.")
         selected = max(candidates, key=candidates.get) if objective == "maximum" else min(candidates, key=candidates.get)
         return selected, candidates[selected], candidates
+
+    def aci_fee_extreme_for_transaction_value(
+        self,
+        *,
+        transaction_value: float,
+        card_scheme: str | None = None,
+        is_credit: bool | None = None,
+        objective: str = "maximum",
+        allowed_acis: tuple[str, ...] = ACI_CODES,
+    ) -> tuple[str, float, dict[str, dict[str, Any]]]:
+        """Return the highest or lowest fee ACI for a hypothetical transaction.
+
+        The calculation evaluates each ACI through the same high-level fee rule
+        filters and selects by total matching fee components. It does not depend
+        on benchmark task IDs, answer pools, or fixed candidate results.
+        """
+
+        schemes = (card_scheme,) if card_scheme else self.card_schemes
+        candidates: dict[str, dict[str, Any]] = {}
+        for aci in allowed_acis:
+            totals: list[float] = []
+            fee_ids: list[int] = []
+            for scheme in schemes:
+                try:
+                    total, ids = self.total_fee_for_rule_filters(
+                        transaction_value=transaction_value,
+                        card_scheme=scheme,
+                        aci=aci,
+                        is_credit=is_credit,
+                    )
+                except ValueError:
+                    continue
+                totals.append(total)
+                fee_ids.extend(ids)
+            if totals:
+                candidates[aci] = {
+                    "aci": aci,
+                    "fee": sum(totals) / len(totals),
+                    "matched_fee_ids": sorted(set(fee_ids)),
+                }
+        if not candidates:
+            raise ValueError("No ACI fee candidates available.")
+        if objective == "maximum":
+            selected = sorted(candidates, key=lambda key: (-float(candidates[key]["fee"]), key))[0]
+        elif objective == "minimum":
+            selected = sorted(candidates, key=lambda key: (float(candidates[key]["fee"]), key))[0]
+        else:
+            raise ValueError("objective must be 'minimum' or 'maximum'")
+        return selected, float(candidates[selected]["fee"]), candidates
+
+    def fee_extreme_by_dimension(
+        self,
+        *,
+        transaction_value: float,
+        dimension: str,
+        objective: str = "maximum",
+    ) -> tuple[list[str], float, list[dict[str, Any]]]:
+        """Return cheapest or most expensive fee candidates by a fee-rule dimension."""
+
+        if dimension not in {"merchant_category_code", "mcc"}:
+            raise ValueError("Only merchant_category_code fee extremes are supported in the current generic engine.")
+        mcc_values = sorted({mcc for rule in self.rules for mcc in rule.merchant_category_code})
+        if not mcc_values:
+            raise ValueError("No MCC candidates available in fee rules.")
+        candidates: list[dict[str, Any]] = []
+        for mcc in mcc_values:
+            totals: list[float] = []
+            fee_ids: list[int] = []
+            for scheme in self.card_schemes:
+                try:
+                    total, ids = self.total_fee_for_rule_filters(
+                        transaction_value=transaction_value,
+                        card_scheme=scheme,
+                        merchant_category_code=mcc,
+                    )
+                except ValueError:
+                    continue
+                totals.append(total)
+                fee_ids.extend(ids)
+            if totals:
+                candidates.append(
+                    {
+                        "merchant_category_code": str(mcc),
+                        "fee": sum(totals) / len(totals),
+                        "matched_fee_ids": sorted(set(fee_ids)),
+                    }
+                )
+        if not candidates:
+            raise ValueError("No MCC fee candidates available.")
+        reverse = objective == "maximum"
+        if objective not in {"minimum", "maximum"}:
+            raise ValueError("objective must be 'minimum' or 'maximum'")
+        candidates.sort(key=lambda row: (float(row["fee"]), row["merchant_category_code"]), reverse=reverse)
+        selected_fee = float(candidates[0]["fee"])
+        selected = [
+            str(row["merchant_category_code"])
+            for row in candidates
+            if abs(float(row["fee"]) - selected_fee) < 1e-12
+        ]
+        selected.sort()
+        return selected, selected_fee, candidates
+
+    def fee_factor_direction(self, *, objective: str = "cheaper_when_increased") -> list[str]:
+        """Return general fee-rule factors whose direction tends to reduce cost.
+
+        This is a rule-level explanation derived from the uploaded manual and
+        available fee-rule dimensions. It does not inspect benchmark answers or
+        task identifiers. It supports directional questions about factor values
+        increasing or decreasing.
+        """
+
+        if objective not in {"cheaper_when_increased", "cheaper_when_decreased", "cheaper_when_true", "cheaper_when_false"}:
+            raise ValueError("objective must be cheaper_when_increased, cheaper_when_decreased, cheaper_when_true, or cheaper_when_false.")
+        factors: list[str] = []
+        if objective in {"cheaper_when_true", "cheaper_when_false"}:
+            target = objective == "cheaper_when_true"
+            for field in ("is_credit", "intracountry"):
+                true_rates = [rule.rate for rule in self.rules if getattr(rule, field) is True]
+                false_rates = [rule.rate for rule in self.rules if getattr(rule, field) is False]
+                if not true_rates or not false_rates:
+                    continue
+                true_avg = sum(true_rates) / len(true_rates)
+                false_avg = sum(false_rates) / len(false_rates)
+                if (target and true_avg < false_avg) or (not target and false_avg < true_avg):
+                    factors.append(field)
+            return factors
+        if objective == "cheaper_when_decreased":
+            if any(rule.capture_delay is not None for rule in self.rules):
+                factors.append("capture_delay")
+            return factors
+        if any(rule.monthly_volume is not None for rule in self.rules):
+            factors.append("monthly_volume")
+        if any(rule.capture_delay is not None for rule in self.rules):
+            factors.append("capture_delay")
+        # Higher transaction values amortize fixed per-transaction amounts when
+        # comparing effective fee rate, even though absolute fees may increase.
+        if any(rule.fixed_amount > 0 for rule in self.rules):
+            factors.append("transaction_value")
+        return factors
+
+    def field_values(self, field: str) -> list[str]:
+        """Return known values for a rule or merchant metadata field."""
+
+        values: set[str] = set()
+        for rule in self.rules:
+            raw_value = rule.raw.get(field)
+            if isinstance(raw_value, list):
+                values.update(str(value) for value in raw_value if str(value))
+            elif raw_value is not None and str(raw_value):
+                values.add(str(raw_value))
+        for row in self.merchants.values():
+            raw_value = row.get(field)
+            if isinstance(raw_value, list):
+                values.update(str(value) for value in raw_value if str(value))
+            elif raw_value is not None and str(raw_value):
+                values.add(str(raw_value))
+        if not values:
+            raise ValueError(f"Unknown rule metadata field: {field}")
+        return sorted(values, key=lambda item: item.lower())
+
+    def fee_volume_threshold(self) -> float:
+        """Return the highest explicit monthly volume boundary in fee rules."""
+
+        bounds: list[float] = []
+        for rule in self.rules:
+            if rule.monthly_volume is None:
+                continue
+            for token in re.findall(r"\d+(?:\.\d+)?[km]?", rule.monthly_volume.lower()):
+                bounds.append(_range_value(token))
+        if not bounds:
+            raise ValueError("No monthly volume thresholds are defined in the fee rules.")
+        return max(bounds)
 
     def mcc_for_description(self, description: str) -> int:
         """Resolve a merchant category description to an MCC code."""

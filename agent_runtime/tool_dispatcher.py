@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+import signal
+import threading
 from typing import Any
 
 from agent_runtime.agent_role import AgentRole
@@ -26,7 +28,7 @@ class ToolDispatcher:
             self._validate_arguments(tool, call.arguments)
             if tool.callable_ref is None:
                 raise ValueError(f"Tool has no callable implementation in this runtime: {tool.name}")
-            raw_output = tool.callable_ref(call.arguments)
+            raw_output = _call_tool_with_timeout(tool, call.arguments)
             output_payload = to_json_ready(raw_output)
             trace = self._trace_event(call, True, start, _summarize_payload(call.arguments), _summarize_payload(output_payload))
             return ToolResult(
@@ -107,6 +109,36 @@ def _matches_type(value: Any, expected_type: str) -> bool:
     if expected_type == "boolean":
         return isinstance(value, bool)
     return True
+
+
+def _call_tool_with_timeout(tool: ToolDefinition, arguments: dict[str, Any]) -> Any:
+    """Execute a tool callable with a POSIX timer when available."""
+
+    if tool.callable_ref is None:
+        raise ValueError(f"Tool has no callable implementation in this runtime: {tool.name}")
+    timeout_seconds = float(tool.timeout_seconds or 0)
+    if timeout_seconds <= 0 or not _can_use_signal_timeout():
+        return tool.callable_ref(arguments)
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+
+    def timeout_handler(_signum: int, _frame: Any) -> None:
+        raise TimeoutError(f"Tool {tool.name} timed out after {timeout_seconds:g} seconds.")
+
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+    try:
+        return tool.callable_ref(arguments)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
+
+
+def _can_use_signal_timeout() -> bool:
+    return threading.current_thread() is threading.main_thread() and hasattr(signal, "setitimer")
 
 
 def _summarize_payload(payload: Any, max_items: int = 8, max_text: int = 120) -> dict[str, Any]:
