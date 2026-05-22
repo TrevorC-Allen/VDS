@@ -2,12 +2,15 @@
 
 本仓库用于从头构建可评测、可复现、可扩展的数据分析 Agent 内核。
 
-当前阶段整理为 Phase 7：泛化验证与 Provider 原生工具链增强。Phase 6 的最小可运行多 Agent workflow 已经作为默认链路启用；Phase 7 负责继续收敛 Benchmark 覆盖、中文 BI、受控工具调用、能力缺口归因和回归治理。当前新增 Phase 7.1，目标是 DABstep submission 治理和 Easy 泛化能力闭环。
+当前阶段整理为 Phase 7：泛化验证与 Provider 原生工具链增强。Phase 6 的最小可运行多 Agent workflow 已经作为默认链路启用；Phase 7 负责继续收敛 Benchmark 覆盖、中文 BI、受控工具调用、能力缺口归因和回归治理。当前已定义 Phase 7.1 submission gate、Phase 7.2 Agent 泛化与执行层语义一致性、Phase 7.2G 上传表泛化专项、Phase 7.3 评测驱动鲁棒性与最终输出契约硬化。
 
 最新状态速览：
 
 - 默认 analyze 已使用 `agent_mode=multi_agent`，由内部 runtime 编排 Planner、Data Engineer、Pandas Executor、SQL Executor、Verifier、Correction、Insight、Visualization 和 Response Builder；`single_agent` 仅保留为 fallback。
 - Phase 1 Backend API Shell 已补充外部系统一次性调用入口 `POST /api/data-agent/run`；该接口把调用方传入的 JSON 表格临时转成 dataset，再复用当前默认 `multi_agent` 链路，不新增核心算法能力。
+- Phase 7.2 已完成 Capability Registry、Planner 泛化契约、Verifier 语义验收和 executor parity report 第一轮落点；SQL / Pandas / DuckDB 一致性只作为执行层可信度和回归判断支撑，不替代 Agent 泛化能力目标。
+- Phase 7.2G 已归入上传表泛化专项，用于闭环 Microsoft 新增 100 与原始五域新增 100 之间的泛化断层；该专项不新增 Phase 7.4，也不覆盖 Phase 7.3。
+- Phase 7.3 已完成 output contract、validation-driven retry、submission provenance 和 risk taxonomy 的 mock / 离线闭环；真实 provider representative / staged / full 回归仍需在有 OpenAI 或 DeepSeek API key 时执行。
 - DABstep public all 1-450 mock 多 Agent 执行覆盖已达到 450/450；public all answer 为空，所以该结果只代表执行覆盖和 trace，不代表 hidden official accuracy。
 - Microsoft 脱敏数据 1-300 mock 离线 scorer 已达到 300/300；标准答案只在 response 生成后用于 scorer，不进入 Agent workflow、prompt、Planner、Executor、Verifier、Correction 或 trace。
 - 桌面 VDS `问题汇总.xlsx` 五个真实问题 sheet 共 95 题 smoke 已达到 95/95，覆盖销售、教育、医疗、物流、SaaS 的周期比较和中文 BI 能力族。
@@ -21,6 +24,8 @@
 - `docs/ARCHITECTURE.md`：主架构层、多 Agent 映射、Tool Calling、Benchmark 和上传文件链路。
 - `docs/PHASE_GATES.md`：阶段门槛、禁止伪泛化补丁和中文优先要求。
 - `docs/BENCHMARK_RULES.md`：Benchmark 数据、标准答案隔离、评分与回归边界。
+
+README 是 GitHub 默认首页的状态摘要。以后任何阶段、状态、主目标、项目规则、API、Benchmark 口径或用户可见能力变更，都必须同步检查并更新根 `README.md`；如果本轮确认 README 不需要修改，必须在 `CHANGELOG_AI.md` 记录原因。
 
 当前仍不做复杂前端、登录权限、数据库持久化、异步队列、微服务或旧 BigCat / VDS 主流程重构。Microsoft Agent Framework 只作为可选 adapter 承载层，轻量依赖入口在 `requirements-ms-agent.txt`，核心算法不依赖它。
 
@@ -108,7 +113,10 @@ VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runti
 - Phase 5：受控 Tool Calling 契约、ToolDispatcher timeout 边界、tool trace 摘要、内部工具 catalog 和 provider-native mock loop 已建立。
 - Phase 6：最小多 Agent workflow 已启用，backend 默认 `multi_agent`；DABstep dev 前 10 当前可复现 9/10，`single_agent` 保留为 fallback。
 - Phase 7：泛化验证与 Provider 原生工具链增强阶段。当前已完成 DABstep public all 1-450 mock 执行覆盖 450/450、Microsoft 脱敏数据 1-300 mock 离线 scorer 300/300、桌面 VDS `问题汇总.xlsx` 五个真实问题 sheet 共 95 题 smoke 95/95。当前增强重点是 provider-native 真实 tool loop、DuckDB runtime、复杂并行/多轮自纠、ACI associated cost 和更复杂中文 BI 泛化能力。
-- Phase 7.1：DABstep Submission Quality Gate and Easy Capability Closure。下一阶段重点是提交文件绑定 commit / report / prediction hash、无空答案、无格式泄漏、无旧 Desktop 文件误传，并按 counting、top/ranking、fraud ratio、yes/no、null check、field values、outlier、quantile、schema/missing-column 等能力族闭环 Easy 风险。
+- Phase 7.1：DABstep Submission Quality Gate and Easy Capability Closure。重点是提交文件绑定 commit / report / prediction hash、无空答案、无格式泄漏、无旧 Desktop 文件误传，并按 counting、top/ranking、fraud ratio、yes/no、null check、field values、outlier、quantile、schema/missing-column 等能力族闭环 Easy 风险。
+- Phase 7.2：Agent Generalization and Executor Semantic Parity。重点是能力族优先、Planner / Verifier 泛化、Capability Registry、Executor 覆盖率与一致性报告；Pandas / SQL / DuckDB 语义统一只作为执行层可信度和回归判断支撑。
+- Phase 7.2G：Uploaded Table Generalization Gap Closure。作为 Phase 7.2 下的上传表泛化专项，聚焦字段角色绑定、Planner / Verifier 语义契约和 capability family 覆盖，不新增 Phase 7.4。
+- Phase 7.3：Evaluation-Driven Robustness and Output Contract Hardening。重点是最终答案 canonicalizer、output validator、validation-driven retry、submission provenance、真实 provider 分段回归和统一 risk taxonomy。
 
 后续 TODO：
 
