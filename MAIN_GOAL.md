@@ -32,15 +32,16 @@
 18. 已提供最小后端接口壳，供前端上传文件、提交问题、获取结构化结果
 19. 已从单 Agent 平滑迁移到 Phase 6 最小多 Agent 默认链路，single_agent 保留为 fallback
 20. 已具备 Phase 5 受控 Tool Calling 基线：字段画像、计划构建、Pandas / SQL 执行、结果校验、图表规划和解释生成已包装为白名单工具；模型仍不能直接执行任意代码、SQL、shell、网络请求或外部文件访问
-21. 当前进入 Phase 7：继续增强真实 provider-native tool loop、DuckDB runtime、复杂并行/多轮自纠、ACI associated cost 通用口径和更大范围中英文真实数据回归
-22. 当前新增 Phase 7.1 作为下一阶段子目标：DABstep Submission Quality Gate and Easy Capability Closure
-23. 当前新增 Phase 7.2 作为 Phase 7 下的后续子目标：Agent Generalization and Executor Semantic Parity；该阶段以 Agent 泛化能力为主目标，Pandas / SQL / DuckDB 语义统一只作为执行层可信度和回归判断支撑。
-24. 当前新增 Phase 7.3 作为 Phase 7.2 之后的下一阶段子目标：Evaluation-Driven Robustness and Output Contract Hardening；该阶段聚焦最终 Output Contract、validation-driven retry、submission provenance、真实 provider 回归和 DA-agent 可借鉴工程模式。
+21. Phase 1 Backend API Shell 当前补充外部系统一次性调用入口，允许调用方通过 API 传入 JSON 表格和自然语言问题，再复用现有默认多 Agent 链路完成数据处理。
+22. 当前进入 Phase 7：继续增强真实 provider-native tool loop、DuckDB runtime、复杂并行/多轮自纠、ACI associated cost 通用口径和更大范围中英文真实数据回归。
+23. 当前新增 Phase 7.1 作为下一阶段子目标：DABstep Submission Quality Gate and Easy Capability Closure。
+24. 当前新增 Phase 7.2 作为 Phase 7 下的后续子目标：Agent Generalization and Executor Semantic Parity；该阶段以 Agent 泛化能力为主目标，Pandas / SQL / DuckDB 语义统一只作为执行层可信度和回归判断支撑。
+25. 当前新增 Phase 7.3 作为 Phase 7.2 之后的下一阶段子目标：Evaluation-Driven Robustness and Output Contract Hardening；该阶段聚焦最终 Output Contract、validation-driven retry、submission provenance、真实 provider 回归和 DA-agent 可借鉴工程模式。
 
 ## 统一 Phase 状态表
 
 1. Phase 0：项目规则与目录骨架，已完成。
-2. Phase 1：核心算法 + 最小 API，已完成基线，继续增强文件解析、编码识别、复杂表头和多 sheet 策略。
+2. Phase 1：核心算法 + 最小 API，已完成基线；Backend API Shell 已补充外部 `POST /api/data-agent/run` 一次性调用入口，继续增强文件解析、编码识别、复杂表头和多 sheet 策略。
 3. Phase 2：LLM 单 Agent，已完成基线，继续保留 `single_agent` 作为 fallback。
 4. Phase 3：Benchmark Runner，已完成基线，继续增强 scorer 对齐、提交治理和错误归因报告。
 5. Phase 4：Microsoft Agent Framework Adapter，已完成可选 adapter，不作为核心依赖。
@@ -89,10 +90,11 @@
 32. 已补齐 DABstep public all 1-450 的剩余执行失败：`metric_per_distinct_entity` 能区分“平均交易金额 / unique entity”和“平均交易次数 / unique entity”，Pandas 与 SQL 双路径一致；mock 多 Agent 全量回归 `outputs/dabstep_all_1_450_mock_after_metric_per_entity_fix_20260522/all_1_to_450_report.json` 为 total=450、success_count=450、unexpected_not_applicable=0、failure_count=0、accuracy=null。
 33. Microsoft 脱敏数据 1-300 已通过离线 scorer 全量回归：`outputs/microsoft_anonymized_1_300_mock_after_true_unsupported_fix_20260522/report.json` 为 total=300、correct=300、accuracy=1.0、success_count=300；标准答案只在 response 生成后用于 scorer，未进入 Agent workflow。
 34. 桌面 VDS `问题汇总.xlsx` 五域全部 95 题已通过 mock 多 Agent 执行覆盖：`outputs/vds_desktop_question_summary_full_mock_20260522.json` 为 total=95、success_count=95、failure_count=0；该结果验证问题理解、能力路由和执行成功，不使用标准答案优化。
-35. Phase 7.2 首个代码落点已完成：新增 Capability Registry，统一 operation -> capability family -> SQL support 边界；多 Agent 和 single_agent 的 SQL gate 改为读取 registry；Benchmark report 已输出 SQL coverage、Pandas-SQL consistency、coverage gap、semantic mismatch、executor mismatch、format mismatch 和 capability family metrics。回归输出包括 `outputs/phase72_capability_registry_dev_1_10_20260522/dev_1_to_10_report.json`、`outputs/phase72_capability_registry_dabstep_all_1_450_20260522/all_1_to_450_report.json`、`outputs/phase72_capability_registry_microsoft_1_300_20260522/report.json`、`outputs/phase72_capability_registry_vds_question_summary_95_20260522.json`。
-36. Phase 7.3 首个代码落点已完成：新增最终答案 canonicalizer / output validator，Response Builder 会把最终答案统一收敛为提交安全字符串并记录 output_contract_validation；DABstep 和 Microsoft runner 已加入 output-contract validation-driven retry、submission provenance、prediction / report hash 和统一 risk taxonomy；RunTrace final_response 记录 output_contract_passed，用于后续真实 provider 分段回归。
-37. Phase 7.3 mock / 离线闭环已完成：DABstep dev 1-10 为 9/10，DABstep public all 1-450 为 success_count=450、failure_count=0，Microsoft 1-300 为 300/300，桌面 VDS 95 smoke 为 95/95；上述报告均输出 provenance、risk_taxonomy，且 format_risk、submission_risk、trace_redaction_risk 为 0。真实 provider representative / staged / full 回归仍需在存在 OpenAI 或 DeepSeek API key 时执行，不以 mock 结果冒充真实 provider 结果。
-38. Phase 7.2 泛化契约第一轮实现已完成：Planner 会补齐 metric_definition、numerator、denominator、entity_grain、time_window、candidate_set 和 output_contract；Verifier 已按业务语义识别显式 filter、grouped count、count vs sum、mode/top_count、Top-K share denominator，并修正中文零售业务 quantity / count / formula 误判。最终回归输出包括 `outputs/phase72_generalization_contract_dev_1_10_final_20260522/dev_1_to_10_report.json`、`outputs/phase72_generalization_contract_dabstep_all_1_450_final_20260522/all_1_to_450_report.json`、`outputs/phase72_generalization_contract_microsoft_1_300_final_20260522/report.json`、`outputs/phase72_generalization_contract_vds_question_summary_95_final_20260522.json`。
+35. Phase 1 Backend API Shell 新增外部 Agent 调用入口 `POST /api/data-agent/run`：外部系统可一次性传入 JSON 表格、问题和可选 request_id；backend 只创建临时 dataset 并复用现有 Phase 6+ 默认 `multi_agent` 链路，不代表新增核心算法 Phase，不属于 Phase 5 Tool Calling，也不属于 Phase 7 Provider 原生 tool loop。
+36. Phase 7.2 首个代码落点已完成：新增 Capability Registry，统一 operation -> capability family -> SQL support 边界；多 Agent 和 single_agent 的 SQL gate 改为读取 registry；Benchmark report 已输出 SQL coverage、Pandas-SQL consistency、coverage gap、semantic mismatch、executor mismatch、format mismatch 和 capability family metrics。回归输出包括 `outputs/phase72_capability_registry_dev_1_10_20260522/dev_1_to_10_report.json`、`outputs/phase72_capability_registry_dabstep_all_1_450_20260522/all_1_to_450_report.json`、`outputs/phase72_capability_registry_microsoft_1_300_20260522/report.json`、`outputs/phase72_capability_registry_vds_question_summary_95_20260522.json`。
+37. Phase 7.3 首个代码落点已完成：新增最终答案 canonicalizer / output validator，Response Builder 会把最终答案统一收敛为提交安全字符串并记录 output_contract_validation；DABstep 和 Microsoft runner 已加入 output-contract validation-driven retry、submission provenance、prediction / report hash 和统一 risk taxonomy；RunTrace final_response 记录 output_contract_passed，用于后续真实 provider 分段回归。
+38. Phase 7.3 mock / 离线闭环已完成：DABstep dev 1-10 为 9/10，DABstep public all 1-450 为 success_count=450、failure_count=0，Microsoft 1-300 为 300/300，桌面 VDS 95 smoke 为 95/95；上述报告均输出 provenance、risk_taxonomy，且 format_risk、submission_risk、trace_redaction_risk 为 0。真实 provider representative / staged / full 回归仍需在存在 OpenAI 或 DeepSeek API key 时执行，不以 mock 结果冒充真实 provider 结果。
+39. Phase 7.2 泛化契约第一轮实现已完成：Planner 会补齐 metric_definition、numerator、denominator、entity_grain、time_window、candidate_set 和 output_contract；Verifier 已按业务语义识别显式 filter、grouped count、count vs sum、mode/top_count、Top-K share denominator，并修正中文零售业务 quantity / count / formula 误判。最终回归输出包括 `outputs/phase72_generalization_contract_dev_1_10_final_20260522/dev_1_to_10_report.json`、`outputs/phase72_generalization_contract_dabstep_all_1_450_final_20260522/all_1_to_450_report.json`、`outputs/phase72_generalization_contract_microsoft_1_300_final_20260522/report.json`、`outputs/phase72_generalization_contract_vds_question_summary_95_final_20260522.json`。
 
 ## 架构原则
 

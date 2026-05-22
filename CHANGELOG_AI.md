@@ -159,6 +159,88 @@ YYYY-MM-DD HH:MM TZ
 是。RunTrace 记录 LLM plan 摘要，不记录 key、完整 prompt 或完整 Chain of Thought。
 
 
+### 日期时间
+
+2026-05-22 13:07 CST
+
+### 本次目标
+
+按 Phase 1 Backend API Shell 扩展实现外部系统一次性调用现有 VDS Agent 的接口，让调用方可以通过 API 传入 JSON 表格和自然语言问题，并复用当前 Phase 6+ 默认 `multi_agent` 链路完成数据处理。
+
+### 修改文件
+
+- README.md
+- MAIN_GOAL.md
+- docs/API_CONTRACT.md
+- backend/routers/data_agent.py
+- backend/schemas/data_agent_schema.py
+- backend/services/data_agent_service.py
+- backend/storage/temp_file_store.py
+- tests/backend/test_data_agent_service.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `POST /api/data-agent/run` FastAPI 路由和非 FastAPI helper，供外部系统一次性提交 inline JSON 表格和问题。
+- 新增 `run_agent_with_inline_tables` service 入口：只负责校验请求、创建临时 dataset、调用既有 `analyze_dataset()`，不实现 Pandas / SQL / Verifier / Benchmark 核心逻辑。
+- 在 `TempFileStore` 增加 inline table payload 标准化和临时 profile 存储能力，支持列表表格和按表名映射两种 JSON 形态。
+- 响应沿用 analyze 契约，并在请求提供时原样返回 `request_id`。
+- README / MAIN_GOAL / API_CONTRACT 同步说明该能力归属 Phase 1 Backend API Shell 扩展，服务于当前 Phase 6+ 默认多 Agent 链路，不属于 Phase 5 Tool Calling 或 Phase 7 Provider 原生 tool loop。
+- backend 测试新增中文 inline 表格、英文 inline 表格、request_id 和非法 payload 标准错误覆盖。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- git diff --check
+
+### 测试结果
+
+- backend service 测试通过：Ran 5 tests，OK。
+- architecture dependency boundary 测试通过：Ran 3 tests，OK。
+- 全量 unittest 通过：Ran 89 tests in 27.304s，OK。
+- git diff --check 通过。
+
+### 遗留问题
+
+- 本轮只实现外部 API 接入面，不做鉴权、限流、多租户、异步任务、复杂持久化、WebSocket 或微服务拆分。
+- inline table 当前仍使用 Phase 1 临时存储策略，进程重启后不恢复 DataFrame tables；长期服务化仍需后续设计 retention 和持久化策略。
+
+### 是否影响主流程
+
+否。新增的是外部系统一次性调用入口，现有 upload / analyze / profile 接口保持不变，不修改旧 BigCat / VDS 主流程，不修改前端。
+
+### 是否涉及 Benchmark
+
+否。未修改 Benchmark 数据、runner、scorer 或标准答案链路，未读取 hidden answer、task_id 或 public proxy 答案池。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未安装 Microsoft Agent Framework，未新增依赖，未把核心算法写入 adapter。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。外部 API 复用现有 `multi_agent` workflow 和稳定响应契约，不把具体 Agent 框架写入 backend 接口。
+
+### 是否修改核心数据契约
+
+否。未修改 data_agent_core contracts。
+
+### 是否修改 API 契约
+
+是。新增 `POST /api/data-agent/run` 外部一次性调用契约；现有 upload / analyze / profile 契约不变。
+
+### 是否新增或修改错误类型
+
+否。复用现有 FILE_PARSE_ERROR 和 LOGIC_FORM_ERROR。
+
+### 是否新增或修改运行追踪逻辑
+
+否。未修改 RunTrace；仅在 API debug 中增加 trace-safe 的 `api_source`，并返回调用方提供的 `request_id`。
+
+---
+
 ### 日期
 
 2026-05-21

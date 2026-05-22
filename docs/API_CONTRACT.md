@@ -18,6 +18,8 @@
 
 2026-05-21 更新：`Not Applicable` 不再只作为普通字符串处理。analyze 的 debug / trace / benchmark report 可记录 not_applicable_attribution，用于区分 `true_unsupported` 和 `capability_gap`；如果属于 `capability_gap`，errors 必须包含 `CAPABILITY_GAP`，前端仍只依赖稳定的 answer、warnings、errors、verification 字段。
 
+2026-05-22 更新：Phase 1 Backend API Shell 新增 `POST /api/data-agent/run` 外部一次性调用入口。该接口把调用方传入的 JSON 表格转成临时 dataset，然后复用现有 analyze / multi_agent 链路；它不是新的核心算法 Phase，不属于 Phase 5 Tool Calling，也不属于 Phase 7 Provider 原生 tool loop。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
@@ -139,6 +141,74 @@ not_applicable_attribution 只允许包含 category、reason、operation、messa
 - run_id（analyze 请求）
 
 errors 中的元素必须包含 error_type、error_message、failed_step、recoverable、suggested_fix。
+
+## POST /api/data-agent/run
+
+目标：供外部系统一次性调用现有 Data Agent。调用方直接传入 JSON 表格和自然语言问题；backend 创建临时 dataset 后复用 `analyze_dataset` 和当前默认 `multi_agent` workflow。
+
+该接口属于 Phase 1 Backend API Shell 扩展，只提供接入面，不实现 Pandas / SQL / Verifier / Benchmark 核心逻辑。
+
+请求字段：
+
+- request_id，可选，调用方侧请求 ID，响应原样返回
+- question，必填，自然语言问题，中文优先并兼容英文
+- tables，必填，JSON 表格数据
+- execution_mode，可选，auto / pandas / sql / dual，默认 dual
+- agent_mode，可选，multi_agent / single_agent，默认 multi_agent
+- guidelines，可选，输出约束或业务提示
+- dataset_id，可选，调用方希望指定的临时 dataset_id
+
+tables 支持两种稳定形态：
+
+```json
+[
+  {
+    "table_name": "销售",
+    "rows": [
+      {"城市": "上海", "销售额": 100},
+      {"城市": "北京", "销售额": 150}
+    ]
+  }
+]
+```
+
+```json
+{
+  "sales": {
+    "rows": [
+      {"city": "Shanghai", "sales": 100},
+      {"city": "Beijing", "sales": 150}
+    ]
+  }
+}
+```
+
+响应字段沿用 analyze 稳定契约：
+
+- response_version
+- success
+- request_id（如果请求提供）
+- run_id
+- dataset_id
+- question
+- answer_type
+- execution_mode
+- answer
+- logic_form
+- result
+- verification
+- insight
+- chart
+- warnings
+- errors
+- debug
+
+失败响应必须包含 response_version、success=false、run_id、warnings、errors；如果请求提供 request_id，必须原样返回。
+
+`/run` 与 `/upload` + `/analyze` 的区别：
+
+- `/run`：适合外部系统已经有 JSON 表格数据，需要一次性调用 Agent。
+- `/upload` + `/analyze`：适合文件上传后多次复用同一个 dataset_id。
 
 ## GET /api/data-agent/datasets/{dataset_id}/profile
 
