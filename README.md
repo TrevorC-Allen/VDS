@@ -7,6 +7,7 @@
 最新状态速览：
 
 - 默认 analyze 已使用 `agent_mode=multi_agent`，由内部 runtime 编排 Planner、Data Engineer、Pandas Executor、SQL Executor、Verifier、Correction、Insight、Visualization 和 Response Builder；`single_agent` 仅保留为 fallback。
+- Phase 1 Backend API Shell 已补充外部系统一次性调用入口 `POST /api/data-agent/run`；该接口把调用方传入的 JSON 表格临时转成 dataset，再复用当前默认 `multi_agent` 链路，不新增核心算法能力。
 - DABstep public all 1-450 mock 多 Agent 执行覆盖已达到 450/450；public all answer 为空，所以该结果只代表执行覆盖和 trace，不代表 hidden official accuracy。
 - Microsoft 脱敏数据 1-300 mock 离线 scorer 已达到 300/300；标准答案只在 response 生成后用于 scorer，不进入 Agent workflow、prompt、Planner、Executor、Verifier、Correction 或 trace。
 - 桌面 VDS `问题汇总.xlsx` 五个真实问题 sheet 共 95 题 smoke 已达到 95/95，覆盖销售、教育、医疗、物流、SaaS 的周期比较和中文 BI 能力族。
@@ -45,6 +46,35 @@ data_agent_core/prompts/data_agent_system_prompt.md
 API key 只允许通过环境变量提供，不写入仓库、文档、trace 或 CHANGELOG。参考 `.env.example`，真实 `.env` / `.env.local` 已在 `.gitignore` 中忽略。
 
 运行追踪只记录 structured analysis plan、reasoning summary、execution trace、verification notes 和工具摘要，不记录完整 Chain of Thought。
+
+## External Agent API
+
+外部系统如果已经有 JSON 表格数据，可以直接调用 `POST /api/data-agent/run`，不必先走文件上传。该接口属于 Phase 1 Backend API Shell 扩展，只负责把 inline tables 转成临时 dataset，然后复用现有 Phase 6+ 默认多 Agent 分析链路。
+
+最小请求示例：
+
+```json
+{
+  "request_id": "external-001",
+  "question": "哪个城市销售额最高？",
+  "tables": [
+    {
+      "table_name": "销售",
+      "rows": [
+        {"城市": "上海", "销售额": 100},
+        {"城市": "北京", "销售额": 150},
+        {"城市": "上海", "销售额": 200}
+      ]
+    }
+  ],
+  "execution_mode": "dual",
+  "agent_mode": "multi_agent"
+}
+```
+
+响应继续沿用 analyze 契约，包含 `response_version`、`run_id`、`dataset_id`、`answer`、`result`、`verification`、`warnings`、`errors` 和 `debug`。`request_id` 会原样返回，便于外部系统对账。
+
+该接口不改变 Benchmark、Microsoft adapter、Provider-native tool loop 或核心算法边界；文件上传复用场景仍使用 `/api/data-agent/upload` + `/api/data-agent/analyze`。
 
 ## Core Test
 

@@ -153,3 +153,114 @@ class DataAgentService:
                 ),
             )
         return dataset_profile_response(profile)
+
+    def run_agent_with_inline_tables(
+        self,
+        *,
+        question: str,
+        tables: Any,
+        execution_mode: str = "dual",
+        guidelines: str = "",
+        agent_mode: str = "multi_agent",
+        dataset_id: str | None = None,
+        request_id: str | None = None,
+        source_name: str = "api_inline_tables",
+    ) -> dict[str, Any]:
+        """Create an inline dataset and run the existing Data Agent workflow."""
+
+        request_run_id = "run_" + uuid.uuid4().hex[:16]
+        if not question.strip():
+            return _attach_external_metadata(
+                error_response(
+                    dataset_id=dataset_id,
+                    run_id=request_run_id,
+                    error=ErrorResult(
+                        error_type=LOGIC_FORM_ERROR,
+                        error_message="question is required for an external agent run.",
+                        failed_step="run_agent_with_inline_tables",
+                        recoverable=True,
+                        suggested_fix="Provide a non-empty natural-language analysis question.",
+                    ),
+                ),
+                request_id=request_id,
+                source_name=source_name,
+            )
+
+        if execution_mode not in VALID_EXECUTION_MODES:
+            return _attach_external_metadata(
+                error_response(
+                    dataset_id=dataset_id,
+                    run_id=request_run_id,
+                    error=ErrorResult(
+                        error_type=LOGIC_FORM_ERROR,
+                        error_message=f"Unsupported execution_mode: {execution_mode}",
+                        failed_step="run_agent_with_inline_tables",
+                        recoverable=True,
+                        suggested_fix="Use one of auto, pandas, sql, or dual.",
+                    ),
+                ),
+                request_id=request_id,
+                source_name=source_name,
+            )
+        if agent_mode not in VALID_AGENT_MODES:
+            return _attach_external_metadata(
+                error_response(
+                    dataset_id=dataset_id,
+                    run_id=request_run_id,
+                    error=ErrorResult(
+                        error_type=LOGIC_FORM_ERROR,
+                        error_message=f"Unsupported agent_mode: {agent_mode}",
+                        failed_step="run_agent_with_inline_tables",
+                        recoverable=True,
+                        suggested_fix="Use multi_agent or single_agent.",
+                    ),
+                ),
+                request_id=request_id,
+                source_name=source_name,
+            )
+
+        try:
+            stored = self.file_store.save_inline_table_payload(
+                tables,
+                dataset_id=dataset_id,
+                source_name=source_name,
+            )
+        except Exception as exc:  # noqa: BLE001 - service must normalize API errors.
+            return _attach_external_metadata(
+                error_response(
+                    dataset_id=dataset_id,
+                    run_id=request_run_id,
+                    error=ErrorResult(
+                        error_type=FILE_PARSE_ERROR,
+                        error_message=str(exc),
+                        failed_step="run_agent_with_inline_tables",
+                        recoverable=True,
+                        suggested_fix="Send tables as JSON records, for example [{'table_name': 'sales', 'rows': [{'city': '上海', 'sales': 100}]}].",
+                    ),
+                ),
+                request_id=request_id,
+                source_name=source_name,
+            )
+
+        response = self.analyze_dataset(
+            dataset_id=stored.dataset_id,
+            question=question,
+            execution_mode=execution_mode,
+            guidelines=guidelines,
+            agent_mode=agent_mode,
+        )
+        return _attach_external_metadata(
+            response,
+            request_id=request_id,
+            source_name=source_name,
+        )
+
+
+def _attach_external_metadata(response: dict[str, Any], *, request_id: str | None, source_name: str) -> dict[str, Any]:
+    """Attach trace-safe external API metadata without changing analysis logic."""
+
+    if request_id:
+        response["request_id"] = request_id
+    response.setdefault("debug", {})
+    response["debug"]["api_source"] = source_name
+    return to_json_ready(response)

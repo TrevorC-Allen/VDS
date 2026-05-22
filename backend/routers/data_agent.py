@@ -40,6 +40,21 @@ def profile_payload(dataset_id: str) -> dict[str, Any]:
     return service.get_dataset_profile(dataset_id)
 
 
+def run_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Non-FastAPI helper mirroring POST /api/data-agent/run."""
+
+    return service.run_agent_with_inline_tables(
+        question=str(payload.get("question") or ""),
+        tables=payload.get("tables"),
+        execution_mode=str(payload.get("execution_mode") or "dual"),
+        guidelines=str(payload.get("guidelines") or ""),
+        agent_mode=str(payload.get("agent_mode") or "multi_agent"),
+        dataset_id=payload.get("dataset_id"),
+        request_id=payload.get("request_id"),
+        source_name=str(payload.get("source_name") or "api_inline_tables"),
+    )
+
+
 try:
     from fastapi import APIRouter, File, UploadFile
     from pydantic import BaseModel
@@ -52,6 +67,16 @@ try:
         execution_mode: str = "dual"
         guidelines: str = ""
         agent_mode: str = "multi_agent"
+
+    class RunPayload(BaseModel):
+        question: str
+        tables: Any
+        execution_mode: str = "dual"
+        guidelines: str = ""
+        agent_mode: str = "multi_agent"
+        dataset_id: str | None = None
+        request_id: str | None = None
+        source_name: str = "api_inline_tables"
 
     @router.post("/upload")
     async def upload(file: UploadFile = File(...)) -> dict[str, Any]:
@@ -72,6 +97,19 @@ try:
             execution_mode=payload.execution_mode,
             guidelines=payload.guidelines,
             agent_mode=payload.agent_mode,
+        )
+
+    @router.post("/run")
+    def run(payload: RunPayload) -> dict[str, Any]:
+        return service.run_agent_with_inline_tables(
+            question=payload.question,
+            tables=payload.tables,
+            execution_mode=payload.execution_mode,
+            guidelines=payload.guidelines,
+            agent_mode=payload.agent_mode,
+            dataset_id=payload.dataset_id,
+            request_id=payload.request_id,
+            source_name=payload.source_name,
         )
 
     @router.get("/datasets/{dataset_id}/profile")
