@@ -11,6 +11,7 @@
 - Phase 7.2 已完成 Capability Registry、Planner 泛化契约、Verifier 语义验收和 executor parity report 第一轮落点；SQL / Pandas / DuckDB 一致性只作为执行层可信度和回归判断支撑，不替代 Agent 泛化能力目标。
 - Phase 7.2G 已归入上传表泛化专项，用于闭环 Microsoft 新增 100 与原始五域新增 100 之间的泛化断层；该专项不新增 Phase 7.4，也不覆盖 Phase 7.3。
 - Phase 7.3 已完成 output contract、validation-driven retry、submission provenance 和 risk taxonomy 的 mock / 离线闭环；真实 provider representative / staged / full 回归仍需在有 OpenAI 或 DeepSeek API key 时执行。
+- 当前工作目标为 DABstep Easy Accuracy Recovery，并按 Phase 职责拆分：Phase 7.1 记录 easy proxy baseline、目标门槛和 submission policy；Phase 7.2 记录对应泛化能力族实现。这不是替换原 Phase 7.1 / 7.2 定义。easy public proxy 已从 `50/72 = 69.44%` baseline 提升到真实 DeepSeek 后验观察 `69/72 = 95.83%`，mock 离线回归为 `72/72 = 100%`（均非 official hidden accuracy），public proxy policy 仍为 `not_used_in_core_chain`。
 - DABstep public all 1-450 mock 多 Agent 执行覆盖已达到 450/450；public all answer 为空，所以该结果只代表执行覆盖和 trace，不代表 hidden official accuracy。
 - Microsoft 脱敏数据 1-300 mock 离线 scorer 已达到 300/300；标准答案只在 response 生成后用于 scorer，不进入 Agent workflow、prompt、Planner、Executor、Verifier、Correction 或 trace。
 - 桌面 VDS `问题汇总.xlsx` 五个真实问题 sheet 共 95 题 smoke 已达到 95/95，覆盖销售、教育、医疗、物流、SaaS 的周期比较和中文 BI 能力族。
@@ -113,8 +114,8 @@ VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runti
 - Phase 5：受控 Tool Calling 契约、ToolDispatcher timeout 边界、tool trace 摘要、内部工具 catalog 和 provider-native mock loop 已建立。
 - Phase 6：最小多 Agent workflow 已启用，backend 默认 `multi_agent`；DABstep dev 前 10 当前可复现 9/10，`single_agent` 保留为 fallback。
 - Phase 7：泛化验证与 Provider 原生工具链增强阶段。当前已完成 DABstep public all 1-450 mock 执行覆盖 450/450、Microsoft 脱敏数据 1-300 mock 离线 scorer 300/300、桌面 VDS `问题汇总.xlsx` 五个真实问题 sheet 共 95 题 smoke 95/95。当前增强重点是 provider-native 真实 tool loop、DuckDB runtime、复杂并行/多轮自纠、ACI associated cost 和更复杂中文 BI 泛化能力。
-- Phase 7.1：DABstep Submission Quality Gate and Easy Capability Closure。重点是提交文件绑定 commit / report / prediction hash、无空答案、无格式泄漏、无旧 Desktop 文件误传，并按 counting、top/ranking、fraud ratio、yes/no、null check、field values、outlier、quantile、schema/missing-column 等能力族闭环 Easy 风险。
-- Phase 7.2：Agent Generalization and Executor Semantic Parity。重点是能力族优先、Planner / Verifier 泛化、Capability Registry、Executor 覆盖率与一致性报告；Pandas / SQL / DuckDB 语义统一只作为执行层可信度和回归判断支撑。
+- Phase 7.1：DABstep Submission Quality Gate and Easy Capability Closure。重点是提交文件绑定 commit / report / prediction hash、无空答案、无格式泄漏、无旧 Desktop 文件误传，并按 counting、top/ranking、fraud ratio、yes/no、null check、field values、outlier、quantile、schema/missing-column 等能力族闭环 Easy 风险；当前 easy recovery 真实 DeepSeek 后验 proxy 观察为 `69/72`，mock 离线回归为 `72/72`，仍不代表 hidden official score。
+- Phase 7.2：Agent Generalization and Executor Semantic Parity。重点是能力族优先、Planner / Verifier 泛化、Capability Registry、Executor 覆盖率与一致性报告；Pandas / SQL / DuckDB 语义统一只作为执行层可信度和回归判断支撑。当前新增 output `answer_target`、field/filter binding、grouped fraud metrics、denominator/share/quantile 和 deterministic fee monotonic 规则，禁止按 task_id 或 proxy answer 特调。
 - Phase 7.2G：Uploaded Table Generalization Gap Closure。作为 Phase 7.2 下的上传表泛化专项，聚焦字段角色绑定、Planner / Verifier 语义契约和 capability family 覆盖，不新增 Phase 7.4。
 - Phase 7.3：Evaluation-Driven Robustness and Output Contract Hardening。重点是最终答案 canonicalizer、output validator、validation-driven retry、submission provenance、真实 provider 分段回归和统一 risk taxonomy。
 

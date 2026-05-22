@@ -244,6 +244,33 @@ YYYY-MM-DD HH:MM TZ
 
 ---
 
+## 2026-05-22 - DeepSeek transport retry for offset benchmark runs
+
+### 修改内容
+
+- `data_agent_core/llm/client.py` 增加 OpenAI-compatible LLM transport retry：对 `IncompleteRead`、remote disconnect、timeout、URL 连接错误以及 408/409/425/429/5xx 做有限指数退避重试。
+- 新增 `VDS_LLM_MAX_RETRIES`、`VDS_LLM_RETRY_BACKOFF_SECONDS` 运行参数，默认保持通用 provider 行为，不改变 Planner / Executor / Verifier 语义。
+- 新增 `tests/core/test_llm_client.py`，覆盖 DeepSeek/OpenAI-compatible transient chunk 断流、429 retry 和 400 non-retry 边界。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_llm_client tests.core.test_generic_capability_operations tests.core.test_output_contract
+
+### 测试结果
+
+- focused tests 通过：Ran 55 tests，OK。
+- 真实 DeepSeek 450 首次 10-way offset 并发因 provider/proxy HTTP chunked response `IncompleteRead` 在 LLM 阶段全部断流，未产生 trace；该问题属于 transport robustness，不是 DABstep logic/proxy correctness failure。
+
+### 是否影响主流程
+
+是。增强真实 LLM provider 的 benchmark 稳定性；不修改前端、不修改 benchmark answer policy、不引入 task_id/proxy answer/hidden answer 到核心链路。
+
+### 是否涉及 Benchmark
+
+是。用于真实 DeepSeek offset 分片 benchmark 的网络稳定性；public proxy 仍只用于 response 后验观察。
+
+---
+
 ### 日期
 
 2026-05-21
@@ -3460,5 +3487,110 @@ YYYY-MM-DD HH:MM TZ
 ### 是否已同步 README
 
 是。README 已同步 Phase 7.2、Phase 7.2G、Phase 7.3 当前摘要，并写入后续每次状态类变更必须检查和更新 README 的规则。
+
+---
+
+### 日期时间
+
+2026-05-22 16:39 CST
+
+### 本次目标
+
+按当前 goal 实施 DABstep Easy Accuracy Recovery：把目标按 Phase 7.1 验收和 Phase 7.2 泛化实现写入 MAIN_GOAL，不改写原 Phase 定义；借鉴 DA-agent 的 schema/tool-first、SQL guardrail、answer contract、deterministic rule engine 思路，但禁止 task_id、proxy answer、accepted answer 或 hidden answer 进入核心链路；使用真实 DeepSeek 分片验证 easy public proxy 必须超过 85%，优先超过 90%。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- README.md
+- agent_runtime/data_agent_tool_impl.py
+- agent_runtime/data_analysis_roles.py
+- data_agent_core/contracts/analysis_contracts.py
+- data_agent_core/core/analysis_planner.py
+- data_agent_core/core/capability_registry.py
+- data_agent_core/core/dabstep_fee_engine.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/core/logic_form.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/output/output_contract.py
+- tests/core/test_generic_capability_operations.py
+
+### 修改内容
+
+- MAIN_GOAL / README 明确当前 goal 是 DABstep Easy Accuracy Recovery，并按 Phase 职责拆分：Phase 7.1 记录 baseline、目标和 proxy policy；Phase 7.2 记录泛化能力族实现；这不是替换原 Phase 7.1 / 7.2 定义。
+- LogicForm 新增 `answer_target`，并在 agent_runtime payload 重建、Planner output contract 和 final answer canonicalizer 中保留，支持 `metric_only`、`entity_only`、`entity_list_only`、`segment_vector`。
+- Intent Parser 增强字段 / filter binding：补齐 account_type、issuer country、missing/null row count、fraud boolean、IP country、scalar amount extreme、top-k share ranking/share metric 拆分、repeat-customer quantile、grouped fraud rate max/min/std、combined fraud segment 和 decimal-place 解析。
+- Pandas / SQL executor 同步增强 metric_per_distinct_entity、top_k_share、null_check、rank_by_metric selected_metric、combined worst_fraud_segment，并新增 `fraud_rate_fluctuation`；同时补齐通用 numeric range filter dict `{min,max}`，支持真实 provider 生成的范围 filter 形态。
+- Fee engine 调整 deterministic fee monotonic 输出：increased 返回 monthly_volume / capture_delay，decreased 返回 monthly_fraud_level，volume threshold 返回规则区间 label，并从 manual.md 表格补 account_type 枚举。
+- 新增同族泛化测试，覆盖字段改名、布尔 filter、grouped fraud metric answer target、period std fraud rate、top-k 按金额排序但按交易数占比、repeat entity quantile、numeric range filter 和 fee rule enum / direction。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=deepseek 分片运行 DABstep easy 72：offset 0/12/24/36/48/60，limit=12，输出到 `outputs/dabstep_easy_proxy_20260522_deepseek_real_chunks/*`
+- 合并真实 DeepSeek 分片并用 public accepted pool 做后验 proxy observation：`outputs/dabstep_easy_proxy_20260522_deepseek_real_combined/all_1_to_72_public_proxy_observation.json`
+- VDS_LLM_PROVIDER=mock DABstep easy 72 离线回归：`outputs/dabstep_easy_proxy_20260522_after_recovery/all_1_to_72_public_proxy_observation.json`
+- VDS_LLM_PROVIDER=mock DABstep dev 1-10：`outputs/dabstep_dev_1_10_after_easy_recovery_range_filter_20260522/dev_1_to_10_report.json`
+- VDS_LLM_PROVIDER=mock DABstep public all 1-450：`outputs/dabstep_all_1_450_after_easy_recovery_20260522/all_1_to_450_report.json`
+- VDS_LLM_PROVIDER=mock Microsoft 1-300：`outputs/microsoft_anonymized_1_300_after_easy_recovery_20260522/report.json`
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_generic_capability_operations tests.core.test_output_contract
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets tests.benchmark.test_phase73_benchmark_runner tests.core.test_dabstep_core
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- git diff --check
+
+### 测试结果
+
+- 真实 DeepSeek easy 72 分片合并：public proxy 后验观察为 `69/72 = 95.83%`，超过 `>=62/72` 验收目标和 `>=65/72` 优先目标；`success_count=65/72`，Pandas-SQL consistency `49/49`，剩余 proxy failure 为 rank_by_metric 1、fee_factor_direction 2。
+- mock easy 72 离线回归：`72/72 = 100%`，仅作为确定性能力族回归，不冒充真实 DeepSeek 或 official hidden accuracy。
+- DABstep dev 1-10：correct=9/10，accuracy=0.9，success_count=10，unexpected_not_applicable=0。
+- DABstep public all 1-450：success_count=450，unexpected_not_applicable=0，true_unsupported=3，failure_count=0，Pandas-SQL consistency 69/69。
+- Microsoft 1-300：correct=300/300，accuracy=1.0，success_count=300。
+- focused tests 通过：Ran 52 tests，OK。
+- full unittest 通过：Ran 126 tests，OK。
+- 架构 / hardcoding / secret / Phase 7.3 runner 子集通过：Ran 13 tests，OK。
+- compileall 通过。
+- git diff --check 通过。
+
+### 遗留问题
+
+- 真实 DeepSeek easy proxy 剩余 3 个 public-proxy mismatch：一个 grouped fraud metric 的 public pool 只接受两位小数，两个 fee boolean direction 与当前 deterministic rule-average 口径不同；后续若继续提升，应按通用 output rounding contract 和 fee candidate-pair / rule semantics 修复，不能按 task_id 或固定答案补丁。
+- public proxy 不是 official hidden accuracy，只能作为 response 生成后的后验观察和能力族归因。
+- `.playwright-cli/` 是本地未跟踪目录，本轮未使用、未修改、未纳入变更。
+
+### 是否影响主流程
+
+是。影响 data_agent_core / agent_runtime 的 DABstep-style table analysis、output contract、executor filter 和 fee rule 能力；不修改前端、不修改 backend API 契约。
+
+### 是否涉及 Benchmark
+
+是。涉及 DABstep easy/public/dev、Microsoft 1-300 和 public proxy observation；expected answer、public proxy、accepted answer 和 hidden answer 仍只用于 response 之后的离线 scorer / observation，未进入 Planner、Executor、Verifier、Correction、prompt、tests fixture 或核心源码。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 ms_agent_framework_adapter 行为，也未引入 Microsoft Agent Framework 依赖。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。`answer_target`、output contract、capability family 和 executor semantic parity 都通过稳定契约表达，可被当前内部 multi-agent workflow 和未来 adapter 复用。
+
+### 是否修改核心数据契约
+
+是。LogicForm 新增 `answer_target`，output_contract 增加对应 answer target 信息。
+
+### 是否修改 API 契约
+
+否。未修改 backend 对外 API schema。
+
+### 是否新增或修改错误类型
+
+否。未新增错误类型。
+
+### 是否新增或修改运行追踪逻辑
+
+否。未新增 trace 字段；现有 trace 会随 LogicForm / output_contract payload 自然记录 `answer_target`。
+
+### 是否已同步 README
+
+是。README 已同步当前 Easy Recovery goal、真实 DeepSeek `69/72`、mock `72/72`、public proxy policy 和 Phase 7.1 / 7.2 职责拆分。
 
 ---

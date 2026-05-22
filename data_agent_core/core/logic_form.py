@@ -21,10 +21,17 @@ def make_logic_form(
     options: dict[str, object] | None = None,
     filters: dict[str, object] | None = None,
     parameters: dict[str, object] | None = None,
+    answer_target: str | None = None,
     output_format: dict[str, object] | None = None,
     output_contract: dict[str, object] | None = None,
 ) -> LogicForm:
     """Create a LogicForm with stable empty defaults."""
+
+    output_format_payload = dict(output_format or {})
+    if answer_target:
+        output_format_payload.setdefault("answer_target", answer_target)
+    elif output_format_payload.get("answer_target"):
+        answer_target = str(output_format_payload["answer_target"])
 
     return LogicForm(
         task_type=task_type,
@@ -41,6 +48,7 @@ def make_logic_form(
         options=options or {},
         filters=filters or {},
         parameters=parameters or {},
-        output_format=output_format or {},
+        answer_target=answer_target,
+        output_format=output_format_payload,
         output_contract=output_contract or {},
     )
