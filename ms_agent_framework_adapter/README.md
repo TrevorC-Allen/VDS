@@ -20,7 +20,7 @@
 - Phase 4：adapter 已作为可选承载层建立，data_agent_core 不依赖 Microsoft Agent Framework。
 - Phase 5：内部 ToolDefinition / ToolCall / ToolResult 可映射为 Microsoft function tool，但真实执行仍由 agent_runtime ToolDispatcher 控制。
 - Phase 6：当前默认 workflow 仍由内部 multi_agent_workflows 承载；Microsoft adapter 只负责未来迁移映射和可选 demo，不承载业务语义、Pandas、SQL、Verifier 或 Benchmark 逻辑。
-- 当前 verified 状态来自内部 workflow：DABstep public all 1-450 mock 执行覆盖 450/450，Microsoft 脱敏数据 1-300 mock 离线 scorer 300/300，桌面 VDS `问题汇总.xlsx` 95 题 smoke 95/95。
+- Phase 7：真实 Microsoft Agent Framework demo、cloud workflow、provider client 对接和复杂编排验证都属于后续增强；当前 verified 状态仍来自内部 workflow：DABstep public all 1-450 mock 执行覆盖 450/450，Microsoft 脱敏数据 1-300 mock 离线 scorer 300/300，桌面 VDS `问题汇总.xlsx` 95 题 smoke 95/95。
 
 ## 未来映射关系
 
@@ -93,4 +93,4 @@ adapter 不会自动读取 `.env`。模型、Azure Foundry 或其他 provider �
 ## TODO
 
 - 后续接真实 Azure Foundry / OpenAI-compatible client 时，保持 key 只来自环境变量。
-- 后续扩展真实 Microsoft Agent Framework demo、复杂多 Agent workflow 编排和 cloud execution，但不得把核心算法搬进 adapter。
+- Phase 7 后续扩展真实 Microsoft Agent Framework demo、复杂多 Agent workflow 编排和 cloud execution，但不得把核心算法搬进 adapter。

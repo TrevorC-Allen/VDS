@@ -12,6 +12,7 @@ from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan
 from data_agent_core.contracts.execution_contracts import ExecutionResult
+from data_agent_core.core.capability_registry import SQL_NATIVE_OPERATIONS
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import SQL_EXECUTION_ERROR
 
@@ -51,26 +52,7 @@ def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult
 
 def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
     op = plan.logic_form.operation
-    if op not in {
-        "top_count",
-        "group_average",
-        "not_applicable",
-        "aggregation",
-        "ranking",
-        "row_count",
-        "distinct_count",
-        "metric_per_distinct_entity",
-        "repeat_entity_percentage",
-        "repeat_entity_count",
-        "top_k_share",
-        "null_check",
-        "filtered_metric_ranking",
-        "rank_by_metric",
-        "field_values",
-        "boolean_percentage",
-        "boolean_count_ratio",
-        "fraud_rate_filtered",
-    }:
+    if op not in SQL_NATIVE_OPERATIONS:
         raise ValueError(f"Operation {op} is not SQL-compatible in the MVP.")
     if op == "not_applicable":
         return "Not Applicable"

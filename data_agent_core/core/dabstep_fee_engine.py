@@ -130,6 +130,12 @@ class DabstepFeeEngine:
         self.mcc_descriptions = self._load_mcc_descriptions()
         self.payments = self._load_payments()
         self.card_schemes = tuple(sorted({rule.card_scheme for rule in self.rules}))
+        self.rules_by_card_scheme: dict[str, list[FeeRule]] = {}
+        for rule in self.rules:
+            self.rules_by_card_scheme.setdefault(rule.card_scheme, []).append(rule)
+        self._monthly_stats_cache: dict[tuple[str, int, int], dict[str, float]] = {}
+        self._payments_period_cache: dict[tuple[str, int, int | None, int | None], list[dict[str, Any]]] = {}
+        self._candidate_rule_cache: dict[tuple[str, str, str | None, int, float, float], list[FeeRule]] = {}
 
     def _load_mcc_descriptions(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -167,18 +173,23 @@ class DabstepFeeEngine:
     def monthly_stats(self, merchant: str, year: int, month: int) -> dict[str, float]:
         """Return volume and fraud metrics in a natural month."""
 
+        cache_key = (merchant, year, month)
+        if cache_key in self._monthly_stats_cache:
+            return dict(self._monthly_stats_cache[cache_key])
         rows = [
             row for row in self.payments
             if row["merchant"] == merchant and row["year"] == year and row["month"] == month
         ]
         volume = sum(row["eur_amount"] for row in rows)
         fraud_volume = sum(row["eur_amount"] for row in rows if row["has_fraudulent_dispute"])
-        return {
+        stats = {
             "transaction_count": len(rows),
             "monthly_volume": volume,
             "monthly_fraud_volume": fraud_volume,
             "monthly_fraud_level": 0.0 if volume == 0 else fraud_volume / volume * 100,
         }
+        self._monthly_stats_cache[cache_key] = stats
+        return dict(stats)
 
     def rule_matches_filters(
         self,
@@ -230,19 +241,7 @@ class DabstepFeeEngine:
         aci = aci_override or payment["aci"]
         card_scheme = card_scheme_override or payment["card_scheme"]
         matches: list[FeeRule] = []
-        for rule in self.rules:
-            if rule.card_scheme != card_scheme:
-                continue
-            if rule.account_type and merchant_meta["account_type"] not in rule.account_type:
-                continue
-            if not _capture_delay_matches(rule.capture_delay, str(merchant_meta.get("capture_delay"))):
-                continue
-            if rule.monthly_volume is not None and not _matches_range(rule.monthly_volume, monthly_stats["monthly_volume"]):
-                continue
-            if rule.monthly_fraud_level is not None and not _matches_range(rule.monthly_fraud_level, monthly_stats["monthly_fraud_level"]):
-                continue
-            if rule.merchant_category_code and int(merchant_meta["merchant_category_code"]) not in rule.merchant_category_code:
-                continue
+        for rule in self._candidate_rules_for_transaction_context(card_scheme, merchant_meta, monthly_stats):
             if rule.is_credit is not None and rule.is_credit != payment["is_credit"]:
                 continue
             if rule.aci and aci not in rule.aci:
@@ -253,6 +252,40 @@ class DabstepFeeEngine:
                     continue
             matches.append(rule)
         return matches
+
+    def _candidate_rules_for_transaction_context(
+        self,
+        card_scheme: str,
+        merchant_meta: dict[str, Any],
+        monthly_stats: dict[str, float],
+    ) -> list[FeeRule]:
+        """Return rules narrowed to scheme, merchant metadata, and monthly thresholds."""
+
+        cache_key = (
+            card_scheme,
+            str(merchant_meta["account_type"]),
+            None if merchant_meta.get("capture_delay") is None else str(merchant_meta.get("capture_delay")),
+            int(merchant_meta["merchant_category_code"]),
+            float(monthly_stats["monthly_volume"]),
+            float(monthly_stats["monthly_fraud_level"]),
+        )
+        if cache_key in self._candidate_rule_cache:
+            return self._candidate_rule_cache[cache_key]
+        candidates: list[FeeRule] = []
+        for rule in self.rules_by_card_scheme.get(card_scheme, []):
+            if rule.account_type and merchant_meta["account_type"] not in rule.account_type:
+                continue
+            if not _capture_delay_matches(rule.capture_delay, str(merchant_meta.get("capture_delay"))):
+                continue
+            if rule.monthly_volume is not None and not _matches_range(rule.monthly_volume, monthly_stats["monthly_volume"]):
+                continue
+            if rule.monthly_fraud_level is not None and not _matches_range(rule.monthly_fraud_level, monthly_stats["monthly_fraud_level"]):
+                continue
+            if rule.merchant_category_code and int(merchant_meta["merchant_category_code"]) not in rule.merchant_category_code:
+                continue
+            candidates.append(rule)
+        self._candidate_rule_cache[cache_key] = candidates
+        return candidates
 
     def fee_ids_for_filters(
         self,
@@ -344,12 +377,16 @@ class DabstepFeeEngine:
     ) -> list[dict[str, Any]]:
         """Return payments for a merchant over a year, month, or day."""
 
+        cache_key = (merchant, year, month, day_of_year)
+        if cache_key in self._payments_period_cache:
+            return list(self._payments_period_cache[cache_key])
         rows = [row for row in self.payments if row["merchant"] == merchant and row["year"] == year]
         if month is not None:
             rows = [row for row in rows if row["month"] == month]
         if day_of_year is not None:
             rows = [row for row in rows if row["day_of_year"] == day_of_year]
-        return rows
+        self._payments_period_cache[cache_key] = rows
+        return list(rows)
 
     def applicable_fee_ids_for_merchant_period(
         self,
@@ -523,22 +560,76 @@ class DabstepFeeEngine:
 
         rule = next(rule for rule in self.rules if rule.fee_id == fee_id)
         affected: list[str] = []
+        stats_by_merchant_month: dict[tuple[str, int], dict[str, float]] = {}
+        rows_by_merchant_month: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        for row in self.payments:
+            if row["year"] != year:
+                continue
+            key = (str(row["merchant"]), int(row["month"]))
+            stats = stats_by_merchant_month.setdefault(
+                key,
+                {
+                    "transaction_count": 0,
+                    "monthly_volume": 0.0,
+                    "monthly_fraud_volume": 0.0,
+                    "monthly_fraud_level": 0.0,
+                },
+            )
+            stats["transaction_count"] += 1
+            stats["monthly_volume"] += float(row["eur_amount"])
+            if row["has_fraudulent_dispute"]:
+                stats["monthly_fraud_volume"] += float(row["eur_amount"])
+            if row["card_scheme"] == rule.card_scheme:
+                rows_by_merchant_month.setdefault(key, []).append(row)
+        for stats in stats_by_merchant_month.values():
+            volume = stats["monthly_volume"]
+            stats["monthly_fraud_level"] = 0.0 if volume == 0 else stats["monthly_fraud_volume"] / volume * 100
+
         for merchant in sorted(self.merchants):
             meta = self.merchant(merchant)
             if new_account_type is not None and meta["account_type"] == new_account_type:
                 continue
-            used = False
-            for month in range(1, 13):
-                stats = self.monthly_stats(merchant, year, month)
-                for row in self.payments_for_period(merchant, year=year, month=month):
-                    if rule in self.matching_rules_for_transaction(row, meta, stats):
-                        used = True
-                        break
-                if used:
-                    break
-            if used:
+            if not self._rule_static_matches_merchant(rule, meta):
+                continue
+            if any(
+                self._rule_matches_month_rows(rule, rows_by_merchant_month.get((merchant, month), []), stats_by_merchant_month.get((merchant, month)))
+                for month in range(1, 13)
+            ):
                 affected.append(merchant)
         return affected
+
+    def _rule_static_matches_merchant(self, rule: FeeRule, merchant_meta: dict[str, Any]) -> bool:
+        if rule.account_type and merchant_meta["account_type"] not in rule.account_type:
+            return False
+        if not _capture_delay_matches(rule.capture_delay, str(merchant_meta.get("capture_delay"))):
+            return False
+        if rule.merchant_category_code and int(merchant_meta["merchant_category_code"]) not in rule.merchant_category_code:
+            return False
+        return True
+
+    def _rule_matches_month_rows(
+        self,
+        rule: FeeRule,
+        rows: list[dict[str, Any]],
+        stats: dict[str, float] | None,
+    ) -> bool:
+        if not rows or stats is None:
+            return False
+        if rule.monthly_volume is not None and not _matches_range(rule.monthly_volume, stats["monthly_volume"]):
+            return False
+        if rule.monthly_fraud_level is not None and not _matches_range(rule.monthly_fraud_level, stats["monthly_fraud_level"]):
+            return False
+        for row in rows:
+            if rule.is_credit is not None and rule.is_credit != row["is_credit"]:
+                continue
+            if rule.aci and row["aci"] not in rule.aci:
+                continue
+            if rule.intracountry is not None:
+                intracountry = row["issuing_country"] == row["acquirer_country"]
+                if rule.intracountry != intracountry:
+                    continue
+            return True
+        return False
 
     def best_fraud_aci_choice(
         self,

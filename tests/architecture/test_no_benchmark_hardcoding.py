@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from multi_agent_workflows.dabstep_benchmark_runner import run_dabstep_multi_agent_benchmark
 from multi_agent_workflows.microsoft_anonymized_benchmark_runner import run_microsoft_anonymized_benchmark
+from multi_agent_workflows.uploaded_table_benchmark_runner import run_uploaded_table_benchmark
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -152,6 +153,56 @@ class BenchmarkHardcodingBoundaryTest(unittest.TestCase):
 
         self.assertEqual(
             [{"question": "2026年5月服务客户数是多少？", "guidelines": "答案只返回整数。", "execution_mode": "auto"}],
+            calls,
+        )
+
+    def test_uploaded_table_runner_does_not_pass_answer_or_task_id_to_agent(self) -> None:
+        calls: list[dict[str, str]] = []
+
+        class FakeWorkflow:
+            @classmethod
+            def from_uploaded_tables(cls, tables, **_kwargs):
+                return cls()
+
+            def analyze(self, question: str, guidelines: str = "", execution_mode: str = "auto"):
+                calls.append(
+                    {
+                        "question": question,
+                        "guidelines": guidelines,
+                        "execution_mode": execution_mode,
+                    }
+                )
+                return _FakeResponse(), _FakeTrace()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset_root = pathlib.Path(temp_dir)
+            table_path = dataset_root / "table.csv"
+            test_path = dataset_root / "tasks.jsonl"
+            table_path.write_text("col\n1\n")
+            test_path.write_text(
+                json.dumps(
+                    {
+                        "task_id": "secret-upload-task",
+                        "question": "Which value appears most often?",
+                        "guidelines": "Answer with text.",
+                        "source_file": str(table_path),
+                        "answer": "NL",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+            with patch("multi_agent_workflows.uploaded_table_benchmark_runner.DataAnalysisMultiAgentWorkflow", FakeWorkflow):
+                run_uploaded_table_benchmark(
+                    dataset_root=dataset_root,
+                    test_set=test_path,
+                    limit=1,
+                    output_dir=dataset_root / "out",
+                )
+
+        self.assertEqual(
+            [{"question": "Which value appears most often?", "guidelines": "Answer with text.", "execution_mode": "auto"}],
             calls,
         )
 

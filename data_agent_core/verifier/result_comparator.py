@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+from typing import Any
+
 from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.contracts.verification_contracts import ComparisonResult
 from data_agent_core.verifier.result_normalizer import normalize_value
@@ -26,7 +29,7 @@ def compare_results(left: ExecutionResult, right: ExecutionResult) -> Comparison
                 value_match=True,
                 issues=[],
             )
-    value_match = left_value == right_value
+    value_match = _values_match(left_value, right_value)
     if not value_match:
         issues.append("Execution values differ after normalization.")
     return ComparisonResult(
@@ -36,3 +39,17 @@ def compare_results(left: ExecutionResult, right: ExecutionResult) -> Comparison
         value_match=value_match,
         issues=issues,
     )
+
+
+def _values_match(left: Any, right: Any) -> bool:
+    if _is_number(left) and _is_number(right):
+        return math.isclose(float(left), float(right), rel_tol=1e-9, abs_tol=1e-8)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(_values_match(left_item, right_item) for left_item, right_item in zip(left, right))
+    if isinstance(left, dict) and isinstance(right, dict):
+        return set(left) == set(right) and all(_values_match(left[key], right[key]) for key in left)
+    return left == right
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)

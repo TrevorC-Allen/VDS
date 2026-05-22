@@ -208,6 +208,10 @@ def _build_trace(
         metric_definition=None if not isinstance(state.logic_form, dict) else state.logic_form.get("metric_definition"),
         numerator=None if not isinstance(state.logic_form, dict) else state.logic_form.get("numerator"),
         denominator=None if not isinstance(state.logic_form, dict) else state.logic_form.get("denominator"),
+        entity_grain=None if not isinstance(state.logic_form, dict) else state.logic_form.get("entity_grain"),
+        time_window=None if not isinstance(state.logic_form, dict) else state.logic_form.get("time_window"),
+        candidate_set=None if not isinstance(state.logic_form, dict) else state.logic_form.get("candidate_set"),
+        output_contract=None if not isinstance(state.logic_form, dict) else state.logic_form.get("output_contract"),
         analysis_plan=state.analysis_plan,
         pandas_result_summary=_execution_summary(state.pandas_result),
         sql_result_summary=_execution_summary(state.sql_result),
@@ -226,7 +230,12 @@ def _build_trace(
         tool_call_summary=state.tool_call_trace,
         insight_summary=state.insight,
         chart_plan_summary=state.chart,
-        final_response={"answer": response.answer, "success": response.success, "agent_mode": "multi_agent"},
+        final_response={
+            "answer": response.answer,
+            "success": response.success,
+            "agent_mode": "multi_agent",
+            "output_contract_passed": response.debug.get("output_contract_validation", {}).get("passed"),
+        },
         latency_ms=latency_ms,
         errors=response.errors,
         warnings=response.warnings,
@@ -241,6 +250,11 @@ def _execution_summary(payload: Any) -> dict[str, Any] | None:
         "backend": payload.get("backend"),
         "value": payload.get("value"),
         "skipped": payload.get("skipped"),
+        "reason": payload.get("reason"),
+        "sql_support": payload.get("sql_support"),
+        "capability_family": payload.get("capability_family"),
+        "coverage_gap": payload.get("coverage_gap"),
+        "native_sql_supported": payload.get("native_sql_supported"),
     }
 
 

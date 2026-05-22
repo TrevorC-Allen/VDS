@@ -10,7 +10,7 @@
 
 ## 当前阶段目标
 
-当前阶段基线已完成并继续增强：
+当前 Phase 6 基线已完成，后续增强统一整理为 Phase 7：
 
 1. 已搭建 data_agent_core 核心算法目录
 2. 已搭建 data_agent_core/contracts 数据契约目录
@@ -32,7 +32,24 @@
 18. 已提供最小后端接口壳，供前端上传文件、提交问题、获取结构化结果
 19. 已从单 Agent 平滑迁移到 Phase 6 最小多 Agent 默认链路，single_agent 保留为 fallback
 20. 已具备 Phase 5 受控 Tool Calling 基线：字段画像、计划构建、Pandas / SQL 执行、结果校验、图表规划和解释生成已包装为白名单工具；模型仍不能直接执行任意代码、SQL、shell、网络请求或外部文件访问
-21. 当前继续增强真实 provider-native tool loop、DuckDB runtime、复杂并行/多轮自纠、ACI associated cost 通用口径和更大范围中英文真实数据回归
+21. 当前进入 Phase 7：继续增强真实 provider-native tool loop、DuckDB runtime、复杂并行/多轮自纠、ACI associated cost 通用口径和更大范围中英文真实数据回归
+22. 当前新增 Phase 7.1 作为下一阶段子目标：DABstep Submission Quality Gate and Easy Capability Closure
+23. 当前新增 Phase 7.2 作为 Phase 7 下的后续子目标：Agent Generalization and Executor Semantic Parity；该阶段以 Agent 泛化能力为主目标，Pandas / SQL / DuckDB 语义统一只作为执行层可信度和回归判断支撑。
+24. 当前新增 Phase 7.3 作为 Phase 7.2 之后的下一阶段子目标：Evaluation-Driven Robustness and Output Contract Hardening；该阶段聚焦最终 Output Contract、validation-driven retry、submission provenance、真实 provider 回归和 DA-agent 可借鉴工程模式。
+
+## 统一 Phase 状态表
+
+1. Phase 0：项目规则与目录骨架，已完成。
+2. Phase 1：核心算法 + 最小 API，已完成基线，继续增强文件解析、编码识别、复杂表头和多 sheet 策略。
+3. Phase 2：LLM 单 Agent，已完成基线，继续保留 `single_agent` 作为 fallback。
+4. Phase 3：Benchmark Runner，已完成基线，继续增强 scorer 对齐、提交治理和错误归因报告。
+5. Phase 4：Microsoft Agent Framework Adapter，已完成可选 adapter，不作为核心依赖。
+6. Phase 5：受控 Tool Calling，已完成 provider-neutral 工具层和 mock provider loop。
+7. Phase 6：内部多 Agent workflow，已作为默认 analyze 链路。
+8. Phase 7：泛化验证与 Provider 原生工具链增强，已完成 DABstep public all 1-450 mock 执行覆盖、Microsoft 脱敏数据 1-300 mock 离线 scorer、桌面 VDS 95 题 smoke，仍持续增强。
+9. Phase 7.1：DABstep Submission Quality Gate and Easy Capability Closure，新增为下一阶段；重点是提交文件治理、Easy 基础能力族闭环、最终答案格式收敛和风险报告，不实现单题优化。
+10. Phase 7.2：Agent Generalization and Executor Semantic Parity，作为 Phase 7.1 之后的后续子目标；重点是能力族优先、Planner / Verifier 泛化、Capability Registry、Executor 覆盖率与一致性报告，不替代、不阻塞 Phase 7.1 submission gate。
+11. Phase 7.3：Evaluation-Driven Robustness and Output Contract Hardening，作为 Phase 7.2 之后的后续子目标；重点是最终答案 canonicalizer、output validator、validation-driven retry、submission provenance、真实 provider 大规模回归和风险分类，不替代 Phase 7.1 submission gate，也不重做 Phase 7.2 Capability Registry。
 
 ## 当前实现状态
 
@@ -72,6 +89,10 @@
 32. 已补齐 DABstep public all 1-450 的剩余执行失败：`metric_per_distinct_entity` 能区分“平均交易金额 / unique entity”和“平均交易次数 / unique entity”，Pandas 与 SQL 双路径一致；mock 多 Agent 全量回归 `outputs/dabstep_all_1_450_mock_after_metric_per_entity_fix_20260522/all_1_to_450_report.json` 为 total=450、success_count=450、unexpected_not_applicable=0、failure_count=0、accuracy=null。
 33. Microsoft 脱敏数据 1-300 已通过离线 scorer 全量回归：`outputs/microsoft_anonymized_1_300_mock_after_true_unsupported_fix_20260522/report.json` 为 total=300、correct=300、accuracy=1.0、success_count=300；标准答案只在 response 生成后用于 scorer，未进入 Agent workflow。
 34. 桌面 VDS `问题汇总.xlsx` 五域全部 95 题已通过 mock 多 Agent 执行覆盖：`outputs/vds_desktop_question_summary_full_mock_20260522.json` 为 total=95、success_count=95、failure_count=0；该结果验证问题理解、能力路由和执行成功，不使用标准答案优化。
+35. Phase 7.2 首个代码落点已完成：新增 Capability Registry，统一 operation -> capability family -> SQL support 边界；多 Agent 和 single_agent 的 SQL gate 改为读取 registry；Benchmark report 已输出 SQL coverage、Pandas-SQL consistency、coverage gap、semantic mismatch、executor mismatch、format mismatch 和 capability family metrics。回归输出包括 `outputs/phase72_capability_registry_dev_1_10_20260522/dev_1_to_10_report.json`、`outputs/phase72_capability_registry_dabstep_all_1_450_20260522/all_1_to_450_report.json`、`outputs/phase72_capability_registry_microsoft_1_300_20260522/report.json`、`outputs/phase72_capability_registry_vds_question_summary_95_20260522.json`。
+36. Phase 7.3 首个代码落点已完成：新增最终答案 canonicalizer / output validator，Response Builder 会把最终答案统一收敛为提交安全字符串并记录 output_contract_validation；DABstep 和 Microsoft runner 已加入 output-contract validation-driven retry、submission provenance、prediction / report hash 和统一 risk taxonomy；RunTrace final_response 记录 output_contract_passed，用于后续真实 provider 分段回归。
+37. Phase 7.3 mock / 离线闭环已完成：DABstep dev 1-10 为 9/10，DABstep public all 1-450 为 success_count=450、failure_count=0，Microsoft 1-300 为 300/300，桌面 VDS 95 smoke 为 95/95；上述报告均输出 provenance、risk_taxonomy，且 format_risk、submission_risk、trace_redaction_risk 为 0。真实 provider representative / staged / full 回归仍需在存在 OpenAI 或 DeepSeek API key 时执行，不以 mock 结果冒充真实 provider 结果。
+38. Phase 7.2 泛化契约第一轮实现已完成：Planner 会补齐 metric_definition、numerator、denominator、entity_grain、time_window、candidate_set 和 output_contract；Verifier 已按业务语义识别显式 filter、grouped count、count vs sum、mode/top_count、Top-K share denominator，并修正中文零售业务 quantity / count / formula 误判。最终回归输出包括 `outputs/phase72_generalization_contract_dev_1_10_final_20260522/dev_1_to_10_report.json`、`outputs/phase72_generalization_contract_dabstep_all_1_450_final_20260522/all_1_to_450_report.json`、`outputs/phase72_generalization_contract_microsoft_1_300_final_20260522/report.json`、`outputs/phase72_generalization_contract_vds_question_summary_95_final_20260522.json`。
 
 ## 架构原则
 
@@ -110,7 +131,7 @@
 
 ## Microsoft Agent Framework 策略
 
-Microsoft Agent Framework 是多 Agent 编排的候选承载框架，但不是当前核心算法依赖。当前默认 Phase 6 workflow 使用内部 runtime；Microsoft adapter 只是可选承载和映射层。
+Microsoft Agent Framework 是多 Agent 编排的候选承载框架，但不是当前核心算法依赖。当前默认 Phase 6 workflow 使用内部 runtime；Phase 7 可继续验证 provider / framework 承载能力，但 Microsoft adapter 仍只是可选承载和映射层。
 
 当前实现方式：
 
@@ -229,18 +250,22 @@ Verifier / Response Builder 生成最终结构化 JSON
 3. Microsoft Agent Framework adapter 可以把内部工具包装为 function tool，但仅作为可选适配层。
 4. Provider-native adapter 已具备 OpenAI / DeepSeek 兼容 schema、tool call 解析和 mock/fake client loop；真实 OpenAI / DeepSeek 网络 tool loop 尚未作为生产默认链路启用，模型仍不允许获得 raw Python、raw SQL、shell、网络或任意文件访问。
 
-## Phase 7：Provider 原生 Tool Calling Adapter
+## Phase 7：泛化验证与 Provider 原生工具链增强
 
-Phase 7 的目标不是替换本地工具层，而是把 OpenAI / DeepSeek 的原生 tool calling 能力接到现有 provider-neutral 工具契约上。当前已完成 schema / tool call 解析 / mock loop 基线；下一步是真实 provider 网络 smoke 和更完整失败恢复，但不能改变真实执行、权限、参数校验、超时、trace 摘要和错误归一化仍由本地 ToolDispatcher 负责的边界。
+Phase 7 的目标不是在 Phase 6 后面继续加后缀，而是把已完成的多 Agent 基线之上的增强统一归类：更大范围 Benchmark / 中文真实数据泛化验证、Not Applicable 能力缺口闭环、中文 BI 能力族扩展、Provider 原生 tool calling 接入、DuckDB runtime、复杂并行和多轮自纠。
+
+Phase 7 仍不能替换本地工具层。OpenAI / DeepSeek 的原生 tool calling 只能接到现有 provider-neutral 工具契约上；当前已完成 schema / tool call 解析 / mock loop 基线，下一步是真实 provider 网络 smoke 和更完整失败恢复。真实执行、权限、参数校验、超时、trace 摘要和错误归一化仍由本地 ToolDispatcher 负责。
 
 阶段顺序：
 
-1. 已实现 OpenAI / DeepSeek 兼容工具循环 adapter 基线，把 provider tool schema / tool call / tool result 映射到内部 ToolDefinition、ToolCall 和 ToolResult。
-2. OpenAI adapter 必须复用现有 ToolRegistry / ToolDispatcher / ToolTraceEvent，不允许在 provider adapter 中实现 DatasetProfile、Pandas、SQL、Verifier、Chart 或 Insight 逻辑。
-3. 已跑通 mock/fake provider 单元测试；仍需补真实 OpenAI / DeepSeek key 下的 uploaded dataset smoke，且 key 只能来自 ignored env 文件或运行环境。
-4. DeepSeek provider 特化只处理 DeepSeek 与 OpenAI-compatible chat completions / tool calls 的协议差异；不得 fork 内部工具契约。
-5. DeepSeek thinking mode 或其他 reasoning 字段只能由 provider adapter 内部维护，用于必要的续传或工具回填，不进入稳定 trace、debug 或 API 响应。
-6. Provider 原生并行 tool calls 如后续启用，必须先证明不会破坏工具顺序依赖、WorkflowState 一致性和 trace 可复现性。
+1. 已完成 Phase 6 最小多 Agent 默认链路，backend analyze 默认走 `multi_agent`，single_agent 保留为 fallback。
+2. 已完成 DABstep public all 1-450 mock 执行覆盖、Microsoft 脱敏数据 1-300 mock 离线 scorer 和桌面 VDS 95 题 smoke 的阶段性验证。
+3. 已实现 OpenAI / DeepSeek 兼容工具循环 adapter 基线，把 provider tool schema / tool call / tool result 映射到内部 ToolDefinition、ToolCall 和 ToolResult。
+4. OpenAI adapter 必须复用现有 ToolRegistry / ToolDispatcher / ToolTraceEvent，不允许在 provider adapter 中实现 DatasetProfile、Pandas、SQL、Verifier、Chart 或 Insight 逻辑。
+5. 已跑通 mock/fake provider 单元测试；仍需补真实 OpenAI / DeepSeek key 下的 uploaded dataset smoke，且 key 只能来自 ignored env 文件或运行环境。
+6. DeepSeek provider 特化只处理 DeepSeek 与 OpenAI-compatible chat completions / tool calls 的协议差异；不得 fork 内部工具契约。
+7. DeepSeek thinking mode 或其他 reasoning 字段只能由 provider adapter 内部维护，用于必要的续传或工具回填，不进入稳定 trace、debug 或 API 响应。
+8. Provider 原生并行 tool calls 如后续启用，必须先证明不会破坏工具顺序依赖、WorkflowState 一致性和 trace 可复现性。
 
 Provider-native 调用链必须保持为：
 
@@ -300,7 +325,7 @@ Response Builder：生成最终结构化 JSON
 6. 当前 backend 默认走 multi_agent，single_agent 只作为 fallback
 7. 当前 DABstep 多 Agent runner 位于 multi_agent_workflows/dabstep_benchmark_runner.py
 
-## Phase 6 质量提升：业务口径驱动的多 Agent 泛化能力
+## Phase 7 质量提升：业务口径驱动的多 Agent 泛化能力
 
 该阶段不是继续更换 Agent 框架，也不是按 Benchmark 题号补规则，更不是把每次看到的错误补成只适配当前数据和当前问法的局部坑，而是让多 Agent 真正参与业务语义判断、计划修正、结果校验和跨数据集泛化能力建设。
 
@@ -327,7 +352,7 @@ Rule NO.1：
 8. 将 all 21-50 public proxy 暴露出的 `Not Applicable` 缺口归纳为通用能力族补齐：字段可取值枚举、比例/百分比、重复行检测、欺诈交易维度排名、ACI 最贵/最便宜选择、fee restriction 影响商户解析。
 9. 每个能力族必须配套泛化验收：至少一个非 Benchmark 或合成数据用例、一个同类变体用例、一个已有代表回归用例；不能只用当前失败题目证明成功。
 
-## Phase 6 质量提升状态
+## Phase 7 当前状态
 
 已完成的第一批基线：
 
@@ -349,6 +374,187 @@ Rule NO.1：
 5. DABstep public all answer 为空，all 100-130 / 131+ 的 official 本地准确率仍不可计算；public proxy 只能后验观察，不能进入核心链路。
 6. 已完成 DABstep public all 1-450 mock 执行覆盖、Microsoft 脱敏数据 1-300 mock 离线 scorer 和桌面 VDS 95 题 smoke；仍需继续做真实 LLM 大规模回归、更多中文真实业务表、更多字段别名、多表场景和更复杂中文 BI 能力验证。
 7. 真实 LLM 多 Agent 评测耗时仍偏长，后续可优化 provider 调用次数和 stage 缓存，但不能牺牲 trace、Verifier 和受控工具边界。
+8. 当前 Pandas / SQL 不等价主要是 coverage gap，不是 SQL correctness gap：SQL 仍是 sqlite fallback / SQL-compatible 子集，fee-rule 能力主要由 Pandas 路径和 shared rule engine 承载；更深层风险是 Agent 能力族抽象、Planner 泛化字段和 Verifier 语义验收还不够稳定，不能把 executor parity 误当成 Agent 泛化能力完成。
+9. 当前还缺少统一风险报告，把 format risk、semantic risk、capability coverage、official hidden score 不可本地复现、public proxy observation、真实 provider cost / latency 和 submission provenance 分开记录；不能只用 success_count 或 mock 覆盖率代表可提交质量。
+
+## Phase 7.1：DABstep Submission Quality Gate and Easy Capability Closure
+
+Phase 7.1 是 Phase 7 下的下一阶段子目标，不是新的大阶段。该阶段只处理提交质量、Easy 基础能力族和最终答案格式收敛，不允许围绕 task_id、隐藏答案、public proxy 答案池、固定题面、固定样本值或当前 leaderboard 反馈写单题优化。
+
+leaderboard 诊断：
+
+1. Trevor 提交中 Easy 低、Hard 高不应被解释为框架整体失败；Hard 题可能受益于已实现的 fee engine、业务规则和多步推理能力。
+2. Easy 低更可能暴露提交文件一致性、基础分析能力族、空答案、最终答案格式和 exact-match 风险。
+3. 外部 leaderboard 的 Easy / Hard 反馈是提交后反馈，不等同于本地可复现 hidden official accuracy。
+4. hidden official accuracy 只能由 Hugging Face leaderboard 返回；本地不能伪造、推断或把 public proxy 当作官方准确率。
+
+下一阶段必须按能力族修复，而不是按题号修复：
+
+1. counting
+2. top / ranking
+3. fraud ratio
+4. boolean yes / no
+5. null check
+6. field values
+7. outlier
+8. quantile
+9. schema / missing-column
+
+Submission gate 要求：
+
+1. 提交 JSONL 必须覆盖预期 task_id 集合，行数、字段名和 `agent_answer` 格式必须通过校验。
+2. 禁止空答案、对象泄漏、debug 泄漏、trace 泄漏、API key 泄漏、旧 Desktop 文件误传和非本次生成文件误传。
+3. 提交文件必须绑定当前 commit hash、report hash、prediction hash 和生成命令。
+4. submission gate 只能检查提交质量和格式，不能读取 hidden answer，不能把 public proxy answer 注入核心链路。
+5. 风险报告必须拆分 Easy / Hard 风险、格式风险、空答案风险、能力族风险和提交文件来源风险。
+
+Phase 7.1 退出条件：
+
+1. 新 DABstep submission JSONL 通过 submission gate。
+2. 无空答案、无格式对象泄漏、无旧 Desktop 文件误传、无 key / hidden / proxy 内容泄漏。
+3. 生成 Easy / Hard 风险报告，并明确它不是 hidden official accuracy。
+4. DABstep public all 1-450 mock 覆盖不退化，unexpected Not Applicable 为 0。
+5. DABstep dev 1-10 仍保持不低于 9/10，且没有单题特判。
+6. Microsoft 1-300 和桌面 VDS 95 smoke 不退化。
+7. secret scan、hardcoding scan、import boundary test 通过。
+
+## Phase 7.2：Agent Generalization and Executor Semantic Parity
+
+Phase 7.2 是 Phase 7 下的后续子目标，不替代、不阻塞 Phase 7.1 submission gate。该阶段的主目标是提升 Agent 面对新问题、新字段、新数据集和中英文真实业务表时的泛化能力；Pandas / SQL / DuckDB 统一只作为执行层可信度、可审计性和回归判断支撑，不能被包装成 Agent 泛化能力本身。
+
+核心判断：
+
+1. Pandas / SQL 分数差异首先要拆成 coverage gap、correctness gap 和 format gap；SQL skipped 不能被当成 SQL 算错。
+2. 如果 Pandas / SQL 都输出一致但业务口径错误，仍然是 Agent 语义泛化失败，Verifier 必须判为需要修正。
+3. Benchmark 暴露的问题必须归入可迁移能力族，例如指标定义、时间窗口、分母选择、候选集选择、字段别名、多表关联、业务规则 what-if，不能被表述为“修某题”。
+4. DABstep fee-rule 能力短期可共享 deterministic rule engine；长期再把 `fees.json`、`manual.md` 和 `merchant_data.json` 的规则语义表格化并逐步 DuckDB 化，不能在 Pandas、SQL、Verifier 中复制三套业务逻辑。
+
+阶段目标：
+
+1. 建立 Capability Registry：每个能力族必须记录输入契约、适用边界、中文 / 英文支持、Pandas 支持、SQL / DuckDB 支持、是否依赖 shared rule engine、是否为 native SQL。
+2. 强化 Planner 泛化契约：Planner 不能只选择 operation，还必须输出 metric_definition、numerator、denominator、entity_grain、time_window、candidate_set、filters 和 output_contract。
+3. 强化 Verifier 语义验收：即使 Pandas / SQL 一致，只要 metric definition、entity grain、分母、时间窗口、候选集或输出格式不匹配问题，也必须判为 semantic mismatch 并触发修正方向。
+4. 将 Executor parity 改为支撑层指标：Benchmark report 必须拆分 Pandas accuracy、SQL coverage、SQL covered-subset accuracy、Pandas-SQL consistency、coverage gap、semantic mismatch、executor mismatch 和 format mismatch。
+5. DuckDB runtime 作为 SQL 目标执行层，sqlite 只保留 fallback；启用 DuckDB 不得绕过 ToolDispatcher、Result Normalizer、Verifier、trace 摘要和 secret / hardcoding 边界。
+
+泛化验收：
+
+1. 每个新能力族至少包含一个合成或非 Benchmark 用例、一个同类问法变体、一个中文字段 / 中文问题用例、一个已有代表回归用例。
+2. DABstep dev 1-10 必须保持不低于 9/10；DABstep public all 1-450 mock 覆盖不退化；Microsoft 1-300 和桌面 VDS 95 smoke 不退化。
+3. Public proxy 只能作为后验观察；task_id、expected answer、proxy answer、accepted answer 和 hidden answer 不得进入 Capability Registry、Planner、Executor、Verifier、Correction、prompt 或测试 fixture。
+4. hardcoding scan、secret scan、import boundary test 必须继续通过；data_agent_core 不得 import backend、ms_agent_framework_adapter、multi_agent_workflows 或 agent_framework。
+
+当前落地状态（2026-05-22）：
+
+1. Planner 泛化契约已在 `build_analysis_plan()` 中成为默认补齐层，LogicForm 会稳定携带 metric_definition、numerator、denominator、entity_grain、time_window、candidate_set 和 output_contract；report 中同步输出 `generalization_contract` 完整性。
+2. Verifier 不再只看 Pandas / SQL 一致性：显式 filter 缺失、grouped count 误路由、count 问题误用 sum、mode/top_count 误路由、Top-K metric share / count share denominator 混用都会进入 semantic mismatch；中文零售业务中的“分销数量 / SKU数量 / 执行次数 / 陈列费率=公式”按业务 quantity、top-count 或 formula context 处理，避免把正确业务 metric 误判成 executor failure。
+3. Microsoft 脱敏数据 false-success 问题已归因并修复：之前 `correct=300/300` 但 `success_count=232` 是 Verifier 语义契约误杀，不是执行结果错误；最终回归 `outputs/phase72_generalization_contract_microsoft_1_300_final_20260522/report.json` 为 total=300、correct=300、accuracy=1.0、success_count=300、semantic_mismatch=0、executor_mismatch=0、format_mismatch=0。
+4. DABstep final mock 回归保持不退化：dev 1-10 为 9/10，SQL covered=3/10，Pandas-SQL consistency=3/3，剩余 1 题仍归入 `best_fraud_aci_choice` / associated cost 语义口径；public all 1-450 为 success_count=450、unexpected_not_applicable=0、true_unsupported=3、SQL covered=70、Pandas-SQL consistency=70/70、coverage_gap=380。
+5. 桌面 VDS `问题汇总.xlsx` 五个真实问题 sheet 共 95 题 smoke 继续为 total=95、success_count=95、failure_count=0；本轮使用 `BI测试问题` 真问题列，不使用标准答案优化。
+6. 当前 SQL/Pandas 不等价仍主要是 coverage gap：DABstep all 的 skipped=380、Microsoft 1-300 的 skipped=300 都按 coverage gap 报告，不计为 SQL correctness failure；SQL covered 子集仍以 Pandas-SQL consistency 和未来独立 `sql_correct` 字段分开报告。
+
+### Phase 7.2G：Uploaded Table Generalization Gap Closure
+
+Phase 7.2G 是 Phase 7.2 下的专项泛化验收，不是新的 Phase 7.4，也不替代 Phase 7.3 的 Output Contract、validation-driven retry 和 submission provenance。该专项把 Microsoft 新增 100 满分但原始五域新增 100 只有 58/100 的差距归入 Agent 泛化、字段角色绑定、Planner / Verifier 语义契约和 capability family 覆盖问题。
+
+当前事实锚点：
+
+1. Microsoft 新增 100：`100/100`，easy `40/40`，hard `60/60`。
+2. 原始五域新增 100：`58/100`，easy `18/40`，hard `40/60`。
+3. 结论：中文零售专用链路稳定，但通用上传表泛化仍不足。
+
+当前闭环结果（2026-05-22）：
+
+1. 已新增通用上传表离线 runner `multi_agent_workflows/uploaded_table_benchmark_runner.py`，支持按 JSONL 行的 `source_file` / `sheet` 或 CSV root 构造 uploaded-table workflow；标准答案只在 response 生成后用于 scorer，不传入 Agent workflow。
+2. 原始五域新增 100 mock 回归已达标：`outputs/phase72g_original_new100_uploaded_runner_final_20260522/report.json` 为 `99/100`，easy `40/40`，hard `59/60`。
+3. Microsoft 新增 100 mock 回归保持不退化：`outputs/phase72g_microsoft_new100_uploaded_runner_final_20260522/report.json` 为 `100/100`，easy `40/40`，hard `60/60`。
+4. 本轮修复属于通用能力族：上传表 top_count 执行、filter vs dimension 绑定、显式 count / sum / mean 聚合、中文小数位输出契约、隐式 filter 安全语境、结构化 raw value 离线评分、VDS 周期对比 count/share 语义校验、DABstep fee-rule 候选规则缓存。
+5. 唯一剩余原始五域失败为 filtered Top-K metric share：源表重算和 agent raw value 均为 `45.63692666600649%`，最终答案 `45.64%`；当前标准答案为 `45.70%`，归为标准答案生成口径待复核，不允许为该单题做执行层特调。
+6. Phase 7.2 回归基线已复跑：DABstep dev 1-10 为 `9/10`（`outputs/phase72g_dabstep_dev_1_10_final_20260522/dev_1_to_10_report.json`）；DABstep public all 1-450 mock 为 `success_count=450/450`、`unexpected_not_applicable=0`、`accuracy=null`（public all answer 为空，`outputs/phase72g_dabstep_all_1_450_final2_20260522/all_1_to_450_report.json`）。
+7. Microsoft 1-300 mock scorer 保持 `300/300`（`outputs/phase72g_microsoft_1_300_20260522/report.json`）；桌面 VDS `问题汇总.xlsx` 95 题 smoke 为 `95/95`（`outputs/phase72g_vds_question_summary_95_20260522.json`）。
+
+能力聚焦：
+
+1. 字段角色绑定：`区域为华北` 这类表达应绑定为 filter，不是 dimension。
+2. 显式 metric：`销售额总和` 必须绑定 sum metric，不能退化成 row count。
+3. 聚合口径：`按区域统计记录数` 必须是 count，不是默认 sum 销售额。
+4. 众数 / top count：`最常见取值` 应路由到 mode / top_count，不应返回 Not Applicable。
+5. Top-K share：必须区分 metric share 和 count share，不能混算。
+6. 筛选后排名：必须先应用 filter，再按指定 metric 排名。
+7. 无效验收样本排除：空实体列、全 0 指标、无意义答案不能作为泛化通过证据。
+
+验收标准：
+
+1. 原始五域新增 100：overall >= `85%`，easy >= `90%`，hard >= `80%`。
+2. Microsoft 新增 100：保持 overall >= `98%`。
+3. 失败报告必须按 capability family 聚合，至少包含 parser miss、role-binding miss、filter loss、metric mismatch、aggregation mismatch、mode/top_count miss、ranking/share mismatch 和 format mismatch。
+4. 每个修复能力必须至少有一个非当前错误样本的同类变体，优先覆盖中文字段、英文字段、字段别名和不同字段值。
+5. 禁止按 task_id、标准答案、固定字段值、固定问法、当前错误样本或当前 benchmark slice 特调。
+
+回归要求：
+
+1. 保留 Microsoft 新增 100 和原始五域新增 100 两套回归集，分别输出 overall、easy、hard 正确率。
+2. 复跑现有 Phase 7.2 回归基线：DABstep dev 1-10、DABstep public all 1-450 mock、Microsoft 1-300 和桌面 VDS 95 smoke。
+3. 新增或更新报告字段时，不改变后端稳定 API；只扩展 benchmark / report metadata。
+
+## Phase 7.3：Evaluation-Driven Robustness and Output Contract Hardening
+
+Phase 7.3 是 Phase 7.2 之后的下一阶段子目标，中文口径为“评测驱动鲁棒性与最终输出契约硬化”。该阶段不是重新定义 Agent 泛化能力，也不是把 DA-agent 的 SQL-first benchmark 产品定位搬进 VDS，而是把 Phase 7.1 的提交质量门禁和 Phase 7.2 的能力族 / Planner / Verifier 契约串成可复现、可审计、可真实 provider 回归的闭环。
+
+核心判断：
+
+1. DA-agent 的 Easy 表现提示我们，低风险基础题的差距很可能来自 schema / rule-first 工作流、最终答案格式、验证失败重试、提交文件治理和 runtime materialization，而不只是模型能力。
+2. VDS 当前已经能跑通 DABstep public all 1-450 mock、Microsoft 1-300 mock scorer 和桌面 VDS 95 smoke；下一步必须证明真实 provider、最终输出字符串、提交 provenance 和风险报告同样稳定。
+3. official hidden score 只能来自 leaderboard；public proxy、历史 task_scores 和本地 mock 覆盖只能用于后验观察、能力缺口归因和提交风险分类，不能进入核心分析链路。
+
+可借鉴 DA-agent 的工程模式：
+
+1. schema / rule-first：Planner 或工具循环在字段、规则、manual 不确定时必须先查 schema summary、field docs 和规则上下文，再构造 LogicForm。
+2. DuckDB runtime materialization：上传 CSV / JSON / 文档规则可以被物化为 DuckDB table、view 和 metadata，供受控 Executor 使用；不得让模型直接获得 raw SQL、shell、网络或任意文件访问。
+3. read-only SQL guardrail：SQL / DuckDB 路径必须保持只读、单语句、SELECT / CTE、参数校验、limit preview 和 Result Normalizer；任何 provider-native tool call 仍需经过 ToolDispatcher。
+4. validation-driven retry：工具失败、Verifier semantic mismatch、output_contract mismatch、format mismatch 或 capability_gap 都应进入结构化重试原因和受控 correction，而不是直接生成自然语言兜底。
+5. final answer only：Benchmark submission 的 `agent_answer` 必须来自已验证结果的 canonicalizer，不允许对象、列表、debug、trace、SQL、markdown、解释文字或中间候选表泄漏到最终答案。
+6. deterministic fee / rule engine：复杂业务规则仍应沉淀为共享 deterministic rule engine 或规则表，不在 prompt、Pandas、SQL、Verifier 中复制多套不可审计逻辑。
+
+明确不借鉴的模式：
+
+1. 不把 task_id、expected answer、proxy answer、accepted answer、hidden answer 或 leaderboard 反馈写入 prompt、Planner、Executor、Verifier、Correction、测试 fixture 或核心源码。
+2. 不给模型 raw SQL 自由执行权、不允许任意文件读取、不绕过 ToolDispatcher、不把 provider adapter 变成核心算法。
+3. 不把 VDS 改成 SQL-first benchmark runner；VDS 仍是中文优先、上传数据集驱动、Pandas / SQL / DuckDB 双路径可校验的数据分析 Agent。
+4. 不把 public proxy 命中率、mock success_count 或 Desktop 旧文件结果包装成 hidden official accuracy。
+
+阶段目标：
+
+1. 建立最终答案 canonicalizer 和 output validator：按 output_contract 处理数字、小数位、百分号、yes/no、逗号分隔、多值列表、Not Applicable 和空答案边界。
+2. 建立 validation-driven retry loop：把工具错误、semantic mismatch、format mismatch、capability gap 和 provider transient failure 分开记录，并只触发受控重试或明确失败。
+3. 建立 submission provenance：每个 DABstep JSONL 必须绑定 commit hash、生成命令、prediction hash、report hash、模型 / provider / runtime 元数据和生成时间，避免旧 Desktop artifact 误传。
+4. 建立统一风险 taxonomy：风险报告必须拆分 format risk、semantic risk、capability risk、submission risk、official hidden unknown、public proxy observation、real-provider cost / latency 和 trace redaction risk。
+5. 建立真实 provider 大规模回归策略：支持 representative / staged / full 三档，支持断点续跑、stage cache、rate limit / timeout 处理和 deterministic mock fallback，但不能牺牲 trace、Verifier 和安全边界。
+6. 建立 trace 脱敏和证据最小化：trace 只保留工具名、参数摘要、结果摘要、错误、耗时、校验结论和 provenance，不记录完整 Chain of Thought、raw reasoning tokens、API key、hidden answer 或敏感原始数据。
+
+当前代码落点：
+
+1. `data_agent_core/output/output_contract.py` 负责 canonicalize 和 validate 最终答案，覆盖 number、percentage、yes/no、list、scheme fee、ACI、card scheme、grouped amounts、Not Applicable、空答案、对象 / 列表泄漏、debug / trace 泄漏和 SQL / markdown 泄漏。
+2. `data_agent_core/output/response_builder.py` 已把 canonicalizer 接入 FinalResponse；output contract 不通过时返回 `OUTPUT_CONTRACT_VALIDATION_FAILED`，标记 recoverable，并进入 validation_driven_retry 结构化记录。
+3. `data_agent_core/benchmark/provenance.py` 为 prediction / report 生成 trace-safe provenance：commit、branch、dirty 状态、命令、runtime、provider env、prediction hash、report content hash 和生成时间，不记录 API key 或 hidden answer。
+4. DABstep / Microsoft benchmark runner 已把最终 `agent_answer` 固定为字符串，输出 output_contract_passed、output_risk_flags、output_contract_retry_events、risk_taxonomy 和 provenance；public proxy policy 固定为 `not_used_in_core_chain`。
+5. `metrics.summarize_details` 已输出统一 risk taxonomy，拆分 format、semantic、capability、submission、official hidden unknown、public proxy observation、real-provider cost / latency 和 trace redaction risk。
+6. `data_agent_core/verifier/result_comparator.py` 已支持嵌套 list / dict 中数值的近似比较，吸收 Pandas 与 SQL 后端之间的浮点表示尾差，避免 `600301.9199999999` vs `600301.92` 这类非语义差异造成 VDS 95 smoke 退化。
+
+当前验收结果：
+
+1. DABstep dev 1-10 mock 多 Agent：`outputs/phase73_output_contract_dev_1_10_after_comparator_20260522/dev_1_to_10_report.json`，total=10、correct=9、accuracy=0.9、success_count=10、format_risk=0、submission_risk=0、trace_redaction_risk=0。
+2. DABstep public all 1-450 mock 多 Agent：`outputs/phase73_output_contract_dabstep_all_1_450_after_comparator_20260522/all_1_to_450_report.json`，total=450、success_count=450、failure_count=0、unexpected_not_applicable=0、true_unsupported=3、format_risk=0、semantic_risk=0、submission_risk=0、trace_redaction_risk=0、official_hidden_unknown=true。
+3. Microsoft 脱敏数据 1-300 mock 离线 scorer：`outputs/phase73_output_contract_microsoft_1_300_after_comparator_20260522/report.json`，total=300、correct=300、accuracy=1.0、success_count=300、format_risk=0、semantic_risk=0、submission_risk=0、trace_redaction_risk=0。
+4. 桌面 VDS `问题汇总.xlsx` 95 题 smoke：`outputs/phase73_output_contract_vds_question_summary_95_final_20260522.json`，total=95、success_count=95、failure_count=0、output_contract_failure_count=0，使用 `BI测试问题` 列，不使用标准答案、hidden answer 或 public proxy。
+
+Phase 7.3 退出条件：
+
+1. DABstep submission JSONL 无对象、列表、dict、debug、trace、SQL、markdown 或解释文字泄漏，且空答案和 `Not Applicable` 均有结构化归因。
+2. 风险报告能独立展示 format / semantic / capability / submission / official hidden unknown / public proxy observation / real-provider cost latency 风险。
+3. 真实 provider representative 回归可复现，记录 provider、model、cost / latency、失败重试原因、prediction hash 和 report hash。
+4. DABstep public all 1-450 mock 覆盖不退化，DABstep dev 1-10 不低于 9/10，Microsoft 1-300 mock scorer 和桌面 VDS 95 smoke 不退化。
+5. hardcoding scan、secret scan、import boundary test 继续通过；核心链路仍不使用 task_id、标准答案、proxy answer、accepted answer 或 hidden answer。
 
 ## `Not Applicable` 能力缺口闭环状态
 

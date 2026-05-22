@@ -119,7 +119,7 @@ agent_runtime/data_agent_tool_impl.py 提供受控 callable：
 
 - Phase 5：ToolDefinition、ToolCall、ToolResult、ToolTraceEvent、ToolDispatcher、tool catalog、timeout_seconds 执行边界和 provider-native mock loop 已建立。
 - Phase 6：data_analysis_roles.py 已承载默认多 Agent 角色执行，backend analyze 默认经 multi_agent workflow 进入这些角色。
-- 当前 verified 状态：DABstep public all 1-450 mock 执行覆盖 450/450，Microsoft 脱敏数据 1-300 mock 离线 scorer 300/300，桌面 VDS `问题汇总.xlsx` 95 题 smoke 95/95。
+- Phase 7：泛化验证与 Provider 原生工具链增强阶段；当前 verified 状态为 DABstep public all 1-450 mock 执行覆盖 450/450，Microsoft 脱敏数据 1-300 mock 离线 scorer 300/300，桌面 VDS `问题汇总.xlsx` 95 题 smoke 95/95。
 - 当前仍保留 single_agent fallback；真实 OpenAI / DeepSeek 网络 tool loop 尚未作为生产默认链路启用。
 
 ## 当前多 Agent 角色执行
@@ -138,6 +138,5 @@ agent_runtime/data_analysis_roles.py 提供 Phase 6 角色 handler：
 
 ## TODO
 
-- Phase 5 已新增 provider-native OpenAI / DeepSeek 兼容 tool call adapter 骨架，保持内部 ToolDefinition 不变；后续再接真实 provider 网络调用和更完整工具循环验证。
-- Phase 6 后续接真实 Microsoft Agent Framework cloud workflow、并行 executor 和更完整 Correction Loop。
+- Phase 7 继续接真实 provider 网络调用、更完整工具循环验证、真实 Microsoft Agent Framework cloud workflow、并行 executor 和更完整 Correction Loop。
 - 继续增强 ACI associated cost 通用语义、真实 LLM 大规模回归和更多中文业务表能力，不允许把 Benchmark 标准答案传入角色执行。

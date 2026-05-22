@@ -154,8 +154,15 @@ def plan_with_llm(
                     "required_output": {
                         "task_type": "string",
                         "operation": "one supported operation",
+                        "metric_definition": "object with metric name, aggregation, and business definition",
+                        "numerator": "object for numerator definition when relevant",
+                        "denominator": "object for denominator definition when relevant",
+                        "entity_grain": "object with entity field and grain role",
+                        "time_window": "object with temporal scope",
+                        "candidate_set": "object with option or data-derived candidate scope",
                         "filters": "object",
                         "parameters": "object",
+                        "output_contract": "object with answer_type and expected result shape",
                         "output_format": "object",
                         "confidence": "number between 0 and 1",
                         "reasoning_summary": "short summary, not chain of thought",
@@ -183,9 +190,20 @@ def _logic_form_from_raw(raw: dict[str, Any]) -> LogicForm:
     return make_logic_form(
         task_type=str(raw.get("task_type") or "unknown"),
         operation=operation,
+        metric=raw.get("metric"),
+        metric_definition=_dict_or_empty(raw.get("metric_definition")),
+        numerator=_dict_or_empty(raw.get("numerator")),
+        denominator=_dict_or_empty(raw.get("denominator")),
+        entity_grain=_dict_or_empty(raw.get("entity_grain")),
+        time_window=_dict_or_empty(raw.get("time_window")),
+        candidate_set=_dict_or_empty(raw.get("candidate_set")),
+        group_by=raw.get("group_by"),
+        objective=raw.get("objective"),
+        options=_dict_or_empty(raw.get("options")),
         filters=_dict_or_empty(raw.get("filters")),
         parameters=_dict_or_empty(raw.get("parameters")),
         output_format=_dict_or_empty(raw.get("output_format")),
+        output_contract=_dict_or_empty(raw.get("output_contract")),
     )
 
 
@@ -194,7 +212,26 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
 
 
 def _safe_raw(raw: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"task_type", "operation", "filters", "parameters", "output_format", "confidence", "reasoning_summary"}
+    allowed = {
+        "task_type",
+        "operation",
+        "metric",
+        "metric_definition",
+        "numerator",
+        "denominator",
+        "entity_grain",
+        "time_window",
+        "candidate_set",
+        "group_by",
+        "objective",
+        "options",
+        "filters",
+        "parameters",
+        "output_contract",
+        "output_format",
+        "confidence",
+        "reasoning_summary",
+    }
     return {key: raw.get(key) for key in allowed if key in raw}
 
 
