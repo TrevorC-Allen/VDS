@@ -15,7 +15,7 @@
 
 ## 当前阶段
 
-当前已从目录骨架推进到 Phase 6 最小可运行多 Agent 默认链路，`data_agent_core` 仍保持框架无关。LLM 单 Agent 链路保留为 fallback；核心解析、计划、Pandas / SQL 执行、校验、解释和图表规划仍在本目录内通过稳定 contracts / errors / tracing 交互。
+当前已从目录骨架推进到 Phase 6 最小可运行多 Agent 默认链路，`data_agent_core` 仍保持框架无关。当前增强统一归入 Phase 7：泛化验证、中文 BI、能力缺口闭环、provider-native tool loop 和 DuckDB runtime。LLM 单 Agent 链路保留为 fallback；核心解析、计划、Pandas / SQL 执行、校验、解释和图表规划仍在本目录内通过稳定 contracts / errors / tracing 交互。
 
 当前核心链路：
 
@@ -39,7 +39,8 @@ LLM API key 只能从环境变量读取，不能写入仓库、trace、文档或
 - Phase 2：LLM 单 Agent MVP 已可测，保留 fallback。
 - Phase 3：Benchmark runner、metrics、error_analysis、trace 和错误归因已可测。
 - Phase 5：内部白名单工具能力已由 agent_runtime 包装，真实执行仍回到 data_agent_core。
-- Phase 6：多 Agent workflow 默认调用本目录核心能力；DABstep public all 1-450 mock 执行覆盖 450/450，Microsoft 脱敏数据 1-300 mock 离线 scorer 300/300，桌面 VDS `问题汇总.xlsx` 95 题 smoke 95/95。
+- Phase 6：多 Agent workflow 默认调用本目录核心能力。
+- Phase 7：DABstep public all 1-450 mock 执行覆盖 450/450，Microsoft 脱敏数据 1-300 mock 离线 scorer 300/300，桌面 VDS `问题汇总.xlsx` 95 题 smoke 95/95；继续推进 ACI associated cost、DuckDB runtime、真实 provider tool loop 和复杂中文 BI 泛化能力。
 
 ## TODO
 

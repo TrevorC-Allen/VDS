@@ -158,7 +158,6 @@ YYYY-MM-DD HH:MM TZ
 
 是。RunTrace 记录 LLM plan 摘要，不记录 key、完整 prompt 或完整 Chain of Thought。
 
----
 
 ### 日期时间
 
@@ -609,6 +608,108 @@ YYYY-MM-DD HH:MM TZ
 ### 是否修改核心数据契约
 
 否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+---
+
+### 日期时间
+
+2026-05-22 13:04 CST
+
+### 本次目标
+
+实现 Phase 7.2G：Uploaded Table Generalization Gap Closure，把原始五域新增 100 从基线 `58/100` 提升到验收线以上，同时确认 Microsoft 新增 100 不退化；修复必须按上传表通用能力族推进，不按 task_id、标准答案、固定字段值、固定问法或当前错误样本特调。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+- data_agent_core/core/intent_parser.py
+- data_agent_core/core/analysis_planner.py
+- data_agent_core/core/dabstep_fee_engine.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/verifier/rule_checker.py
+- multi_agent_workflows/uploaded_table_benchmark_runner.py
+- tests/architecture/test_no_benchmark_hardcoding.py
+- tests/benchmark/test_uploaded_table_benchmark_runner.py
+- tests/core/test_semantic_metric_verification.py
+
+### 修改内容
+
+- 新增通用 uploaded-table benchmark runner：按 JSONL 中的 source_file / sheet 或 CSV root 构造 uploaded-table workflow，输出 overall、easy、hard、capability_area、failure_buckets、risk_taxonomy 和 provenance。
+- runner 只把 question / guidelines 传入 workflow；标准答案只在 response 生成后用于离线 scorer，并新增结构化 raw value 等价评分，避免表格/list 类正确结果被安全 final-answer 字符串格式误判。
+- 修复上传表 top_count 使用 `_analysis_dataframe`，不再假设 DABstep `payments` 表。
+- 修复上传表字段角色绑定：显式 filter 优先于 dimension；`区域为华北` 绑定为 filter，group-by 通过 `按...统计/分组/汇总` 解析。
+- 修复 record count / metric 聚合语义：`记录数/条数/笔数/次数` 绑定 count，`销售额总和` 保持 sum，`平均值` 保持 mean。
+- 修复中文输出契约：支持 `保留2位小数` 解析到 decimals，避免 `0.46964` 这类 raw float 直接进入最终答案。
+- 收紧隐式 filter：只有明确过滤语境才把中文值绑定为 filter，避免把数据集名称里的领域词或单字值误绑定为过滤条件。
+- 修复 repeat_entity_percentage 的 denominator planner contract 为 unique entity，避免 Verifier 误判分母。
+- 修复 Verifier 对 VDS 周期对比 count/share 的误判：`vds_period_growth_count_share` 是先比较业务 metric，再输出实体数量和占比，不应被强制要求 metric_definition=count。
+- 优化 DABstep fee-rule engine：按 card scheme 预分组 fee rules，并缓存 merchant-period payments、monthly stats 和 merchant/month candidate rules，避免 `card_scheme_steering` 大商户全量扫描超时。
+- 在 `MAIN_GOAL.md` 的 Phase 7.2G 下补充当前闭环结果、报告路径和唯一剩余标准答案口径待复核项。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.uploaded_table_benchmark_runner --dataset-root /Users/trevorcui/Desktop/Virtual\ Data\ Scientist测试数据 --test-set /Users/trevorcui/Desktop/Virtual\ Data\ Scientist测试数据/VDS_DAB风格新增泛化100_20260522/原始数据集_DAB风格新增泛化100_问题和标准答案.jsonl --limit 100 --offset 0 --output-dir outputs/phase72g_original_new100_uploaded_runner_final_20260522 --dataset-id vds_original_generalized_new100
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.uploaded_table_benchmark_runner --dataset-root /Users/trevorcui/Desktop/微软脱敏数据 --test-set /Users/trevorcui/Desktop/微软脱敏数据/VDS_DAB风格新增泛化100_20260522/微软数据集_DAB风格新增泛化100_问题和标准答案.jsonl --limit 100 --offset 0 --output-dir outputs/phase72g_microsoft_new100_uploaded_runner_final_20260522 --dataset-id microsoft_anonymized_generalized_new100
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/phase72g_dabstep_dev_1_10_final_20260522
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split all --limit 450 --offset 0 --output-dir outputs/phase72g_dabstep_all_1_450_final2_20260522
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root /Users/trevorcui/Desktop/微软脱敏数据 --limit 300 --offset 0 --output-dir outputs/phase72g_microsoft_1_300_20260522
+- VDS_LLM_PROVIDER=mock inline runner for `/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/问题/问题汇总.xlsx`, output `outputs/phase72g_vds_question_summary_95_20260522.json`
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.benchmark.test_uploaded_table_benchmark_runner tests.architecture.test_no_benchmark_hardcoding tests.core.test_generic_capability_operations tests.core.test_semantic_metric_verification tests.benchmark.test_benchmark_metrics
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime multi_agent_workflows tests
+- rg hardcoding boundary scan over data_agent_core / agent_runtime / multi_agent_workflows / backend / ms_agent_framework_adapter / tests
+
+### 测试结果
+
+- 原始五域新增 100：total=100，correct=99，accuracy=0.99，easy `40/40`，hard `59/60`；报告路径 `outputs/phase72g_original_new100_uploaded_runner_final_20260522/report.json`。
+- Microsoft 新增 100：total=100，correct=100，accuracy=1.0，easy `40/40`，hard `60/60`；报告路径 `outputs/phase72g_microsoft_new100_uploaded_runner_final_20260522/report.json`。
+- DABstep dev 1-10 mock：total=10，correct=9，accuracy=0.9，success_count=10；报告路径 `outputs/phase72g_dabstep_dev_1_10_final_20260522/dev_1_to_10_report.json`。
+- DABstep public all 1-450 mock：total=450，success_count=450，unexpected_not_applicable=0，true_unsupported=3，accuracy=null；public all answer 为空，不能本地计算 official accuracy；报告路径 `outputs/phase72g_dabstep_all_1_450_final2_20260522/all_1_to_450_report.json`。
+- Microsoft 1-300 mock 离线 scorer：total=300，correct=300，accuracy=1.0，success_count=232；报告路径 `outputs/phase72g_microsoft_1_300_20260522/report.json`。
+- 桌面 VDS `问题汇总.xlsx` 五个真实问题 sheet 共 95 题 mock smoke：total=95，success_count=95，failure_count=0；报告路径 `outputs/phase72g_vds_question_summary_95_20260522.json`。
+- Targeted unittest 通过：Ran 55 tests，OK。
+- Full unittest 通过：Ran 117 tests，OK。
+- compileall 通过。
+- hardcoding boundary scan 仅命中允许的 benchmark runner / provenance / metrics / guardrail test 文本；核心链路未新增 task_id、标准答案、hidden answer、proxy answer 或 public proxy 输入。
+
+### 遗留问题
+
+- 原始五域唯一剩余失败为 `ORG_H010`：源表重算 top3 filtered metric share 为 `45.63692666600649%`，agent answer 为 `45.64%`，标准答案为 `45.70%`。该项按标准答案生成口径待复核处理，不能做单题补丁。
+- 仍有部分表格/列表类问题的 `success_count` 低于 scorer correct，因为 FinalResponse success 还受 Verifier / output contract 组合判断影响；本轮验收以离线 scorer correctness 为准，后续可在 Phase 7.3 output contract hardening 中继续收敛。
+- DABstep public all 本地 answer 为空，`accuracy=null` 是数据集限制；该回归只验证 mock 执行覆盖、Not Applicable 归因、trace 和输出风险。
+
+### 是否影响主流程
+
+是，影响上传表 intent parser、planner contract、Pandas executor、Verifier、DABstep fee-rule engine 和 benchmark runner；不修改前端、不改变后端稳定 API、不引入新外部依赖。
+
+### 是否涉及 Benchmark
+
+是。新增通用 uploaded-table 离线 runner 和结构化 scorer，但标准答案仅用于 response 之后的 scorer；未把 task_id、标准答案、proxy answer、accepted answer 或 hidden answer 写入 Agent workflow、prompt、Planner、Executor、Verifier、Correction、测试 fixture 或核心逻辑。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未安装 Microsoft Agent Framework，未新增 adapter 依赖，未把核心算法写入 adapter。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。7.2G 把通用上传表能力收敛到字段角色绑定、聚合口径、输出契约和 runner provenance，后续多 Agent / provider / DuckDB 路径可以复用同一上传表语义契约。
+
+### 是否修改核心数据契约
+
+是，扩展 benchmark report metadata 和 uploaded-table runner 输出字段；不修改后端 API request / response 稳定字段。
 
 ### 是否修改 API 契约
 
@@ -2583,6 +2684,687 @@ YYYY-MM-DD HH:MM TZ
 ### 是否影响未来多 Agent 迁移
 
 是，正向影响。README 更清楚地区分当前内部 Phase 6+ 多 Agent 默认链路和后续 provider / Microsoft 承载层增强。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+---
+
+### 日期时间
+
+2026-05-22 09:54 CST
+
+### 本次目标
+
+按用户最新要求保留 Phase 7 大阶段口径，并把下一阶段规范化为 Phase 7.1：DABstep Submission Quality Gate and Easy Capability Closure；本轮只做阶段治理、状态统一和下一阶段定义，不实现新算法。
+
+### 修改文件
+
+- README.md
+- MAIN_GOAL.md
+- docs/PHASE_GATES.md
+- docs/FEATURE_BACKLOG.md
+- docs/ARCHITECTURE.md
+- data_agent_core/README.md
+- agent_runtime/README.md
+- multi_agent_workflows/README.md
+- ms_agent_framework_adapter/README.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 将根 README 当前阶段改为 Phase 7：泛化验证与 Provider 原生工具链增强。
+- 将 Phase 6 定义收敛为“最小多 Agent workflow 基线已完成”，把 DABstep 450/450、Microsoft 300/300、VDS 95/95、Not Applicable 能力闭环、中文 BI 能力族、provider-native tool loop、DuckDB runtime、复杂并行和多轮自纠统一归入 Phase 7。
+- 在 MAIN_GOAL 中新增统一 Phase 状态表，明确 Phase 0 到 Phase 7 的已完成/当前状态，并把 Phase 7.1 写为下一阶段子目标。
+- 在 MAIN_GOAL、PHASE_GATES、FEATURE_BACKLOG 和 README 中新增 Phase 7.1 的进入条件、退出条件、submission gate、Easy 能力族、leaderboard 反馈边界和禁止按题优化红线。
+- 明确 Trevor 提交 Easy 低、Hard 高是外部提交反馈，不能写成本地可复现 hidden official accuracy；hidden official accuracy 只能由 Hugging Face leaderboard 返回。
+- 明确 submission 文件必须绑定当前 commit hash、report hash、prediction hash 和生成命令。
+- 同步 FEATURE_BACKLOG、ARCHITECTURE 和各模块 README 的阶段口径。
+
+### 测试方式
+
+- rg -n "Phase 6\\.1|Phase 6\\+" MAIN_GOAL.md README.md docs/PHASE_GATES.md docs/FEATURE_BACKLOG.md data_agent_core/README.md agent_runtime/README.md ms_agent_framework_adapter/README.md multi_agent_workflows/README.md docs/ARCHITECTURE.md
+- rg -n "Phase 7\\.1|Submission Quality Gate|Easy Capability|leaderboard|current_verify" MAIN_GOAL.md docs/PHASE_GATES.md docs/FEATURE_BACKLOG.md README.md
+- rg -n "Phase 7|Phase Status" MAIN_GOAL.md docs/PHASE_GATES.md docs/FEATURE_BACKLOG.md README.md
+- rg secret scan excluding outputs、storage、.env* 和 __pycache__
+- rg -n "hidden answer|expected answer|proxy answer|public proxy|task_id|固定题面|固定样本值" MAIN_GOAL.md docs/PHASE_GATES.md docs/FEATURE_BACKLOG.md README.md
+- git diff --check
+- git status --short --branch
+
+### 测试结果
+
+- current-doc `Phase 6.1` / `Phase 6+` scan 无命中；本轮按用户最新要求使用 Phase 7 / Phase 7.1。
+- Phase 7.1 / Submission Quality Gate / Easy Capability / leaderboard / current_verify scan 有预期命中，集中在 MAIN_GOAL、PHASE_GATES、FEATURE_BACKLOG 和 README。
+- Phase 7 / Phase Status scan 有预期命中，四份主文档口径一致。
+- secret scan 无命中，未新增真实 API key。
+- hidden answer / expected answer / proxy answer / public proxy / task_id 等扫描仅命中文档红线和禁止项描述，未新增允许进入核心链路的表述。
+- git diff --check 通过。
+- git status 显示当前分支为 feature/project-rules-and-data-agent-skeleton，存在本轮文档改动和未跟踪 `.playwright-cli/`，未提交、未推送。
+
+### 遗留问题
+
+- 本轮仅整理文档阶段口径，不修改核心算法、submission gate 代码或 benchmark scoring 链路。
+- 本轮未提交、未推送、未开 PR、未合并 main；当前只是本地工作区改动。
+
+### 是否影响主流程
+
+否。仅文档修改，不影响旧 BigCat / VDS 主流程，不修改前端、后端业务或核心执行逻辑。
+
+### 是否涉及 Benchmark
+
+是，仅整理 Benchmark 回归结果所属阶段，并新增 DABstep submission gate / Easy 能力族下一阶段定义；未修改 Benchmark 数据、runner、scorer 或核心分析链路，未读取 hidden answer，未将标准答案、task_id 或 proxy answer 写入核心链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+是，仅整理 adapter 和未来 demo 所属阶段；未安装 Microsoft Agent Framework，未新增依赖，未把核心算法写入 adapter。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。Phase 6 只表示已完成的内部多 Agent 基线；Phase 7 承载后续 provider、framework、并行和泛化验证增强；Phase 7.1 作为 Phase 7 下的 submission / Easy 能力子阶段，不改变核心算法位置。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+---
+
+### 日期时间
+
+2026-05-22 10:17 CST
+
+### 本次目标
+
+按用户要求把 Phase 7.2 写入 MAIN_GOAL，明确下一阶段以 Agent 泛化能力为主，Pandas / SQL / DuckDB 语义统一只作为执行层可信度、可审计性和回归判断支撑；不打断既有 Phase 7.1 submission gate。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 在 MAIN_GOAL 当前阶段目标和统一 Phase 状态表中追加 Phase 7.2：Agent Generalization and Executor Semantic Parity。
+- 在 Phase 7 当前遗留项中补充 Pandas / SQL 当前差异主要是 coverage gap，不是 SQL correctness gap；同时记录更深层风险是 Agent 能力族抽象、Planner 泛化字段和 Verifier 语义验收仍需增强。
+- 在 Phase 7.1 后新增 Phase 7.2 章节，明确能力族优先、Planner 泛化契约、Verifier 语义验收、Capability Registry、Executor parity 支撑指标和 DuckDB runtime 边界。
+- 明确 public proxy 只能后验观察，task_id、expected answer、proxy answer、accepted answer 和 hidden answer 不得进入 Capability Registry、Planner、Executor、Verifier、Correction、prompt 或测试 fixture。
+
+### 测试方式
+
+- rg -n "Phase 7\\.2|Agent Generalization|Executor Semantic Parity|Capability Registry|coverage gap|semantic mismatch|shared rule engine" MAIN_GOAL.md CHANGELOG_AI.md
+- git diff --check
+- git status --short --branch
+
+### 测试结果
+
+- Phase 7.2 / Agent Generalization / Executor Semantic Parity / Capability Registry / coverage gap / semantic mismatch / shared rule engine scan 有预期命中，集中在 MAIN_GOAL 和本条 CHANGELOG。
+- git diff --check 通过。
+- git status 显示当前分支为 feature/project-rules-and-data-agent-skeleton，存在本轮文档改动、此前已有文档改动和未跟踪 `.playwright-cli/`，未提交、未推送。
+
+### 遗留问题
+
+- 本轮仅做文档目标追加，不修改 executor、benchmark runner、Capability Registry 代码或 DuckDB runtime。
+- Phase 7.2 仍需后续实际实现 Capability Registry、Planner 泛化契约、Verifier 语义验收和 benchmark report 指标拆分。
+
+### 是否影响主流程
+
+否。仅文档修改，不影响旧 BigCat / VDS 主流程，不修改前端、后端业务或核心执行逻辑。
+
+### 是否涉及 Benchmark
+
+是，仅新增下一阶段 Benchmark 报告口径和泛化验收目标；未修改 Benchmark 数据、runner、scorer 或核心分析链路，未读取 hidden answer，未将标准答案、task_id 或 proxy answer 写入核心链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未安装 Microsoft Agent Framework，未新增依赖，未把核心算法写入 adapter。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。Phase 7.2 明确 Planner、Verifier、Executor parity 和 Capability Registry 的边界，使后续多 Agent 能力增强以泛化能力和稳定契约为中心，而不是单纯补 SQL 或按题优化。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+---
+
+### 日期时间
+
+2026-05-22 10:38 CST
+
+### 本次目标
+
+按用户确认的方案在 MAIN_GOAL 中追加 Phase 7.3：Evaluation-Driven Robustness and Output Contract Hardening，作为 Phase 7.2 之后的下一阶段；本轮只做文档增量，不改代码、不重排历史段落、不清理其他人的 dirty worktree。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 在 MAIN_GOAL 当前阶段目标中追加 Phase 7.3，明确聚焦最终 Output Contract、validation-driven retry、submission provenance、真实 provider 回归和 DA-agent 可借鉴工程模式。
+- 在统一 Phase 状态表中追加 Phase 7.3，明确它不替代 Phase 7.1 submission gate，也不重做 Phase 7.2 Capability Registry。
+- 在 Phase 7 当前遗留项中新增统一风险报告缺口，要求拆分 format risk、semantic risk、capability coverage、official hidden score 不可本地复现、public proxy observation、真实 provider cost / latency 和 submission provenance。
+- 在 Phase 7.2 后新增 Phase 7.3 章节，记录可借鉴 DA-agent 的 schema / rule-first、DuckDB runtime materialization、read-only SQL guardrail、validation-driven retry、final answer only 和 deterministic rule engine 模式。
+- 明确不借鉴 task_id 进 prompt、raw SQL 自由执行、任意文件读取、用 public proxy / leaderboard 反推答案、SQL-first benchmark 产品定位等模式。
+
+### 测试方式
+
+- rg -n "Phase 7\\.3|Evaluation-Driven Robustness|Output Contract|validation-driven|DA-agent|DuckDB|provenance|official hidden|public proxy" MAIN_GOAL.md CHANGELOG_AI.md
+- git diff --check
+- git diff -- MAIN_GOAL.md CHANGELOG_AI.md
+- git status --short --branch
+
+### 测试结果
+
+- Phase 7.3 / Evaluation-Driven Robustness / Output Contract / validation-driven / DA-agent / DuckDB / provenance / official hidden / public proxy scan 有预期命中，集中在 MAIN_GOAL 和本条 CHANGELOG。
+- git diff --check 通过。
+- git diff -- MAIN_GOAL.md CHANGELOG_AI.md 已人工检查，仅包含本轮文档追加和既有未提交文档上下文。
+- git status 显示当前分支为 feature/project-rules-and-data-agent-skeleton，工作区仍有大量既有未提交改动和未跟踪文件；本轮未 stage、未提交、未推送。
+- 本轮是文档-only 变更，未运行 Python 单测。
+
+### 遗留问题
+
+- Phase 7.3 只是下一阶段目标记录；最终答案 canonicalizer、output validator、validation-driven retry loop、submission provenance、真实 provider 分段回归和风险 taxonomy 仍待后续实现。
+- official hidden score 仍只能由 leaderboard 返回，本地 public all answer 为空，public proxy 只能后验观察，不能进入核心分析链路。
+
+### 是否影响主流程
+
+否。仅文档修改，不影响旧 BigCat / VDS 主流程，不修改前端、后端业务或核心执行逻辑。
+
+### 是否涉及 Benchmark
+
+是，仅新增下一阶段 Benchmark 输出契约、提交治理和风险报告目标；未修改 Benchmark 数据、runner、scorer 或核心分析链路，未读取 hidden answer，未将标准答案、task_id 或 proxy answer 写入核心链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未安装 Microsoft Agent Framework，未新增依赖，未把核心算法写入 adapter。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。Phase 7.3 把 Phase 7.1 submission gate 和 Phase 7.2 能力族 / Planner / Verifier 契约串成真实 provider、最终输出和提交 provenance 可验证的闭环，不改变核心算法位置。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+---
+
+### 日期时间
+
+2026-05-22 10:56 CST
+
+### 本次目标
+
+按 Phase 7.2 计划落地第一批代码实现：以 Agent 泛化能力为主线，新增 Capability Registry，并把 SQL/Pandas/DuckDB parity 改成执行层报告与验证指标，不把 SQL skipped 误算为 SQL correctness failure。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+- data_agent_core/core/capability_registry.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/agent/single_agent.py
+- agent_runtime/data_analysis_roles.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- data_agent_core/benchmark/benchmark_runner.py
+- data_agent_core/benchmark/metrics.py
+- tests/core/test_capability_registry.py
+- tests/benchmark/test_benchmark_metrics.py
+
+### 修改内容
+
+- 新增 `CapabilityMetadata` / Capability Registry，记录 operation、capability_family、input/output contract、Pandas 支持、SQL support、中文/英文支持、shared rule engine 依赖和适用边界。
+- 将 fee-rule what-if 能力标记为 `shared_rule_engine`，短期继续共享 deterministic rule engine，不在 Pandas、SQL、Verifier 中复制三套业务逻辑。
+- 多 Agent runtime 和 single_agent 的 SQL gate 改为读取 Capability Registry；SQL skipped payload 和 trace summary 输出 `sql_support`、`capability_family`、`coverage_gap`、`native_sql_supported` 和 reason。
+- Benchmark detail / metrics 新增 `sql_coverage`、`sql_covered_subset_accuracy`、`pandas_sql_consistency`、`gap_counts`、`capability_family_metrics`，并拆分 coverage gap、semantic mismatch、executor mismatch、format mismatch。
+- single_agent verifier 改为传入 plan 和 user_question，使业务口径语义校验与多 Agent 链路保持一致。
+- 更新 MAIN_GOAL 当前实现状态，记录 Phase 7.2 首个代码落点和本轮回归输出。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.benchmark.test_benchmark_metrics tests.core.test_capability_registry tests.core.test_generic_capability_operations
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.agent_runtime.test_runtime_contracts tests.agent_runtime.test_data_agent_tool_impl tests.multi_agent_workflows.test_phase6_multi_agent_workflow tests.architecture.test_dependency_boundaries
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- git diff --check
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/phase72_capability_registry_dev_1_10_20260522
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split all --limit 450 --offset 0 --output-dir outputs/phase72_capability_registry_dabstep_all_1_450_20260522
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root /Users/trevorcui/Desktop/微软脱敏数据 --limit 300 --offset 0 --output-dir outputs/phase72_capability_registry_microsoft_1_300_20260522
+- VDS_LLM_PROVIDER=mock inline runner for `/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/问题/问题汇总.xlsx` using `BI测试问题`, output `outputs/phase72_capability_registry_vds_question_summary_95_20260522.json`
+
+### 测试结果
+
+- Targeted capability / metrics / generic SQL-Pandas tests 通过：Ran 42 tests，OK。
+- Runtime / multi-agent / import-boundary focused tests 通过：Ran 9 tests，OK。
+- Full unittest 通过：Ran 91 tests in 11.567s，OK。
+- compileall 通过。
+- git diff --check 通过。
+- DABstep dev 1-10 mock 多 Agent 回归：total=10，correct=9，accuracy=0.9，success_count=10；metrics 显示 SQL coverage=3/10，Pandas-SQL consistency=3/3，coverage_gap=7，semantic_mismatch=1，executor_mismatch=0，format_mismatch=0。
+- DABstep public all 1-450 mock 多 Agent 回归：total=450，success_count=450，unexpected_not_applicable=0，true_unsupported=3，failure_count=0，accuracy=null；metrics 显示 SQL covered=70/450，Pandas-SQL consistency=70/70，coverage_gap=380。
+- Microsoft 脱敏数据 1-300 mock 离线 scorer：total=300，correct=300，accuracy=1.0，success_count=300。
+- 桌面 VDS `问题汇总.xlsx` 五个真实问题 sheet 共 95 题 mock smoke：total=95，success_count=95，failure_count=0；本轮使用 `BI测试问题` 真问题列，不使用标准答案优化。
+
+### 遗留问题
+
+- Phase 7.2 仍未完成 Planner 泛化契约全量字段强制输出和 DuckDB 表格化 rule engine；本轮只完成 Capability Registry、SQL gate 统一、trace/report gap 指标拆分和基础语义校验接入。
+- `sql_covered_subset_accuracy` 只有当 runner 提供独立 `sql_correct` 时才计算；当前主 benchmark runner 仍以最终 Pandas response scorer 为主，SQL 子集主要通过 Pandas-SQL consistency 和 coverage 指标报告。
+- DABstep dev 1-10 仍为 9/10，剩余失败继续归入 `best_fraud_aci_choice` / business-rule what-if 语义口径问题，不能按题号或答案补丁处理。
+
+### 是否影响主流程
+
+是，影响 data_agent_core、agent_runtime、multi_agent_workflows 和 benchmark report；不修改前端，不新增外部依赖，不改变 Microsoft Agent Framework adapter 的核心边界。
+
+### 是否涉及 Benchmark
+
+是。Benchmark expected answer 仍只在 response 生成后用于 scorer；task_id、expected answer、proxy answer、accepted answer 和 hidden answer 未进入 Capability Registry、Planner、Executor、Verifier、Correction 或 prompt。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未安装 Microsoft Agent Framework，未新增 adapter 依赖，未把核心算法写入 adapter。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。Capability Registry 使能力族、executor support 和 benchmark gap 报告成为共享契约，后续 Planner / Verifier / DuckDB 增强可以围绕同一语义层推进。
+
+### 是否修改核心数据契约
+
+是，新增 registry metadata 契约，但未修改既有 API request/response dataclass 字段。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+是。SQL trace summary 新增 coverage / support / capability family 字段，便于区分 coverage gap、semantic mismatch 和 executor mismatch。
+
+---
+
+### 日期时间
+
+2026-05-22 11:06 CST
+
+### 本次目标
+
+按用户确认的方案把上传表泛化断层归入 Phase 7.2G，而不是新增 Phase 7.4；本轮只做文档/验收计划最小追加，不改 Phase 7.3 的 Output Contract / retry / provenance 方向，也不修改正在推进的 Phase 7.2 代码实现。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 在 MAIN_GOAL 的 Phase 7.2 下新增 `Phase 7.2G：Uploaded Table Generalization Gap Closure` 小节。
+- 记录事实锚点：Microsoft 新增 100 为 `100/100`，easy `40/40`，hard `60/60`；原始五域新增 100 为 `58/100`，easy `18/40`，hard `40/60`。
+- 明确 7.2G 归因到 Agent 泛化、字段角色绑定、Planner / Verifier 语义契约和 capability family 覆盖，不新增 Phase 7.4，不重写 Phase 7.3。
+- 补充上传表泛化能力焦点：filter vs dimension、显式 metric、count vs sum、mode / top_count、Top-K metric share vs count share、筛选后排名和无效验收样本排除。
+- 补充验收目标：原始五域新增 100 overall >= `85%`、easy >= `90%`、hard >= `80%`；Microsoft 新增 100 保持 >= `98%`；失败报告按 capability family 聚合。
+
+### 测试方式
+
+- rg -n "Phase 7\\.2G|Uploaded Table Generalization Gap Closure|原始五域新增 100|Microsoft 新增 100|58/100|100/100" MAIN_GOAL.md CHANGELOG_AI.md
+- rg -n "^## Phase 7\\.4|^## Phase 7\\.3|^### Phase 7\\.2G" MAIN_GOAL.md
+- git diff --check
+
+### 测试结果
+
+- Phase 7.2G / Uploaded Table Generalization / 原始五域新增 100 / Microsoft 新增 100 scan 有预期命中，集中在 MAIN_GOAL 和本条 CHANGELOG。
+- Phase 标题 scan 显示 MAIN_GOAL 中新增的是 `### Phase 7.2G` 小节；未新增 `## Phase 7.4`，现有 `## Phase 7.3` 保持唯一。
+- git diff --check 通过。
+
+### 遗留问题
+
+- 本轮只是文档/验收计划落地，不实现上传表泛化能力修复。
+- 后续仍需在 Phase 7.2G 实现并复跑 Microsoft 新增 100、原始五域新增 100、DABstep dev 1-10、DABstep public all 1-450 mock、Microsoft 1-300 和桌面 VDS 95 smoke。
+
+### 是否影响主流程
+
+否。仅修改文档，不修改前端、后端、核心执行器、runtime 或 benchmark runner。
+
+### 是否涉及 Benchmark
+
+是。仅记录新增回归集和验收目标；标准答案仍只能用于离线 scorer，不能进入 Agent workflow、prompt、Planner、Executor、Verifier、Correction、测试 fixture 或核心逻辑。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未安装 Microsoft Agent Framework，未新增依赖，未把核心算法写入 adapter。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。7.2G 把上传表泛化断层纳入 Phase 7.2 的 Agent 泛化验收，避免把同类能力拆到新阶段造成重复。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+---
+
+### 日期时间
+
+2026-05-22 14:03 CST
+
+### 本次目标
+
+继续执行 Phase 7.2：把 Agent 泛化能力放在主线，修正 Planner / Verifier 语义契约和 benchmark report 口径，使 SQL/Pandas/DuckDB parity 只作为执行层支撑指标；同时确认不打断 Phase 7.1 submission gate、Phase 7.2G 上传表泛化专项和 Phase 7.3 Output Contract 进程。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+- data_agent_core/core/analysis_planner.py
+- data_agent_core/verifier/rule_checker.py
+- data_agent_core/benchmark/metrics.py
+- data_agent_core/benchmark/benchmark_runner.py
+- multi_agent_workflows/microsoft_anonymized_benchmark_runner.py
+- multi_agent_workflows/uploaded_table_benchmark_runner.py
+- tests/core/test_semantic_metric_verification.py
+
+### 修改内容
+
+- Planner 泛化契约补齐继续收敛：中文零售 top-count 类 operation 默认带 count aggregation，避免“出现次数最多 / 记录数最多 / 行数最多”被记录成无 metric 语义。
+- Verifier 语义检查增强：显式 filter 缺失、grouped count 误路由、count vs sum、mode/top_count、Top-K share denominator 继续作为 semantic mismatch；同时允许已结构化到 parameters / time_window 的中文 person/date/ym/product 等 filter context。
+- 修复 Microsoft 1-300 中 `correct=300/300` 但 `success_count=232` 的 false-success：根因是 Verifier 把中文零售 business quantity / top-count / formula context 误判为非 count 或缺 filter，不是执行器算错。
+- Benchmark metrics 新增统一 helper：`benchmark_error_type()` 和 `executor_report_fields()`，DABstep、Microsoft、uploaded-table runner 共享 error type、capability family、SQL coverage、Pandas-SQL consistency、coverage gap、semantic mismatch、executor mismatch、format mismatch 字段。
+- `capability_family_metrics` 不再在全体同一能力族时折叠为空；Microsoft 1-300 最终报告会明确输出 `chinese_retail_business_metric` 聚合。
+- 上传表 runner 补齐统一 executor/parity 字段，避免不同 benchmark report 的 Phase 7.2 口径分裂。
+- 新增非 Benchmark 合成语义测试，覆盖中文零售 top-count、业务 quantity metric、以及 `陈列费率=陈列确认金额/分销金额` 这类公式加结构化 filter context。
+- MAIN_GOAL 追加 Phase 7.2 当前落地状态和最终回归证据路径，不重排已有 Phase 7.1 / 7.2G / 7.3。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_semantic_metric_verification tests.benchmark.test_benchmark_metrics tests.benchmark.test_uploaded_table_benchmark_runner tests.benchmark.test_phase73_benchmark_runner
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.benchmark.test_benchmark_metrics tests.core.test_semantic_metric_verification
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_no_secrets
+- git diff --check
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/phase72_generalization_contract_dev_1_10_final_20260522
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split all --limit 450 --offset 0 --output-dir outputs/phase72_generalization_contract_dabstep_all_1_450_final_20260522
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root /Users/trevorcui/Desktop/微软脱敏数据 --limit 300 --offset 0 --output-dir outputs/phase72_generalization_contract_microsoft_1_300_final_20260522
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 /private/tmp/vds_95_smoke.py
+
+### 测试结果
+
+- Targeted semantic / metrics / runner tests 通过：Ran 18 tests，OK。
+- Targeted metrics / semantic tests 通过：Ran 15 tests，OK。
+- Full unittest 通过：Ran 117 tests in 44.457s，OK。
+- compileall 通过。
+- import boundary + benchmark hardcoding tests 通过：Ran 7 tests，OK。
+- tracked-file secret scan 通过：Ran 1 test，OK。
+- git diff --check 通过。
+- DABstep dev 1-10 final：total=10，correct=9，accuracy=0.9，success_count=10；SQL covered=3/10，Pandas-SQL consistency=3/3，coverage_gap=7，semantic_mismatch=1，executor_mismatch=0，format_mismatch=0；输出 `outputs/phase72_generalization_contract_dev_1_10_final_20260522/dev_1_to_10_report.json`。
+- DABstep public all 1-450 final：total=450，success_count=450，unexpected_not_applicable=0，true_unsupported=3，failure_count=0，accuracy=null；SQL covered=70，Pandas-SQL consistency=70/70，coverage_gap=380，semantic_mismatch=0，executor_mismatch=0，format_mismatch=0；输出 `outputs/phase72_generalization_contract_dabstep_all_1_450_final_20260522/all_1_to_450_report.json`。
+- Microsoft 脱敏数据 1-300 final：total=300，correct=300，accuracy=1.0，success_count=300；capability_family_metrics 输出 `chinese_retail_business_metric`；SQL covered=0，coverage_gap=300，semantic_mismatch=0，executor_mismatch=0，format_mismatch=0；输出 `outputs/phase72_generalization_contract_microsoft_1_300_final_20260522/report.json`。
+- 桌面 VDS `问题汇总.xlsx` 95 题 smoke：total=95，success_count=95，failure_count=0；输出 `outputs/phase72_generalization_contract_vds_question_summary_95_final_20260522.json`。
+
+### 遗留问题
+
+- DABstep dev 1-10 仍有 1 个 `best_fraud_aci_choice` / associated cost 语义口径失败，继续归入 business-rule what-if / fee candidate table 能力族，不能按 task_id、标准答案或固定题面特调。
+- SQL/Pandas 不等价仍主要是 coverage gap，不是 SQL correctness gap：DABstep all skipped=380，Microsoft 1-300 skipped=300；skipped 不计为 executor mismatch。
+- `sql_covered_subset_accuracy` 仍只有 runner 提供独立 `sql_correct` 时才计算；当前主要用 Pandas-SQL consistency 验证 SQL covered 子集。
+- DuckDB 表格化 rule engine、真实 provider-native tool loop、大规模真实 LLM 回归仍是后续阶段目标。
+
+### 是否影响主流程
+
+是。影响 Planner、Verifier、Benchmark metrics、DABstep/Microsoft/uploaded-table runner 的报告口径；不修改前端，不新增外部依赖，不改变 Microsoft Agent Framework adapter 的核心边界。
+
+### 是否涉及 Benchmark
+
+是。标准答案仍只在 response 生成后用于离线 scorer；task_id、expected answer、proxy answer、accepted answer 和 hidden answer 未进入 Capability Registry、Planner、Executor、Verifier、Correction、prompt、测试 fixture 或核心链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未新增 adapter 依赖，未把核心算法写入 Microsoft adapter。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。Planner 泛化契约、Verifier 语义 mismatch 和 executor parity report 字段现在可被多 Agent workflow、single_agent fallback 和 benchmark runners 共享。
+
+### 是否修改核心数据契约
+
+是。继续强化 LogicForm / AnalysisPlan 中的 generalization contract 字段使用；未修改对外 API request / response dataclass 字段。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+是。Benchmark detail/report 进一步统一 capability family、SQL coverage 和 mismatch 字段；既有 trace schema 未新增对外必填字段。
+
+---
+
+### 日期时间
+
+2026-05-22 14:06 CST
+
+### 本次目标
+
+实施 Phase 7.3：Evaluation-Driven Robustness and Output Contract Hardening，把最终答案 canonicalizer、output validator、validation-driven retry、submission provenance、risk taxonomy 和 Phase 7.3 退出回归落到代码与文档；同时保持 Phase 7.1 submission gate、Phase 7.2 Capability Registry 和 Phase 7.2G 上传表泛化专项边界不被覆盖。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+- data_agent_core/output/output_contract.py
+- data_agent_core/output/response_builder.py
+- data_agent_core/errors/error_types.py
+- data_agent_core/benchmark/provenance.py
+- data_agent_core/benchmark/metrics.py
+- data_agent_core/benchmark/benchmark_runner.py
+- data_agent_core/verifier/result_comparator.py
+- data_agent_core/verifier/rule_checker.py
+- data_agent_core/core/dabstep_fee_engine.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/agent/single_agent.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- multi_agent_workflows/microsoft_anonymized_benchmark_runner.py
+- multi_agent_workflows/uploaded_table_benchmark_runner.py
+- tests/core/test_output_contract.py
+- tests/core/test_semantic_metric_verification.py
+- tests/benchmark/test_benchmark_metrics.py
+- tests/benchmark/test_phase73_benchmark_runner.py
+
+### 修改内容
+
+- 新增最终答案 canonicalizer / output validator，覆盖 number、percentage、yes/no、list、scheme fee、ACI、card scheme、grouped amounts、Not Applicable、空答案、对象 / 列表泄漏、debug / trace 泄漏和 SQL / markdown 泄漏。
+- Response Builder 接入 canonicalizer；最终 `answer` 收敛为提交安全字符串，并把 `output_contract_validation`、`validation_driven_retry`、`canonical_answer` 写入 debug。输出契约失败会追加 recoverable `OUTPUT_CONTRACT_VALIDATION_FAILED`。
+- DABstep、Microsoft 和 uploaded-table runner 统一加入 output-contract validation-driven retry、`output_contract_passed`、`output_risk_flags`、retry events、risk taxonomy 和 provenance。
+- 新增 trace-safe benchmark provenance：记录 generated_at、command、cwd、git branch / commit / dirty count、runtime、provider env、prediction sha256 和 report content sha256；不记录 API key、hidden answer、public proxy answer pool 或 raw reasoning。
+- Benchmark metrics 新增统一 risk taxonomy，拆分 format_risk、semantic_risk、capability_risk、submission_risk、official_hidden_unknown、public_proxy_observation、real_provider_cost_latency 和 trace_redaction_risk。
+- RunTrace / multi-agent workflow / single_agent final_response 记录 `output_contract_passed`，便于真实 provider 分段回归和提交前审计。
+- 修复 Phase 7.3 回归暴露的通用问题：Decimal / scientific zero canonicalization、distinct_count unique shopper verifier false reject、fee restriction affected merchants 全量扫描性能、intent parser 隐式 value filter 和 `by amount` group_by 误判。
+- 修复 VDS 95 smoke 中 Pandas / SQL 浮点表示尾差：Result Comparator 对嵌套 list / dict 中的数值使用近似比较，避免 `600301.9199999999` 与 `600301.92` 这类非语义差异造成 verifier false failure。
+- MAIN_GOAL 更新 Phase 7.3 当前代码落点、验收结果路径和真实 provider 前提说明。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_semantic_metric_verification
+- VDS_LLM_PROVIDER=mock single-question S16 smoke for `/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/数据/QueryGPT_SaaS订阅数据_单表版.xlsx`
+- VDS_LLM_PROVIDER=mock inline runner for `/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/问题/问题汇总.xlsx`, output `outputs/phase73_output_contract_vds_question_summary_95_final_20260522.json`
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_output_contract tests.core.test_semantic_metric_verification tests.benchmark.test_benchmark_metrics tests.benchmark.test_phase73_benchmark_runner
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime multi_agent_workflows tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/phase73_output_contract_dev_1_10_after_comparator_20260522
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split all --limit 450 --offset 0 --output-dir outputs/phase73_output_contract_dabstep_all_1_450_after_comparator_20260522
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root /Users/trevorcui/Desktop/微软脱敏数据 --limit 300 --offset 0 --output-dir outputs/phase73_output_contract_microsoft_1_300_after_comparator_20260522
+
+### 测试结果
+
+- Semantic verifier focused test 通过：Ran 13 tests，OK。
+- S16 单题 smoke 通过：`本周毛利率下降最多的Top10客户？` 的 Pandas-SQL consistency 从 false failure 恢复为 true。
+- Phase 7.3 focused tests 通过：Ran 24 tests，OK。
+- Full unittest 通过：Ran 117 tests in 17.567s，OK。
+- compileall 通过。
+- 桌面 VDS `问题汇总.xlsx` 95 题 smoke：total=95，success_count=95，failure_count=0，output_contract_failure_count=0；报告路径 `outputs/phase73_output_contract_vds_question_summary_95_final_20260522.json`。
+- DABstep dev 1-10 mock 多 Agent：total=10，correct=9，accuracy=0.9，success_count=10；format_risk=0，submission_risk=0，trace_redaction_risk=0；报告路径 `outputs/phase73_output_contract_dev_1_10_after_comparator_20260522/dev_1_to_10_report.json`。
+- DABstep public all 1-450 mock 多 Agent：total=450，success_count=450，unexpected_not_applicable=0，true_unsupported=3，failure_count=0，accuracy=null；format_risk=0，semantic_risk=0，submission_risk=0，trace_redaction_risk=0；report_content_sha256 已生成；报告路径 `outputs/phase73_output_contract_dabstep_all_1_450_after_comparator_20260522/all_1_to_450_report.json`。
+- Microsoft 脱敏数据 1-300 mock 离线 scorer：total=300，correct=300，accuracy=1.0，success_count=300；format_risk=0，semantic_risk=0，submission_risk=0，trace_redaction_risk=0；报告路径 `outputs/phase73_output_contract_microsoft_1_300_after_comparator_20260522/report.json`。
+
+### 遗留问题
+
+- 真实 OpenAI / DeepSeek provider representative / staged / full 回归本轮未执行，因为当前运行环境未提供 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY`；本轮已实现 provider / runtime / latency / provenance / retry 记录入口，后续有 key 后可按同一 runner 分段执行。
+- DABstep dev 1-10 仍为 9/10，剩余失败继续归入 `best_fraud_aci_choice` / associated cost 语义口径，不能按 task_id、标准答案或固定题面特调。
+- DABstep public all answer 为空，本地不能计算 hidden official accuracy；`official_hidden_unknown=true` 仅表示本地不可复现 official hidden score。
+- DABstep all 1-450 本次全量耗时较长，report 已记录 elapsed_seconds=738.975；后续真实 provider 分段回归需要使用 staged / resume 策略。
+
+### 是否影响主流程
+
+是。影响 FinalResponse 构建、benchmark runner、risk report、provenance、Verifier comparison 和 trace final_response；不修改前端，不改变后端稳定 API，不新增外部依赖。
+
+### 是否涉及 Benchmark
+
+是。标准答案仍只在 response 生成后用于 scorer；task_id、expected answer、proxy answer、accepted answer、hidden answer 和 leaderboard feedback 未进入 prompt、Planner、Executor、Verifier、Correction、测试 fixture 或核心链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未新增 Microsoft Agent Framework 依赖，未把核心算法写入 adapter。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。最终输出契约、provenance、risk taxonomy 和 verifier 数值比较均在 provider-neutral / workflow-neutral 层实现，可被 single_agent、多 Agent workflow 和后续 provider-native loop 复用。
+
+### 是否修改核心数据契约
+
+是。新增 output contract validation debug payload、benchmark provenance 和 risk taxonomy metadata；未修改对外 API request / response 必填字段。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+是。新增 `OUTPUT_CONTRACT_VALIDATION_FAILED`，用于标记最终输出契约失败的 recoverable 错误。
+
+### 是否新增或修改运行追踪逻辑
+
+是。RunTrace final_response 增加 `output_contract_passed`，benchmark report 增加 provenance / risk taxonomy / retry events；trace 仍不记录完整 Chain of Thought、raw reasoning tokens、API key、hidden answer 或 public proxy answer pool。
+
+---
+
+### 日期时间
+
+2026-05-22 14:17 CST
+
+### 本次目标
+
+完成 Phase 7.2 收口审计，修正 `MAIN_GOAL.md` 当前实现状态编号，并复核 Phase 7.2 目标已由当前代码、测试和文档证据覆盖；不改 executor 代码，不重排 Phase 7.1 / Phase 7.2G / Phase 7.3。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 修正 `MAIN_GOAL.md` 当前实现状态中 Phase 7.2 泛化契约落地项的重复编号，把第二个 `37.` 改为 `38.`。
+- 复核 Phase 7.2 当前证据：Planner 泛化契约字段、Verifier semantic mismatch、Capability Registry、executor parity report、测试和文档均已落到当前 worktree。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime ms_agent_framework_adapter multi_agent_workflows backend tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets
+- git diff --check
+
+### 测试结果
+
+- Full unittest 通过：Ran 117 tests，OK。
+- compileall 通过。
+- 架构边界 / Benchmark hardcoding / secret scan 通过：Ran 8 tests，OK。
+- git diff --check 通过。
+
+### 遗留问题
+
+- 无新增遗留问题；Phase 7.2 仍保留既有后续方向：SQL coverage gap、DuckDB/rule-engine 表格化、真实 provider 分段回归和 DABstep `best_fraud_aci_choice` associated cost 语义口径。
+
+### 是否影响主流程
+
+否。本次只做文档编号收口和审计记录。
+
+### 是否涉及 Benchmark
+
+是。只复核 Benchmark 报告口径和测试结果；未把 task_id、expected answer、proxy answer、accepted answer 或 hidden answer 引入核心链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。本次不改代码路径。
 
 ### 是否修改核心数据契约
 

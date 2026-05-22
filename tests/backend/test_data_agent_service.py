@@ -87,7 +87,7 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertTrue(response["dataset_id"].startswith("ds_"))
         self.assertEqual("multi_agent", response["debug"]["agent_mode"])
         self.assertEqual("api_inline_tables", response["debug"]["api_source"])
-        self.assertEqual({"城市": "上海", "销售额": 200}, response["result"]["rows"][0])
+        self.assertEqual({"城市": "上海", "销售额": 300}, response["result"]["rows"][0])
         self.assertEqual([], response["errors"])
 
     def test_external_run_accepts_english_table_mapping(self) -> None:

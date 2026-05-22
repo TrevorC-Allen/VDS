@@ -21,6 +21,10 @@ class RunTrace:
     metric_definition: Any = None
     numerator: Any = None
     denominator: Any = None
+    entity_grain: Any = None
+    time_window: Any = None
+    candidate_set: Any = None
+    output_contract: Any = None
     analysis_plan: Any = None
     pandas_result_summary: Any = None
     sql_result_summary: Any = None

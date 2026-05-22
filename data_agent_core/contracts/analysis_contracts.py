@@ -27,12 +27,16 @@ class LogicForm:
     metric_definition: dict[str, Any] = field(default_factory=dict)
     numerator: dict[str, Any] = field(default_factory=dict)
     denominator: dict[str, Any] = field(default_factory=dict)
+    entity_grain: dict[str, Any] = field(default_factory=dict)
+    time_window: dict[str, Any] = field(default_factory=dict)
+    candidate_set: dict[str, Any] = field(default_factory=dict)
     group_by: str | None = None
     objective: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
     filters: dict[str, Any] = field(default_factory=dict)
     parameters: dict[str, Any] = field(default_factory=dict)
     output_format: dict[str, Any] = field(default_factory=dict)
+    output_contract: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

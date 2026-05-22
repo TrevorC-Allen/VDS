@@ -223,12 +223,16 @@ def _logic_form_from_payload(payload: dict[str, Any], column_mapping: dict[str, 
         metric_definition=dict(payload.get("metric_definition") or {}),
         numerator=dict(payload.get("numerator") or {}),
         denominator=dict(payload.get("denominator") or {}),
+        entity_grain=dict(payload.get("entity_grain") or {}),
+        time_window=dict(payload.get("time_window") or {}),
+        candidate_set=dict(payload.get("candidate_set") or {}),
         group_by=payload.get("group_by"),
         objective=payload.get("objective"),
         options=dict(payload.get("options") or {}),
         filters=dict(payload.get("filters") or {}),
         parameters=parameters,
         output_format=dict(payload.get("output_format") or {}),
+        output_contract=dict(payload.get("output_contract") or {}),
     )
 
 

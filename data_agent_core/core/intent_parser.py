@@ -1209,9 +1209,13 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
 
     lowered = question.lower()
     table_name, df = _select_primary_table(tables)
-    metric = _find_metric_column(question, df)
-    dimension = _find_dimension_column(question, df, metric)
-    filters = _infer_value_filters(question, df, exclude={metric, dimension})
+    record_count_requested = _is_record_count_metric_question(lowered)
+    metric = None if record_count_requested else _find_metric_column(question, df)
+    filters = _infer_value_filters(question, df, exclude={metric})
+    explicit_group_by = _find_group_by_column(question, df)
+    if explicit_group_by == metric:
+        explicit_group_by = None
+    dimension = explicit_group_by or _find_dimension_column(question, df, metric, exclude=set(filters))
     output_format = {"guidelines": guidelines}
 
     if _is_top_outlier_group_question(lowered):
@@ -1234,7 +1238,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             task_type="ranking",
             operation="top_count",
             filters=filters,
-            parameters={"group_by": _find_named_column(question, df) or _extract_group_by(question, default=dimension or "hour_of_day")},
+            parameters={"table": table_name, "group_by": _find_named_column(question, df) or _extract_group_by(question, default=dimension or "hour_of_day")},
             output_format=output_format | {"answer_type": "number"},
         )
 
@@ -1248,7 +1252,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             output_format=output_format | {"answer_type": "text"},
         )
 
-    if _is_row_count_question(lowered):
+    if _is_row_count_question(lowered) and not _has_grouping_language(lowered):
         return make_logic_form(
             task_type="aggregation",
             operation="row_count",
@@ -1259,23 +1263,15 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
 
     if _is_metric_per_distinct_entity_question(lowered):
         field = _find_named_column(question, df) or _find_entity_column(question, df) or dimension
+        numerator_metric = "__row_count__" if record_count_requested else metric
+        aggregation = "count" if numerator_metric == "__row_count__" else "sum"
         return make_logic_form(
             task_type="aggregation",
             operation="metric_per_distinct_entity",
-            metric=metric,
+            metric=numerator_metric,
             filters=filters,
-            parameters={"table": table_name, "metric": metric, "entity_field": field, "aggregation": "sum"},
+            parameters={"table": table_name, "metric": numerator_metric, "entity_field": field, "aggregation": aggregation},
             output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 2)},
-        )
-
-    if _is_distinct_count_question(lowered):
-        field = _find_named_column(question, df) or _find_entity_column(question, df) or dimension
-        return make_logic_form(
-            task_type="schema_query",
-            operation="distinct_count",
-            filters=filters,
-            parameters={"table": table_name, "field": field},
-            output_format=output_format | {"answer_type": "number"},
         )
 
     if _is_repeat_entity_percentage_question(lowered):
@@ -1286,6 +1282,16 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             filters=filters,
             parameters={"table": table_name, "field": field},
             output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
+        )
+
+    if _is_distinct_count_question(lowered):
+        field = _find_distinct_target_column(question, df) or _find_named_column(question, df) or _find_entity_column(question, df) or dimension
+        return make_logic_form(
+            task_type="schema_query",
+            operation="distinct_count",
+            filters=filters,
+            parameters={"table": table_name, "field": field},
+            output_format=output_format | {"answer_type": "number"},
         )
 
     if _is_outlier_count_question(lowered):
@@ -1312,6 +1318,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         )
 
     if _is_top_k_share_question(lowered) and dimension:
+        aggregation = "count" if record_count_requested else _infer_aggregation(lowered, default="sum" if metric else "count")
         return make_logic_form(
             task_type="aggregation",
             operation="top_k_share",
@@ -1322,7 +1329,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 "table": table_name,
                 "metric": metric,
                 "dimension": dimension,
-                "aggregation": _infer_aggregation(lowered, default="sum" if metric else "count"),
+                "aggregation": aggregation,
                 "limit": _extract_limit(question, default=3),
             },
             output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
@@ -1345,7 +1352,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         )
 
     if _is_ranking_question(lowered) and dimension:
-        aggregation = _infer_aggregation(lowered, default="sum" if metric else "count")
+        aggregation = "count" if record_count_requested else _infer_aggregation(lowered, default="sum" if metric else "count")
         return make_logic_form(
             task_type="ranking",
             operation="filtered_metric_ranking" if filters else "ranking",
@@ -1363,6 +1370,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
 
     if _is_aggregation_question(lowered):
         aggregation = _infer_aggregation(lowered, default="sum")
+        decimals = _decimal_places(guidelines)
         return make_logic_form(
             task_type="aggregation",
             operation="aggregation",
@@ -1372,7 +1380,9 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 "dimension": dimension if _has_grouping_language(lowered) else None,
                 "aggregation": aggregation,
             },
-            output_format=output_format | {"answer_type": "table" if dimension and _has_grouping_language(lowered) else "number"},
+            output_format=output_format
+            | {"answer_type": "table" if dimension and _has_grouping_language(lowered) else "number"}
+            | ({"decimals": decimals} if decimals is not None else {}),
         )
 
     if _is_filtering_question(lowered):
@@ -1407,7 +1417,13 @@ def _extract_fee_id(question: str) -> int | None:
 
 def _decimal_places(guidelines: str, default: int | None = None) -> int | None:
     match = re.search(r"(\d+)\s+decimals?", guidelines, re.I)
-    return int(match.group(1)) if match else default
+    if match:
+        return int(match.group(1))
+    match = re.search(r"保留\s*(\d+)\s*位小数|(\d+)\s*位小数", guidelines)
+    if match:
+        value = next(group for group in match.groups() if group)
+        return int(value)
+    return default
 
 
 def _select_primary_table(tables: dict[str, pd.DataFrame]) -> tuple[str, pd.DataFrame]:
@@ -1433,24 +1449,68 @@ def _find_metric_column(question: str, df: pd.DataFrame) -> str | None:
     return numeric_columns[0]
 
 
-def _find_dimension_column(question: str, df: pd.DataFrame, metric: str | None) -> str | None:
+def _find_dimension_column(
+    question: str,
+    df: pd.DataFrame,
+    metric: str | None,
+    exclude: set[str] | None = None,
+) -> str | None:
     lowered = question.lower()
+    excluded = set(exclude or set())
     for column in df.columns:
         name = str(column)
-        if name == metric:
+        if name == metric or name in excluded:
             continue
         if name.lower() in lowered or name in question:
             return name
     categorical = [
         str(column)
         for column in df.columns
-        if str(column) != metric and not pd.api.types.is_numeric_dtype(df[column])
+        if str(column) != metric and str(column) not in excluded and not pd.api.types.is_numeric_dtype(df[column])
     ]
     dimension_keywords = ("city", "country", "region", "category", "merchant", "城市", "国家", "地区", "类别", "分类", "商户")
     for column in categorical:
         if any(keyword in column.lower() for keyword in dimension_keywords):
             return column
     return categorical[0] if categorical else None
+
+
+def _find_group_by_column(question: str, df: pd.DataFrame) -> str | None:
+    """Resolve the grouping field from explicit phrases such as "按区域统计"."""
+
+    lowered = question.lower()
+    phrases: list[str] = []
+    for pattern in (
+        r"按\s*([^，,。？?]+?)\s*(?:统计|分组|汇总|计算)",
+        r"(?:group(?:ed)?\s+by|by)\s+([A-Za-z0-9_ \-\u4e00-\u9fff]+?)(?:\s+(?:统计|计算|sum|total|average|count|share|percentage|占比)|[,，。？?]|$)",
+    ):
+        phrases.extend(match.strip() for match in re.findall(pattern, question, flags=re.I) if match.strip())
+    for phrase in phrases:
+        phrase_lower = phrase.lower()
+        for column in df.columns:
+            name = str(column)
+            if name in phrase or name.lower() in phrase_lower:
+                return name
+    return None
+
+
+def _find_distinct_target_column(question: str, df: pd.DataFrame) -> str | None:
+    """Resolve the target field in questions like "不同的院区名称有多少个"."""
+
+    lowered = question.lower()
+    phrases: list[str] = []
+    for pattern in (
+        r"不同的?\s*([^，,。？?]+?)\s*(?:有多少|多少|数量|个数)",
+        r"(?:distinct|unique)\s+([A-Za-z0-9_ \-\u4e00-\u9fff]+?)(?:\s+(?:count|number|values?)|[,，。？?]|$)",
+    ):
+        phrases.extend(match.strip() for match in re.findall(pattern, question, flags=re.I) if match.strip())
+    for phrase in phrases:
+        phrase_lower = phrase.lower()
+        for column in df.columns:
+            name = str(column)
+            if name in phrase or name.lower() in phrase_lower:
+                return name
+    return None
 
 
 def _find_named_column(question: str, df: pd.DataFrame) -> str | None:
@@ -1496,7 +1556,29 @@ def _is_bottom_question(lowered: str) -> bool:
 
 
 def _is_aggregation_question(lowered: str) -> bool:
-    return any(token in lowered for token in ("total", "sum", "average", "avg", "mean", "count", "number", "总", "合计", "平均", "数量", "多少"))
+    return any(
+        token in lowered
+        for token in (
+            "total",
+            "sum",
+            "average",
+            "avg",
+            "mean",
+            "count",
+            "number",
+            "总",
+            "合计",
+            "平均",
+            "数量",
+            "多少",
+            "统计",
+            "记录数",
+            "条数",
+            "笔数",
+            "次数",
+            "个数",
+        )
+    )
 
 
 def _is_filtering_question(lowered: str) -> bool:
@@ -1510,6 +1592,10 @@ def _has_grouping_language(lowered: str) -> bool:
 def _is_row_count_question(lowered: str) -> bool:
     if _is_ranking_question(lowered):
         return False
+    return _is_record_count_metric_question(lowered) and not _is_distinct_count_question(lowered)
+
+
+def _is_record_count_metric_question(lowered: str) -> bool:
     return any(
         token in lowered
         for token in (
@@ -1526,10 +1612,14 @@ def _is_row_count_question(lowered: str) -> bool:
             "多少行",
             "记录数",
             "多少条",
+            "条数",
+            "笔数",
+            "次数",
+            "个数",
             "交易数",
             "总交易",
         )
-    ) and not _is_distinct_count_question(lowered)
+    )
 
 
 def _is_distinct_count_question(lowered: str) -> bool:
@@ -1581,7 +1671,7 @@ def _metric_per_distinct_entity_metric(question: str, context: dict[str, Any] | 
 def _is_most_common_value_question(lowered: str) -> bool:
     if "fraud" in lowered or "fraudulent" in lowered:
         return False
-    return any(token in lowered for token in ("most common", "most frequent", "most commonly", "出现次数最多", "最常见", "最频繁"))
+    return any(token in lowered for token in ("most common", "most frequent", "most commonly", "mode", "出现次数最多", "出现最多", "最常见", "最频繁", "频次最高", "频率最高", "众数"))
 
 
 def _is_boolean_ratio_question(lowered: str) -> bool:
@@ -1801,11 +1891,13 @@ def _is_top_k_share_question(lowered: str) -> bool:
 def _infer_aggregation(lowered: str, default: str) -> str:
     if any(token in lowered for token in ("average", "avg", "mean", "平均")):
         return "mean"
-    if re.search(r"\b(count|number)\b", lowered) or any(token in lowered for token in ("数量", "多少")):
+    if any(token in lowered for token in ("sum", "total", "总和", "合计")):
+        return "sum"
+    if _is_record_count_metric_question(lowered) or re.search(r"\b(count|number of rows|number of records)\b", lowered):
         return "count"
-    if any(token in lowered for token in ("max", "最高")):
+    if any(token in lowered for token in ("max value", "maximum value", "最大值", "最大")):
         return "max"
-    if any(token in lowered for token in ("min", "最低")):
+    if any(token in lowered for token in ("min value", "minimum value", "最小值", "最小")):
         return "min"
     return default
 
@@ -1823,6 +1915,8 @@ def _infer_value_filters(question: str, df: pd.DataFrame, exclude: set[str | Non
         name = str(column)
         if name in excluded:
             continue
+        if name not in question and name.lower() not in lowered:
+            continue
         series = df[column]
         if pd.api.types.is_numeric_dtype(series):
             continue
@@ -1834,7 +1928,46 @@ def _infer_value_filters(question: str, df: pd.DataFrame, exclude: set[str | Non
             if text and _value_in_question(text, question, lowered):
                 filters[name] = value
                 break
+    if filters:
+        return filters
+    for column in df.columns:
+        name = str(column)
+        if name in excluded:
+            continue
+        series = df[column]
+        if pd.api.types.is_numeric_dtype(series):
+            continue
+        unique_values = [value for value in series.dropna().unique().tolist() if str(value)]
+        if len(unique_values) > 50:
+            continue
+        matched = [
+            value
+            for value in unique_values
+            if _is_safe_implicit_filter_value(str(value)) and _implicit_value_in_question(str(value), question, lowered)
+        ]
+        if len(matched) == 1:
+            filters[name] = matched[0]
     return filters
+
+
+def _is_safe_implicit_filter_value(text: str) -> bool:
+    stripped = text.strip()
+    if re.search(r"[\u4e00-\u9fff]", stripped):
+        return len(stripped) > 1
+    return len(stripped) > 1
+
+
+def _implicit_value_in_question(text: str, question: str, lowered: str) -> bool:
+    if re.search(r"[\u4e00-\u9fff]", text):
+        escaped = re.escape(text)
+        return any(
+            re.search(pattern, question)
+            for pattern in (
+                rf"(?:为|是|等于|属于|包含|选择|筛选)\s*{escaped}",
+                rf"{escaped}\s*(?:时|的记录|的数据|类别|类型|区域|地区|城市|科室|产品|客户|门店)",
+            )
+        )
+    return _value_in_question(text, question, lowered)
 
 
 def _value_in_question(text: str, question: str, lowered: str) -> bool:

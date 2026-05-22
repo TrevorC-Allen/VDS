@@ -264,6 +264,35 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertEqual(17, logic.parameters["fee_id"])
         self.assertIsNone(logic.filters["new_account_type"])
 
+    def test_fee_affected_merchants_engine_uses_rule_constraints_without_monthly_rescan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fee_rule = _fee_rule(10, "GlobalCard", [], fixed_amount=0.10, rate=0)
+            fee_rule["account_type"] = ["A", "B"]
+            fee_rule["is_credit"] = None
+            (root / "fees.json").write_text(json.dumps([fee_rule]))
+            (root / "merchant_data.json").write_text(
+                json.dumps(
+                    [
+                        {"merchant": "MerchantA", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5411},
+                        {"merchant": "MerchantB", "account_type": "B", "capture_delay": "manual", "merchant_category_code": 5411},
+                        {"merchant": "MerchantO", "account_type": "O", "capture_delay": "manual", "merchant_category_code": 5411},
+                    ]
+                )
+            )
+            (root / "merchant_category_codes.csv").write_text("mcc,description\n5411,Grocery Stores\n")
+            (root / "payments.csv").write_text(
+                "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+                "MerchantA,2023,1,0,0,10.0,true,false,false,A,GlobalCard,NL,NL\n"
+                "MerchantB,2023,1,0,0,10.0,false,false,false,B,GlobalCard,NL,NL\n"
+                "MerchantO,2023,1,0,0,10.0,true,false,false,A,GlobalCard,NL,NL\n"
+            )
+
+            engine = DabstepFeeEngine(root)
+
+            self.assertEqual(["MerchantA", "MerchantB"], engine.fee_restriction_affected_merchants(fee_id=10, year=2023))
+            self.assertEqual(["MerchantA"], engine.fee_restriction_affected_merchants(fee_id=10, new_account_type="B", year=2023))
+
     def test_row_and_distinct_count_work_for_english_and_chinese_questions(self) -> None:
         table = pd.DataFrame(
             [
@@ -427,6 +456,73 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
             self.assertTrue(pandas_result.success, question)
             self.assertTrue(sql_result.success, sql_result.errors)
             self.assertEqual(pandas_result.value, sql_result.value)
+
+    def test_uploaded_table_filter_dimension_count_and_mode_generalize_in_chinese(self) -> None:
+        table = pd.DataFrame(
+            [
+                {"区域": "华北", "城市": "北京", "产品类别": "饮料", "销售额": 100.0},
+                {"区域": "华北", "城市": "天津", "产品类别": "零食", "销售额": 200.0},
+                {"区域": "华东", "城市": "上海", "产品类别": "饮料", "销售额": 500.0},
+            ]
+        )
+
+        filtered_logic = parse_generic_table_question("区域为华北时，哪个城市销售额最高？", {"sales": table})
+        grouped_count_logic = parse_generic_table_question("按区域统计记录数", {"sales": table})
+        mode_logic = parse_generic_table_question("产品类别的众数是什么？", {"sales": table})
+
+        self.assertEqual("filtered_metric_ranking", filtered_logic.operation)
+        self.assertEqual({"区域": "华北"}, filtered_logic.filters)
+        self.assertEqual("城市", filtered_logic.parameters["dimension"])
+        self.assertEqual("销售额", filtered_logic.parameters["metric"])
+        self.assertEqual("aggregation", grouped_count_logic.operation)
+        self.assertEqual("count", grouped_count_logic.parameters["aggregation"])
+        self.assertIsNone(grouped_count_logic.parameters["metric"])
+        self.assertEqual("区域", grouped_count_logic.parameters["dimension"])
+        self.assertEqual("top_count", mode_logic.operation)
+        self.assertEqual("产品类别", mode_logic.parameters["group_by"])
+
+        for logic in (filtered_logic, grouped_count_logic, mode_logic):
+            plan = build_analysis_plan(logic)
+            pandas_result = pandas_executor.execute_plan(plan, {"tables": {"sales": table}})
+            sql_result = sql_executor.execute_plan(plan, {"tables": {"sales": table}})
+            self.assertTrue(pandas_result.success, pandas_result.errors)
+            self.assertTrue(sql_result.success, sql_result.errors)
+            self.assertEqual(pandas_result.value, sql_result.value)
+
+        self.assertEqual([{"城市": "天津", "销售额": 200.0}], pandas_executor.execute_plan(build_analysis_plan(filtered_logic), {"tables": {"sales": table}}).value)
+        self.assertEqual("饮料", pandas_executor.execute_plan(build_analysis_plan(mode_logic), {"tables": {"sales": table}}).value)
+
+    def test_uploaded_table_top_k_share_distinguishes_metric_share_from_count_share(self) -> None:
+        table = pd.DataFrame(
+            [
+                {"城市": "北京", "销售额": 300.0},
+                {"城市": "上海", "销售额": 200.0},
+                {"城市": "上海", "销售额": 50.0},
+                {"城市": "天津", "销售额": 100.0},
+                {"城市": "广州", "销售额": 10.0},
+            ]
+        )
+        metric_share_logic = parse_generic_table_question("前2个城市销售额占比是多少？", {"sales": table})
+        count_share_logic = parse_generic_table_question("前2个城市记录数占比是多少？", {"sales": table})
+
+        self.assertEqual("top_k_share", metric_share_logic.operation)
+        self.assertEqual("sum", metric_share_logic.parameters["aggregation"])
+        self.assertEqual("销售额", metric_share_logic.parameters["metric"])
+        self.assertEqual("top_k_share", count_share_logic.operation)
+        self.assertEqual("count", count_share_logic.parameters["aggregation"])
+        self.assertIsNone(count_share_logic.parameters["metric"])
+
+        metric_share = pandas_executor.execute_plan(build_analysis_plan(metric_share_logic), {"tables": {"sales": table}})
+        count_share = pandas_executor.execute_plan(build_analysis_plan(count_share_logic), {"tables": {"sales": table}})
+        metric_share_sql = sql_executor.execute_plan(build_analysis_plan(metric_share_logic), {"tables": {"sales": table}})
+        count_share_sql = sql_executor.execute_plan(build_analysis_plan(count_share_logic), {"tables": {"sales": table}})
+
+        self.assertTrue(metric_share.success, metric_share.errors)
+        self.assertTrue(count_share.success, count_share.errors)
+        self.assertAlmostEqual(((300.0 + 250.0) / 660.0) * 100, float(metric_share.value), places=5)
+        self.assertAlmostEqual(60.0, float(count_share.value), places=5)
+        self.assertAlmostEqual(float(metric_share.value), float(metric_share_sql.value), places=5)
+        self.assertAlmostEqual(float(count_share.value), float(count_share_sql.value), places=5)
 
     def test_not_applicable_distinguishes_capability_gap_from_true_unsupported(self) -> None:
         capability_gap = parse_question("Can you answer a currently unsupported but data-answerable pattern?")

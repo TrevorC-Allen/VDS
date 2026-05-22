@@ -33,7 +33,7 @@
 
 风险：当前已覆盖 DABstep public all 1-450 的 mock 执行路径，但 public all answer 为空，不能据此宣称 hidden official accuracy；剩余公开 dev 失败仍是 ACI associated cost 通用语义缺口。
 
-状态：2026-05-22 已完成 MVP 并进入 Phase 6+ 业务口径增强；dev 前 10 题当前验证结果为 9/10，DABstep public all 1-450 mock 执行覆盖为 450/450。
+状态：2026-05-22 已完成 MVP 和 Phase 6 多 Agent 基线；当前进入 Phase 7 业务口径和泛化验证增强。dev 前 10 题当前验证结果为 9/10，DABstep public all 1-450 mock 执行覆盖为 450/450。
 
 ### LLM Single Agent Chain
 
@@ -135,7 +135,7 @@
 
 ### Phase Gate And Multi-Agent Migration
 
-目标：按 Phase 1 到 Phase 6+ 的门槛推进，先补核心泛化能力、防硬编码测试和防伪泛化验收，再接 Microsoft Agent Framework adapter、Phase 5 受控 Tool Calling 和 Phase 6+ 多 Agent workflow。
+目标：按 Phase 1 到 Phase 7.1 的门槛推进，先补核心泛化能力、防硬编码测试和防伪泛化验收，再接 Microsoft Agent Framework adapter、Phase 5 受控 Tool Calling、Phase 6 多 Agent workflow 基线、Phase 7 泛化验证 / provider 工具链增强和 Phase 7.1 submission gate。
 
 影响模块：docs、agent_runtime、ms_agent_framework_adapter、multi_agent_workflows、tests/architecture。
 
@@ -145,7 +145,7 @@
 
 风险：如果跳过 Phase gate 直接做 Microsoft workflow，容易把核心算法绑死在具体框架里。
 
-状态：2026-05-21 已落地 Phase 6 最小可运行多 Agent workflow。backend 默认 multi_agent；DABstep 多 Agent runner 可跑 dev 前 10，当前回归为 9/10；复杂并行、多轮纠错、ACI associated cost 通用口径和真实 Microsoft cloud workflow 仍属后续增强。
+状态：2026-05-21 已落地 Phase 6 最小可运行多 Agent workflow。backend 默认 multi_agent；DABstep 多 Agent runner 可跑 dev 前 10，当前回归为 9/10。复杂并行、多轮纠错、ACI associated cost 通用口径、真实 provider tool loop 和真实 Microsoft cloud workflow 统一归入 Phase 7。
 
 ### Phase 6 Multi-Agent Runtime
 
@@ -167,7 +167,7 @@
 
 影响模块：data_agent_core/contracts、data_agent_core/core/intent_parser.py、data_agent_core/executors、data_agent_core/verifier、data_agent_core/tracing、agent_runtime/data_analysis_roles.py、multi_agent_workflows、tests/core。
 
-优先级：P0，阶段：Phase 6+。
+优先级：P0，阶段：Phase 7。
 
 验收标准：LogicForm 能表达 metric_definition、numerator、denominator、group_by、objective 和 options；Verifier 能识别业务口径错误并输出 correction_action；Correction 能生成 corrected LogicForm 并触发受控重跑；trace 能记录 semantic_verification_notes、candidate_table_summary 和 selected_candidate。
 
@@ -199,7 +199,7 @@
 
 影响模块：data_agent_core/core/intent_parser.py、data_agent_core/executors、data_agent_core/output/response_builder.py、data_agent_core/tracing、data_agent_core/benchmark、agent_runtime/data_analysis_roles.py、multi_agent_workflows、tests/core、docs/API_CONTRACT.md。
 
-优先级：P0，阶段：Phase 6+。
+优先级：P0，阶段：Phase 7。
 
 验收标准：FinalResponse debug / trace / benchmark report 能记录 not_applicable_attribution；`capability_gap` 必须进入 errors 字段并使用 `CAPABILITY_GAP`；新增基础能力族 row_count、distinct_count、repeat_entity_percentage、outlier_count、top_k_share、filtered_metric_ranking 能在合成中英文用例上运行；DABstep / proxy 只作为后验观察。
 
@@ -217,7 +217,7 @@
 
 影响模块：data_agent_core/core/chinese_retail_intent.py、data_agent_core/executors/chinese_retail_executor.py、tests/core/test_chinese_retail_capabilities.py、benchmark report、docs。
 
-优先级：P0，阶段：Phase 6+。
+优先级：P0，阶段：Phase 7。
 
 验收标准：支持服务客户数、合约店占比、目标人数、目标达成率、今日分销排名、历史 SKU / 品类排名、拜访成功率、陈列/拜访记录数、冰柜客户数和历史字段枚举；每项能力至少有合成中文用例；标准答案只用于离线 scorer。
 
@@ -235,7 +235,7 @@
 
 影响模块：data_agent_core/core/vds_bi_intent.py、data_agent_core/executors/vds_bi_executor.py、data_agent_core/llm/planner.py、tests/core/test_vds_bi_capabilities.py、multi_agent_workflows。
 
-优先级：P0，阶段：Phase 6+。
+优先级：P0，阶段：Phase 7。
 
 验收标准：支持本周/上周/上上周周期比较；支持周环比排名下降/上升、TopN 增加/减少、增长数量和占比、环比阈值计数、城市/区域等维度环比增长率 Top、当前期阈值 Top、同圈层平均值倍数异常；同一能力族必须能迁移到门店、校区、院区、站点、客户等实体。
 
@@ -251,7 +251,7 @@
 
 影响模块：data_agent_core/core/intent_parser.py、data_agent_core/executors/pandas_executor.py、tests/core/test_generic_capability_operations.py、benchmark report。
 
-优先级：P0，阶段：Phase 6+。
+优先级：P0，阶段：Phase 7。
 
 验收标准：支持按 `hour_of_day` 分组统计交易数；支持按 Z-Score 或 IQR 识别 outlier 后再按小时分组排名；不依赖 DABstep task_id、题面或答案。
 
@@ -261,7 +261,32 @@
 
 状态：2026-05-21 已完成。DABstep all 100-130 mock 多 Agent 回归 total=31、success_count=31、unexpected_not_applicable=0；official accuracy 仍因 public all answer 为空而不可本地计算。
 
+### DABstep Submission Quality Gate and Easy Capability Closure
+
+目标：在 Phase 7.1 建立提交治理和 Easy 泛化能力闭环，确保 DABstep submission 文件与当前代码、报告和预测产物一致，并把 Easy 低分风险归因到可复用能力族，而不是按题号或 proxy answer 优化。
+
+影响模块：benchmark runner、response builder、tests、docs、submission tooling。
+
+优先级：P0，阶段：Phase 7.1。
+
+验收标准：submission gate 能校验行数、task_id 覆盖、必填字段、`agent_answer` 格式、空答案、对象泄漏、debug / trace 泄漏、API key 泄漏和旧 Desktop 文件误传；submission 文件必须绑定当前 commit hash、report hash、prediction hash 和生成命令；Easy / Hard 风险报告必须生成，并明确不是 hidden official accuracy。
+
+风险：禁止 task_id、hidden answer、public proxy answer、固定题面、固定样本值、历史 accepted-answer pool 或当前 leaderboard 反馈进入核心链路；禁止把外部 leaderboard 结果写成本地可复现官方准确率。
+
+泛化验证方式：每个 Easy 能力族至少使用一个合成或非 Benchmark 用例验证，中文优先并保留英文 DABstep 回归；能力族包括 counting、top/ranking、fraud ratio、boolean yes/no、null check、field values、outlier、quantile、schema/missing-column。
+
+是否影响 contracts：当前文档阶段不影响；未来如果 submission gate 需要新增报告 metadata，必须先更新契约说明。
+
+是否影响 API_CONTRACT：当前文档阶段不影响；submission tooling 不应改变稳定后端 API。
+
+是否影响 tracing：当前文档阶段不影响；未来可增加 submission/report metadata，但不得记录完整 Chain of Thought、API key、hidden answer 或 proxy answer。
+
+是否影响 errors：当前文档阶段不影响；未来如果新增 submission gate 错误类型，必须同步 errors 文档和测试。
+
+状态：2026-05-22 新增为下一阶段目标；本轮只做文档补录和阶段状态统一，不实现新算法、不修改 benchmark scoring 链路、不引入 Microsoft Agent Framework 依赖。
+
 ## TODO
 
 - 新功能进入开发前，先确认是否影响 contracts / API_CONTRACT / tracing / errors。
-- 真实 OpenAI / DeepSeek provider-native tool loop、DuckDB runtime、ACI associated cost 通用口径、复杂并行/多轮自纠、更多真实 LLM 大规模回归、更多中文真实业务表、多表场景、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 问法仍需按能力族推进。
+- Phase 7.1 优先推进 DABstep submission gate、Easy / Hard 风险报告、最终答案格式收敛和 Easy 基础能力族闭环。
+- Phase 7 继续推进真实 OpenAI / DeepSeek provider-native tool loop、DuckDB runtime、ACI associated cost 通用口径、复杂并行/多轮自纠、更多真实 LLM 大规模回归、更多中文真实业务表、多表场景、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 问法。

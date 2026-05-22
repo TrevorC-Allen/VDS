@@ -18,9 +18,9 @@
 
 2026-05-21 更新：业务口径驱动校验已开始落地。LogicForm 预留 metric、metric_definition、numerator、denominator、group_by、objective 和 options；Verifier 不只检查 Pandas / SQL 一致性，也检查问题语义和指标定义是否一致；Correction 可输出结构化 corrected LogicForm 并触发受控重跑。
 
-2026-05-21 更新：`Not Applicable` 能力缺口闭环已继续推进。Response Builder、trace 和 Benchmark report 会区分 `true_unsupported` 与 `capability_gap`；基础通用能力族已新增 row_count、distinct_count、repeat_entity_percentage、outlier_count、top_k_share、filtered_metric_ranking、null_check、季度过滤、fraud likelihood 多维排名和 fee what-if candidate table，并优先用合成中英文用例验证泛化。
+2026-05-21 更新：Phase 7 的 `Not Applicable` 能力缺口闭环已继续推进。Response Builder、trace 和 Benchmark report 会区分 `true_unsupported` 与 `capability_gap`；基础通用能力族已新增 row_count、distinct_count、repeat_entity_percentage、outlier_count、top_k_share、filtered_metric_ranking、null_check、季度过滤、fraud likelihood 多维排名和 fee what-if candidate table，并优先用合成中英文用例验证泛化。
 
-2026-05-21 更新：Provider-native tool calling adapter 已建立在 `agent_runtime/provider_native_tool_adapter.py`。该层只把 OpenAI / DeepSeek 兼容 tool schema 和 tool_calls 映射到内部 ToolDefinition / ToolCall / ToolResult，再交给 ToolDispatcher；不实现 DatasetProfile、Pandas、SQL、Verifier、Chart、Insight 或 Benchmark 逻辑。
+2026-05-21 更新：Phase 7 的 Provider-native tool calling adapter 已建立在 `agent_runtime/provider_native_tool_adapter.py`。该层只把 OpenAI / DeepSeek 兼容 tool schema 和 tool_calls 映射到内部 ToolDefinition / ToolCall / ToolResult，再交给 ToolDispatcher；不实现 DatasetProfile、Pandas、SQL、Verifier、Chart、Insight 或 Benchmark 逻辑。
 
 2026-05-22 更新：ToolDispatcher 已对 timeout_seconds 增加本地 POSIX timeout 执行边界；架构测试新增 tracked-file secret scan，并把 Benchmark 硬编码扫描扩大到 agent_runtime、backend、ms_agent_framework_adapter 和 multi_agent_workflows 的核心源码范围。
 
@@ -246,4 +246,4 @@ VDS 桌面测试数据用于暴露中文 BI 周环比、阈值、异常和多行
 - 扩展 CSV / Excel 表头识别和多 sheet 策略。
 - 将 sqlite fallback 替换或扩展为 DuckDB runtime，但保持核心框架无关。
 - 后续再把 provider 原生 OpenAI / DeepSeek 工具循环接入真实网络 smoke；当前已有 schema / tool call 解析 / mock loop，但不作为生产默认链路。
-- Phase 6 后续再扩展真实 Microsoft Agent Framework demo、并行 executor、更完整 Correction Loop、ACI associated cost 通用口径、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 能力，不把核心算法写进 workflow。
+- Phase 7 继续扩展真实 Microsoft Agent Framework demo、并行 executor、更完整 Correction Loop、ACI associated cost 通用口径、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 能力，不把核心算法写进 workflow。

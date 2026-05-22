@@ -1,6 +1,6 @@
 # multi_agent_workflows
 
-本目录当前承载 Phase 6 最小多 Agent 编排，后续扩展复杂并行、循环和 Microsoft Agent Framework 承载 workflow。
+本目录当前承载 Phase 6 最小多 Agent 编排。后续复杂并行、循环、真实 provider tool loop 和 Microsoft Agent Framework 承载 workflow 统一归入 Phase 7。
 
 ## 当前阶段
 
@@ -32,6 +32,8 @@ DataAnalysisSupervisor
 
 ## Phase Status
 
+- Phase 6 多 Agent 基线已完成，backend 默认走内部 workflow。
+- Phase 7 当前承载更大范围回归和泛化验证：
 - DABstep dev 1-10 mock 多 Agent 回归：9/10，剩余缺口为 `best_fraud_aci_choice` / ACI associated cost 通用语义。
 - DABstep public all 1-450 mock 多 Agent 执行覆盖：450/450；public all answer 为空，不能本地计算 hidden official accuracy。
 - Microsoft 脱敏数据 1-300 mock 离线 scorer：300/300；标准答案只在 scorer 阶段使用。
@@ -39,6 +41,6 @@ DataAnalysisSupervisor
 
 ## TODO
 
-- 扩展 Microsoft Agent Framework 真实运行 demo。
+- Phase 7 扩展 Microsoft Agent Framework 真实运行 demo。
 - 为每个 Agent 增加更细的独立测试。
 - 扩展并行 executor、多轮代码级自纠、真实 provider tool loop smoke 和更多中文复杂 BI 问法。
