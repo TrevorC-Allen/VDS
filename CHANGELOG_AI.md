@@ -2452,3 +2452,70 @@ YYYY-MM-DD HH:MM TZ
 否。
 
 ---
+
+### 日期时间
+
+2026-05-22 09:42 CST
+
+### 本次目标
+
+回应 GitHub README 首屏只显示 Phase 6、无法体现后续大量推进内容的问题，把根 README 调整为 Phase 6+ 当前增强状态，并明确详细阶段记录分布在 MAIN_GOAL、CHANGELOG_AI 和 docs 中。
+
+### 修改文件
+
+- README.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 将 README 首段从“推进到 Phase 6 最小可运行多 Agent workflow”扩展为“Phase 6+ 增强阶段”。
+- 在 README 首屏新增最新状态速览，直接展示 DABstep public all 1-450 执行覆盖 450/450、Microsoft 脱敏数据 1-300 离线 scorer 300/300、桌面 VDS 95 题 smoke 95/95，以及当前真实遗留的 ACI associated cost 语义口径问题。
+- 在 README 中明确 `MAIN_GOAL.md`、`CHANGELOG_AI.md`、`docs/ARCHITECTURE.md`、`docs/PHASE_GATES.md`、`docs/BENCHMARK_RULES.md` 分别承载的详细内容，避免误以为 GitHub 首页没有展示就代表内容丢失。
+- 将 Phase Status 中 Phase 6 改为 Phase 6+，补充当前增强重点。
+
+### 测试方式
+
+- git diff --check
+
+### 测试结果
+
+- git diff --check 通过。
+
+### 遗留问题
+
+- 本轮仅修复 README 展示层和治理记录，不修改核心算法。
+- GitHub 默认页只展示根 README 的摘要，完整进展仍以 MAIN_GOAL、CHANGELOG_AI 和 docs 为主。
+
+### 是否影响主流程
+
+否。仅文档修改，不影响旧 BigCat / VDS 主流程，不修改前端、后端业务或核心执行逻辑。
+
+### 是否涉及 Benchmark
+
+是，仅同步 README 中的 Benchmark 回归状态；未修改 Benchmark 数据，未读取 hidden answer，未将标准答案、task_id 或 proxy answer 写入核心链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未安装 Microsoft Agent Framework，未新增依赖，未把核心算法写入 adapter。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。README 更清楚地区分当前内部 Phase 6+ 多 Agent 默认链路和后续 provider / Microsoft 承载层增强。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+---
