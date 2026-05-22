@@ -244,6 +244,33 @@ YYYY-MM-DD HH:MM TZ
 
 ---
 
+## 2026-05-22 - DeepSeek transport retry for offset benchmark runs
+
+### 修改内容
+
+- `data_agent_core/llm/client.py` 增加 OpenAI-compatible LLM transport retry：对 `IncompleteRead`、remote disconnect、timeout、URL 连接错误以及 408/409/425/429/5xx 做有限指数退避重试。
+- 新增 `VDS_LLM_MAX_RETRIES`、`VDS_LLM_RETRY_BACKOFF_SECONDS` 运行参数，默认保持通用 provider 行为，不改变 Planner / Executor / Verifier 语义。
+- 新增 `tests/core/test_llm_client.py`，覆盖 DeepSeek/OpenAI-compatible transient chunk 断流、429 retry 和 400 non-retry 边界。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_llm_client tests.core.test_generic_capability_operations tests.core.test_output_contract
+
+### 测试结果
+
+- focused tests 通过：Ran 55 tests，OK。
+- 真实 DeepSeek 450 首次 10-way offset 并发因 provider/proxy HTTP chunked response `IncompleteRead` 在 LLM 阶段全部断流，未产生 trace；该问题属于 transport robustness，不是 DABstep logic/proxy correctness failure。
+
+### 是否影响主流程
+
+是。增强真实 LLM provider 的 benchmark 稳定性；不修改前端、不修改 benchmark answer policy、不引入 task_id/proxy answer/hidden answer 到核心链路。
+
+### 是否涉及 Benchmark
+
+是。用于真实 DeepSeek offset 分片 benchmark 的网络稳定性；public proxy 仍只用于 response 后验观察。
+
+---
+
 ### 日期
 
 2026-05-21
