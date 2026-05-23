@@ -85,9 +85,107 @@ def _verify_semantic_contract(
         if logic.options and primary.value.get("selected") not in {str(value) for value in logic.options.values()}:
             notes.append("Selected value is not one of the provided multiple-choice candidates.")
             return False, notes, {"action": "reselect_from_candidate_table", "reason": "Selected value must come from options."}
+    fee_table_passed, fee_table_notes, fee_table_action = _verify_fee_candidate_table(logic, primary.value)
+    notes.extend(fee_table_notes)
+    if not fee_table_passed:
+        return False, notes, fee_table_action
     if logic.metric_definition:
         notes.append("LogicForm includes a metric_definition for audit.")
     return True, notes, correction_action
+
+
+def _verify_fee_candidate_table(logic: Any, value: Any) -> tuple[bool, list[str], dict[str, object] | None]:
+    operations = {
+        "card_scheme_steering",
+        "cheapest_card_scheme_for_transaction",
+        "best_fraud_aci_choice",
+        "aci_fee_extreme",
+        "fee_extreme_by_dimension",
+    }
+    if getattr(logic, "operation", None) not in operations:
+        return True, [], None
+    if not isinstance(value, dict):
+        return False, ["Fee candidate selection returned a non-structured result."], {
+            "action": "repair_fee_candidate_table",
+            "reason": "structured_result_required",
+        }
+    table = value.get("candidate_table")
+    if not isinstance(table, list) or not table or not all(isinstance(row, dict) for row in table):
+        return False, ["Fee candidate selection did not return a complete candidate table."], {
+            "action": "repair_fee_candidate_table",
+            "reason": "candidate_table_required",
+        }
+    missing_fee_rows = [row for row in table if not _numeric_like(row.get("fee"))]
+    if missing_fee_rows:
+        return False, ["Fee candidate table contains rows without numeric fee values."], {
+            "action": "repair_fee_candidate_table",
+            "reason": "numeric_fee_required",
+        }
+
+    selected_values = _selected_fee_values(value)
+    if selected_values:
+        labels = _candidate_table_labels(table, value, logic)
+        if not labels:
+            return False, ["Fee candidate table does not expose a candidate dimension."], {
+                "action": "repair_fee_candidate_table",
+                "reason": "candidate_dimension_required",
+            }
+        missing = [item for item in selected_values if item not in labels]
+        if missing:
+            return False, ["Selected fee candidate is absent from the candidate table."], {
+                "action": "reselect_from_candidate_table",
+                "reason": "selected_candidate_absent",
+            }
+    notes = [f"Fee candidate table verified with {len(table)} candidates."]
+    return True, notes, None
+
+
+def _numeric_like(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _selected_fee_values(value: dict[str, Any]) -> list[str]:
+    selected = value.get("selected")
+    if _empty_selection(selected):
+        selected = value.get("answer")
+    if _empty_selection(selected):
+        selected = value.get("aci") or value.get("card_scheme")
+    if isinstance(selected, (list, tuple, set)):
+        return [str(item) for item in selected if item not in {None, ""}]
+    return [] if _empty_selection(selected) else [str(selected)]
+
+
+def _empty_selection(value: Any) -> bool:
+    return value is None or value == ""
+
+
+def _candidate_table_labels(table: list[dict[str, Any]], value: dict[str, Any], logic: Any) -> set[str]:
+    dimension = str(value.get("dimension") or getattr(logic, "group_by", None) or "")
+    fields = [
+        field
+        for field in (
+            dimension,
+            "aci",
+            "card_scheme",
+            "merchant_category_code",
+            "mcc",
+            "candidate",
+            "answer",
+        )
+        if field
+    ]
+    labels: set[str] = set()
+    for row in table:
+        for field in fields:
+            if field in row and row[field] not in {None, ""}:
+                labels.add(str(row[field]))
+    return labels
 
 
 def _verify_generalization_contract(
