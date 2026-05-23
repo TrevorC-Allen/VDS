@@ -12,11 +12,15 @@ from data_agent_core.contracts.analysis_contracts import UserQuestion
 from data_agent_core.contracts.response_contracts import ChartSpec, FinalResponse, InsightResult
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.core.capability_registry import coverage_summary_for_logic_form
+from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
 from data_agent_core.core.file_parser import load_dabstep_context
 from data_agent_core.core.intent_parser import parse_generic_table_question, parse_question
 from data_agent_core.executors import pandas_executor, sql_executor
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMStageResult, complete_stage_with_llm, plan_with_llm
+from data_agent_core.output.chart_planner import build_chart_spec
+from data_agent_core.output.insight_generator import generate_insight
+from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
 from data_agent_core.output.response_builder import build_response, classify_not_applicable
 from data_agent_core.tracing.run_trace import RunTrace
 from data_agent_core.verifier.result_comparator import compare_results
@@ -129,6 +133,7 @@ class DataAnalysisAgent:
             rule_chart=rule_chart,
             verification=verification,
         )
+        quality_report = self._quality_report_payload()
         stage_summaries = {
             "intent_parser": self._stage_summary(llm_intent),
             "column_mapping": self._stage_summary(llm_column_mapping),
@@ -155,6 +160,10 @@ class DataAnalysisAgent:
                 "pandas_success": pandas_result.success,
                 "sql_success": None if sql_result is None else sql_result.success,
                 "operation": logic_form.operation,
+                "source_tables": list(logic_form.source_tables),
+                "table_selection_reason": logic_form.table_selection_reason,
+                "join_plan": logic_form.join_plan,
+                "join_execution_summary": pandas_result.debug.get("join_execution_summary") if isinstance(pandas_result.debug, dict) else None,
                 "capability": sql_coverage,
                 "llm_used": True,
                 "llm_operation": llm_plan.logic_form.operation,
@@ -163,8 +172,17 @@ class DataAnalysisAgent:
                 "llm_stage_summaries": stage_summaries,
                 "column_mapping": column_mapping,
             },
+            quality_report=quality_report,
         )
-        response.insight = self._insight_from_stage(response.answer, verification.passed, llm_insight)
+        response.insight = self._insight_from_stage(
+            response.answer,
+            verification.passed,
+            llm_insight,
+            question=question,
+            plan=plan,
+            execution_result=pandas_result,
+            quality_report=quality_report,
+        )
         response.chart = self._chart_from_stage(rule_chart, llm_chart, verification.passed)
         trace = RunTrace(
             run_id=run_id,
@@ -183,6 +201,10 @@ class DataAnalysisAgent:
             entity_grain=logic_form.entity_grain,
             time_window=logic_form.time_window,
             candidate_set=logic_form.candidate_set,
+            source_tables=list(logic_form.source_tables),
+            table_selection_reason=logic_form.table_selection_reason,
+            join_plan=logic_form.join_plan,
+            join_execution_summary=pandas_result.debug.get("join_execution_summary") if isinstance(pandas_result.debug, dict) else None,
             output_contract=logic_form.output_contract,
             analysis_plan={"plan_id": plan.plan_id, "steps": plan.steps},
             llm_plan_summary={
@@ -206,10 +228,13 @@ class DataAnalysisAgent:
             },
             insight_summary=stage_summaries["insight_generator"],
             chart_plan_summary=stage_summaries["chart_planner"],
+            quality_report=quality_report,
             latency_ms=(time.perf_counter() - start) * 1000,
             errors=response.errors,
             warnings=response.warnings,
         )
+        trace.reasoning_trace_view = build_reasoning_trace_view(trace)
+        response.reasoning_trace_view = trace.reasoning_trace_view
         return response, trace
 
     def _context_summary(self) -> dict[str, Any]:
@@ -457,27 +482,52 @@ class DataAnalysisAgent:
         }
 
     def _rule_chart_spec(self, plan: Any, execution_result: Any, trusted: bool) -> ChartSpec:
-        if not trusted:
-            return ChartSpec(reason="No chart because verification did not pass.")
-        if execution_result.rows and len(execution_result.columns) >= 2:
-            return ChartSpec(
-                chart_type="bar",
-                x=execution_result.columns[0],
-                y=execution_result.columns[1],
-                title="Data comparison",
-                data=execution_result.rows,
-                reason="Rule planner selected a bar chart for a two-column comparison result.",
-            )
-        return ChartSpec(reason="No chart required for scalar or text answer.")
+        return build_chart_spec(plan=plan, execution_result=execution_result, verification_passed=trusted)
 
-    def _insight_from_stage(self, answer: Any, trusted: bool, stage: LLMStageResult) -> InsightResult:
+    def _insight_from_stage(
+        self,
+        answer: Any,
+        trusted: bool,
+        stage: LLMStageResult,
+        *,
+        question: str = "",
+        plan: Any = None,
+        execution_result: Any = None,
+        quality_report: dict[str, Any] | None = None,
+    ) -> InsightResult:
         if not trusted:
             return InsightResult(caveats=["No insight generated because verification did not pass."])
+        base = (
+            generate_insight(
+                question=question,
+                plan=plan,
+                execution_result=execution_result,
+                verification_passed=trusted,
+                quality_report=quality_report,
+            )
+            if execution_result is not None
+            else InsightResult(summary=str(answer or ""))
+        )
         raw = stage.raw
         suggestions = raw.get("suggestions") if isinstance(raw.get("suggestions"), list) else []
         caveats = raw.get("caveats") if isinstance(raw.get("caveats"), list) else []
-        summary = str(raw.get("summary") or answer or "")
-        return InsightResult(summary=summary, suggestions=suggestions, caveats=caveats)
+        summary = str(raw.get("summary") or base.summary or answer or "")
+        existing_caveats = list(base.caveats)
+        for caveat in caveats:
+            if caveat not in existing_caveats:
+                existing_caveats.append(caveat)
+        return InsightResult(
+            summary=summary,
+            key_numbers=base.key_numbers,
+            anomaly_findings=base.anomaly_findings,
+            volatility_findings=base.volatility_findings,
+            suggestions=base.suggestions if base.suggestions else suggestions,
+            business_suggestions=base.business_suggestions if base.business_suggestions else suggestions,
+            caveats=existing_caveats,
+            next_questions=base.next_questions,
+            evidence_rows=base.evidence_rows,
+            confidence=max(base.confidence, stage.confidence),
+        )
 
     def _chart_from_stage(self, rule_chart: ChartSpec, stage: LLMStageResult, trusted: bool) -> ChartSpec:
         if not trusted:
@@ -492,8 +542,19 @@ class DataAnalysisAgent:
                 title=raw.get("title") or rule_chart.title,
                 data=rule_chart.data,
                 reason=str(raw.get("reason") or raw.get("reasoning_summary") or rule_chart.reason),
+                encoding=rule_chart.encoding,
+                series=rule_chart.series,
+                confidence=max(rule_chart.confidence, stage.confidence),
+                selection_reason=rule_chart.selection_reason,
+                fallback_reason=rule_chart.fallback_reason,
             )
         return rule_chart
+
+    def _quality_report_payload(self) -> dict[str, Any] | None:
+        tables = self.context.get("tables") if isinstance(self.context, dict) else None
+        if isinstance(tables, dict):
+            return report_to_dict(build_data_quality_report(tables, generated_from="analysis_runtime"))
+        return None
 
     def _stage_summary(self, stage: LLMStageResult) -> dict[str, Any]:
         return {
@@ -609,6 +670,7 @@ class UploadedDatasetAgent(DataAnalysisAgent):
             rule_chart=rule_chart,
             verification=verification,
         )
+        quality_report = self._quality_report_payload()
         stage_summaries = {
             "intent_parser": self._stage_summary(llm_intent),
             "column_mapping": self._stage_summary(llm_column_mapping),
@@ -635,6 +697,10 @@ class UploadedDatasetAgent(DataAnalysisAgent):
                 "pandas_success": pandas_result.success,
                 "sql_success": None if sql_result is None else sql_result.success,
                 "operation": logic_form.operation,
+                "source_tables": list(logic_form.source_tables),
+                "table_selection_reason": logic_form.table_selection_reason,
+                "join_plan": logic_form.join_plan,
+                "join_execution_summary": pandas_result.debug.get("join_execution_summary") if isinstance(pandas_result.debug, dict) else None,
                 "capability": sql_coverage,
                 "llm_used": True,
                 "llm_operation": llm_plan.logic_form.operation,
@@ -643,8 +709,17 @@ class UploadedDatasetAgent(DataAnalysisAgent):
                 "llm_stage_summaries": stage_summaries,
                 "column_mapping": column_mapping,
             },
+            quality_report=quality_report,
         )
-        response.insight = self._insight_from_stage(response.answer, verification.passed, llm_insight)
+        response.insight = self._insight_from_stage(
+            response.answer,
+            verification.passed,
+            llm_insight,
+            question=question,
+            plan=plan,
+            execution_result=pandas_result,
+            quality_report=quality_report,
+        )
         response.chart = self._chart_from_stage(rule_chart, llm_chart, verification.passed)
         trace = RunTrace(
             run_id=run_id,
@@ -660,6 +735,10 @@ class UploadedDatasetAgent(DataAnalysisAgent):
             entity_grain=logic_form.entity_grain,
             time_window=logic_form.time_window,
             candidate_set=logic_form.candidate_set,
+            source_tables=list(logic_form.source_tables),
+            table_selection_reason=logic_form.table_selection_reason,
+            join_plan=logic_form.join_plan,
+            join_execution_summary=pandas_result.debug.get("join_execution_summary") if isinstance(pandas_result.debug, dict) else None,
             output_contract=logic_form.output_contract,
             analysis_plan={"plan_id": plan.plan_id, "steps": plan.steps},
             llm_plan_summary={
@@ -678,6 +757,7 @@ class UploadedDatasetAgent(DataAnalysisAgent):
             correction_plan_summary=stage_summaries["correction_planner"],
             insight_summary=stage_summaries["insight_generator"],
             chart_plan_summary=stage_summaries["chart_planner"],
+            quality_report=quality_report,
             final_response={
                 "answer": response.answer,
                 "success": response.success,
@@ -687,6 +767,8 @@ class UploadedDatasetAgent(DataAnalysisAgent):
             errors=response.errors,
             warnings=response.warnings,
         )
+        trace.reasoning_trace_view = build_reasoning_trace_view(trace)
+        response.reasoning_trace_view = trace.reasoning_trace_view
         return response, trace
 
     def _context_summary(self) -> dict[str, Any]:
@@ -762,6 +844,8 @@ def _merge_optional_contract_fields(target: Any, source: Any) -> None:
         "options",
         "filters",
         "parameters",
+        "source_tables",
+        "join_plan",
         "output_format",
     ):
         source_value = getattr(source, field_name, None)
@@ -769,6 +853,10 @@ def _merge_optional_contract_fields(target: Any, source: Any) -> None:
         if isinstance(source_value, dict) and isinstance(target_value, dict):
             for key, value in source_value.items():
                 target_value.setdefault(key, value)
+        elif isinstance(source_value, list) and isinstance(target_value, list) and not target_value:
+            target_value.extend(source_value)
     for field_name in ("metric", "group_by", "objective"):
         if getattr(target, field_name, None) is None and getattr(source, field_name, None) is not None:
             setattr(target, field_name, getattr(source, field_name))
+    if not getattr(target, "table_selection_reason", "") and getattr(source, "table_selection_reason", ""):
+        target.table_selection_reason = source.table_selection_reason

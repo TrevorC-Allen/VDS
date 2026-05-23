@@ -20,6 +20,7 @@ from data_agent_core.contracts.response_contracts import ChartSpec, FinalRespons
 from data_agent_core.contracts.verification_contracts import VerificationResult
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.core.capability_registry import coverage_summary_for_logic_form
+from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
 from data_agent_core.core.intent_parser import parse_generic_table_question, parse_question
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMStageResult, complete_stage_with_llm, plan_with_llm
@@ -281,7 +282,7 @@ class DataAnalysisRoleRuntime:
     def run_insight(self, task: AgentTask, state: WorkflowState, *, guidelines: str) -> AgentResult:
         """Run Insight Agent after verification."""
 
-        verified_result = _verified_result_payload(state)
+        verified_result = _verified_result_payload(state, quality_report=self._quality_report_payload())
         tool_result = self.dispatcher.dispatch(
             ToolCall(
                 step_id=task.task_id + "_tool",
@@ -373,6 +374,10 @@ class DataAnalysisRoleRuntime:
                 "agent_mode": "multi_agent",
                 "workflow_mode": "phase6_internal_multi_agent",
                 "operation": plan.logic_form.operation,
+                "source_tables": list(plan.logic_form.source_tables),
+                "table_selection_reason": plan.logic_form.table_selection_reason,
+                "join_plan": plan.logic_form.join_plan,
+                "join_execution_summary": pandas_result.debug.get("join_execution_summary") if isinstance(pandas_result.debug, dict) else None,
                 "capability": coverage_summary_for_logic_form(
                     state.logic_form or {},
                     available_columns=_available_columns_for_logic_form(self.context, state.logic_form),
@@ -382,11 +387,30 @@ class DataAnalysisRoleRuntime:
                 "tool_call_summaries": state.tool_call_trace,
                 "microsoft_adapter_ready": True,
             },
+            quality_report=self._quality_report_payload(),
         )
         response.insight = _insight_from_payload(state.insight)
         response.chart = _chart_from_payload(state.chart)
         state.final_response = response.to_dict()
         return response
+
+    def _quality_report_payload(self) -> dict[str, Any] | None:
+        """Return profile quality report or build one from in-memory tables."""
+
+        profile = self.dataset_profile
+        if is_dataclass(profile):
+            payload = asdict(profile)
+        elif isinstance(profile, dict):
+            payload = profile
+        else:
+            payload = {}
+        report = payload.get("quality_report")
+        if isinstance(report, dict):
+            return report
+        tables = self.context.get("tables")
+        if isinstance(tables, dict):
+            return report_to_dict(build_data_quality_report(tables, generated_from="analysis_runtime"))
+        return None
 
     def context_summary(self) -> dict[str, Any]:
         """Return a compact schema summary for LLM stages."""
@@ -497,6 +521,8 @@ def _merge_optional_contract_fields(target: LogicForm, source: LogicForm) -> Non
         "options",
         "filters",
         "parameters",
+        "source_tables",
+        "join_plan",
         "output_format",
     ):
         source_value = getattr(source, field_name)
@@ -504,9 +530,13 @@ def _merge_optional_contract_fields(target: LogicForm, source: LogicForm) -> Non
         if isinstance(source_value, dict) and isinstance(target_value, dict):
             for key, value in source_value.items():
                 target_value.setdefault(key, value)
+        elif isinstance(source_value, list) and isinstance(target_value, list) and not target_value:
+            target_value.extend(source_value)
     for field_name in ("metric", "group_by", "objective"):
         if getattr(target, field_name) is None and getattr(source, field_name) is not None:
             setattr(target, field_name, getattr(source, field_name))
+    if not target.table_selection_reason and source.table_selection_reason:
+        target.table_selection_reason = source.table_selection_reason
 
 
 def _analysis_plan_from_payload(payload: dict[str, Any]) -> AnalysisPlan:
@@ -536,6 +566,9 @@ def _logic_form_from_payload(payload: dict[str, Any]) -> LogicForm:
         options=dict(payload.get("options") or {}),
         filters=dict(payload.get("filters") or {}),
         parameters=dict(payload.get("parameters") or {}),
+        source_tables=list(payload.get("source_tables") or []),
+        table_selection_reason=str(payload.get("table_selection_reason") or ""),
+        join_plan=dict(payload.get("join_plan") or {}),
         answer_target=payload.get("answer_target") or dict(payload.get("output_format") or {}).get("answer_target"),
         output_format=dict(payload.get("output_format") or {}),
         output_contract=dict(payload.get("output_contract") or {}),
@@ -570,12 +603,15 @@ def _verification_result_from_payload(payload: dict[str, Any]) -> VerificationRe
     )
 
 
-def _verified_result_payload(state: WorkflowState) -> dict[str, Any]:
-    return {
+def _verified_result_payload(state: WorkflowState, quality_report: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = {
         "verification": state.verification,
         "pandas_result": state.pandas_result,
         "sql_result": state.sql_result,
     }
+    if quality_report is not None:
+        payload["quality_report"] = quality_report
+    return payload
 
 
 def _merge_insight(tool_payload: dict[str, Any], llm_stage: LLMStageResult) -> dict[str, Any]:
@@ -584,9 +620,12 @@ def _merge_insight(tool_payload: dict[str, Any], llm_stage: LLMStageResult) -> d
     if raw.get("summary"):
         payload["summary"] = str(raw["summary"])
     if isinstance(raw.get("suggestions"), list):
-        payload["suggestions"] = raw["suggestions"]
+        payload.setdefault("suggestions", raw["suggestions"])
+        payload.setdefault("business_suggestions", raw["suggestions"])
     if isinstance(raw.get("caveats"), list):
-        payload["caveats"] = raw["caveats"]
+        existing = list(payload.get("caveats") or [])
+        payload["caveats"] = existing + [item for item in raw["caveats"] if item not in existing]
+    payload.setdefault("confidence", llm_stage.confidence or payload.get("confidence") or 0.0)
     return payload
 
 
@@ -600,6 +639,7 @@ def _merge_chart(tool_payload: dict[str, Any], llm_stage: LLMStageResult) -> dic
         payload["y"] = raw.get("y") or payload.get("y")
         payload["title"] = raw.get("title") or payload.get("title")
         payload["reason"] = str(raw.get("reason") or raw.get("reasoning_summary") or payload.get("reason") or "")
+        payload["confidence"] = max(float(payload.get("confidence") or 0.0), llm_stage.confidence)
     return payload
 
 
@@ -609,9 +649,14 @@ def _insight_from_payload(payload: Any) -> InsightResult:
     return InsightResult(
         summary=str(payload.get("summary") or ""),
         key_numbers=dict(payload.get("key_numbers") or {}),
+        anomaly_findings=list(payload.get("anomaly_findings") or []),
+        volatility_findings=list(payload.get("volatility_findings") or []),
         suggestions=list(payload.get("suggestions") or []),
+        business_suggestions=list(payload.get("business_suggestions") or payload.get("suggestions") or []),
         caveats=list(payload.get("caveats") or []),
         next_questions=list(payload.get("next_questions") or []),
+        evidence_rows=list(payload.get("evidence_rows") or []),
+        confidence=float(payload.get("confidence") or 0.0),
     )
 
 
@@ -625,6 +670,11 @@ def _chart_from_payload(payload: Any) -> ChartSpec:
         title=payload.get("title"),
         data=list(payload.get("data") or []),
         reason=str(payload.get("reason") or ""),
+        encoding=dict(payload.get("encoding") or {}),
+        series=list(payload.get("series") or []),
+        confidence=float(payload.get("confidence") or 0.0),
+        selection_reason=str(payload.get("selection_reason") or ""),
+        fallback_reason=str(payload.get("fallback_reason") or ""),
     )
 
 

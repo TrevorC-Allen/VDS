@@ -19,8 +19,11 @@ from agent_runtime.data_analysis_roles import DataAnalysisRoleRuntime
 from agent_runtime.workflow_state import WorkflowState
 from data_agent_core.contracts.dataset_contracts import DatasetProfile
 from data_agent_core.contracts.response_contracts import FinalResponse
+from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
 from data_agent_core.core.file_parser import load_dabstep_context
+from data_agent_core.core.schema_profiler import profile_tables
 from data_agent_core.llm.client import LLMClient
+from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
 from data_agent_core.tracing.run_trace import RunTrace
 
 
@@ -115,6 +118,14 @@ class DataAnalysisMultiAgentWorkflow:
         """Create a multi-agent workflow for uploaded CSV / Excel tables."""
 
         context = {"tables": tables, "primary_table": _primary_table_name(tables)}
+        if dataset_profile is None:
+            dataset_profile = DatasetProfile(
+                dataset_id=dataset_id,
+                file_name="uploaded_tables",
+                status="ready",
+                tables=list(profile_tables(tables).values()),
+                quality_report=report_to_dict(build_data_quality_report(tables, generated_from="upload_profile")),
+            )
         return cls(dataset_id=dataset_id, context=context, dataset_profile=dataset_profile, llm_client=llm_client)
 
     def analyze(self, question: str, guidelines: str = "", execution_mode: str = "auto") -> tuple[FinalResponse, RunTrace]:
@@ -180,6 +191,9 @@ class DataAnalysisMultiAgentWorkflow:
             task_results=task_results,
             latency_ms=(time.perf_counter() - start) * 1000,
         )
+        trace.reasoning_trace_view = build_reasoning_trace_view(trace)
+        response.reasoning_trace_view = trace.reasoning_trace_view
+        state.final_response = response.to_dict()
         state.trace = trace.to_dict()
         return MultiAgentWorkflowResult(response=response, trace=trace, state=state, task_results=task_results)
 
@@ -211,6 +225,10 @@ def _build_trace(
         entity_grain=None if not isinstance(state.logic_form, dict) else state.logic_form.get("entity_grain"),
         time_window=None if not isinstance(state.logic_form, dict) else state.logic_form.get("time_window"),
         candidate_set=None if not isinstance(state.logic_form, dict) else state.logic_form.get("candidate_set"),
+        source_tables=[] if not isinstance(state.logic_form, dict) else list(state.logic_form.get("source_tables") or []),
+        table_selection_reason="" if not isinstance(state.logic_form, dict) else str(state.logic_form.get("table_selection_reason") or ""),
+        join_plan=None if not isinstance(state.logic_form, dict) else state.logic_form.get("join_plan"),
+        join_execution_summary=_join_execution_summary(state.pandas_result),
         output_contract=None if not isinstance(state.logic_form, dict) else state.logic_form.get("output_contract"),
         analysis_plan=state.analysis_plan,
         pandas_result_summary=_execution_summary(state.pandas_result),
@@ -230,6 +248,7 @@ def _build_trace(
         tool_call_summary=state.tool_call_trace,
         insight_summary=state.insight,
         chart_plan_summary=state.chart,
+        quality_report=response.quality_report,
         final_response={
             "answer": response.answer,
             "success": response.success,
@@ -256,6 +275,15 @@ def _execution_summary(payload: Any) -> dict[str, Any] | None:
         "coverage_gap": payload.get("coverage_gap"),
         "native_sql_supported": payload.get("native_sql_supported"),
     }
+
+
+def _join_execution_summary(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return None
+    debug = payload.get("debug")
+    if not isinstance(debug, dict):
+        return None
+    return debug.get("join_execution_summary")
 
 
 def _primary_table_name(tables: dict[str, Any]) -> str:

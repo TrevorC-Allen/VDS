@@ -47,6 +47,30 @@ class DataAgentServiceTest(unittest.TestCase):
             self.assertIn("planner", analysis["debug"]["multi_agent_roles"])
             self.assertIn("trace_path", analysis["debug"])
 
+    def test_upload_datasets_preserves_source_file_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            temp_sales = root / "tmp_sales_upload.csv"
+            temp_inventory = root / "tmp_inventory_upload.csv"
+            temp_sales.write_text("产品,销售额\nA,100\nB,300\n", encoding="utf-8")
+            temp_inventory.write_text("产品,库存量\nA,10\nC,80\n", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(
+                [temp_sales, temp_inventory],
+                original_filenames=["销售文件.csv", "库存文件.csv"],
+            )
+
+        self.assertTrue(upload["success"])
+        self.assertEqual("销售文件.csv, 库存文件.csv", upload["file_name"])
+        profiles = {table["table_name"]: table for table in upload["tables"]}
+        self.assertEqual("销售文件.csv", profiles["销售文件"]["source_file"])
+        self.assertEqual("库存文件.csv", profiles["库存文件"]["source_file"])
+        self.assertEqual(["产品", "销售额"], [column["name"] for column in profiles["销售文件"]["columns"]])
+
     def test_analyze_unknown_dataset_returns_standard_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             service = DataAgentService(

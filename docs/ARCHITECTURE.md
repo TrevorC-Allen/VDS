@@ -24,6 +24,8 @@
 
 2026-05-22 更新：ToolDispatcher 已对 timeout_seconds 增加本地 POSIX timeout 执行边界；架构测试新增 tracked-file secret scan，并把 Benchmark 硬编码扫描扩大到 agent_runtime、backend、ms_agent_framework_adapter 和 multi_agent_workflows 的核心源码范围。
 
+2026-05-23 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已进入 planned architecture。后续应在 Workbench 与 DataAgentService 之间增加 Conversation Store / Conversation Service，用 `conversation_id` 管理会话上下文、历史消息、active dataset 和 runs；当前尚未实现，文档只记录后续架构边界。
+
 ## 层次边界
 
 1. data_agent_core 是核心算法层。
@@ -32,6 +34,7 @@
 4. ms_agent_framework_adapter 是可选 Microsoft Agent Framework 适配层。
 5. multi_agent_workflows 已承载默认 Phase 6 最小顺序多 Agent workflow。
 6. docs 是工程契约和扩展需求管理目录。
+7. Phase 11 planned Conversation Service 位于 backend 内，负责 `conversation_id`、历史消息、active dataset、runs 和 owner_context 过滤边界；它只能编排已有 upload / analyze 调用，不能承载核心数据分析逻辑。
 
 ## 依赖规则
 
@@ -241,9 +244,41 @@ VDS 桌面测试数据用于暴露中文 BI 周环比、阈值、异常和多行
 7. trace 写入 storage/runs/{run_id}/trace.json，debug.trace_path 只用于调试，前端不能依赖它作为稳定契约。
 8. UploadedDatasetAgent 保留为 single_agent fallback。
 
+## Planned Phase 11 会话层
+
+Phase 11 计划新增会话层，但当前尚未实现。该层的目标是让 Workbench 支持多窗口隔离、历史 Chat 续聊和未来用户隔离升级。
+
+计划链路：
+
+用户打开 `/workbench?conversation_id=...`
+↓
+Workbench 读取或创建 conversation
+↓
+Conversation Service 恢复 messages、active_dataset_id、runs
+↓
+上传文件时绑定 conversation_id 和 dataset_id
+↓
+分析时把 question、run_id、answer summary、safe process summary 追加到 conversation
+↓
+Workbench 左侧历史 Chat 从 Conversation Service 加载
+
+边界：
+
+1. `conversation_id` 是 UI 续聊和多窗口隔离主键，不替代 `dataset_id` 的数据集身份。
+2. dataset / run / conversation 三者分层：dataset 保存上传数据，run 保存一次分析，conversation 保存对话上下文和这些对象的引用。
+3. v1 可使用本地匿名 owner scope，但 schema 必须预留 `owner_type`、`owner_id`、`tenant_id`、`created_by` 或统一 `owner_context`。
+4. 未来真实用户隔离必须由后端 owner filter 强制执行，不能只靠前端隐藏历史 Chat。
+5. 安静过程展示只消费 trace-safe `reasoning_trace_view` 摘要；默认展示一条小号浅灰的最新过程摘要，点击后展开结构化步骤，不展示完整 Chain of Thought、raw prompt、raw reasoning tokens、quality_report、warnings、verification 或 join trace。
+6. Conversation Service 不能实现 join、排序、聚合、评分、图表选择或核心分析逻辑；这些仍属于 backend 调用 data_agent_core / multi_agent_workflows 后返回的结果。
+
 ## TODO
 
 - 扩展 CSV / Excel 表头识别和多 sheet 策略。
-- 将 sqlite fallback 替换或扩展为 DuckDB runtime，但保持核心框架无关。
-- 后续再把 provider 原生 OpenAI / DeepSeek 工具循环接入真实网络 smoke；当前已有 schema / tool call 解析 / mock loop，但不作为生产默认链路。
-- Phase 7 继续扩展真实 Microsoft Agent Framework demo、并行 executor、更完整 Correction Loop、ACI associated cost 通用口径、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 能力，不把核心算法写进 workflow。
+- Phase 7.5：硬化 ToolDispatcher、工具 schema、allowed_roles、timeout、trace-safe summary、Pandas / NumPy 白名单、SQL / DuckDB read-only 限制和文件访问根目录；不开放自由 Python、自由 SQL、shell、网络或任意文件访问。
+- Phase 7.6：接入真实 OpenAI / DeepSeek provider-native tool loop smoke；provider adapter 只能把 tool call 转成内部 ToolCall 并交给 ToolDispatcher，不承载 DatasetProfile、Pandas、SQL、Verifier、Chart、Insight 或 Benchmark 逻辑，也不作为生产默认链路。
+- Phase 7.7：将 sqlite fallback 替换或扩展为 DuckDB read-only runtime，但保持核心框架无关；DuckDB 路径必须继续经过 Result Normalizer、Verifier 和 trace 摘要。
+- Phase 7.8：先为每个 Agent 增加独立测试，再做 Pandas / SQL / DuckDB executor 有限并行和 bounded Correction Loop；Planner、Verifier、Correction 的核心决策不并行。
+- Phase 7.9：扩展真实 Microsoft Agent Framework demo；MAF adapter 只承载 AgentRole、ToolDefinition、WorkflowState 映射，不能把核心算法写进 adapter 或 workflow。
+- Phase 7.10：继续增强 ACI associated cost、fee what-if candidate table、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 能力，所有修复必须归入能力族并通过合成/非 Benchmark 用例。
+- Phase 8 Guardrail / Phase 9.1：Phase 8 只做多文件 / 多表 / join non-regression 守护；Phase 9.1 只做字段确认、join key 确认、澄清交互和评测回看面板，前端不实现指标公式、join 或数据计算。
+- Phase 11：先实现 Conversation Store / Service、owner_context 过滤边界和旧 dataset_id 调用兼容，再接前端历史 Chat 与 GPT-like 安静过程 UX；不得把本地匿名会话误写成已实现登录权限。

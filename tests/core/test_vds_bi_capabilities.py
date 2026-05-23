@@ -114,6 +114,29 @@ class VdsBiCapabilitiesTest(unittest.TestCase):
         self.assertTrue(rate.success, rate.errors)
         self.assertEqual("成都", rate.value[0]["城市"])
 
+    def test_current_category_share_top_is_generic(self) -> None:
+        tables = {
+            "learning": pd.DataFrame(
+                [
+                    {"校区名称": "甲校区", "状态": "已退课", "是否本周/上周": "本周", "CR_row": 0.1},
+                    {"校区名称": "甲校区", "状态": "学习中", "是否本周/上周": "本周", "CR_row": 0.2},
+                    {"校区名称": "乙校区", "状态": "已退课", "是否本周/上周": "本周", "CR_row": 0.3},
+                    {"校区名称": "乙校区", "状态": "已退课", "是否本周/上周": "本周", "CR_row": 0.4},
+                    {"校区名称": "乙校区", "状态": "学习中", "是否本周/上周": "本周", "CR_row": 0.5},
+                    {"校区名称": "乙校区", "状态": "已退课", "是否本周/上周": "上周", "CR_row": 0.6},
+                ]
+            )
+        }
+        logic = parse_generic_table_question("本周已退课人数占比最高的Top10校区？", tables, "已退课记录数/本周校区总记录数。")
+        result = execute_plan(build_analysis_plan(logic), {"tables": tables})
+
+        self.assertEqual("vds_current_category_share_top", logic.operation)
+        self.assertEqual("状态", logic.parameters["category_column"])
+        self.assertEqual("已退课", logic.parameters["category_value"])
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual("乙校区", result.value[0]["校区名称"])
+        self.assertAlmostEqual(66.666666, result.value[0]["share"], places=5)
+
     def test_llm_stage_payload_serializes_pandas_timestamps(self) -> None:
         result = complete_stage_with_llm(
             llm_client=MockLLMClient(),

@@ -285,8 +285,263 @@
 
 状态：2026-05-22 新增为下一阶段目标；本轮只做文档补录和阶段状态统一，不实现新算法、不修改 benchmark scoring 链路、不引入 Microsoft Agent Framework 依赖。
 
+### Phase 8 Multi-file / Multi-table Generalization Closure
+
+目标：补齐多文件精准路由、多表 join、表关系发现、澄清机制、Executor / Verifier / trace 闭环，保证上传表多文件、多表问题不再静默退回 `primary_table`。
+
+影响模块：backend、data_agent_core/contracts、data_agent_core/core、data_agent_core/executors、data_agent_core/verifier、data_agent_core/tracing、multi_agent_workflows、tests。
+
+优先级：P0，阶段：Phase 8。
+
+验收标准：支持一次上传多文件；profile 保留 `source_file`、`sheet`、`table_name`；销售 / 库存两表精准路由；订单 + 客户按城市聚合通过可信 join；无 join key 返回澄清或标准错误；多对多 join 不静默成功；旧单表能力不退化。
+
+风险：如果只按当前文件名、当前字段值或当前测试样本写规则，会形成伪泛化补丁；join 如果未经过唯一性、值重叠率和 many-to-many 风险校验，会把错误聚合伪装成成功。
+
+泛化验证方式：合成销售 / 库存、订单 / 客户、无 join key、多对多 join 和旧单表回归；同时复跑 DABstep dev 1-10、DABstep public all 1-450、微软脱敏数据 1-300 和原本 VDS 95 smoke。
+
+是否影响 contracts：是。`LogicForm` / `AnalysisPlan` 增加 `source_tables`、`table_selection_reason`、`join_plan`。
+
+是否影响 API_CONTRACT：是。新增 `/api/data-agent/upload-batch`，并记录多文件 profile 和 join trace 展示字段。
+
+是否影响 tracing：是。RunTrace 增加 `source_tables`、`table_selection_reason`、`join_plan`、`join_execution_summary`。
+
+是否影响 errors：是。无可信 join key、多对多风险、多表未 join 和 ID fallback 必须通过 verification / correction_action / warnings / errors 表达。
+
+状态：2026-05-23 已完成。全量 unittest 已随 Phase 10 收口更新到 `147 tests OK`；Phase 8 mock / 离线门禁为 DABstep dev `9/10`、DABstep public all `450/450`、微软脱敏数据 `300/300`、原本 VDS `95/95`，关键风险指标为 0。真实 DeepSeek representative 已补跑：DABstep dev `9/10`、微软脱敏数据 1-20 `20/20`、原本 VDS 五域 15 题 `15/15`；Phase 10 after-fix full real 已补跑三数据集，DABstep public all `450/450` 执行覆盖、Microsoft `300/300`、VDS 95 smoke `95/95`。
+
+### Phase 9 Frontend Workbench
+
+目标：在 Phase 8 核心算法和 API 契约通过后，交付前端产品化首版，把多文件、多表、澄清和结果契约展示为可操作 workbench。
+
+影响模块：frontend、backend/main.py、README.md、docs/API_CONTRACT.md。
+
+优先级：P0，阶段：Phase 9。
+
+验收标准：支持单文件 / 多文件上传、文件 / sheet / table profile 预览、问题提交、结果表格、verification、warnings、errors、join plan trace、join execution summary 和 run history；前端不实现指标公式、join、排序聚合、评分或核心数据计算。
+
+风险：如果前端开始自行计算指标或 join，会破坏 Phase 8 已冻结的后端契约和 Verifier 安全边界；如果前端依赖 debug 进行业务计算，会导致稳定契约漂移。
+
+泛化验证方式：用 mocked API route 做桌面 / 移动浏览器 smoke，确认页面能展示多文件 profile、join trace、warnings / errors / verification；核心算法继续以后端单元测试和 benchmark 门禁验证。
+
+是否影响 contracts：否。首版前端只消费既有契约。
+
+是否影响 API_CONTRACT：是。记录 `/workbench`、`/frontend`、`upload-batch` 和 join trace 展示边界。
+
+是否影响 tracing：否。首版只展示 Phase 8 trace 字段。
+
+是否影响 errors：否。首版只展示后端 errors。
+
+状态：2026-05-23 已完成首版。`backend/main.py` 挂载 `/frontend` 和 `/workbench`；前端 smoke 无 console / page error，截图为 `outputs/phase9_workbench_desktop_20260523.png` 和 `outputs/phase9_workbench_mobile_20260523.png`。
+
+### Phase 7.5 Tool / Safety
+
+目标：硬化受控工具层和安全边界，使 ToolDispatcher、工具 schema、角色权限、timeout、错误归一化和 trace-safe summary 能支撑真实 provider tool loop。
+
+影响模块：agent_runtime、data_agent_core/configs、data_agent_core/executors、data_agent_core/tracing、tests/agent_runtime、tests/architecture。
+
+优先级：P0，阶段：Phase 7.5。
+
+验收标准：未知工具、缺参数、类型错误、角色越权、timeout 和 callable failure 都返回结构化 ToolResult；Pandas / NumPy 白名单、SQL / DuckDB read-only 限制、文件访问根目录策略明确；工具 trace 不含完整 Chain of Thought、raw reasoning tokens、API key 或敏感原始数据。
+
+风险：如果工具层过早开放自由 Python、自由 SQL、shell、网络或外部文件访问，会破坏可复现性和安全边界。
+
+泛化验证方式：工具 focused tests、architecture tests、DABstep dev 1-10、DABstep public all 1-450 mock、Microsoft 1-300 mock scorer 和 VDS 95 smoke 均不退步。
+
+是否影响 contracts：可能影响内部 Tool contract；如字段变更必须同步 agent_runtime docs。
+
+是否影响 API_CONTRACT：否，后端稳定 API 不因工具硬化变更。
+
+是否影响 tracing：是。只允许扩展 trace-safe 工具摘要，不记录敏感内容。
+
+是否影响 errors：可能影响工具错误归一化；新增错误类型必须同步测试和文档。
+
+### Phase 7.6 Provider-native Smoke
+
+目标：接入真实 OpenAI / DeepSeek provider-native tool loop smoke，验证 provider tool call 能映射为内部 ToolCall 并经过 ToolDispatcher。
+
+影响模块：agent_runtime/provider_native_tool_adapter.py、data_agent_core/llm、agent_runtime/tool_dispatcher.py、tests/agent_runtime。
+
+优先级：P0，阶段：Phase 7.6。
+
+验收标准：真实 smoke 可完成 profile_schema、build_analysis_plan、execute_pandas_plan、execute_sql_plan、verify_results、build_chart_spec、generate_insight 的闭环；记录 provider、model、latency、cost、prediction hash 和 report hash；没有 key 时只运行 mock，不冒充真实 provider 结果。
+
+风险：如果把 provider-native adapter 设为生产默认链路，或绕过 ToolDispatcher，会让模型获得不受控执行能力。
+
+泛化验证方式：mock provider loop 和真实 provider smoke 分开记录；三数据集 non-regression gate 必须通过。
+
+是否影响 contracts：不应改变内部 ToolDefinition / ToolCall / ToolResult 契约。
+
+是否影响 API_CONTRACT：否。
+
+是否影响 tracing：是。新增真实 provider smoke metadata 时必须保持 trace-safe。
+
+是否影响 errors：否，除非新增 provider transient failure 归一化类型。
+
+### Phase 7.7 DuckDB Runtime
+
+目标：把 DuckDB 作为 SQL 目标执行层，sqlite 仅保留 fallback，增强执行层可信度、覆盖率和可审计性。
+
+影响模块：data_agent_core/executors、data_agent_core/core/capability_registry.py、data_agent_core/verifier、data_agent_core/tracing、tests/core。
+
+优先级：P1，阶段：Phase 7.7。
+
+验收标准：DuckDB 只允许 read-only SELECT / CTE、单语句、受控 limit / preview；结果必须经过 Result Normalizer、Verifier 和 trace 摘要；sqlite fallback 不退化。
+
+风险：如果把模型输出的 raw SQL 直接执行，或让 DuckDB 路径复制 Pandas / Verifier 业务逻辑，会破坏安全边界和一致性。
+
+泛化验证方式：合成 SQL-compatible 用例、Pandas / DuckDB covered-subset consistency、DABstep / Microsoft / VDS 三数据集回归。
+
+是否影响 contracts：可能影响 executor capability metadata。
+
+是否影响 API_CONTRACT：否。
+
+是否影响 tracing：是。需要记录 DuckDB execution summary，但不得记录敏感原始数据。
+
+是否影响 errors：可能新增 read-only SQL guardrail 失败归因。
+
+### Phase 7.8 Multi-Agent Parallel / Retry
+
+目标：在当前顺序 multi-agent 基线之上，增加 executor 有限并行和 bounded correction retry。
+
+影响模块：agent_runtime、multi_agent_workflows、data_agent_core/verifier、data_agent_core/tracing、tests/multi_agent_workflows。
+
+优先级：P1，阶段：Phase 7.8。
+
+验收标准：Pandas / SQL / DuckDB executor 可有限并行；Planner、Verifier、Correction 的核心决策不并行；semantic mismatch、tool error、format mismatch 和 capability_gap 分开触发固定最大轮数的 correction retry；所有 attempt 写入 trace。
+
+风险：如果并行破坏 WorkflowState 一致性、trace 可复现性或 Verifier 边界，会导致不可审计的 Agent 行为。
+
+泛化验证方式：每个 Agent 独立测试、WorkflowState 序列化测试、三数据集 non-regression gate。
+
+是否影响 contracts：可能影响 WorkflowState / AgentResult 内部字段。
+
+是否影响 API_CONTRACT：否。
+
+是否影响 tracing：是。必须记录并行 executor 和 retry 摘要。
+
+是否影响 errors：可能影响 retry reason 分类。
+
+### Phase 7.9 MAF Demo
+
+目标：验证 Microsoft Agent Framework 作为可选承载层映射 AgentRole、ToolDefinition、ToolCall、ToolResult 和 WorkflowState。
+
+影响模块：ms_agent_framework_adapter、agent_runtime、requirements-ms-agent.txt、tests/ms_agent_framework_adapter。
+
+优先级：P2，阶段：Phase 7.9。
+
+验收标准：真实 MAF demo 或 cloud workflow 能承载内部角色和白名单工具映射；本地未安装 agent-framework 时仍给出清晰错误；data_agent_core 不 import ms_agent_framework_adapter 或 agent_framework。
+
+风险：如果 adapter 承载核心算法，会导致未来无法替换框架；如果把 agent-framework 变成核心依赖，会破坏依赖边界。
+
+泛化验证方式：fake framework tests、真实 demo smoke、dependency boundary test、三数据集 non-regression gate。
+
+是否影响 contracts：不应改变核心数据契约；只允许 adapter mapping。
+
+是否影响 API_CONTRACT：否。
+
+是否影响 tracing：仅可记录 adapter / workflow 摘要。
+
+是否影响 errors：否。
+
+### Phase 7.10 ACI / Complex BI
+
+目标：补齐 `best_fraud_aci_choice`、ACI associated cost、fee what-if candidate table、candidate-pair / rule semantics，以及 VDS 趋势、状态影响、毛利率、支付 / 配送 / 付费方式等复杂中文 BI 问法。
+
+影响模块：data_agent_core/core、data_agent_core/executors、data_agent_core/verifier、agent_runtime、multi_agent_workflows、tests/core、tests/benchmark。
+
+优先级：P0，阶段：Phase 7.10。
+
+验收标准：每个新增能力族有合成或非 Benchmark 用例、同类变体、中文字段 / 中文问题用例和旧代表回归；DABstep dev 1-10、DABstep public all 1-450 mock、Microsoft 1-300 和 VDS 95 smoke 不退步。
+
+风险：如果按 task_id、题面、public proxy、accepted answer、hidden answer、固定样本值或当前错误形态修复，就是伪泛化补丁。
+
+泛化验证方式：能力族报告必须说明 supported inputs、unsupported boundaries、合成/同类验证和三数据集回归。
+
+是否影响 contracts：可能影响 LogicForm / AnalysisPlan 能力字段。
+
+是否影响 API_CONTRACT：通常否；如新增稳定前端展示字段必须先更新 API_CONTRACT。
+
+是否影响 tracing：是。需要记录 candidate table / selected candidate / semantic verification 摘要。
+
+是否影响 errors：可能新增 capability gap 或 semantic mismatch 细分。
+
+### Phase 9.1 Workbench Confirmation
+
+目标：在 Phase 9 首版 workbench 后新增字段确认、join key 确认、低置信度澄清交互和评测回看面板。
+
+影响模块：frontend、backend API 调用壳、docs/API_CONTRACT.md、tests/backend、浏览器 smoke。
+
+优先级：P1，阶段：Phase 9.1。
+
+验收标准：前端只收集用户确认和展示后端结果；不实现指标公式、join、排序、聚合或评分；桌面 / 移动 smoke 无 console error。
+
+风险：如果前端依赖 debug 字段做业务计算，或把核心计算搬到浏览器，会破坏 Phase 8 / Phase 9 边界。
+
+泛化验证方式：mocked API route 的桌面 / 移动 smoke，后端仍用三数据集 non-regression gate 守护核心算法。
+
+是否影响 contracts：否，除非确认交互需要新增稳定请求字段。
+
+是否影响 API_CONTRACT：可能影响；新增稳定确认字段前必须先更新 API_CONTRACT。
+
+是否影响 tracing：否。首版只展示 trace-safe 字段。
+
+是否影响 errors：否。只展示后端 errors / warnings。
+
+### Phase 10 Visualization / Insight / Quality / Process View
+
+目标：让 verified result 具备自动图表、洞察建议、数据质量报告和安全过程可视化。
+
+影响模块：data_agent_core/contracts、data_agent_core/output、data_agent_core/core、agent_runtime、multi_agent_workflows、backend、frontend、tests/core、docs/API_CONTRACT.md。
+
+优先级：P0，阶段：Phase 10。
+
+状态：2026-05-23 已完成首版并完成 after-fix full real 收口。ChartSpec v2 支持 bar / horizontal_bar / line / pie / donut / histogram / KPI；InsightResult v2 支持 key_numbers、anomaly_findings、volatility_findings、business_suggestions、caveats；DataQualityReport 支持 upload/profile 和 analyze 响应，且上传表质量报告已缓存到 dataset profile；reasoning_trace_view 只展示结构化过程摘要，不暴露完整 Chain of Thought。验收结果：Full unittest `147 tests OK`，DABstep dev `9/10`，DABstep public all mock `450/450`，Microsoft 1-300 mock `300/300`，VDS 95 smoke `95/95`；真实 DeepSeek full 为 DABstep public all `450/450` 执行覆盖、Microsoft `300/300`、VDS 95 smoke `95/95`，汇总在 `outputs/phase10_full_real_three_dataset_deepseek_20260523_summary_after_fix.json`。
+
+验收标准：前端只渲染后端契约；用户问“文件有什么问题”时返回质量扫描报告；图表自动选择不由前端计算；trace view 不包含 `chain_of_thought`、`cot`、`hidden_reasoning`、`full_reasoning`、API key 或 hidden answer。
+
+风险：如果前端自行实现图表选择、异常规则或清洗逻辑，会破坏核心算法在后端 / data_agent_core 的边界；如果展示 raw CoT，会破坏 trace redaction 安全边界。
+
+泛化验证方式：中文上传表合成用例、chart / insight / quality / trace 单元测试、backend service smoke、DABstep / Microsoft / VDS 三数据集 non-regression gate。
+
+是否影响 contracts：是。扩展 FinalResponse、ChartSpec、InsightResult，并新增 DataQualityReport / ReasoningTraceStep。
+
+是否影响 API_CONTRACT：是。新增 `quality_report`、`reasoning_trace_view` 和 chart / insight v2 字段说明。
+
+是否影响 tracing：是。RunTrace 增加 quality_report 和 reasoning_trace_view。
+
+是否影响 errors：否。首版复用现有 warnings / errors，不新增错误类型。
+
+### Phase 11 Conversation Isolation / Session Persistence / Quiet Process UX
+
+目标：把 Workbench 从单页内存状态升级为可恢复的 GPT-like 会话式数据分析体验，支持会话隔离、历史续聊、多窗口独立对话和未来用户隔离升级。
+
+影响模块：backend、backend/storage、backend/routers、frontend、docs/API_CONTRACT.md、tests/backend、浏览器 smoke。
+
+优先级：P0，阶段：Phase 11。
+
+状态：Planned / Not implemented yet。本条只记录计划和边界，不代表 conversation endpoints、`conversation_id` 或 owner isolation 已经可用。
+
+验收标准：新增 `conversation_id` 会话层；每个会话独立保存消息、当前 dataset、runs 和最近结果；无 `conversation_id` 的新窗口默认创建独立会话；带同一 `conversation_id` 的窗口恢复同一历史；历史 Chat 从后端会话列表加载；旧 `dataset_id` analyze / upload 调用继续兼容。
+
+UX 验收标准：过程展示默认只占一行，使用小号浅灰文字展示最新安全摘要，例如“用户提到了‘城市订单金额’，我会先确认城市字段和金额字段。”；右侧或末尾提供 `查看过程` / `查看 N 步` 点击提示；展开后只显示用户可理解的结构化步骤，不展示后端审计 JSON、quality_report、warnings、verification、join trace 或完整 Chain of Thought。
+
+未来用户隔离预留：conversation schema 必须预留 `owner_type`、`owner_id`、`tenant_id`、`created_by` 或统一 `owner_context`；v1 可使用 local anonymous scope，但所有 list / get / update / upload / analyze 的服务层接口都要保留 backend owner filter 边界，不能只靠前端隐藏历史。
+
+风险：如果只用 browser localStorage 存完整历史，会导致多窗口、重启和未来多用户隔离不可控；如果把 raw CoT 或后端术语直接展示给用户，会破坏安全边界和 GPT-like 体验；如果前端根据历史自行做 join、聚合、排序或评分，会破坏核心算法边界。
+
+测试方式：backend 单测覆盖 create/list/get/update conversation、upload 绑定会话、analyze 追加到正确会话、两个会话互不串线、旧无 `conversation_id` 调用兼容、raw CoT 禁止字段不出现在响应；前端测试覆盖 URL `conversation_id` 恢复、新建聊天生成新会话、历史列表加载和安静过程展开；浏览器 smoke 覆盖两个窗口上传不同 CSV 并提问、回到历史会话继续提问、同一 URL 恢复同一会话。
+
+是否影响 contracts：是。新增 planned conversation schema 和可选 `conversation_id` / owner 字段。
+
+是否影响 API_CONTRACT：是。必须先记录 planned endpoints 和兼容策略，再实现。
+
+是否影响 tracing：是。只能复用或派生 trace-safe `reasoning_trace_view` 摘要，不新增 raw CoT、raw prompt 或 raw reasoning token 暴露面。
+
+是否影响 errors：可能。实现时可复用现有 errors；如新增 conversation not found / owner mismatch 等稳定错误类型，必须先写入 API_CONTRACT 和 tests。
+
 ## TODO
 
 - 新功能进入开发前，先确认是否影响 contracts / API_CONTRACT / tracing / errors。
-- Phase 7.1 优先推进 DABstep submission gate、Easy / Hard 风险报告、最终答案格式收敛和 Easy 基础能力族闭环。
-- Phase 7 继续推进真实 OpenAI / DeepSeek provider-native tool loop、DuckDB runtime、ACI associated cost 通用口径、复杂并行/多轮自纠、更多真实 LLM 大规模回归、更多中文真实业务表、多表场景、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 问法。
+- Phase 7.5 - 7.10 必须按编号推进，且每个工程阶段都要通过 DABstep、Microsoft 和 VDS 三数据集 non-regression gate。
+- Phase 8 后续只做 Guardrail，不重开 Phase 8 主体；Phase 9 后续按 Phase 9.1 做确认和回看面板，不把核心计算搬到前端。
+- Phase 11 启动前先实现后端会话持久化和 owner_context 边界，再接前端历史 Chat；不得把本地匿名会话误写成已实现登录权限。

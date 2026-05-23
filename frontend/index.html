@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Virtual Data Scientist Workbench</title>
+    <link rel="icon" href="/frontend/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/frontend/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="历史 Chat">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">V</div>
+          <div>
+            <strong>Virtual Data Scientist</strong>
+            <span>Data analysis chat</span>
+          </div>
+        </div>
+
+        <button id="new-chat-button" class="new-chat-button" type="button" aria-label="新分析">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          新分析
+        </button>
+
+        <section class="history-panel" aria-labelledby="history-title">
+          <div class="history-header">
+            <h2 id="history-title">历史 Chat</h2>
+            <span id="history-count">0</span>
+          </div>
+          <ol id="run-history" class="run-history">
+            <li class="history-empty">上传数据并提问后，这里会显示最近的分析记录。</li>
+          </ol>
+        </section>
+      </aside>
+
+      <main class="chat-workspace">
+        <header class="chat-topbar">
+          <div>
+            <h1>VDS</h1>
+            <p id="dataset-status">等待上传数据集</p>
+          </div>
+          <div class="status-strip" aria-live="polite">
+            <span id="api-status" class="status-dot idle">准备就绪</span>
+            <span id="dataset-chip" class="dataset-chip">未上传数据</span>
+          </div>
+        </header>
+
+        <section id="chat-messages" class="chat-messages" aria-live="polite">
+          <article class="message assistant-message welcome-message">
+            <div class="avatar" aria-hidden="true">V</div>
+            <div class="message-content">
+              <h2>今天要分析什么数据？</h2>
+              <p class="message-copy">上传 CSV 或 Excel，然后直接提问。我会像对话一样展示理解、选择数据、分析和回答的过程。</p>
+            </div>
+          </article>
+
+          <article id="profile-message" class="message assistant-message hidden">
+            <div class="avatar" aria-hidden="true">V</div>
+            <div class="message-content">
+              <section class="analysis-block profile-panel" aria-labelledby="profile-title">
+                <div class="block-header">
+                  <div>
+                    <h2 id="profile-title">已读取数据</h2>
+                    <p id="profile-summary">暂无数据概览</p>
+                  </div>
+                </div>
+                <div id="table-list" class="table-list empty-state">上传后显示文件、sheet、表名和行列数。</div>
+                <div class="field-table-wrap">
+                  <table class="field-table">
+                    <thead>
+                      <tr>
+                        <th>字段</th>
+                        <th>类型</th>
+                        <th>样例</th>
+                      </tr>
+                    </thead>
+                    <tbody id="field-table-body">
+                      <tr><td colspan="3" class="muted-cell">选择一个表查看字段预览。</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </article>
+
+          <article id="result-message" class="message assistant-message hidden">
+            <div class="avatar" aria-hidden="true">V</div>
+            <div class="message-content result-stack">
+              <section class="analysis-block result-panel" aria-labelledby="result-title">
+                <div class="block-header">
+                  <div>
+                    <h2 id="result-title">分析结果</h2>
+                    <p id="result-status">尚未运行</p>
+                  </div>
+                </div>
+                <div id="answer" class="answer-box">-</div>
+                <div id="chart-panel" class="chart-panel empty-state">分析完成后会生成适合的图表或重点结果。</div>
+                <div id="result-table" class="result-table empty-state">结果表会显示在这里。</div>
+              </section>
+
+              <section class="analysis-block insight-panel" aria-labelledby="insight-title">
+                <div class="block-header compact">
+                  <h2 id="insight-title">简要结论</h2>
+                </div>
+                <div id="insight-summary" class="insight-summary muted-cell">暂无洞察。</div>
+                <ul id="insight-list" class="compact-list"></ul>
+              </section>
+
+              <section class="analysis-block process-panel" aria-labelledby="process-title">
+                <div class="block-header compact process-header">
+                  <div>
+                  <h2 id="process-title">正在做什么</h2>
+                    <p id="process-summary">我会在这里展示当前正在处理的步骤。</p>
+                  </div>
+                </div>
+                <ol id="process-timeline" class="process-timeline" aria-live="polite">
+                  <li class="muted-cell">提问后显示分析过程。</li>
+                </ol>
+              </section>
+            </div>
+          </article>
+        </section>
+
+        <section class="composer-shell" aria-label="对话输入">
+          <div class="composer">
+            <textarea id="question-input" rows="1" placeholder="向 VDS 提问，例如：哪个城市订单金额最高？"></textarea>
+            <div class="composer-actions">
+              <div class="upload-controls" aria-label="文件上传">
+                <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls" />
+                <label class="icon-button upload-pick-button" for="file-input" title="选择文件" aria-label="选择文件">
+                  <svg viewBox="0 0 24 24"><path d="m21.4 11.6-8.5 8.5a5 5 0 0 1-7.1-7.1l9-9a3.2 3.2 0 0 1 4.5 4.5l-9.1 9.1a1.5 1.5 0 0 1-2.1-2.1l8.3-8.3" /></svg>
+                </label>
+                <button id="upload-button" class="button secondary upload-button" type="button" disabled>上传</button>
+                <div class="file-status" aria-live="polite">
+                  <strong id="file-summary">选择文件</strong>
+                  <span id="file-detail">CSV / Excel 支持多选</span>
+                </div>
+              </div>
+              <div class="controls-row">
+                <label>
+                  执行
+                  <select id="execution-mode">
+                    <option value="auto">auto</option>
+                    <option value="dual">dual</option>
+                    <option value="pandas">pandas</option>
+                    <option value="sql">sql</option>
+                  </select>
+                </label>
+                <label>
+                  Agent
+                  <select id="agent-mode">
+                    <option value="multi_agent">multi_agent</option>
+                    <option value="single_agent">single_agent</option>
+                  </select>
+                </label>
+              </div>
+              <button id="run-button" class="button primary" type="button" disabled>
+                <span>发送</span>
+                <svg viewBox="0 0 24 24"><path d="m5 12 14-8-5 16-3-6-6-2Z" /></svg>
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="/frontend/app.js" type="module"></script>
+  </body>
+</html>

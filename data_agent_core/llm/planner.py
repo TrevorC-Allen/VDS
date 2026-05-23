@@ -53,6 +53,7 @@ SUPPORTED_OPERATIONS = {
     "boolean_percentage",
     "boolean_count_ratio",
     "duplicate_check",
+    "data_quality_report",
     "not_applicable",
     "vds_period_rank_change",
     "vds_period_delta_top",
@@ -60,6 +61,7 @@ SUPPORTED_OPERATIONS = {
     "vds_period_threshold_count",
     "vds_period_rate_top",
     "vds_current_threshold_top",
+    "vds_current_category_share_top",
     "vds_peer_anomaly",
 }
 

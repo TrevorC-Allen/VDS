@@ -38,9 +38,7 @@ class DataAgentService:
         """Parse an uploaded CSV / Excel file and return its dataset profile."""
 
         try:
-            parsed = parse_dataset_file(file_path)
-            if original_filename:
-                parsed.profile.file_name = original_filename
+            parsed = parse_dataset_file(file_path, source_name=original_filename)
             self.file_store.save_parsed_dataset(file_path, parsed)
             return dataset_profile_response(parsed.profile)
         except Exception as exc:  # noqa: BLE001 - service must normalize API errors.
@@ -51,6 +49,27 @@ class DataAgentService:
                     failed_step="upload_dataset",
                     recoverable=True,
                     suggested_fix="Upload a supported CSV or Excel file with a readable header row.",
+                )
+            )
+
+    def upload_datasets(
+        self,
+        file_paths: list[str | Path],
+        original_filenames: list[str | None] | None = None,
+    ) -> dict[str, Any]:
+        """Parse multiple uploaded CSV / Excel files into one dataset profile."""
+
+        try:
+            stored = self.file_store.save_uploaded_files(file_paths, original_filenames=original_filenames)
+            return dataset_profile_response(stored.profile)
+        except Exception as exc:  # noqa: BLE001 - service must normalize API errors.
+            return error_response(
+                error=ErrorResult(
+                    error_type=FILE_PARSE_ERROR,
+                    error_message=str(exc),
+                    failed_step="upload_datasets",
+                    recoverable=True,
+                    suggested_fix="Upload one or more supported CSV or Excel files with readable header rows.",
                 )
             )
 
