@@ -25,13 +25,32 @@ def parse_vds_bi_question(question: str, tables: dict[str, pd.DataFrame], guidel
     table_name, df = _select_vds_bi_table(tables)
     if df is None or not table_name:
         return None
-    metric = _extract_metric_column(question, df)
     entity = _extract_entity_column(question, df)
-    if not metric or not entity:
+    if not entity:
         return None
     current_period, previous_period = _extract_period_pair(question)
     limit = _extract_limit(question, default=10)
     output_format = {"guidelines": guidelines, "answer_type": "table"}
+    category_condition = _extract_category_condition(question, df)
+    if "占比" in question and category_condition and ("Top" in question or "top" in question or "前" in question or "最高" in question):
+        category_column, category_value = category_condition
+        return make_logic_form(
+            task_type="ranking",
+            operation="vds_current_category_share_top",
+            parameters={
+                "table": table_name,
+                "entity": entity,
+                "category_column": category_column,
+                "category_value": category_value,
+                "current_period": current_period,
+                "limit": limit,
+            },
+            output_format=output_format | {"answer_type": "table", "decimals": 2},
+        )
+
+    metric = _extract_metric_column(question, df)
+    if not metric:
+        return None
 
     if "排名" in question and ("下降" in question or "上升" in question):
         return make_logic_form(
@@ -268,4 +287,15 @@ def _extract_filter_value(question: str, df: pd.DataFrame) -> str | None:
     for value in values:
         if value in question:
             return value
+    return None
+
+
+def _extract_category_condition(question: str, df: pd.DataFrame) -> tuple[str, str] | None:
+    for column in ("状态", "人员类型", "患者类型", "客户类型", "项目类别", "科室", "货品类别", "套餐名称"):
+        if column not in df.columns:
+            continue
+        values = sorted((str(value) for value in df[column].dropna().unique()), key=len, reverse=True)
+        for value in values:
+            if value and value in question:
+                return column, value
     return None

@@ -26,6 +26,8 @@
 
 2026-05-23 更新：Phase 10 首版结果体验增强已落地。analyze 响应稳定返回或预留 `chart`、`insight`、`quality_report`、`reasoning_trace_view`；upload/profile 响应可返回 `quality_report`。`reasoning_trace_view` 只允许展示结构化阶段摘要，不允许返回完整 Chain of Thought、raw reasoning tokens、raw prompt、API key 或 hidden benchmark answer。
 
+2026-05-23 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已进入 planned contract。本节新增的 conversation endpoints、`conversation_id` 和 owner 隔离字段均为计划契约，当前尚未实现；旧的 `dataset_id` 调用方式必须继续兼容。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
@@ -40,6 +42,53 @@
 10. 多文件 / 多表场景中，后端必须显式返回或记录表选择和 join 依据；低置信度路由、无可信 join key 或多对多风险必须以结构化 warning / error / verification 体现。
 11. Phase 10 前端只能渲染后端 `chart`、`insight`、`quality_report`、`reasoning_trace_view` 字段，不得自行推断图表类型、异常规则、清洗动作或分析过程。
 12. `reasoning_trace_view` 是安全过程视图，不是完整 Chain of Thought；任何 `chain_of_thought`、`cot`、`hidden_reasoning`、`full_reasoning` 字段都不得进入稳定响应。
+13. Phase 11 planned conversation API 必须以后端 `conversation_id` 作为会话连续性主键；前端不得用本地内存 run history 冒充可恢复历史。
+14. Phase 11 planned owner 字段只用于预留未来隔离边界；v1 本地匿名实现不得宣称已经具备真实登录、鉴权、多租户或企业级权限。
+15. GPT-like 过程展示只能使用安全摘要字段，默认显示单行浅灰小字摘要，点击后展开结构化步骤；不得在主界面展示 raw CoT、后端审计 JSON、quality_report、warnings、verification 或 join trace。
+
+## Planned Phase 11 Conversation APIs
+
+目标：为 Workbench 提供可恢复的会话层，使每个对话、窗口和历史 Chat 都能通过 `conversation_id` 明确隔离。该能力当前为计划契约，尚未实现。
+
+计划 endpoints：
+
+- `POST /api/data-agent/conversations`
+- `GET /api/data-agent/conversations`
+- `GET /api/data-agent/conversations/{conversation_id}`
+- `PATCH /api/data-agent/conversations/{conversation_id}`
+
+计划中的 conversation 字段：
+
+- conversation_id
+- title
+- active_dataset_id
+- messages
+- runs
+- created_at
+- updated_at
+- owner_type
+- owner_id
+- tenant_id
+- created_by
+
+计划中的 owner 语义：
+
+- v1 可使用 `owner_type=local_anonymous` 表示本地匿名会话。
+- `owner_id`、`tenant_id`、`created_by` 和 `owner_context` 只作为未来用户隔离预留字段。
+- 未来接入真实认证后，所有 list / get / update / upload / analyze 都必须通过 backend owner filter 过滤，不能只靠前端隐藏历史记录。
+
+兼容策略：
+
+- 现有只传 `dataset_id` 的 upload / analyze / profile / run 调用继续可用。
+- `conversation_id` 在 Phase 11 初始实现中应为可选字段；由 Workbench UI 优先创建并传入。
+- 老客户端不传 `conversation_id` 时，后端不得破坏当前数据分析链路。
+
+Quiet Process UX 契约：
+
+- `reasoning_trace_view` 继续只返回安全结构化摘要。
+- 前端可从最新 step 派生 `latest_process_summary`，例如“用户提到了‘城市订单金额’，我会先确认城市字段和金额字段。”。
+- 展开详情只能展示用户可理解步骤，例如理解问题、定位数据、选择分析方式、生成结果、核对回答。
+- API 不得新增或透传 `chain_of_thought`、`cot`、`hidden_reasoning`、`full_reasoning`、raw prompt 或 raw reasoning tokens。
 
 ## POST /api/data-agent/upload
 
@@ -85,6 +134,13 @@ quality_report 当前可包含：
 - issues
 - generated_from
 
+Phase 11 planned request extension：
+
+- conversation_id，可选；用于把上传结果绑定到指定会话。
+- owner_type，可选；v1 可为 `local_anonymous`。
+- owner_id，可选；未来由认证层注入或校验。
+- tenant_id，可选；未来由认证层注入或校验。
+
 ## POST /api/data-agent/upload-batch
 
 目标：一次接收多个 CSV / Excel 文件，解析为同一个 dataset，返回可审计的多文件 DatasetProfile。
@@ -116,6 +172,11 @@ quality_report 当前可包含：
 - table_name 必须在一个 dataset 内唯一；CSV 默认使用源文件 stem，Excel 多 sheet 默认使用 `文件stem__sheet`。
 - 旧单文件 `/upload` 仍保持原契约。
 
+Phase 11 planned request extension：
+
+- conversation_id，可选；用于把多文件 dataset 绑定到指定会话。
+- owner_type / owner_id / tenant_id，可选；仅作为未来用户隔离预留，不代表当前已实现鉴权。
+
 ## POST /api/data-agent/analyze
 
 目标：接收 dataset_id、用户问题、execution_mode 和可选 agent_mode，返回分析结果、校验信息、解释建议和图表配置。
@@ -135,6 +196,11 @@ agent_mode 预留：
 - single_agent
 
 默认建议：multi_agent。
+
+Phase 11 planned request extension：
+
+- conversation_id，可选；用于把用户问题、assistant 结果、run_id、dataset_id 和过程摘要追加到指定会话。
+- owner_type / owner_id / tenant_id，可选；未来应由 backend owner_context 统一解析，不能信任前端自报字段完成权限隔离。
 
 稳定字段草案：
 
@@ -404,9 +470,17 @@ inline table 对象也可携带 `source_file` 和 `sheet`，用于 Phase 8 多�
 - 前端只调用 `/api/data-agent/upload`、`/api/data-agent/upload-batch`、`/api/data-agent/analyze`。
 - 前端不得实现指标公式、join、排序聚合或评分逻辑；这些逻辑必须保留在 backend / data_agent_core。
 
+Phase 11 planned behavior：
+
+- URL 使用 `/workbench?conversation_id=...` 定位当前会话。
+- 无 `conversation_id` 的新窗口默认创建独立会话。
+- 左侧历史 Chat 从 conversation API 加载，不再只依赖前端内存。
+- 过程展示默认只显示一条小号浅灰摘要，点击后展开安全结构化步骤。
+
 ## TODO
 
 - 后续如引入真实 FastAPI 部署配置，需要保持 router 只调用 service，不写核心算法。
 - 后续补充更多失败响应示例。
 - 后续补充 storage retention 和最大文件大小的可配置项。
 - 后续如把字段确认、join key 确认或澄清交互升级为稳定产品能力，必须先扩展 API_CONTRACT，再实现前端。
+- Phase 11 实现前，必须先落地 conversation store、owner_context 过滤边界和旧 `dataset_id` 调用兼容测试。

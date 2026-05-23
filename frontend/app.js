@@ -3,6 +3,8 @@ const state = {
   profile: null,
   selectedTable: "",
   runHistory: [],
+  progressTimer: null,
+  progressStep: 0,
 };
 
 const el = {
@@ -30,17 +32,8 @@ const el = {
   resultTable: document.querySelector("#result-table"),
   insightSummary: document.querySelector("#insight-summary"),
   insightList: document.querySelector("#insight-list"),
-  qualityScore: document.querySelector("#quality-score"),
-  qualitySummary: document.querySelector("#quality-summary"),
-  qualityList: document.querySelector("#quality-list"),
-  verificationBadge: document.querySelector("#verification-badge"),
-  sourceTables: document.querySelector("#source-tables"),
-  selectionReason: document.querySelector("#selection-reason"),
-  joinPlan: document.querySelector("#join-plan"),
-  joinSummary: document.querySelector("#join-summary"),
+  processSummary: document.querySelector("#process-summary"),
   processTimeline: document.querySelector("#process-timeline"),
-  warningsErrors: document.querySelector("#warnings-errors"),
-  clarification: document.querySelector("#clarification"),
   runHistory: document.querySelector("#run-history"),
   historyCount: document.querySelector("#history-count"),
 };
@@ -95,10 +88,10 @@ async function uploadFiles() {
     clearResult();
     setApiStatus("ready", "数据集已就绪");
     el.fileSummary.textContent = `${files.length} 个文件已上传`;
-    el.fileDetail.textContent = state.datasetId || files.map((file) => file.name).join(" / ");
+    el.fileDetail.textContent = "可以开始提问";
   } catch (error) {
     setApiStatus("error", "上传失败");
-    renderIssues([], [String(error.message || error)]);
+    renderUserFacingError("上传失败", String(error.message || error));
   } finally {
     el.uploadButton.disabled = false;
     updateRunButton();
@@ -112,6 +105,8 @@ async function runAnalysis() {
     return;
   }
   appendUserMessage(question);
+  el.questionInput.value = "";
+  renderProgress(question);
   setApiStatus("idle", "分析中");
   el.runButton.disabled = true;
   try {
@@ -129,12 +124,14 @@ async function runAnalysis() {
     if (!response.ok) {
       throw new Error(errorText(result) || `HTTP ${response.status}`);
     }
+    stopProgress();
     result.question = question;
     renderResult(result);
-    setApiStatus(result.success ? "ready" : "error", result.success ? "分析完成" : "需要处理");
+    setApiStatus(result.success ? "ready" : "error", result.success ? "分析完成" : "需要继续确认");
   } catch (error) {
+    stopProgress();
     setApiStatus("error", "分析失败");
-    renderIssues([], [String(error.message || error)]);
+    renderUserFacingError("分析失败", String(error.message || error));
   } finally {
     updateRunButton();
   }
@@ -147,13 +144,13 @@ function updateRunButton() {
 function renderProfile() {
   const profile = state.profile;
   const tables = profile?.tables || [];
-  el.datasetChip.textContent = `dataset_id: ${state.datasetId || "-"}`;
+  el.datasetChip.textContent = state.datasetId ? "数据已上传" : "未上传数据";
   el.datasetStatus.textContent = profile
-    ? `${profile.file_name || "uploaded dataset"} / ${profile.status || "unknown"}`
+    ? `${profile.file_name || "uploaded dataset"} / 数据已就绪`
     : "等待上传数据集";
   el.profileSummary.textContent = profile
     ? `${tables.length} 张表，${tables.reduce((sum, table) => sum + Number(table.row_count || 0), 0)} 行`
-    : "暂无 profile";
+    : "暂无数据概览";
 
   if (!tables.length) {
     el.tableList.className = "table-list empty-state";
@@ -186,7 +183,7 @@ function renderProfile() {
 
 function renderFieldTable(table) {
   if (!table) {
-    el.fieldTableBody.innerHTML = `<tr><td colspan="6" class="muted-cell">选择一个表查看字段画像。</td></tr>`;
+    el.fieldTableBody.innerHTML = `<tr><td colspan="3" class="muted-cell">选择一个表查看字段预览。</td></tr>`;
     return;
   }
   el.fieldTableBody.innerHTML = (table.columns || [])
@@ -195,9 +192,6 @@ function renderFieldTable(table) {
         <tr>
           <td>${escapeHtml(column.name)}</td>
           <td>${escapeHtml(column.inferred_type)}</td>
-          <td>${formatPercent(Number(column.missing_rate || 0) * 100)}</td>
-          <td>${Number(column.unique_count || 0)}</td>
-          <td>${escapeHtml((column.semantic_hints || []).join(", ") || "-")}</td>
           <td>${escapeHtml((column.sample_values || []).slice(0, 3).join(", ") || "-")}</td>
         </tr>
       `,
@@ -206,25 +200,16 @@ function renderFieldTable(table) {
 }
 
 function renderResult(result) {
-  const verification = result.verification || {};
-  const debug = result.debug || {};
   const rows = result.result?.rows || [];
   const columns = result.result?.columns || [];
   el.answer.textContent = result.answer || "-";
-  el.resultStatus.textContent = `${result.success ? "success" : "not successful"} / ${result.run_id || "-"}`;
+  el.resultStatus.textContent = result.success ? "已完成" : "需要继续确认";
   renderRows(rows, columns);
   renderChart(result.chart, rows, columns, result.answer);
   renderInsight(result.insight);
-  renderQuality(result.quality_report || state.profile?.quality_report);
-  renderProcess(result.reasoning_trace_view || []);
-  renderVerification(verification);
-  el.sourceTables.textContent = formatJson(debug.source_tables || result.logic_form?.source_tables || []);
-  el.selectionReason.textContent = debug.table_selection_reason || result.logic_form?.table_selection_reason || "-";
-  el.joinPlan.textContent = formatJson(debug.join_plan || result.logic_form?.join_plan || {});
-  el.joinSummary.textContent = formatJson(debug.join_execution_summary || {});
-  renderIssues(result.warnings || [], result.errors || [], verification);
+  renderProcess(result.reasoning_trace_view || [], result);
   pushHistory(result);
-  revealMessage(el.resultMessage);
+  revealMessage(el.resultMessage, "start");
 }
 
 function renderRows(rows, columns) {
@@ -249,24 +234,20 @@ function renderRows(rows, columns) {
 }
 
 function renderChart(chart, fallbackRows = [], fallbackColumns = [], answer = "") {
+  el.chartPanel.classList.remove("hidden");
   const type = chart?.chart_type;
   const rows = chart?.data?.length ? chart.data : fallbackRows;
   const x = chart?.x || fallbackColumns[0];
   const y = chart?.y || fallbackColumns.find((column) => Number.isFinite(Number(rows?.[0]?.[column])));
   if (!type || type === "kpi" || !rows.length || !x || !y) {
-    el.chartPanel.className = "chart-panel kpi-panel";
-    el.chartPanel.innerHTML = `
-      <div class="kpi-value">${escapeHtml(answer || chart?.title || "-")}</div>
-      <div class="chart-reason">${escapeHtml(chart?.reason || chart?.selection_reason || "单值结果无需图表。")}</div>
-    `;
+    el.chartPanel.className = "chart-panel hidden";
     return;
   }
   const values = rows
     .map((row) => ({ label: String(row[x] ?? ""), value: Number(row[y]) }))
     .filter((item) => item.label && Number.isFinite(item.value));
-  if (!values.length) {
-    el.chartPanel.className = "chart-panel empty-state";
-    el.chartPanel.textContent = "后端返回的 chart spec 没有可绘制数值。";
+  if (values.length <= 1) {
+    el.chartPanel.className = "chart-panel hidden";
     return;
   }
   el.chartPanel.className = "chart-panel";
@@ -310,7 +291,6 @@ function renderBarChart(values, chart, horizontal) {
       <line x1="60" y1="190" x2="580" y2="190" class="axis-line"></line>
       ${bars.join("")}
     </svg>
-    <div class="chart-reason">${escapeHtml(chart?.reason || chart?.selection_reason || "")}</div>
   `;
 }
 
@@ -339,7 +319,6 @@ function renderLineChart(values, chart) {
         )
         .join("")}
     </svg>
-    <div class="chart-reason">${escapeHtml(chart?.reason || chart?.selection_reason || "")}</div>
   `;
 }
 
@@ -364,55 +343,79 @@ function renderPieChart(values, chart, type) {
           .join("")}
       </ul>
     </div>
-    <div class="chart-reason">${escapeHtml(chart?.reason || chart?.selection_reason || "")}</div>
   `;
 }
 
 function renderInsight(insight) {
   el.insightSummary.textContent = insight?.summary || "暂无洞察。";
   const items = [];
-  (insight?.anomaly_findings || []).forEach((item) => items.push({ label: "异常", text: item.message || stringifyIssue(item) }));
-  (insight?.volatility_findings || []).forEach((item) => items.push({ label: "波动", text: item.message || stringifyIssue(item) }));
   (insight?.business_suggestions || insight?.suggestions || []).forEach((text) => items.push({ label: "建议", text }));
-  (insight?.caveats || []).forEach((text) => items.push({ label: "注意", text }));
   el.insightList.innerHTML = items.length
     ? items.map((item) => `<li><strong>${escapeHtml(item.label)}</strong>${escapeHtml(item.text)}</li>`).join("")
     : `<li class="muted-cell">暂无建议。</li>`;
 }
 
-function renderQuality(report) {
-  if (!report) {
-    el.qualityScore.className = "badge neutral";
-    el.qualityScore.textContent = "未扫描";
-    el.qualitySummary.textContent = "上传或分析后显示质量扫描结果。";
-    el.qualityList.innerHTML = "";
-    return;
-  }
-  const score = Number(report.quality_score ?? 0);
-  el.qualityScore.className = `badge ${score >= 80 ? "pass" : score >= 60 ? "warn" : "fail"}`;
-  el.qualityScore.textContent = `${formatNumber(score)} / 100`;
-  el.qualitySummary.textContent = report.summary || `发现 ${Number(report.issue_count || 0)} 个潜在问题。`;
-  const issues = report.issues || [];
-  el.qualityList.innerHTML = issues.length
-    ? issues
-        .slice(0, 8)
-        .map((issue) => `<li><strong>${escapeHtml(issue.severity || "-")} · ${escapeHtml(issue.issue_type || "-")}</strong>${escapeHtml(issue.message || "")}</li>`)
-        .join("")
-    : `<li class="muted-cell">未发现明显问题。</li>`;
+function renderProgress(question) {
+  stopProgress();
+  el.answer.textContent = "正在分析你的问题...";
+  el.resultStatus.textContent = "处理中";
+  el.resultTable.className = "result-table empty-state";
+  el.resultTable.textContent = "结果表会显示在这里。";
+  el.chartPanel.className = "chart-panel empty-state";
+  el.chartPanel.textContent = "分析完成后会生成适合的图表或重点结果。";
+  el.insightSummary.textContent = "正在理解你的问题。";
+  el.insightList.innerHTML = "";
+  revealMessage(el.resultMessage);
+
+  const steps = buildLiveSteps(question);
+  const update = () => {
+    renderProcessItems(
+      steps.map((step, index) => ({
+        ...step,
+        status: index < state.progressStep ? "completed" : index === state.progressStep ? "active" : "pending",
+      })),
+      `正在处理：${steps[state.progressStep]?.title || "生成回答"}`,
+    );
+    state.progressStep = Math.min(state.progressStep + 1, steps.length - 1);
+  };
+  state.progressStep = 0;
+  update();
+  state.progressTimer = window.setInterval(update, 1100);
 }
 
-function renderProcess(steps) {
+function stopProgress() {
+  if (state.progressTimer) {
+    window.clearInterval(state.progressTimer);
+    state.progressTimer = null;
+  }
+}
+
+function renderProcess(steps, result = {}) {
+  if (!steps.length && !result.question && !result.answer) {
+    renderProcessItems([], "提问后显示分析过程。");
+    return;
+  }
+  const friendlySteps = buildFriendlySteps(steps, result);
+  if (!friendlySteps.length) {
+    renderProcessItems([], "提问后显示分析过程。");
+    return;
+  }
+  renderProcessItems(friendlySteps, "已完成本次分析过程。");
+}
+
+function renderProcessItems(steps, summary) {
+  el.processSummary.textContent = summary;
   if (!steps.length) {
-    el.processTimeline.innerHTML = `<li class="muted-cell">运行后显示结构化过程。</li>`;
+    el.processTimeline.innerHTML = `<li class="muted-cell">提问后显示分析过程。</li>`;
     return;
   }
   el.processTimeline.innerHTML = steps
     .map(
       (step) => `
-        <li>
+        <li class="${escapeHtml(step.status || "completed")}">
           <span class="step-dot ${escapeHtml(step.status || "completed")}"></span>
           <div>
-            <strong>${escapeHtml(step.name || step.step_id || "-")}</strong>
+            <strong>${escapeHtml(step.title || "-")}</strong>
             <p>${escapeHtml(step.summary || "")}</p>
           </div>
         </li>
@@ -421,31 +424,118 @@ function renderProcess(steps) {
     .join("");
 }
 
-function renderVerification(verification) {
-  const passed = Boolean(verification.passed);
-  el.verificationBadge.className = `badge ${passed ? "pass" : "fail"}`;
-  el.verificationBadge.textContent = passed ? "通过" : "未通过";
+function buildLiveSteps(question) {
+  return [
+    { title: "理解你的问题", summary: `正在判断你想问什么：${question}` },
+    { title: "选择相关数据", summary: "正在从已上传文件里找到最相关的表。" },
+    { title: "匹配字段含义", summary: "正在识别指标、维度和可能需要关联的字段。" },
+    { title: "制定分析方式", summary: "正在确认是排序、汇总、对比还是其他分析。" },
+    { title: "执行分析", summary: "正在计算结果并组织可展示的数据。" },
+    { title: "生成回答", summary: "正在整理最终答案、图表和用户可读说明。" },
+  ];
 }
 
-function renderIssues(warnings, errors, verification = {}) {
-  const items = [];
-  warnings.forEach((warning) => items.push({ type: "warning", text: stringifyIssue(warning) }));
-  errors.forEach((error) => items.push({ type: "error", text: stringifyIssue(error) }));
-  const action = verification.correction_action;
-  if (action?.action === "clarify_join_key") {
-    el.clarification.classList.remove("hidden");
-    el.clarification.textContent = `需要确认 join key：${action.reason || "后端没有足够置信度执行多表 join。"}`;
-  } else {
-    el.clarification.classList.add("hidden");
-    el.clarification.textContent = "";
+function buildFriendlySteps(steps, result) {
+  const sourceTables = result.debug?.source_tables || result.logic_form?.source_tables || [];
+  const selection = parseSelectionReason(result.debug?.table_selection_reason || result.logic_form?.table_selection_reason || "");
+  const joinText = friendlyJoinText(result.debug?.join_plan || result.logic_form?.join_plan || {});
+  const compact = [
+    { title: "理解问题", summary: result.question ? `你想知道：${result.question}` : "已理解本次提问。" },
+    {
+      title: "选择数据",
+      summary: sourceTables.length ? `使用 ${sourceTables.join("、")}。${selection.note ? ` ${selection.note}` : ""}` : "从上传文件中选择相关数据。",
+    },
+    {
+      title: "匹配字段",
+      summary: [selection.metric ? `指标是 ${selection.metric}` : "", selection.dimension ? `维度是 ${selection.dimension}` : ""].filter(Boolean).join("，") || "已找到回答问题需要的字段。",
+    },
+    { title: "关联数据", summary: joinText },
+    { title: "执行分析", summary: "完成计算，并检查结果可以用于回答。" },
+    { title: "生成回答", summary: result.answer ? `答案是 ${result.answer}。` : "已生成最终回答。" },
+  ];
+  return compact.map((step) => ({ ...step, status: "completed" }));
+}
+
+function friendlyStepTitle(name) {
+  if (name.includes("上传") || name.includes("Profile")) return "读取上传数据";
+  if (name.includes("意图")) return "理解你的问题";
+  if (name.includes("表路由")) return "选择相关数据";
+  if (name.includes("字段")) return "匹配字段含义";
+  if (name.includes("分析计划")) return "制定分析方式";
+  if (name.includes("Join")) return "判断多表关联";
+  if (name.includes("执行")) return "执行分析";
+  if (name.includes("校验") || name.includes("修正")) return "核对结果";
+  if (name.includes("图表")) return "选择展示方式";
+  if (name.includes("洞察")) return "整理结论";
+  if (name.includes("最终")) return "生成回答";
+  return name || "处理步骤";
+}
+
+function friendlyStepSummary(title, step, result, sourceTables, selection, joinText) {
+  if (title === "读取上传数据") return "已读取上传文件，并识别出表、字段和样例。";
+  if (title === "理解你的问题") return result.question ? `已理解你的问题：${result.question}` : friendlySummaryFallback(step);
+  if (title === "选择相关数据") {
+    const selected = sourceTables.length ? `已选择 ${sourceTables.join("、")}。` : friendlySummaryFallback(step);
+    return [selected, selection.note].filter(Boolean).join(" ");
   }
-  if (!items.length) {
-    el.warningsErrors.innerHTML = `<li class="muted-cell">暂无 warnings 或 errors。</li>`;
-    return;
+  if (title === "匹配字段含义") {
+    const parts = [];
+    if (selection.metric) parts.push(`关注指标：${selection.metric}`);
+    if (selection.dimension) parts.push(`分析维度：${selection.dimension}`);
+    return parts.length ? `${parts.join("；")}。` : "已匹配本次问题需要使用的字段。";
   }
-  el.warningsErrors.innerHTML = items
-    .map((item) => `<li class="${item.type}"><strong>${item.type}</strong><br>${escapeHtml(item.text)}</li>`)
-    .join("");
+  if (title === "制定分析方式") return "已确定如何从数据中得到答案。";
+  if (title === "判断多表关联") return joinText;
+  if (title === "执行分析") return "已完成计算并整理出结果数据。";
+  if (title === "核对结果") return "已核对结果可以用于回答。";
+  if (title === "选择展示方式") return "已选择适合本次结果的展示方式。";
+  if (title === "整理结论") return result.insight?.summary || "已整理主要结论。";
+  if (title === "生成回答") return result.answer ? `最终回答：${result.answer}` : "已生成最终回答。";
+  return friendlySummaryFallback(step);
+}
+
+function friendlySummaryFallback(step) {
+  const summary = String(step.summary || "");
+  if (!summary || summary.includes("=") || summary.includes("{") || summary.includes("}")) return "已完成该步骤。";
+  return summary;
+}
+
+function parseSelectionReason(reason) {
+  const parsed = {};
+  reason.split(";").forEach((part) => {
+    const [key, value] = part.split("=").map((item) => item?.trim());
+    if (key && value) parsed[key] = value;
+  });
+  const notes = [];
+  if (reason.includes("explicit_table_mention")) notes.push("命中了你明确提到的数据文件。");
+  if (parsed.join_plan === "trusted") notes.push("本题需要关联多张表，已找到可用关系。");
+  return {
+    metric: parsed.metric,
+    dimension: parsed.dimension,
+    note: notes.join(" "),
+  };
+}
+
+function friendlyJoinText(joinPlan) {
+  if (!joinPlan?.trusted) return "本题不需要关联多张表，或暂未找到需要关联的关系。";
+  const left = joinPlan.left_table || "左表";
+  const right = joinPlan.right_table || "右表";
+  const key = joinPlan.left_key && joinPlan.right_key && joinPlan.left_key === joinPlan.right_key ? joinPlan.left_key : `${joinPlan.left_key || "-"} / ${joinPlan.right_key || "-"}`;
+  return `已判断需要把 ${left} 和 ${right} 按 ${key} 关联后再回答。`;
+}
+
+function renderUserFacingError(title, message) {
+  stopProgress();
+  el.answer.textContent = title;
+  el.resultStatus.textContent = "需要处理";
+  el.resultTable.className = "result-table empty-state";
+  el.resultTable.textContent = "本次没有生成结果表。";
+  el.chartPanel.className = "chart-panel empty-state";
+  el.chartPanel.classList.remove("hidden");
+  el.chartPanel.textContent = "本次没有生成图表。";
+  renderInsight(null);
+  renderProcessItems([{ title, summary: message || "请检查上传文件或稍后重试。", status: "failed" }], "处理没有完成。");
+  revealMessage(el.resultMessage);
 }
 
 function pushHistory(result) {
@@ -461,7 +551,7 @@ function pushHistory(result) {
     .map(
       (item) => `
         <li>
-          <strong>${escapeHtml(item.success ? "success" : "needs review")} / ${escapeHtml(item.runId || "-")}</strong>
+          <strong>${escapeHtml(item.success ? "已完成分析" : "需要继续确认")}</strong>
           <span>${escapeHtml(item.question || "")}</span>
         </li>
       `,
@@ -470,23 +560,17 @@ function pushHistory(result) {
 }
 
 function clearResult() {
+  stopProgress();
   el.resultMessage?.classList.add("hidden");
   el.answer.textContent = "-";
   el.resultStatus.textContent = "尚未运行";
   el.resultTable.className = "result-table empty-state";
   el.resultTable.textContent = "结果表会显示在这里。";
   el.chartPanel.className = "chart-panel empty-state";
-  el.chartPanel.textContent = "图表会根据后端 chart spec 自动展示。";
+  el.chartPanel.classList.remove("hidden");
+  el.chartPanel.textContent = "分析完成后会生成适合的图表或重点结果。";
   renderInsight(null);
-  renderQuality(state.profile?.quality_report);
   renderProcess([]);
-  el.verificationBadge.className = "badge neutral";
-  el.verificationBadge.textContent = "未验证";
-  el.sourceTables.textContent = "-";
-  el.selectionReason.textContent = "-";
-  el.joinPlan.textContent = "-";
-  el.joinSummary.textContent = "-";
-  renderIssues([], []);
 }
 
 function appendUserMessage(question) {
@@ -502,15 +586,26 @@ function appendUserMessage(question) {
   scrollToLatest();
 }
 
-function revealMessage(message) {
+function revealMessage(message, align = "latest") {
   if (!message) return;
   message.classList.remove("hidden");
-  scrollToLatest();
+  if (align === "start") {
+    scrollToMessageStart(message);
+  } else {
+    scrollToLatest();
+  }
 }
 
 function scrollToLatest() {
   requestAnimationFrame(() => {
     el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
+  });
+}
+
+function scrollToMessageStart(message) {
+  requestAnimationFrame(() => {
+    const target = Math.max(0, message.offsetTop - 10);
+    el.chatMessages.scrollTo({ top: target, behavior: "smooth" });
   });
 }
 
@@ -525,8 +620,8 @@ function resetConversation() {
   updateFileSummary();
   renderProfile();
   clearResult();
-  setApiStatus("idle", "API 未连接");
-  el.datasetChip.textContent = "dataset_id: -";
+  setApiStatus("idle", "准备就绪");
+  el.datasetChip.textContent = "未上传数据";
   el.datasetStatus.textContent = "等待上传数据集";
   el.questionInput.value = "";
   updateRunButton();
@@ -548,11 +643,6 @@ function stringifyIssue(issue) {
   if (typeof issue === "string") return issue;
   if (issue?.error_message) return issue.error_message;
   return JSON.stringify(issue);
-}
-
-function formatJson(value) {
-  if (!value || (typeof value === "object" && !Object.keys(value).length)) return "-";
-  return JSON.stringify(value, null, 2);
 }
 
 function formatPercent(value) {

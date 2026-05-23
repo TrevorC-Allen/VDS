@@ -1199,6 +1199,11 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
         if expected == "__NOT_NULL__":
             data = data[~_null_mask(data[column])]
             continue
+        if _is_day_of_year_range_filter(column, expected):
+            start, end = expected
+            values = pd.to_numeric(data[column], errors="coerce")
+            data = data[(values >= float(start)) & (values <= float(end))]
+            continue
         if isinstance(expected, dict) and ("min" in expected or "max" in expected):
             values = pd.to_numeric(data[column], errors="coerce")
             mask = values.notna()
@@ -1210,6 +1215,17 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
             continue
         data = data[_series_equals(data[column], expected)]
     return data
+
+
+def _is_day_of_year_range_filter(column: Any, expected: Any) -> bool:
+    if str(column) != "day_of_year" or not isinstance(expected, (list, tuple)) or len(expected) != 2:
+        return False
+    try:
+        start = float(expected[0])
+        end = float(expected[1])
+    except (TypeError, ValueError):
+        return False
+    return start <= end
 
 
 def _series_equals(series: pd.Series, expected: Any) -> pd.Series:

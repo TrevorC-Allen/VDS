@@ -68,6 +68,32 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertEqual(3, pandas_result.value)
         self.assertEqual(pandas_result.value, sql_result.value)
 
+    def test_day_of_year_endpoint_list_filter_is_shared_by_pandas_and_sql(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "merchant": ["A", "A", "A", "A"],
+                "year": [2023, 2023, 2023, 2023],
+                "day_of_year": [182, 183, 220, 275],
+                "eur_amount": [100.0, 100.0, 300.0, 500.0],
+                "has_fraudulent_dispute": [False, True, False, True],
+            }
+        )
+        logic = LogicForm(
+            task_type="aggregation",
+            operation="fraud_rate_filtered",
+            filters={"merchant": "A", "year": 2023, "day_of_year": [183, 274]},
+            parameters={"table": "payments"},
+            output_format={"answer_type": "percentage"},
+        )
+        plan = build_analysis_plan(logic)
+        pandas_result = pandas_executor.execute_plan(plan, {"payments": payments})
+        sql_result = sql_executor.execute_plan(plan, {"payments": payments})
+
+        self.assertTrue(pandas_result.success, pandas_result.errors)
+        self.assertTrue(sql_result.success, sql_result.errors)
+        self.assertAlmostEqual(25.0, float(pandas_result.value), places=5)
+        self.assertAlmostEqual(float(pandas_result.value), float(sql_result.value), places=5)
+
     def test_duplicate_check_reports_yes_without_exposing_rows(self) -> None:
         table = pd.DataFrame(
             [

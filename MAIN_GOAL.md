@@ -10,7 +10,7 @@
 
 ## 当前阶段目标
 
-当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环。
+当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环。Phase 11 已规划为会话隔离、历史续聊和 GPT-like 安静过程展示阶段，当前状态为 Planned / Not implemented yet。
 
 1. 已搭建 data_agent_core 核心算法目录
 2. 已搭建 data_agent_core/contracts 数据契约目录
@@ -38,8 +38,9 @@
 24. 当前新增 Phase 7.2 作为 Phase 7 下的后续子目标：Agent Generalization and Executor Semantic Parity；该阶段以 Agent 泛化能力为主目标，Pandas / SQL / DuckDB 语义统一只作为执行层可信度和回归判断支撑。
 25. 当前新增 Phase 7.3 作为 Phase 7.2 之后的下一阶段子目标：Evaluation-Driven Robustness and Output Contract Hardening；该阶段聚焦最终 Output Contract、validation-driven retry、submission provenance、真实 provider 回归和 DA-agent 可借鉴工程模式。
 26. Phase 8 已作为正式新阶段完成：Core Algorithm Review, Multi-file / Multi-table Generalization Closure。已补齐多文件 dataset 装配、问题到表路由、多表 join plan、Pandas join materialize、Verifier 校验和 trace 闭环；模型能力和泛化能力回归门禁未退步。
-27. Phase 9 已作为 Phase 8 之后的正式前端阶段完成首版：Frontend Productization After Core Algorithm Freeze。已提供静态 workbench，多文件上传、profile 预览、分析提交、join trace、verification、warnings、errors 和历史回看均依赖后端 API 契约；前端不实现指标公式、join 或数据计算。
-28. Phase 10 已作为 Phase 9 之后的正式结果体验阶段完成首版：Visualization, Insight, Data Quality and Safe Process View。后端稳定生成 `chart`、`insight`、`quality_report`、`reasoning_trace_view`；前端只渲染上述契约，不实现核心计算、异常规则、清洗动作或完整 Chain of Thought。
+27. Phase 9 已作为 Phase 8 之后的正式前端阶段完成首版：Frontend Productization After Core Algorithm Freeze。已提供静态 workbench，多文件上传、profile 预览、分析提交、用户可读分析过程和历史回看均依赖后端 API 契约；前端不实现指标公式、join 或数据计算。
+28. Phase 10 已作为 Phase 9 之后的正式结果体验阶段完成首版：Visualization, Insight, Data Quality and Safe Process View。后端稳定生成 `chart`、`insight`、`quality_report`、`reasoning_trace_view`；前端只把图表、洞察和安全过程摘要转成用户可读体验，不展示后端质量报告、warnings/errors、verification 细节、join trace，不实现核心计算、异常规则、清洗动作或完整 Chain of Thought。
+29. Phase 11 已作为 Phase 10 之后的正式规划阶段：Conversation Isolation, Session Persistence and Quiet Process UX。当前状态为 Planned / Not implemented yet；目标是每个 `conversation_id` 独立保存上下文，多窗口默认独立会话，可从历史 Chat 回到旧会话继续分析，并预留 `owner_id`、`tenant_id`、`owner_context` 以支持未来用户隔离。
 
 ## 统一 Phase 状态表
 
@@ -63,6 +64,7 @@
 18. Phase 8 Guardrail：核心算法回看与多文件/多表泛化闭环已完成 8A-8E；后续只做 non-regression 守护，不重开 Phase 8 主体。
 19. Phase 9.1：Workbench Confirmation and Review Panels，在 Phase 9 首版 workbench 后继续做字段确认、join key 确认、澄清交互和评测回看；前端仍不承载指标公式、join 或数据计算。
 20. Phase 10：Visualization, Insight, Data Quality and Safe Process View，已完成 ChartSpec v2、InsightResult v2、DataQualityReport、safe `reasoning_trace_view` 和 workbench 渲染。自动清洗不属于 Phase 10，后续必须开新 Phase 并要求用户确认。
+21. Phase 11：Conversation Isolation, Session Persistence and Quiet Process UX，状态为 Planned / Not implemented yet。目标是新增 `conversation_id` 会话层、历史续聊、多窗口隔离、未来用户隔离字段预留，以及 GPT-like 小号浅灰单行过程摘要 + 点击展开详情的安静过程展示。
 
 ## 当前实现状态
 
@@ -105,16 +107,16 @@
 35. Phase 1 Backend API Shell 新增外部 Agent 调用入口 `POST /api/data-agent/run`：外部系统可一次性传入 JSON 表格、问题和可选 request_id；backend 只创建临时 dataset 并复用现有 Phase 6+ 默认 `multi_agent` 链路，不代表新增核心算法 Phase，不属于 Phase 5 Tool Calling，也不属于 Phase 7 Provider 原生 tool loop。
 36. Phase 7.2 首个代码落点已完成：新增 Capability Registry，统一 operation -> capability family -> SQL support 边界；多 Agent 和 single_agent 的 SQL gate 改为读取 registry；Benchmark report 已输出 SQL coverage、Pandas-SQL consistency、coverage gap、semantic mismatch、executor mismatch、format mismatch 和 capability family metrics。回归输出包括 `outputs/phase72_capability_registry_dev_1_10_20260522/dev_1_to_10_report.json`、`outputs/phase72_capability_registry_dabstep_all_1_450_20260522/all_1_to_450_report.json`、`outputs/phase72_capability_registry_microsoft_1_300_20260522/report.json`、`outputs/phase72_capability_registry_vds_question_summary_95_20260522.json`。
 37. Phase 7.3 首个代码落点已完成：新增最终答案 canonicalizer / output validator，Response Builder 会把最终答案统一收敛为提交安全字符串并记录 output_contract_validation；DABstep 和 Microsoft runner 已加入 output-contract validation-driven retry、submission provenance、prediction / report hash 和统一 risk taxonomy；RunTrace final_response 记录 output_contract_passed，用于后续真实 provider 分段回归。
-38. Phase 7.3 mock / 离线闭环已完成：DABstep dev 1-10 为 9/10，DABstep public all 1-450 为 success_count=450、failure_count=0，Microsoft 1-300 为 300/300，桌面 VDS 95 smoke 为 95/95；上述报告均输出 provenance、risk_taxonomy，且 format_risk、submission_risk、trace_redaction_risk 为 0。真实 provider representative / staged / full 回归仍需在存在 OpenAI 或 DeepSeek API key 时执行，不以 mock 结果冒充真实 provider 结果。
+38. Phase 7.3 mock / 离线闭环已完成：DABstep dev 1-10 为 9/10，DABstep public all 1-450 为 success_count=450、failure_count=0，Microsoft 1-300 为 300/300，桌面 VDS 95 smoke 为 95/95；上述报告均输出 provenance、risk_taxonomy，且 format_risk、submission_risk、trace_redaction_risk 为 0。真实 provider representative / staged / full 回归必须在存在 OpenAI 或 DeepSeek key 时执行，不以 mock 结果冒充真实 provider 结果；Phase 10 已完成 DeepSeek full real after-fix 汇总。
 39. Phase 7.2 泛化契约第一轮实现已完成：Planner 会补齐 metric_definition、numerator、denominator、entity_grain、time_window、candidate_set 和 output_contract；Verifier 已按业务语义识别显式 filter、grouped count、count vs sum、mode/top_count、Top-K share denominator，并修正中文零售业务 quantity / count / formula 误判。最终回归输出包括 `outputs/phase72_generalization_contract_dev_1_10_final_20260522/dev_1_to_10_report.json`、`outputs/phase72_generalization_contract_dabstep_all_1_450_final_20260522/all_1_to_450_report.json`、`outputs/phase72_generalization_contract_microsoft_1_300_final_20260522/report.json`、`outputs/phase72_generalization_contract_vds_question_summary_95_final_20260522.json`。
 40. 当前工作目标已切换到 DABstep Easy Accuracy Recovery，并按 Phase 职责拆分记录；这不是替换原 Phase 7.1 / 7.2 定义。Phase 7.1 记录 easy public proxy baseline `50/72 = 69.44%`、验收目标 `>=62/72 = 86.11%`、优先 `>=65/72 = 90.28%` 和 proxy policy；Phase 7.2 记录对应的泛化能力族实现。本轮真实 DeepSeek 后验 proxy 观察已达 `69/72 = 95.83%`（`outputs/dabstep_easy_proxy_20260522_deepseek_real_combined/all_1_to_72_public_proxy_observation.json`），mock 离线回归为 `72/72 = 100%`（`outputs/dabstep_easy_proxy_20260522_after_recovery/all_1_to_72_public_proxy_observation.json`）；public proxy 仍只作为 response 之后观察，不进入 Planner / Executor / Verifier / Correction / prompt / tests fixture。
 41. 当前新增 Phase 8 / Phase 9 实施治理规则：每进入新 Phase 或 Phase 内子阶段，必须先在 MAIN_GOAL.md 更新当前阶段 Goal，并预写下一阶段 Goal；每完成一个阶段，必须回看验收结果并更新后续 Goal。Phase 8 期间模型能力和泛化能力不得低于 DABstep、微软脱敏数据和原本 VDS 当前基线；Phase 9 必须等待 Phase 8 完成后启动。
 42. Phase 8 已完成 8A-8E：`POST /api/data-agent/upload-batch` 支持一次上传多文件；profile 保留 `source_file`、`sheet`、`table_name`；inline table 同步支持 metadata；LogicForm / AnalysisPlan / trace 增加 `source_tables`、`table_selection_reason`、`join_plan`；Pandas executor 可受控 materialize 可信 join；Verifier 对无可信 join key、多对多风险、多表未 join 和 ID fallback 进行阻断或澄清。
 43. Phase 8 非退步门禁已通过：DABstep dev 1-10 为 `9/10`，DABstep public all 1-450 mock 执行覆盖为 `450/450`，微软脱敏数据 1-300 mock scorer 为 `300/300`，原本 VDS `问题汇总.xlsx` 95 题 smoke 为 `95/95`；`format_risk`、`submission_risk`、`trace_redaction_risk` 均为 0。
-44. Phase 9 已完成首版前端 workbench：`frontend/` 提供静态页面，`backend/main.py` 挂载 `/frontend` 和 `/workbench`；页面只调用 `/api/data-agent/upload`、`/api/data-agent/upload-batch`、`/api/data-agent/analyze`，展示 profile、结果、verification、warnings、errors、`source_tables`、`table_selection_reason`、`join_plan`、`join_execution_summary` 和历史记录，不实现核心计算。
-45. Phase 8/9 已补跑真实 DeepSeek representative 回归：DABstep dev 1-10 真实 DeepSeek 为 `9/10`；微软脱敏数据 1-20 真实 DeepSeek 为 `20/20`；原本 VDS `问题汇总.xlsx` 五域代表集 15 题真实 DeepSeek 在修复 LLM candidate_set 归一化后为 `15/15`，输出契约失败为 0。完整 450 / 300 / 95 真实 provider full 回归仍未执行，不能把 representative 结果冒充 full real score。
-46. Phase 10 已完成首版：`data_agent_core/output/chart_planner.py` 自动选择 bar / horizontal_bar / line / pie / donut / histogram / KPI；`insight_generator.py` 只基于已验证结果生成摘要、异常、波动和建议；`core/data_quality.py` 在上传和分析时扫描缺失、重复、类型、日期、离群和 key 风险；`reasoning_trace_view.py` 只展示结构化阶段摘要，不暴露完整 Chain of Thought。Workbench 已展示图表、洞察、质量报告和过程时间线。
-47. Phase 10 当前验收已通过：Full unittest `142 tests OK`，compileall、`node --check frontend/app.js` 和 `git diff --check` 通过；DABstep dev `9/10`、DABstep public all mock `450/450`、Microsoft 1-300 mock `300/300`、原本 VDS 95 smoke `95/95`；真实 DeepSeek representative 为 DABstep dev `9/10`、Microsoft 1-20 `20/20`、原本 VDS 五域 15 题 `15/15`。完整 450 / 300 / 95 full real 回归仍未执行，不能用 representative 冒充 full real score。
+44. Phase 9 已完成首版前端 workbench：`frontend/` 提供静态页面，`backend/main.py` 挂载 `/frontend` 和 `/workbench`；页面只调用 `/api/data-agent/upload`、`/api/data-agent/upload-batch`、`/api/data-agent/analyze`，展示 profile、结果、用户可读分析过程和历史记录，不实现核心计算。
+45. Phase 8/9 已补跑真实 DeepSeek representative 回归：DABstep dev 1-10 真实 DeepSeek 为 `9/10`；微软脱敏数据 1-20 真实 DeepSeek 为 `20/20`；原本 VDS `问题汇总.xlsx` 五域代表集 15 题真实 DeepSeek 在修复 LLM candidate_set 归一化后为 `15/15`，输出契约失败为 0。
+46. Phase 10 已完成首版：`data_agent_core/output/chart_planner.py` 自动选择 bar / horizontal_bar / line / pie / donut / histogram / KPI；`insight_generator.py` 只基于已验证结果生成摘要、异常、波动和建议；`core/data_quality.py` 在上传和分析时扫描缺失、重复、类型、日期、离群和 key 风险；`reasoning_trace_view.py` 只展示结构化阶段摘要，不暴露完整 Chain of Thought。Workbench 已展示图表、洞察和用户可读过程时间线；质量报告、warnings/errors、verification 细节和 join trace 保留在后端/API，不在主界面直接展示。
+47. Phase 10 当前验收已通过：Full unittest `147 tests OK`，compileall、`node --check frontend/app.js` 和 `git diff --check` 通过；DABstep dev `9/10`、DABstep public all mock `450/450`、Microsoft 1-300 mock `300/300`、原本 VDS 95 smoke `95/95`；真实 DeepSeek full 回归已完成，汇总为 DABstep public all `success_count=450/450`、Microsoft `correct=300/300`、原本 VDS 95 smoke `success_count=95/95`，输出 `outputs/phase10_full_real_three_dataset_deepseek_20260523_summary_after_fix.json`。DABstep public all answer 为空，不能据此宣称 hidden official accuracy。
 
 ## 架构原则
 
@@ -693,7 +695,8 @@ Phase 8 当前退出结果：
 3. Phase 8C 已完成：同名字段、归一化 ID 字段、唯一性和值重叠率用于推断可信 join key；`LogicForm` 和 `AnalysisPlan` 稳定携带 `source_tables`、`table_selection_reason`、`join_plan`；v1 只允许可信一对一 / 多对一 join。
 4. Phase 8D 已完成：Pandas executor 受控 materialize join 后再执行聚合 / 排序 / 过滤；Verifier 能阻断无可信 join key、多对多风险、多表未 join 和命名维度退回 ID 的伪成功；trace / debug 记录 `join_execution_summary`。
 5. Phase 8E 已完成：完整 mock / 离线门禁通过，输出文件为 `outputs/phase8_dev_1_10_mock_20260523/dev_1_to_10_report.json`、`outputs/phase8_dabstep_all_1_450_mock_20260523/all_1_to_450_report.json`、`outputs/phase8_microsoft_1_300_mock_20260523/report.json`、`outputs/phase8_vds_question_summary_95_mock_20260523.json`。
-6. 真实 provider representative 已补跑 DeepSeek：`outputs/phase8_dabstep_dev_1_10_deepseek_real_20260523/dev_1_to_10_report.json` 为 `9/10`，`outputs/phase8_microsoft_1_20_deepseek_real_20260523/report.json` 为 `20/20`，`outputs/phase8_vds_question_summary_15_deepseek_real_after_candidate_fix_20260523.json` 为 `15/15`。完整 full real 回归仍未执行，不能把 representative 结果冒充 full real score。
+6. 真实 provider representative 已补跑 DeepSeek：`outputs/phase8_dabstep_dev_1_10_deepseek_real_20260523/dev_1_to_10_report.json` 为 `9/10`，`outputs/phase8_microsoft_1_20_deepseek_real_20260523/report.json` 为 `20/20`，`outputs/phase8_vds_question_summary_15_deepseek_real_after_candidate_fix_20260523.json` 为 `15/15`。
+7. Phase 10 after-fix full real 已补跑 DeepSeek：DABstep public all、Microsoft 1-300 和 VDS 95 汇总文件为 `outputs/phase10_full_real_three_dataset_deepseek_20260523_summary_after_fix.json`。DABstep public all 仍只能验证执行覆盖和风险，不代表 hidden official accuracy。
 
 ### Phase 8 滚动 Goal 更新机制
 
@@ -798,24 +801,25 @@ Phase 8 当前退出结果：
 4. DABstep public all 1-450 mock：`success_count=450/450`、`unexpected_not_applicable=0`、risk taxonomy 关键风险为 0。
 5. Microsoft 脱敏数据 1-300 mock scorer：`correct=300/300`。
 6. 原本 VDS `问题汇总.xlsx` 95 题 smoke：`success_count=95/95`。
-7. 真实 DeepSeek representative 回归已执行：DABstep dev 1-10 `9/10`，Microsoft 1-20 `20/20`，原本 VDS 五域 15 题 `15/15`。完整 450 / 300 / 95 full real 回归仍未执行。
+7. 真实 DeepSeek representative 回归已执行：DABstep dev 1-10 `9/10`，Microsoft 1-20 `20/20`，原本 VDS 五域 15 题 `15/15`。
+8. Phase 10 after-fix full real 已完成：DABstep public all `success_count=450/450`，Microsoft 1-300 `correct=300/300`，原本 VDS 95 smoke `success_count=95/95`；汇总文件为 `outputs/phase10_full_real_three_dataset_deepseek_20260523_summary_after_fix.json`。
 
 ## Phase 10：Visualization / Insight / Quality / Safe Process View
 
-当前 Goal：把结果可视化、洞察建议、数据质量扫描和安全过程可视化做成后端稳定契约与前端展示体验。状态：已完成首版。
+当前 Goal：把结果可视化、洞察建议、数据质量扫描和安全过程可视化做成后端稳定契约，并在前端只展示用户可理解的结果与过程。状态：已完成首版，当前前端主界面已收敛为 GPT-like PC 体验。
 
 已交付：
 
 1. 后端生成 `chart`、`insight`、`quality_report` 和 `reasoning_trace_view` 稳定字段。
 2. `chart` 自动选择 bar / horizontal_bar / line / pie / donut / histogram / KPI；选择逻辑在 `data_agent_core/output/chart_planner.py`，前端只渲染契约。
 3. `insight` 只基于 verified result、质量报告和可解释统计生成摘要、异常、波动和建议，不臆造业务结论。
-4. `quality_report` 扫描缺失、重复、类型、日期、离群、负值和 key 风险；只报告问题和清洗建议，不自动修改原始数据。
-5. `reasoning_trace_view` 展示结构化阶段摘要、意图识别、执行和校验结果；不暴露完整 Chain of Thought、raw prompt、API key 或隐藏 benchmark 答案。
+4. `quality_report` 扫描缺失、重复、类型、日期、离群、负值和 key 风险；只作为后端/API 审计字段，不在主界面直接展示，不自动修改原始数据。
+5. `reasoning_trace_view` 展示结构化阶段摘要、意图识别、执行和校验结果；前端将其转译为用户可读过程，不暴露完整 Chain of Thought、raw prompt、API key 或隐藏 benchmark 答案。
 6. 上传表质量报告已缓存到 dataset profile，避免 Microsoft / VDS 这类多题回归中每题重复扫描。
 
 验收结果：
 
-1. Full unittest：`Ran 142 tests ... OK`。
+1. Full unittest：`Ran 147 tests ... OK`。
 2. compileall：`data_agent_core agent_runtime multi_agent_workflows backend tests` 通过。
 3. 前端语法：`node --check frontend/app.js` 通过。
 4. `git diff --check` 通过。
@@ -824,13 +828,60 @@ Phase 8 当前退出结果：
 7. Microsoft 脱敏数据 1-300 mock scorer：`correct=300/300`。
 8. 原本 VDS `问题汇总.xlsx` 95 题 smoke：`success_count=95/95`，`output_contract_failure_count=0`。
 9. 真实 DeepSeek representative：DABstep dev 1-10 `9/10`，Microsoft 1-20 `20/20`，原本 VDS 五域 15 题 `15/15`，关键风险为 0。
+10. 真实 DeepSeek full：DABstep public all `450/450` 执行覆盖、Microsoft `300/300`、原本 VDS 95 smoke `95/95`；`format_risk / semantic_risk / submission_risk / trace_redaction_risk` 均为 0。DABstep public all 本地无 expected answer，accuracy 仍为 `null`，不代表 hidden official accuracy。
 
 禁止事项：
 
 1. Phase 10 不自动清洗、覆盖或保存用户原始数据。
 2. 前端不实现图表选择、异常规则、指标公式、join、排序、聚合或数据清洗。
-3. 过程可视化不能展示 raw CoT、raw reasoning tokens、raw prompt、API key 或 benchmark hidden answer。
-4. 完整 450 / 300 / 95 真实 provider full 回归未执行前，不得把 representative 结果冒充 full real score。
+3. 过程可视化不能展示 raw CoT、raw reasoning tokens、raw prompt、API key、benchmark hidden answer，也不在主界面直接展示后端审计 JSON、warnings/errors、verification 细节或 join trace。
+4. 不得把 DABstep public all full real 执行覆盖冒充 hidden official accuracy；public all 本地没有 expected answer，只能验证执行覆盖、风险门禁和 trace。
+
+## Phase 11：Conversation Isolation / Session Persistence / Quiet Process UX
+
+当前 Goal：把 Workbench 从单页内存状态升级为可恢复的对话式数据分析体验。状态：Planned / Not implemented yet；本节只记录后续实现计划和边界，不代表功能已经落地。
+
+目标：
+
+1. 新增 `conversation_id` 作为 Workbench 的会话连续性主键，每个会话独立保存消息、当前数据集、运行摘要和最近结果。
+2. 多窗口默认创建独立会话；如果 URL 显式带同一个 `conversation_id`，则进入同一条历史会话。
+3. 左侧历史 Chat 从后端会话列表恢复，不再只依赖浏览器内存中的 run history。
+4. 用户可以随时从历史 Chat 回到旧会话，继续上传、提问和分析。
+5. 预留 `owner_id`、`tenant_id`、`owner_context`、`created_by` 等字段，为未来真实登录、多用户隔离和租户隔离升级做准备。
+6. 过程展示采用 GPT-like 安静形态：默认只显示一条小号浅灰的最新过程摘要，用户点击后再展开结构化步骤详情。
+
+计划中的后端会话结构：
+
+1. `conversation_id`
+2. `title`
+3. `active_dataset_id`
+4. `messages`
+5. `runs`
+6. `created_at` / `updated_at`
+7. `owner_type` / `owner_id` / `tenant_id` / `created_by`
+
+计划中的前端行为：
+
+1. 当前会话 URL 使用 `/workbench?conversation_id=...`。
+2. 新建聊天时创建新的 `conversation_id` 并更新 URL。
+3. 打开历史会话时恢复消息、当前数据集、最近分析结果和可继续提问状态。
+4. 不同 `conversation_id` 的窗口互不影响；同一 `conversation_id` 的窗口显示同一会话，并在发送后刷新最新状态。
+5. 过程摘要文案必须面向用户，例如“用户提到了‘城市订单金额’，我会先确认城市字段和金额字段。”，不能把后端 `join_plan`、`verification`、`quality_report`、warnings 或 raw trace JSON 直接放到主界面。
+
+禁止事项：
+
+1. 不展示完整 Chain of Thought、raw reasoning tokens、raw prompt、API key 或 hidden benchmark answer。
+2. 不把数据质量、warnings、join verification、join trace 等后端审计术语放到主界面抢占空间。
+3. 不让前端实现 join、聚合、排序、评分、图表选择或核心数据分析逻辑。
+4. 不把 v1 本地匿名会话隔离写成已实现的真实登录、鉴权、多租户或企业级权限系统。
+
+验收标准：
+
+1. 文档能清楚区分 Phase 11 planned 与已实现能力。
+2. 后续实现时，两个不同窗口的 dataset、消息和分析结果不能串线。
+3. 回到历史会话后，用户能看到旧消息和最近结果，并能继续提问。
+4. `reasoning_trace_view` 只作为安全过程摘要来源；前端默认只显示一条低占用过程摘要，点击后才展开详情。
+5. API、存储和前端状态都为未来 `owner_context` 过滤预留边界。
 
 ## Phase 9：前端产品化
 
@@ -848,7 +899,7 @@ Phase 9 范围：
 2. 文件 / sheet / table 预览。
 3. 字段识别和 join key 确认。
 4. 低置信度表选择和 join key 澄清交互。
-5. 表格、图表、解释、warnings、errors、verification 展示。
+5. 表格、图表、解释和用户可读过程展示；warnings、errors、verification、join trace 作为后端/API 审计字段保留，不在主界面直接展示。
 6. 评测与回看面板。
 
 当前已交付：
@@ -856,7 +907,7 @@ Phase 9 范围：
 1. `frontend/index.html`、`frontend/styles.css`、`frontend/app.js`、`frontend/README.md` 提供首版静态 workbench。
 2. `backend/main.py` 在存在 `frontend/` 目录时挂载 `/frontend` 静态资源，并提供 `/workbench`。
 3. 前端支持单文件 / 多文件上传，单文件调用 `/api/data-agent/upload`，多文件调用 `/api/data-agent/upload-batch`。
-4. 前端支持 profile 预览、问题提交、结果表格、chart spec / insight 摘要、verification、warnings、errors、join plan trace、join execution summary 和本地 run history。
+4. 前端支持 profile 预览、问题提交、结果表格、自动图表、insight 摘要、用户可读分析过程和本地 run history；verification、warnings、errors、join plan trace、join execution summary 保留在后端/API。
 5. 前端 smoke 使用 mocked API route 验证桌面和移动视口无 console / page error，截图保存在 `outputs/phase9_workbench_desktop_20260523.png` 和 `outputs/phase9_workbench_mobile_20260523.png`。
 
 Phase 9 禁止：

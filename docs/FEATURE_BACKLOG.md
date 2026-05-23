@@ -307,7 +307,7 @@
 
 是否影响 errors：是。无可信 join key、多对多风险、多表未 join 和 ID fallback 必须通过 verification / correction_action / warnings / errors 表达。
 
-状态：2026-05-23 已完成。全量 unittest `136 tests OK`；Phase 8 mock / 离线门禁为 DABstep dev `9/10`、DABstep public all `450/450`、微软脱敏数据 `300/300`、原本 VDS `95/95`，关键风险指标为 0。真实 DeepSeek representative 已补跑：DABstep dev `9/10`、微软脱敏数据 1-20 `20/20`、原本 VDS 五域 15 题 `15/15`；完整 full real 回归仍未执行。
+状态：2026-05-23 已完成。全量 unittest 已随 Phase 10 收口更新到 `147 tests OK`；Phase 8 mock / 离线门禁为 DABstep dev `9/10`、DABstep public all `450/450`、微软脱敏数据 `300/300`、原本 VDS `95/95`，关键风险指标为 0。真实 DeepSeek representative 已补跑：DABstep dev `9/10`、微软脱敏数据 1-20 `20/20`、原本 VDS 五域 15 题 `15/15`；Phase 10 after-fix full real 已补跑三数据集，DABstep public all `450/450` 执行覆盖、Microsoft `300/300`、VDS 95 smoke `95/95`。
 
 ### Phase 9 Frontend Workbench
 
@@ -495,7 +495,7 @@
 
 优先级：P0，阶段：Phase 10。
 
-状态：2026-05-23 已完成首版。ChartSpec v2 支持 bar / horizontal_bar / line / pie / donut / histogram / KPI；InsightResult v2 支持 key_numbers、anomaly_findings、volatility_findings、business_suggestions、caveats；DataQualityReport 支持 upload/profile 和 analyze 响应，且上传表质量报告已缓存到 dataset profile；reasoning_trace_view 只展示结构化过程摘要，不暴露完整 Chain of Thought。验收结果：Full unittest `142 tests OK`，DABstep dev `9/10`，DABstep public all mock `450/450`，Microsoft 1-300 mock `300/300`，VDS 95 smoke `95/95`；真实 DeepSeek representative 为 DABstep dev `9/10`、Microsoft 1-20 `20/20`、VDS 五域 15 题 `15/15`。
+状态：2026-05-23 已完成首版并完成 after-fix full real 收口。ChartSpec v2 支持 bar / horizontal_bar / line / pie / donut / histogram / KPI；InsightResult v2 支持 key_numbers、anomaly_findings、volatility_findings、business_suggestions、caveats；DataQualityReport 支持 upload/profile 和 analyze 响应，且上传表质量报告已缓存到 dataset profile；reasoning_trace_view 只展示结构化过程摘要，不暴露完整 Chain of Thought。验收结果：Full unittest `147 tests OK`，DABstep dev `9/10`，DABstep public all mock `450/450`，Microsoft 1-300 mock `300/300`，VDS 95 smoke `95/95`；真实 DeepSeek full 为 DABstep public all `450/450` 执行覆盖、Microsoft `300/300`、VDS 95 smoke `95/95`，汇总在 `outputs/phase10_full_real_three_dataset_deepseek_20260523_summary_after_fix.json`。
 
 验收标准：前端只渲染后端契约；用户问“文件有什么问题”时返回质量扫描报告；图表自动选择不由前端计算；trace view 不包含 `chain_of_thought`、`cot`、`hidden_reasoning`、`full_reasoning`、API key 或 hidden answer。
 
@@ -511,8 +511,37 @@
 
 是否影响 errors：否。首版复用现有 warnings / errors，不新增错误类型。
 
+### Phase 11 Conversation Isolation / Session Persistence / Quiet Process UX
+
+目标：把 Workbench 从单页内存状态升级为可恢复的 GPT-like 会话式数据分析体验，支持会话隔离、历史续聊、多窗口独立对话和未来用户隔离升级。
+
+影响模块：backend、backend/storage、backend/routers、frontend、docs/API_CONTRACT.md、tests/backend、浏览器 smoke。
+
+优先级：P0，阶段：Phase 11。
+
+状态：Planned / Not implemented yet。本条只记录计划和边界，不代表 conversation endpoints、`conversation_id` 或 owner isolation 已经可用。
+
+验收标准：新增 `conversation_id` 会话层；每个会话独立保存消息、当前 dataset、runs 和最近结果；无 `conversation_id` 的新窗口默认创建独立会话；带同一 `conversation_id` 的窗口恢复同一历史；历史 Chat 从后端会话列表加载；旧 `dataset_id` analyze / upload 调用继续兼容。
+
+UX 验收标准：过程展示默认只占一行，使用小号浅灰文字展示最新安全摘要，例如“用户提到了‘城市订单金额’，我会先确认城市字段和金额字段。”；右侧或末尾提供 `查看过程` / `查看 N 步` 点击提示；展开后只显示用户可理解的结构化步骤，不展示后端审计 JSON、quality_report、warnings、verification、join trace 或完整 Chain of Thought。
+
+未来用户隔离预留：conversation schema 必须预留 `owner_type`、`owner_id`、`tenant_id`、`created_by` 或统一 `owner_context`；v1 可使用 local anonymous scope，但所有 list / get / update / upload / analyze 的服务层接口都要保留 backend owner filter 边界，不能只靠前端隐藏历史。
+
+风险：如果只用 browser localStorage 存完整历史，会导致多窗口、重启和未来多用户隔离不可控；如果把 raw CoT 或后端术语直接展示给用户，会破坏安全边界和 GPT-like 体验；如果前端根据历史自行做 join、聚合、排序或评分，会破坏核心算法边界。
+
+测试方式：backend 单测覆盖 create/list/get/update conversation、upload 绑定会话、analyze 追加到正确会话、两个会话互不串线、旧无 `conversation_id` 调用兼容、raw CoT 禁止字段不出现在响应；前端测试覆盖 URL `conversation_id` 恢复、新建聊天生成新会话、历史列表加载和安静过程展开；浏览器 smoke 覆盖两个窗口上传不同 CSV 并提问、回到历史会话继续提问、同一 URL 恢复同一会话。
+
+是否影响 contracts：是。新增 planned conversation schema 和可选 `conversation_id` / owner 字段。
+
+是否影响 API_CONTRACT：是。必须先记录 planned endpoints 和兼容策略，再实现。
+
+是否影响 tracing：是。只能复用或派生 trace-safe `reasoning_trace_view` 摘要，不新增 raw CoT、raw prompt 或 raw reasoning token 暴露面。
+
+是否影响 errors：可能。实现时可复用现有 errors；如新增 conversation not found / owner mismatch 等稳定错误类型，必须先写入 API_CONTRACT 和 tests。
+
 ## TODO
 
 - 新功能进入开发前，先确认是否影响 contracts / API_CONTRACT / tracing / errors。
 - Phase 7.5 - 7.10 必须按编号推进，且每个工程阶段都要通过 DABstep、Microsoft 和 VDS 三数据集 non-regression gate。
 - Phase 8 后续只做 Guardrail，不重开 Phase 8 主体；Phase 9 后续按 Phase 9.1 做确认和回看面板，不把核心计算搬到前端。
+- Phase 11 启动前先实现后端会话持久化和 owner_context 边界，再接前端历史 Chat；不得把本地匿名会话误写成已实现登录权限。

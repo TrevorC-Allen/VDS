@@ -294,9 +294,27 @@ def _count_metric_request_satisfied(logic: Any, question: str) -> bool:
         return True
     if logic.operation in {"row_count", "top_count", "distinct_count"}:
         return True
+    if _row_count_per_unique_entity(logic):
+        return True
     if _counts_entities_after_metric_comparison(logic.operation):
         return True
     return _business_quantity_metric_satisfies_count_question(logic, question)
+
+
+def _row_count_per_unique_entity(logic: Any) -> bool:
+    if str(getattr(logic, "operation", "") or "") != "metric_per_distinct_entity":
+        return False
+    params = getattr(logic, "parameters", {}) or {}
+    numerator = getattr(logic, "numerator", {}) or {}
+    metric = str(getattr(logic, "metric", "") or params.get("metric") or numerator.get("field") or "")
+    aggregation = str(params.get("aggregation") or numerator.get("aggregation") or "")
+    if metric not in {"__row_count__", "row_count", "transaction_count", "record_count"} and aggregation != "count":
+        return False
+    denominator = getattr(logic, "denominator", {}) or {}
+    entity_grain = getattr(logic, "entity_grain", {}) or {}
+    return _has_unique_entity_denominator(denominator, entity_grain) or bool(
+        params.get("entity_field") or entity_grain.get("field")
+    )
 
 
 def _counts_entities_after_metric_comparison(operation: str) -> bool:

@@ -246,6 +246,355 @@ YYYY-MM-DD HH:MM TZ
 
 ### 日期时间
 
+2026-05-23 23:10 CST
+
+### 本次目标
+
+按用户要求把 Phase 11 会话隔离、历史续聊、多窗口独立会话、未来用户隔离预留和 GPT-like 安静过程展示写入 MAIN_GOAL 及相关文档，方便后续随时 follow up；本轮只同步计划和边界，不实现功能。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- README.md
+- docs/API_CONTRACT.md
+- docs/FEATURE_BACKLOG.md
+- docs/ARCHITECTURE.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- MAIN_GOAL.md 新增 Phase 11：Conversation Isolation, Session Persistence and Quiet Process UX，状态标记为 Planned / Not implemented yet。
+- README.md 增加 Phase 11 简短状态说明，明确 conversation endpoints 当前尚未实现。
+- docs/API_CONTRACT.md 新增 planned conversation API、planned request extension、owner 字段预留、旧 dataset_id 兼容策略和 quiet process UX 安全边界。
+- docs/FEATURE_BACKLOG.md 新增 Phase 11 backlog 条目，记录目标、验收标准、UX 验收、风险和测试方式。
+- docs/ARCHITECTURE.md 新增 planned Conversation Store / Conversation Service 架构位置，明确其只能管理会话和调用已有 upload / analyze，不承载核心数据分析逻辑。
+- 文档统一要求过程展示默认只是一条小号浅灰安全摘要，点击后展开结构化步骤；不展示完整 Chain of Thought、raw reasoning tokens、raw prompt、quality_report、warnings、verification 或 join trace。
+
+### 测试方式
+
+- git diff --check
+- rg -n "Phase 11|Conversation Isolation|conversation_id|owner_context|owner_id|tenant_id|Quiet Process|安静过程|Planned / Not implemented yet" MAIN_GOAL.md README.md docs/API_CONTRACT.md docs/FEATURE_BACKLOG.md docs/ARCHITECTURE.md
+- rg -n "Phase 11.*已完成|conversation endpoints.*已实现|已支持.*conversation_id|已落地.*conversation|真实登录|企业级权限" MAIN_GOAL.md README.md docs/API_CONTRACT.md docs/FEATURE_BACKLOG.md docs/ARCHITECTURE.md
+- git diff --stat -- MAIN_GOAL.md README.md docs/API_CONTRACT.md docs/FEATURE_BACKLOG.md docs/ARCHITECTURE.md CHANGELOG_AI.md
+
+### 测试结果
+
+- git diff --check 通过。
+- Phase 11、conversation_id、owner_context、安静过程展示和 Planned / Not implemented yet 关键词均在 MAIN_GOAL、README、API_CONTRACT、FEATURE_BACKLOG 和 ARCHITECTURE 中命中。
+- 误实现口径扫描未发现 Phase 11 被写成已完成；`真实登录` / `企业级权限` 仅出现在未来预留或禁止误宣称的上下文。
+- diff stat 确认本轮相关文档已更新；当前 worktree 仍有本轮之前已存在的其他未提交改动，本轮未回滚或整理无关文件。
+
+### 遗留问题
+
+- 本轮只做计划文档同步，尚未实现 Conversation Store / Service、conversation endpoints、前端历史 Chat 恢复或安静过程 UX。
+- Phase 11 实现前仍需补后端会话持久化、owner_context 过滤边界、旧 dataset_id 调用兼容测试和浏览器多窗口 smoke。
+- 当前 worktree 已有大量未提交代码和前端改动，本轮只修改文档文件，不处理无关 dirty 文件。
+
+### 是否影响主流程
+
+否。仅文档计划同步，不改 backend / frontend runtime，不改变当前 upload / analyze / workbench 行为。
+
+### 是否涉及 Benchmark
+
+否。未修改 Benchmark 数据、runner、scorer、标准答案、public proxy 或核心分析链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 MAF adapter 或相关依赖。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。文档明确会话层只保存对话上下文和引用，不承载 Planner / Executor / Verifier / Insight / Chart 核心逻辑，可被当前 multi_agent workflow 和未来 adapter 复用。
+
+### 是否修改核心数据契约
+
+否。本轮未修改代码 contracts；仅记录 planned conversation schema。
+
+### 是否修改 API 契约
+
+是。docs/API_CONTRACT.md 新增 planned Phase 11 conversation APIs、可选 conversation_id / owner 字段和兼容策略，但明确尚未实现。
+
+### 是否新增或修改错误类型
+
+否。本轮只记录如果未来新增 conversation not found / owner mismatch 等错误类型，必须先写入 API_CONTRACT 和 tests。
+
+### 是否新增或修改运行追踪逻辑
+
+否。本轮不改 trace 代码；文档只要求后续 quiet process UX 复用 trace-safe reasoning_trace_view 摘要，不暴露 raw CoT。
+
+### 是否已同步 README
+
+是。README 已同步 Phase 11 已规划但尚未实现的状态，并避免把 planned API 写成可用能力。
+
+---
+
+### 日期时间
+
+2026-05-23 17:41 CST
+
+### 本次目标
+
+按用户反馈继续把 `/workbench` PC 前端视觉向 ChatGPT 桌面体验靠拢，并恢复用户正在访问的 `127.0.0.1:8001/workbench` 本地服务。
+
+### 修改文件
+
+- frontend/index.html
+- frontend/styles.css
+- frontend/app.js
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 恢复 `8001` uvicorn 服务，使用 `.env.local` 的真实 provider 环境启动，避免 Edge 访问 `127.0.0.1:8001/workbench` 出现 `ERR_CONNECTION_REFUSED`。
+- 重写 `/workbench` 主要视觉系统：弱化后台面板感，采用浅灰侧栏、白色聊天画布、居中内容列、底部悬浮 composer、小圆形发送按钮和更接近 ChatGPT 的信息密度。
+- 隐藏执行模式 / Agent 下拉控件，保留默认后端调用参数，减少用户主界面干扰。
+- 简化字段预览表，只展示字段、类型、样例，去掉缺失率 / 唯一值 / 语义等偏审计信息。
+- 结果态改成开放式回答：答案优先、单条结果不强行绘制图表，保留结果表、简要结论和用户可读过程。
+- 将分析过程从后端阶段日志压缩成 6 个用户可理解步骤：理解问题、选择数据、匹配字段、关联数据、执行分析、生成回答。
+- 洞察列表不再展示 caveat / 注意类文案，避免主界面出现 warning 式信息。
+
+### 测试方式
+
+- `node --check frontend/app.js`
+- `PYTHONPATH=/tmp/vds-fastapi-deps312:$PWD /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets`
+- `git diff --check`
+- curl smoke：`/workbench`、`/frontend/styles.css`、`/frontend/app.js`、`/frontend/favicon.svg`
+- Browser smoke：打开 `http://127.0.0.1:8001/workbench`，检查 title、console warn/error、首屏和禁止审计字段。
+- Playwright PC smoke：1365x768 访问 `http://127.0.0.1:8001/workbench`，上传 `订单表.csv / 客户表.csv / 库存文件.csv`，提问“哪个城市订单金额最高？”，检查答案、过程、禁止词和截图。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- `tests.backend.test_workbench_static_assets` 3/3 通过。
+- `git diff --check` 通过。
+- `8001` 当前监听中；`/workbench` 返回 `200 text/html`，CSS / JS / favicon 均返回 200。
+- Browser smoke：页面 title 正确，console warn/error 为空，主界面不含“数据质量”、“Warnings / Errors”、“Join / Verification”、“dataset_id:”、“source_tables”、“join_plan”。
+- Playwright PC smoke：答案为 `北京, 200`；单条结果 chart 已隐藏；主界面不含审计禁止词；过程压缩为 6 步；截图保存在 `/tmp/vds-gpt-redesign-current/01-desktop-initial.png` 和 `/tmp/vds-gpt-redesign-current/05-desktop-result.png`。
+
+### 遗留问题
+
+- 本轮按用户要求聚焦 PC 网页端，未做移动端适配优化。
+- 当前视觉是 GPT-like 产品骨架，不是复制 OpenAI 受保护品牌资产；保留 VDS 自有名称和蓝色图标。
+
+### 是否影响主流程
+
+是，仅影响 `/workbench` 前端展示和本地测试服务恢复；不影响后端分析逻辑。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。前端仍只调用后端 API，不承载 Agent 编排。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。只修改前端对过程摘要的用户化展示。
+
+### 是否已同步 README
+
+否。本轮是 `/workbench` 视觉审美重排和本地服务恢复，未改变阶段定义、API 契约、Benchmark 口径或 README 已记录的主能力边界。
+
+---
+
+### 日期时间
+
+2026-05-23 13:56 CST
+
+### 本次目标
+
+按用户反馈把 `/workbench` PC 主界面从后端审计面板改为 GPT-like 用户可读过程体验：不再直接展示数据质量、Warnings / Errors、Join / Verification、dataset_id、run_id 或 join trace JSON，只展示当前正在理解什么、选择哪些数据、如何分析以及最终答案。
+
+### 修改文件
+
+- README.md
+- MAIN_GOAL.md
+- frontend/README.md
+- frontend/index.html
+- frontend/styles.css
+- frontend/app.js
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 从主界面删除数据质量、Join / Verification、Warnings / Errors 等用户不可读审计面板。
+- 将 `reasoning_trace_view` 转译为用户可读分析过程：读取上传数据、理解问题、选择相关数据、匹配字段含义、制定分析方式、判断多表关联、执行分析、核对结果、选择展示方式、整理结论、生成回答。
+- 分析请求期间展示 live progress：理解问题、选择相关数据、匹配字段含义、制定分析方式、执行分析、生成回答。
+- 顶部状态与历史记录去技术化：不再显示 `dataset_id:`、`run_id`、`success / run_xxx`，改为“未上传数据 / 数据已上传 / 已完成分析”等用户语言。
+- 图表区域不再显示后端英文 chart selection reason，只展示图表本身或自然语言提示。
+- README、MAIN_GOAL 和 frontend README 同步说明：质量报告、warnings/errors、verification、join trace 保留在后端/API，不在主界面直接展示；前端仍不实现计算、join、排序、聚合或评分。
+- 静态测试增加断言，防止 `/workbench` HTML 再次出现用户不可读审计面板文字。
+
+### 测试方式
+
+- `node --check frontend/app.js`
+- `PYTHONPATH=/tmp/vds-fastapi-deps312:$PWD /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets`
+- `git diff --check`
+- curl smoke：`/workbench`、`/frontend/styles.css`、`/frontend/app.js`、`/frontend/favicon.svg`
+- Browser shell smoke：打开 `http://127.0.0.1:8004/workbench`，检查页面身份、console warn/error、首屏状态和审计面板隐藏状态。
+- Playwright PC smoke：真实访问 `http://127.0.0.1:8004/workbench`，上传 `订单表.csv / 客户表.csv / 库存文件.csv`，提问“哪个城市订单金额最高？”，检查处理中过程、最终过程、答案、历史记录和禁止词。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- `tests.backend.test_workbench_static_assets` 3/3 通过。
+- `git diff --check` 通过。
+- `/workbench` 返回 `200 text/html`；`/frontend/styles.css` 返回 `200 text/css`；`/frontend/app.js` 返回 `200 text/javascript`；`/frontend/favicon.svg` 返回 `200 image/svg+xml`。
+- Browser shell smoke：title 为 `Virtual Data Scientist Workbench`；console warn/error 为空；首屏 `准备就绪 / 未上传数据`；`.upload-card` / `.dropzone` 为 0；首屏不含“数据质量”、“Warnings / Errors”、“Join / Verification”。
+- Playwright PC smoke：上传后显示 `3 张表，8 行`；处理中显示“理解你的问题 / 选择相关数据 / 匹配字段含义 / 制定分析方式 / 执行分析 / 生成回答”；最终答案为 `北京, 200`；过程显示“已选择 订单表、客户表”、“按 客户ID 关联后再回答”；主界面禁止词为空，未显示 `dataset_id:`、`run_id`、`source_tables`、`join_plan` 或英文 chart reason。
+- PC 截图与报告：`/tmp/vds-workbench-pc-process-current/04-pc-processing-steps.png`、`/tmp/vds-workbench-pc-process-current/05-pc-result-process.png`、`/tmp/vds-workbench-pc-process-current/report-final.json`。
+
+### 遗留问题
+
+- 本轮按用户要求暂不处理移动端验收。
+- 前端展示的是后端安全结构化摘要的用户化表达，不展示完整 Chain of Thought、raw reasoning tokens、raw prompt 或后端审计 JSON。
+
+### 是否影响主流程
+
+是，仅影响 `/workbench` PC 主界面展示体验和文档说明；不影响后端分析逻辑。
+
+### 是否涉及 Benchmark
+
+否。未修改 Benchmark、runner、scorer、标准答案或 public proxy。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。前端仍只调用稳定后端 API 并展示后端契约摘要，不承载 Agent 编排或核心计算。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。后端仍返回 quality_report、warnings、errors、verification、debug 和 join trace；只是前端主界面不直接展示这些审计字段。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。只修改前端对 `reasoning_trace_view` 的用户化展示。
+
+### 是否已同步 README
+
+是。已同步 README.md、MAIN_GOAL.md 和 frontend/README.md，说明主界面不再直接展示后端审计明细。
+
+---
+
+### 日期时间
+
+2026-05-23 13:05 CST
+
+### 本次目标
+
+按用户要求把 `/workbench` 上传入口改为 GPT-like 底部 composer 左下角交互，并切换为浅色蓝色主视觉；删除首屏上方上传卡片，避免页面上半区出现上传框。
+
+### 修改文件
+
+- frontend/index.html
+- frontend/styles.css
+- frontend/app.js
+- frontend/favicon.svg
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 删除首条 assistant 消息中的 `upload-card` / `dropzone` 上传大框。
+- 将 `file-input`、纸夹选择按钮、上传按钮和文件状态移动到底部 composer 左侧。
+- 将 workbench token 从深色侧栏 / 绿色 accent 调整为浅蓝侧栏 / 蓝色 accent，按钮、图标、selected state 和 chart 颜色同步蓝色体系。
+- 新增 `/frontend/favicon.svg` 蓝色网页 icon，并在 HTML 中引用。
+- JS 删除对 `dropzone` 的依赖，文件选择后只更新底部 compact status；上传和分析仍只调用后端 API，不在前端实现计算、join、排序、聚合或评分。
+- 静态测试新增 favicon、底部 upload-controls、无 `upload-card` / `dropzone` 断言。
+
+### 测试方式
+
+- node --check frontend/app.js
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets
+- git diff --check -- frontend/index.html frontend/styles.css frontend/app.js frontend/favicon.svg tests/backend/test_workbench_static_assets.py CHANGELOG_AI.md
+- curl smoke: `/workbench`、`/frontend/styles.css`、`/frontend/app.js`、`/frontend/favicon.svg`、`/styles.css`、`/app.js`
+- Browser / Playwright smoke: 真实访问 `http://127.0.0.1:8001/workbench`，检查 console、桌面截图、移动视口、选择 CSV、上传 profile。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- `tests.backend.test_workbench_static_assets` 2/2 通过。
+- `git diff --check` 通过。
+- `/workbench` 返回 `200 text/html`；`/frontend/styles.css` 返回 `200 text/css`；`/frontend/app.js` 返回 `200 text/javascript`；`/frontend/favicon.svg` 返回 `200 image/svg+xml`。
+- `/styles.css` 和 `/app.js` 仍返回 404，但页面 HTML 不再引用它们。
+- Browser desktop smoke：console warning / error 为空；首屏为浅色蓝色左侧历史 Chat + 中间 chat + 底部 composer；`.upload-card` 和 `#dropzone` 不存在；favicon href 为 `/frontend/favicon.svg`。
+- Playwright mobile smoke：选择 CSV 后底部状态为 `1 个文件待上传`，上传后 profile 显示 `1 张表，3 行`，上方上传框数量为 0。
+- 真实 provider analyze smoke 未完成：当前 shell 初始未 export key；随后确认 `.env.local` 存在真实 key，但当前 8001 uvicorn 进程仍未在 analyze 路径读取到 provider 配置，返回 `Set VDS_LLM_PROVIDER=openai or deepseek...`。本轮不把该后端启动环境问题记为前端通过项。
+
+### 遗留问题
+
+- 需要单独收敛本地 8001 的真实 provider 启动方式，确保 uvicorn 进程实际继承 `.env.local` 后再跑完整真实 analyze UI smoke。
+- 当前 worktree 已有大量无关 dirty 文件，本轮只触碰上述前端、静态测试和 changelog 文件，不回滚、不覆盖其他改动。
+
+### 是否影响主流程
+
+是，仅影响 `/workbench` 用户界面布局和静态资源；不影响后端分析逻辑。
+
+### 是否涉及 Benchmark
+
+否。本轮不改 Benchmark、runner、scorer、标准答案或 public proxy。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。前端仍只调用后端 API 并展示契约结果。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮只是既有 `/workbench` 的视觉和上传入口调整，不改变项目阶段、主目标、API 契约、Benchmark 口径或 GitHub 首页能力摘要。
+
+---
+
+### 日期时间
+
 2026-05-23 12:47 CST
 
 ### 本次目标
@@ -4353,5 +4702,107 @@ YYYY-MM-DD HH:MM TZ
 ### 是否已同步 README
 
 是。README 已同步 Phase 7.5 - 7.10、Phase 8 Guardrail 和 Phase 9.1 的编号摘要。
+
+---
+### 日期时间
+
+2026-05-23 23:13 CST
+
+### 本次目标
+
+收口 Phase 10 full real after-fix：修复真实 DeepSeek 全量回归暴露的两个通用能力问题，补齐 VDS 95 中文 BI 当前周期占比能力，复跑三数据集真实 DeepSeek 汇总，并同步 Phase 10 验收状态。
+
+### 修改文件
+
+- data_agent_core/verifier/rule_checker.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/core/vds_bi_intent.py
+- data_agent_core/executors/vds_bi_executor.py
+- data_agent_core/core/capability_registry.py
+- data_agent_core/llm/planner.py
+- tests/core/test_semantic_metric_verification.py
+- tests/core/test_generic_capability_operations.py
+- tests/core/test_vds_bi_capabilities.py
+- README.md
+- MAIN_GOAL.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+- 本轮前序 Phase 10 体验文件仍在同一工作树中：frontend/app.js、frontend/index.html、frontend/styles.css、frontend/README.md、docs/API_CONTRACT.md、docs/ARCHITECTURE.md、tests/backend/test_workbench_static_assets.py
+
+### 修改内容
+
+- Verifier 对 `metric_per_distinct_entity` 的 row-count numerator + unique-entity denominator 做通用 count metric 认可，避免把“平均交易次数 / unique shopper”误判为非 count metric。
+- SQL / Pandas executor 对 `day_of_year: [start, end]` 两端点列表统一按区间过滤，修复真实 DeepSeek 中 Q3 fraud rate 的 Pandas / SQL fallback 不一致。
+- VDS 中文 BI 增加 `vds_current_category_share_top` 能力族，支持“本周某状态人数占比最高 TopN 校区/实体”等当前周期类别占比问题。
+- 新增合成测试覆盖 count-per-unique-entity、day_of_year endpoint range filter 和当前周期类别占比 TopN，避免按 task_id 或固定题面特判。
+- 生成 after-fix full real 汇总：DABstep public all 用旧 full offset 结果加 task 36 / task 58 after-fix 真实单题 replacement 合并，Microsoft 300 和 VDS 95 使用已完成的真实 DeepSeek full 汇总。
+- README、MAIN_GOAL、FEATURE_BACKLOG 更新 Phase 10 full real 状态，明确 DABstep public all 本地没有 expected answer，不能宣称 hidden official accuracy。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_semantic_metric_verification tests.core.test_generic_capability_operations tests.core.test_vds_bi_capabilities tests.core.test_phase10_result_experience
+- set -a; . ./.env.local; set +a; VDS_LLM_PROVIDER=deepseek VDS_LLM_MAX_RETRIES=6 VDS_LLM_RETRY_BACKOFF_SECONDS=2 /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split all --limit 1 --offset 113 --output-dir outputs/phase10_full_real_dabstep_task36_deepseek_20260523_after_fix
+- set -a; . ./.env.local; set +a; VDS_LLM_PROVIDER=deepseek VDS_LLM_MAX_RETRIES=6 VDS_LLM_RETRY_BACKOFF_SECONDS=2 /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split all --limit 1 --offset 275 --output-dir outputs/phase10_full_real_dabstep_task58_deepseek_20260523_after_fix
+- Python 汇总脚本生成 `outputs/phase10_full_real_dabstep_all_deepseek_20260523_combined_after_fix.json`
+- Python 汇总脚本生成 `outputs/phase10_full_real_three_dataset_deepseek_20260523_summary_after_fix.json`
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime backend multi_agent_workflows tests
+- node --check frontend/app.js
+- git diff --check
+
+### 测试结果
+
+- Focused tests 通过：Ran 73 tests，OK。
+- DABstep task 36 after-fix 真实 DeepSeek：total=1，success_count=1，pandas_sql_consistency=1/1，semantic_risk=0，submission_risk=0，trace_redaction_risk=0。
+- DABstep task 58 after-fix 真实 DeepSeek：total=1，success_count=1，pandas_sql_consistency=1/1，semantic_risk=0，submission_risk=0，trace_redaction_risk=0。
+- DABstep public all after-fix combined：total=450，success_count=450，unexpected_not_applicable=0，true_unsupported=3，format_risk=0，semantic_risk=0，submission_risk=0，trace_redaction_risk=0，accuracy=null。
+- Microsoft 1-300 真实 DeepSeek combined：total=300，correct=300，accuracy=1.0，success_count=300，关键风险为 0。
+- 原本 VDS 95 真实 DeepSeek combined：total=95，success_count=95，failure_count=0，output_contract_failure_count=0，关键风险为 0。
+- 三数据集汇总 gate passed：`outputs/phase10_full_real_three_dataset_deepseek_20260523_summary_after_fix.json`。
+- 全量 unittest 通过：Ran 147 tests，OK。
+- compileall、`node --check frontend/app.js`、`git diff --check` 均通过。
+
+### 遗留问题
+
+- DABstep public all 的 expected answer 本地为空，因此 full real 只能证明真实 provider 执行覆盖、风险门禁、trace 和可比路径一致性，不能本地计算 hidden official accuracy。
+- 90-179 分片 after-fix 重跑时曾遇到 DeepSeek HTTPS connection reset；已用更小 offset 的真实单题 replacement 验证并合并，不把网络中断当作逻辑失败。
+- `.playwright-cli/` 仍是本地既有未跟踪目录，本轮未纳入 Git。
+
+### 是否影响主流程
+
+是。修复 Verifier 和 executor 的通用能力族，并更新 Phase 10 full real 验收状态。
+
+### 是否涉及 Benchmark
+
+是。涉及 DABstep public all、Microsoft 1-300 和原本 VDS 95 的真实 DeepSeek full 汇总；标准答案、public proxy、accepted answer、hidden answer 和 task_id 仍不进入 Planner、Executor、Verifier、Correction、prompt 或 trace。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。Verifier count metric 语义和 executor filter 语义更加稳定，可被当前 multi_agent workflow 和未来 adapter 复用。
+
+### 是否修改核心数据契约
+
+是。新增 VDS BI operation 进入能力注册和 planner 支持集；未改变既有响应字段名称。
+
+### 是否修改 API 契约
+
+否。本轮修复核心能力和文档状态，未新增 API 请求/响应字段。
+
+### 是否新增或修改错误类型
+
+否。未新增 error_type。
+
+### 是否新增或修改运行追踪逻辑
+
+否。本轮没有新增 trace 字段；仅验证风险和 trace redaction gate。
+
+### 是否已同步 README
+
+是。README 已同步 Phase 10 full real after-fix 验收结果和 DABstep hidden accuracy 边界。
 
 ---

@@ -16,6 +16,7 @@ VDS_BI_OPERATIONS = {
     "vds_period_threshold_count",
     "vds_period_rate_top",
     "vds_current_threshold_top",
+    "vds_current_category_share_top",
     "vds_peer_anomaly",
 }
 
@@ -67,6 +68,8 @@ def execute_vds_bi_operation(logic: LogicForm, context: dict[str, Any]) -> Any:
         return _period_rate_top(df, params)
     if op == "vds_current_threshold_top":
         return _current_threshold_top(df, params)
+    if op == "vds_current_category_share_top":
+        return _current_category_share_top(df, params)
     if op == "vds_peer_anomaly":
         return _peer_anomaly(df, params)
     raise ValueError(f"Unsupported VDS BI operation: {op}")
@@ -149,6 +152,32 @@ def _current_threshold_top(df: pd.DataFrame, params: dict[str, Any]) -> list[dic
         selected = values[values < threshold].sort_values(ascending=True)
     selected = selected.head(int(params.get("limit") or 10))
     return [{entity: index, metric: float(value)} for index, value in selected.items()]
+
+
+def _current_category_share_top(df: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
+    data = df[df["是否本周/上周"].astype(str) == str(params.get("current_period") or "本周")]
+    entity = str(params["entity"])
+    category_column = str(params["category_column"])
+    category_value = str(params["category_value"])
+    if data.empty or entity not in data.columns or category_column not in data.columns:
+        return []
+    total = data.groupby(entity, dropna=True).size()
+    matched = data[data[category_column].astype(str) == category_value].groupby(entity, dropna=True).size()
+    result = pd.DataFrame({"total_count": total, "category_count": matched}).fillna(0)
+    if result.empty:
+        return []
+    result["share"] = result.apply(lambda row: 0.0 if float(row["total_count"]) == 0.0 else float(row["category_count"]) / float(row["total_count"]) * 100, axis=1)
+    result = result.sort_values(["share", "category_count", "total_count"], ascending=[False, False, False]).head(int(params.get("limit") or 10))
+    return [
+        {
+            entity: index,
+            category_column: category_value,
+            "category_count": int(row["category_count"]),
+            "total_count": int(row["total_count"]),
+            "share": float(row["share"]),
+        }
+        for index, row in result.iterrows()
+    ]
 
 
 def _peer_anomaly(df: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:

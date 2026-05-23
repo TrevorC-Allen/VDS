@@ -61,6 +61,7 @@ SUPPORTED_OPERATIONS = {
     "vds_period_threshold_count",
     "vds_period_rate_top",
     "vds_current_threshold_top",
+    "vds_current_category_share_top",
     "vds_peer_anomaly",
 }
 
