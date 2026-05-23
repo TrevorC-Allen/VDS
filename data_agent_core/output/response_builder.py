@@ -9,7 +9,7 @@ from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan, UserQuestion
 from data_agent_core.contracts.execution_contracts import ExecutionResult
-from data_agent_core.contracts.response_contracts import ChartSpec, FinalResponse, InsightResult
+from data_agent_core.contracts.response_contracts import ChartSpec, DataQualityReport, FinalResponse, InsightResult, ReasoningTraceStep
 from data_agent_core.contracts.verification_contracts import VerificationResult
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import CAPABILITY_GAP, OUTPUT_CONTRACT_VALIDATION_FAILED
@@ -24,6 +24,8 @@ def build_response(
     execution_result: ExecutionResult,
     verification: VerificationResult,
     debug: dict[str, Any] | None = None,
+    quality_report: DataQualityReport | dict[str, Any] | None = None,
+    reasoning_trace_view: list[ReasoningTraceStep] | list[dict[str, Any]] | None = None,
 ) -> FinalResponse:
     """Build a FinalResponse with stable fields and formatted answer."""
 
@@ -88,6 +90,8 @@ def build_response(
         verification=_to_dict(verification),
         insight=InsightResult(summary=answer if success else ""),
         chart=ChartSpec(),
+        quality_report=quality_report,
+        reasoning_trace_view=reasoning_trace_view or [],
         warnings=warnings,
         errors=errors,
         debug=debug_payload,

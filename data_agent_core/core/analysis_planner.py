@@ -58,6 +58,9 @@ def build_analysis_plan(logic_form: LogicForm) -> AnalysisPlan:
                 "candidate_set": bool(logic_form.candidate_set),
                 "filters": isinstance(logic_form.filters, dict),
                 "filter_count": len(logic_form.filters),
+                "source_tables": list(logic_form.source_tables),
+                "table_selection_reason": logic_form.table_selection_reason,
+                "has_join_plan": bool(logic_form.join_plan),
                 "output_contract": bool(logic_form.output_contract),
             },
         },
@@ -90,6 +93,8 @@ def complete_generalization_contract(logic_form: LogicForm) -> LogicForm:
         logic_form.time_window = _time_window(logic_form.filters, params)
     if not logic_form.candidate_set:
         logic_form.candidate_set = _candidate_set(logic_form.options, params, group_field)
+    else:
+        logic_form.candidate_set = _normalize_candidate_set(logic_form.candidate_set, params, group_field)
     if not logic_form.output_contract:
         logic_form.output_contract = {
             "answer_type": str(logic_form.output_format.get("answer_type") or "scalar"),
@@ -98,6 +103,12 @@ def complete_generalization_contract(logic_form: LogicForm) -> LogicForm:
             "capability_family": capability.capability_family,
             "format_guidelines": str(logic_form.output_format.get("guidelines") or ""),
         }
+    if logic_form.join_plan:
+        logic_form.parameters.setdefault("join_plan", logic_form.join_plan)
+    if logic_form.source_tables:
+        logic_form.parameters.setdefault("source_tables", list(logic_form.source_tables))
+    if logic_form.table_selection_reason:
+        logic_form.parameters.setdefault("table_selection_reason", logic_form.table_selection_reason)
     return logic_form
 
 
@@ -122,6 +133,7 @@ def _metric_name(logic_form: LogicForm, metric: Any) -> str:
         "distinct_count": "distinct_count",
         "top_count": "record_count",
         "duplicate_check": "duplicate_rows",
+        "data_quality_report": "data_quality_issues",
         "null_check": "missing_values",
         "field_values": "field_values",
     }.get(logic_form.operation, logic_form.operation)
@@ -216,3 +228,30 @@ def _candidate_set(options: dict[str, Any], params: dict[str, Any], group_field:
     if group_field:
         return {"source": "data", "field": str(group_field)}
     return {"source": "not_required", "values": []}
+
+
+def _normalize_candidate_set(candidate_set: dict[str, Any], params: dict[str, Any], group_field: Any) -> dict[str, Any]:
+    """Normalize LLM-proposed candidate-set notes into verifier-safe contract shape."""
+
+    normalized = dict(candidate_set)
+    if normalized.get("source"):
+        return normalized
+    candidate_field = _candidate_field(group_field, params)
+    if candidate_field:
+        normalized["source"] = "data"
+        normalized.setdefault("field", str(candidate_field))
+        return normalized
+    if normalized.get("values") or normalized.get("options") or normalized.get("option"):
+        normalized["source"] = "options"
+        normalized.setdefault("values", normalized.get("values") or normalized.get("options") or normalized.get("option"))
+        return normalized
+    return {"source": "not_required", "values": []}
+
+
+def _candidate_field(group_field: Any, params: dict[str, Any]) -> Any:
+    entity_field = params.get("entity") or params.get("dimension") or params.get("field")
+    if entity_field:
+        return entity_field
+    if isinstance(group_field, list):
+        return group_field[0] if group_field else None
+    return group_field

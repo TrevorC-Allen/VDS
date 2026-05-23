@@ -130,6 +130,29 @@ class SemanticMetricVerificationTest(unittest.TestCase):
         for field_name in ("metric_definition", "numerator", "denominator", "entity_grain", "time_window", "candidate_set", "filters", "output_contract"):
             self.assertTrue(contract[field_name], field_name)
 
+    def test_analysis_plan_normalizes_llm_candidate_set_without_source(self) -> None:
+        plan = build_analysis_plan(
+            LogicForm(
+                task_type="ranking",
+                operation="vds_period_rank_change",
+                metric="PSD_row",
+                candidate_set={"option": "all stores present in both weeks"},
+                parameters={
+                    "table": "sales",
+                    "metric": "PSD_row",
+                    "entity": "门店名称",
+                    "current_period": "本周",
+                    "previous_period": "上周",
+                    "direction": "decline",
+                    "limit": 10,
+                },
+                output_format={"answer_type": "table"},
+            )
+        )
+
+        self.assertEqual("data", plan.logic_form.candidate_set["source"])
+        self.assertEqual("门店名称", plan.logic_form.candidate_set["field"])
+
     def test_verifier_rejects_missing_unique_denominator_for_per_unique_question(self) -> None:
         plan = build_analysis_plan(
             LogicForm(

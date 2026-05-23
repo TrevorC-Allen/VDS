@@ -130,6 +130,10 @@ def _verify_generalization_contract(
     if not share_passed:
         notes.append("Top-K share denominator does not match the requested count-vs-metric semantics.")
         return False, notes, share_action
+    join_passed, join_notes, join_action = _verify_join_contract(logic, question, primary)
+    notes.extend(join_notes)
+    if not join_passed:
+        return False, notes, join_action
     output_passed, output_note = _verify_output_contract(logic.output_contract, primary.value)
     notes.append(output_note)
     if not output_passed:
@@ -196,6 +200,78 @@ def _has_structured_filter_context(logic: Any) -> bool:
         "ym",
     }
     return any(key in params and params.get(key) not in {None, "", []} for key in filter_like_keys)
+
+
+def _verify_join_contract(
+    logic: Any,
+    question: str,
+    primary: ExecutionResult,
+) -> tuple[bool, list[str], dict[str, object] | None]:
+    params = getattr(logic, "parameters", {}) or {}
+    join_plan = getattr(logic, "join_plan", None) or params.get("join_plan") or {}
+    source_tables = list(getattr(logic, "source_tables", None) or params.get("source_tables") or [])
+    notes: list[str] = []
+
+    if len(source_tables) > 1 and not join_plan:
+        notes.append("Plan references multiple source tables but does not define a join plan.")
+        return False, notes, {"action": "clarify_join_key", "reason": "multi_table_without_join_plan"}
+    if not join_plan:
+        if _asks_named_dimension(question) and _dimension_looks_like_id(params.get("dimension") or getattr(logic, "group_by", None)):
+            notes.append("Question asks for a named dimension, but the plan would return an ID field.")
+            return False, notes, {"action": "repair_table_selection_or_join", "reason": "dimension_fell_back_to_id"}
+        return True, notes, None
+
+    if not join_plan.get("trusted"):
+        notes.append("Join plan is required but not trusted.")
+        return False, notes, {"action": "clarify_join_key", "reason": join_plan.get("reason") or "untrusted_join_plan"}
+    if join_plan.get("many_to_many_risk"):
+        notes.append("Join plan has many-to-many risk and cannot be treated as a verified result.")
+        return False, notes, {"action": "clarify_join_key", "reason": "many_to_many_join_risk"}
+
+    summary = primary.debug.get("join_execution_summary") if isinstance(primary.debug, dict) else None
+    if isinstance(summary, dict):
+        notes.append(
+            "Join materialized: "
+            f"{summary.get('left_table')}.{summary.get('left_key')} -> "
+            f"{summary.get('right_table')}.{summary.get('right_key')} "
+            f"({summary.get('relationship')})."
+        )
+        if summary.get("unmatched_left_key_count"):
+            notes.append(f"Join produced unmatched primary keys: {summary.get('unmatched_left_key_count')}.")
+    elif primary.success:
+        notes.append("Trusted join plan exists, but execution did not report join materialization.")
+        return False, notes, {"action": "repair_executor_join_trace", "reason": "missing_join_execution_summary"}
+
+    if _asks_named_dimension(question) and _dimension_looks_like_id(params.get("dimension") or getattr(logic, "group_by", None)):
+        notes.append("Question asks for a named dimension, but the plan would return an ID field.")
+        return False, notes, {"action": "repair_table_selection_or_join", "reason": "dimension_fell_back_to_id"}
+    return True, notes, None
+
+
+def _asks_named_dimension(question: str) -> bool:
+    return any(
+        token in question
+        for token in (
+            "city",
+            "country",
+            "customer name",
+            "product name",
+            "merchant name",
+            "城市",
+            "国家",
+            "客户名",
+            "客户名称",
+            "产品名",
+            "产品名称",
+            "商户名",
+            "商户名称",
+        )
+    )
+
+
+def _dimension_looks_like_id(value: Any) -> bool:
+    text = str(value or "").lower()
+    return bool(text) and ("id" in text or text.endswith("编号") or text.endswith("代码"))
 
 
 def _asks_grouped_count(question: str) -> bool:

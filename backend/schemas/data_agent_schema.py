@@ -51,6 +51,7 @@ def dataset_profile_response(profile: DatasetProfile | dict[str, Any]) -> dict[s
         "tables": data.get("tables", []),
         "created_at": data.get("created_at"),
         "status": data.get("status", "unknown"),
+        "quality_report": data.get("quality_report"),
         "warnings": data.get("warnings", []),
         "errors": data.get("errors", []),
     }

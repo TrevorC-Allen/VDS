@@ -244,6 +244,604 @@ YYYY-MM-DD HH:MM TZ
 
 ---
 
+### 日期时间
+
+2026-05-23 12:47 CST
+
+### 本次目标
+
+按用户要求在 Phase 9 之后继续实施 Phase 10：结果图表自动展示、洞察建议、数据质量扫描和安全过程可视化；同时用 mock full gate 和真实 DeepSeek representative 验证模型能力 / 泛化能力不退步，并整理 git。
+
+### 修改文件
+
+- README.md
+- MAIN_GOAL.md
+- docs/API_CONTRACT.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+- backend/main.py
+- backend/routers/data_agent.py
+- backend/schemas/data_agent_schema.py
+- backend/services/data_agent_service.py
+- backend/storage/temp_file_store.py
+- agent_runtime/data_agent_tool_impl.py
+- agent_runtime/data_analysis_roles.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- data_agent_core/contracts/analysis_contracts.py
+- data_agent_core/contracts/dataset_contracts.py
+- data_agent_core/contracts/response_contracts.py
+- data_agent_core/core/analysis_planner.py
+- data_agent_core/core/capability_registry.py
+- data_agent_core/core/data_quality.py
+- data_agent_core/core/file_parser.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/core/logic_form.py
+- data_agent_core/core/schema_profiler.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/llm/planner.py
+- data_agent_core/output/chart_planner.py
+- data_agent_core/output/insight_generator.py
+- data_agent_core/output/reasoning_trace_view.py
+- data_agent_core/output/response_builder.py
+- data_agent_core/tracing/run_trace.py
+- data_agent_core/verifier/rule_checker.py
+- frontend/index.html
+- frontend/styles.css
+- frontend/app.js
+- frontend/README.md
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_phase8_multitable_capabilities.py
+- tests/core/test_phase10_result_experience.py
+- tests/core/test_semantic_metric_verification.py
+
+### 修改内容
+
+- Phase 10 增加后端稳定输出契约：`chart`、`insight`、`quality_report`、`reasoning_trace_view`。
+- Chart planner 自动选择 bar / horizontal_bar / line / pie / donut / histogram / KPI；前端只根据后端 `chart_type` 渲染，不做图表选择和指标计算。
+- Insight generator 基于 verified result 和质量报告生成摘要、异常、波动、建议和 caveats，不读取 benchmark 标准答案。
+- 新增数据质量扫描：缺失值、重复行、疑似表头、常量列、混合数值类型、离群值、可疑负值、非法日期、高基数分类和 join key 重复风险。
+- 用户问“我的文件有什么问题”等数据质量问题时，intent / planner / executor 可进入 `data_quality_report`。
+- `reasoning_trace_view` 只展示阶段摘要、意图识别、执行和验证信息，不暴露完整 Chain of Thought、raw reasoning、raw prompt、API key 或 hidden benchmark answer。
+- Workbench 增加图表、洞察、质量报告和过程时间线展示；前端仍禁止实现核心分析逻辑、join、排序、聚合、异常规则或清洗逻辑。
+- 修复 Phase 10 回归暴露的 `data_quality.py` 负值样本索引不对齐问题。
+- 上传表 workflow 在 `from_uploaded_tables` 阶段生成 dataset profile 和质量报告缓存，避免 Microsoft / VDS 多题回归中每题重复扫描整套表。
+- README、MAIN_GOAL、FEATURE_BACKLOG 和 API_CONTRACT 同步 Phase 10 已完成状态、验收结果、真实 DeepSeek representative 和 full real 未执行限制。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_phase10_result_experience
+- node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime multi_agent_workflows backend tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.core.test_generic_capability_operations tests.core.test_output_contract tests.core.test_semantic_metric_verification tests.core.test_phase8_multitable_capabilities
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- git diff --check
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/phase10_dabstep_dev_1_10_mock_20260523
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split all --limit 450 --offset 0 --output-dir outputs/phase10_dabstep_all_1_450_mock_20260523
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root /Users/trevorcui/Desktop/微软脱敏数据 --limit 300 --offset 0 --output-dir outputs/phase10_microsoft_1_300_mock_20260523
+- VDS_LLM_PROVIDER=mock inline runner for `/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/问题/问题汇总.xlsx`, output `outputs/phase10_vds_question_summary_95_mock_20260523.json`
+- set -a; . ./.env.local; set +a; VDS_LLM_PROVIDER=deepseek /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/phase10_dabstep_dev_1_10_deepseek_real_20260523
+- set -a; . ./.env.local; set +a; VDS_LLM_PROVIDER=deepseek /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root /Users/trevorcui/Desktop/微软脱敏数据 --limit 20 --offset 0 --output-dir outputs/phase10_microsoft_1_20_deepseek_real_20260523
+- set -a; . ./.env.local; set +a; VDS_LLM_PROVIDER=deepseek inline runner for VDS 五域各前三题，output `outputs/phase10_vds_question_summary_15_deepseek_real_20260523.json`
+
+### 测试结果
+
+- Phase 10 focused tests 通过：Ran 5 tests，OK。
+- Targeted backend / core regression 通过：Ran 77 tests，OK。
+- Full unittest 通过：Ran 142 tests in 10.799s，OK。
+- compileall 通过。
+- `node --check frontend/app.js` 通过。
+- `git diff --check` 通过。
+- DABstep dev 1-10 mock：correct=9/10，success_count=10，format_risk=0，submission_risk=0，trace_redaction_risk=0。
+- DABstep public all 1-450 mock：success_count=450/450，unexpected_not_applicable=0，true_unsupported=3，format_risk=0，submission_risk=0，trace_redaction_risk=0。
+- Microsoft 脱敏数据 1-300 mock scorer：correct=300/300，accuracy=1.0，success_count=300，format_risk=0，semantic_risk=0，submission_risk=0，trace_redaction_risk=0。
+- 原本 VDS `问题汇总.xlsx` 95 题 mock smoke：total=95，success_count=95，failure_count=0，output_contract_failure_count=0，trace_redaction_risk=0。
+- 真实 DeepSeek DABstep dev 1-10：correct=9/10，success_count=10，format_risk=0，submission_risk=0，trace_redaction_risk=0；剩余失败仍为既有 `best_fraud_aci_choice` / associated cost 语义口径。
+- 真实 DeepSeek Microsoft 1-20：correct=20/20，accuracy=1.0，success_count=20，format_risk=0，submission_risk=0，trace_redaction_risk=0。
+- 真实 DeepSeek VDS 五域 15 题：success_count=15/15，failure_count=0，output_contract_failure_count=0，trace_redaction_risk=0。
+
+### 遗留问题
+
+- 完整 450 / 300 / 95 真实 provider full 回归仍未执行；当前真实 provider 只代表 representative，不得冒充 full real score。
+- DABstep dev 仍有既有 `best_fraud_aci_choice` / ACI associated cost 语义口径缺口，后续应按通用 fee candidate table / associated cost 能力族修复，不能按 task_id 或固定答案特调。
+- Phase 10 只输出数据质量问题和清洗建议，不自动修改用户原始数据；自动清洗必须另开新 Phase 并要求用户确认。
+- `.playwright-cli/` 仍是本地既有未跟踪目录，本轮不纳入 Git。
+
+### 是否影响主流程
+
+是。默认 analyze / upload / workbench 返回和展示的结果体验字段增加，但核心计算仍在 data_agent_core / backend，前端只渲染后端契约。
+
+### 是否涉及 Benchmark
+
+是。复跑 DABstep、Microsoft 和原本 VDS 三类门禁；标准答案、public proxy、accepted answer、hidden answer 和 task_id 仍只用于 response 之后的离线评分 / 风险观察，未进入 Planner、Executor、Verifier、Correction、prompt、trace 或测试 fixture。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 ms_agent_framework_adapter，也未把 MAF 作为核心依赖。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。`chart`、`insight`、`quality_report` 和 `reasoning_trace_view` 都是 provider-neutral / adapter-neutral 的稳定输出，可由当前 internal multi-agent workflow 和未来 adapter 复用。
+
+### 是否修改核心数据契约
+
+是。扩展 `FinalResponse`、`ChartSpec`、`InsightResult`，新增 `DataQualityReport`、`DataQualityIssue`、`ReasoningTraceStep`，并让 `DatasetProfile` 可携带 `quality_report`。
+
+### 是否修改 API 契约
+
+是。`docs/API_CONTRACT.md` 已同步 Phase 10 响应字段和 trace-safe 过程展示边界。
+
+### 是否新增或修改错误类型
+
+否。首版数据质量能力复用现有 warnings / errors 和质量报告字段，不新增 error_type。
+
+### 是否新增或修改运行追踪逻辑
+
+是。RunTrace 增加 `quality_report` 和 `reasoning_trace_view`；过程展示只保留结构化摘要，不记录完整 Chain of Thought。
+
+### 是否已同步 README
+
+是。README 已同步 Phase 10 完成状态、mock full gate、真实 DeepSeek representative、profile 缓存修复和 full real 未执行限制。
+
+---
+
+### 日期时间
+
+2026-05-23 11:41 CST
+
+### 本次目标
+
+回应“必须用真实 DeepSeek 跑，否则无法判断模型能力是否下降”的问题：使用 `.env.local` 中的 DeepSeek 配置补跑 Phase 8/9 representative 回归，发现并修复原本 VDS 真实 provider 下的 candidate_set 契约归一化问题，再同步 README / MAIN_GOAL / FEATURE_BACKLOG。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- README.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+- data_agent_core/core/analysis_planner.py
+- tests/core/test_semantic_metric_verification.py
+
+### 修改内容
+
+- 使用真实 DeepSeek 跑 DABstep dev 1-10、Microsoft 脱敏数据 1-20、原本 VDS 五域代表集 15 题。
+- 初次 VDS 15 题真实 DeepSeek 为 `5/15`，失败原因是 LLM 输出的 `candidate_set` 只有自然语言描述、没有稳定 `source` 字段，Verifier 正确判为候选集契约不完整。
+- 在 `complete_generalization_contract()` 中新增 candidate_set 归一化：当 LLM 给出候选集描述但缺少 `source` 时，按结构化 `entity` / `dimension` / `field` 或 group field 补为 `source=data`，不放宽 Verifier，不改业务计算，不使用题号、标准答案、固定样本值或 public proxy。
+- 新增单元测试，覆盖 LLM candidate_set 无 source 时归一化为 verifier-safe 契约。
+- 文档同步：当前状态改为已跑真实 DeepSeek representative；同时明确完整 450 / 300 / 95 full real 回归仍未执行，不能用 representative 冒充 full real score。
+
+### 测试方式
+
+- set -a; . ./.env.local; set +a; VDS_LLM_PROVIDER=deepseek /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/phase8_dabstep_dev_1_10_deepseek_real_20260523
+- set -a; . ./.env.local; set +a; VDS_LLM_PROVIDER=deepseek /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root /Users/trevorcui/Desktop/微软脱敏数据 --limit 20 --offset 0 --output-dir outputs/phase8_microsoft_1_20_deepseek_real_20260523
+- set -a; . ./.env.local; set +a; VDS_LLM_PROVIDER=deepseek 原本 VDS `问题汇总.xlsx` 五域各取前三题代表集，输出 `outputs/phase8_vds_question_summary_15_deepseek_real_after_candidate_fix_20260523.json`
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_semantic_metric_verification
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall backend frontend data_agent_core agent_runtime multi_agent_workflows tests
+- node --check frontend/app.js
+- git diff --check
+
+### 测试结果
+
+- DABstep dev 1-10 真实 DeepSeek：correct=9/10，accuracy=0.9，保住当前 `9/10` 基线；剩余失败仍为既有 `best_fraud_aci_choice` / associated cost 语义口径。
+- Microsoft 脱敏数据 1-20 真实 DeepSeek：correct=20/20，accuracy=1.0。
+- 原本 VDS 五域 15 题真实 DeepSeek：初次 `5/15`；candidate_set 归一化修复后 `15/15`，output_contract_failure_count=0。
+- focused semantic tests 通过：Ran 14 tests，OK。
+- 全量 unittest 通过：Ran 136 tests，OK。
+- compileall 通过。
+- node --check frontend/app.js 通过。
+- git diff --check 通过。
+
+### 遗留问题
+
+- 真实 DeepSeek full 回归仍未执行：DABstep public all 1-450、Microsoft 1-300、原本 VDS 95 全量都还只是 mock / 离线 full 通过，真实 provider 当前只有 representative。
+- DABstep dev 仍保留 `best_fraud_aci_choice` / ACI associated cost 通用语义口径后续项。
+- `.playwright-cli/` 仍是本地既有未跟踪目录，本轮未纳入变更。
+
+### 是否影响主流程
+
+是。修复真实 provider 下 Planner generalization contract 的 candidate_set 归一化，影响 Verifier 前的稳定契约补全。
+
+### 是否涉及 Benchmark
+
+是。涉及 DABstep dev、Microsoft 脱敏数据和原本 VDS representative；标准答案只在 response 之后用于离线评分，未进入 Agent workflow、prompt、Planner、Executor、Verifier、Correction 或 trace。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。candidate_set 归一化让真实 provider 输出更稳定地进入 multi_agent workflow 和后续 adapter。
+
+### 是否修改核心数据契约
+
+是。规范了已有 `candidate_set` 字段的结构补全规则。
+
+### 是否修改 API 契约
+
+否。未修改外部 API 字段。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。trace 会自然记录归一化后的 `candidate_set`。
+
+### 是否已同步 README
+
+是。README 已同步真实 DeepSeek representative 结果和 full real 未执行限制。
+
+---
+
+### 日期时间
+
+2026-05-23 12:16 CST
+
+### 本次目标
+
+修复真实 `/workbench` 入口下前端 CSS / JS 资源路径错误导致页面退化为裸 HTML 的问题，并补充防回归测试和真实浏览器 smoke。
+
+### 修改文件
+
+- frontend/index.html
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 将 workbench 页面资源引用从相对路径 `./styles.css` / `./app.js` 改为后端实际挂载路径 `/frontend/styles.css` / `/frontend/app.js`。
+- 新增静态单测，防止 `/workbench` 再次返回无法加载样式和脚本的 HTML。
+- 保持前端只负责上传、提问和展示，不新增指标公式、join、排序、聚合、评分或后端核心分析逻辑。
+
+### 测试方式
+
+- curl 验证 `GET /workbench`、`GET /frontend/styles.css`、`GET /frontend/app.js`
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js
+- Browser smoke 真实访问 `http://127.0.0.1:8001/workbench`，检查页面标题、DOM、console、桌面截图、移动截图和上传按钮交互
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets
+- curl 上传 `/tmp/vds-workbench-smoke.csv` 到 `POST /api/data-agent/upload`
+- VDS_LLM_PROVIDER=mock 直接运行 backend service 上传 + analyze smoke
+- git diff --check
+
+### 测试结果
+
+- `/workbench` 返回 `200 text/html`，HTML 内资源已指向 `/frontend/styles.css` 和 `/frontend/app.js`。
+- `/frontend/styles.css` 返回 `200 text/css`，`/frontend/app.js` 返回 `200 text/javascript`。
+- 新增 workbench 静态资源测试通过：Ran 1 test，OK。
+- backend service + workbench 静态测试通过：Ran 7 tests，OK。
+- `node --check frontend/app.js` 通过。
+- Browser smoke：页面标题为 `Virtual Data Scientist Workbench`，console warning / error 为空，桌面视口恢复左侧深色导航、主工作区卡片和右侧审计栏；移动视口资源加载正常。
+- 上传按钮空文件交互正常显示 `请选择文件`，未产生 console error。
+- API 上传 smoke 成功：`success=True`，1 张表，2 行，2 列。
+- mock analyze smoke 成功：上传 3 行 CSV 后返回 `success=True`，首行结果为 `{'city': 'Shanghai', 'amount': 150}`。
+- git diff --check 通过。
+
+### 遗留问题
+
+- 本轮只修复真实 workbench 入口资源路径和首屏渲染，不重做产品设计。
+- Browser 插件当前未执行真实文件选择上传；文件上传通过 API smoke 和 backend service mock analyze 验证。
+
+### 是否影响主流程
+
+是。影响用户访问 `/workbench` 的前端展示入口，但不改变后端分析主流程。
+
+### 是否涉及 Benchmark
+
+否。未修改 Benchmark 数据、runner、scorer、标准答案或 public proxy 观察链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。仅修复前端静态资源入口，不改 multi_agent workflow、agent_runtime 或 adapter。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。`/workbench` 与 `/frontend/*` 既有契约不变，只修复 HTML 资源引用。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮不改变项目阶段、API 契约、Benchmark 口径或用户可见能力范围，只修复既有 `/workbench` 入口资源加载错误，因此 README 首页状态无需更新。
+
+---
+
+### 日期时间
+
+2026-05-23 12:27 CST
+
+### 本次目标
+
+按用户要求将 VDS Workbench 从仪表盘式三栏卡片改为 GPT 类聊天界面：左侧历史 Chat，中间消息流，底部固定对话输入。
+
+### 修改文件
+
+- frontend/index.html
+- frontend/styles.css
+- frontend/app.js
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 重构 workbench HTML 为聊天壳：左侧保留品牌、新分析入口和历史 Chat；主区域改为 assistant / user 消息流；底部 composer 承载问题输入、文件入口、执行模式、Agent 模式和发送按钮。
+- 将数据画像、分析结果、图表、洞察、质量、Join / Verification、过程和 warnings/errors 放入 assistant 消息内的结构化块，不再使用旧的仪表盘 `work-grid` / `inspector` 首屏。
+- 调整前端状态编排：上传成功后展示数据画像消息；发送问题时追加用户消息；后端结果返回后展示 assistant 结果消息并写入左侧历史 Chat。
+- 保留既有 `/api/data-agent/upload`、`/api/data-agent/upload-batch`、`/api/data-agent/analyze` 调用，不在前端实现指标公式、join、排序、聚合或评分。
+- 扩展静态测试，锁定 chat-first shell 并防止回退到旧 `work-grid` / `inspector` 布局。
+
+### 测试方式
+
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets
+- curl 验证 `GET /workbench` 返回 chat shell 和 `/frontend/*` 资源路径
+- Browser smoke 真实访问 `http://127.0.0.1:8001/workbench`，检查 console、桌面截图、移动截图、旧布局节点不存在和空文件上传交互
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- workbench 静态测试通过：Ran 2 tests，OK。
+- `/workbench` 返回 `200 text/html`，包含 `历史 Chat`、`chat-messages`、`composer-shell` 和 `/frontend/styles.css` / `/frontend/app.js`。
+- Browser desktop smoke：console warning / error 为空；左侧为历史 Chat，中间为 VDS assistant 消息，底部为固定 composer；旧 `.work-grid`、`.inspector`、`.question-panel` 不存在。
+- Browser mobile smoke：390px 视口无横向溢出，历史 Chat、消息区和 composer 均可见，console warning / error 为空。
+- 上传按钮空文件交互正常显示 `请选择文件`，未产生 console error。
+
+### 遗留问题
+
+- Browser 插件当前未执行真实文件选择上传；文件上传和 analyze 能力仍由 API smoke / backend service smoke 覆盖。
+- 本轮是 chat-first 信息架构重做，不涉及更复杂的多会话持久化、会话删除、会话重命名或历史恢复。
+
+### 是否影响主流程
+
+是。影响 `/workbench` 用户界面和前端状态展示方式，但不改变后端分析主流程。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。仅改前端展示和本地状态编排。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。README 已描述 Phase 9 workbench 的上传、提问和展示能力；本轮只调整界面布局为 chat-first，不改变阶段状态、API 契约或能力范围。
+
+---
+
+### 日期时间
+
+2026-05-23 02:45 CST
+
+### 本次目标
+
+按照 Phase 8/9 实施计划推进到 Phase 9 完成：先完成 Phase 8A-8E 核心算法闭环，再在 Phase 8 完整门禁通过后交付 Phase 9 前端 workbench，并把 MAIN_GOAL、README、API_CONTRACT、FEATURE_BACKLOG 同步为已完成状态。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- README.md
+- docs/API_CONTRACT.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+- backend/main.py
+- backend/routers/data_agent.py
+- backend/services/data_agent_service.py
+- backend/storage/temp_file_store.py
+- agent_runtime/data_agent_tool_impl.py
+- agent_runtime/data_analysis_roles.py
+- data_agent_core/agent/single_agent.py
+- data_agent_core/contracts/analysis_contracts.py
+- data_agent_core/contracts/dataset_contracts.py
+- data_agent_core/core/analysis_planner.py
+- data_agent_core/core/capability_registry.py
+- data_agent_core/core/file_parser.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/core/logic_form.py
+- data_agent_core/core/schema_profiler.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/tracing/run_trace.py
+- data_agent_core/verifier/rule_checker.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- tests/backend/test_data_agent_service.py
+- tests/core/test_phase8_multitable_capabilities.py
+- frontend/index.html
+- frontend/styles.css
+- frontend/app.js
+- frontend/README.md
+
+### 修改内容
+
+- Phase 8A：新增多文件 dataset 装配能力和 `POST /api/data-agent/upload-batch`；DatasetProfile / TableProfile 保留 `source_file`、`sheet`、`table_name`、字段画像和样例值；inline table payload 也支持 `source_file` / `sheet` metadata。
+- Phase 8B：增强问题到表路由，按文件名、表名、字段名、语义别名和样例值打分；销售 / 库存多表问题不再静默选 `primary_table`。
+- Phase 8C：扩展 `LogicForm` / `AnalysisPlan`，稳定携带 `source_tables`、`table_selection_reason`、`join_plan`；基于同名字段、归一化 ID 字段、唯一性和值重叠率推断一对一 / 多对一 join key。
+- Phase 8D：Pandas executor 在可信 join plan 下先受控 materialize join，再执行聚合 / 排序 / 过滤；Verifier 阻断无可信 join key、多对多风险、多表未 join 和 ID fallback 伪成功；RunTrace / debug 记录 join 证据。
+- Phase 8E：复跑 DABstep、微软脱敏数据和原本 VDS 三类非退步门禁；无真实 provider key 时只记录 mock / 离线结果，不冒充真实模型能力。
+- Phase 9：新增 `frontend/` 静态 workbench，并在 `backend/main.py` 挂载 `/frontend` 和 `/workbench`；前端支持单/多文件上传、profile 预览、问题提交、结果展示、verification、warnings、errors、join trace 和 run history，不实现指标公式、join 或数据计算。
+- 文档同步：MAIN_GOAL、README、API_CONTRACT、FEATURE_BACKLOG 均更新为 Phase 8/9 已完成状态，并记录后续真实 provider 回归限制。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall backend frontend data_agent_core agent_runtime multi_agent_workflows tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_phase8_multitable_capabilities tests.backend.test_data_agent_service tests.core.test_uploaded_table_agent tests.multi_agent_workflows.test_phase6_multi_agent_workflow
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- DABstep dev 1-10 mock：`outputs/phase8_dev_1_10_mock_20260523/dev_1_to_10_report.json`
+- DABstep public all 1-450 mock：`outputs/phase8_dabstep_all_1_450_mock_20260523/all_1_to_450_report.json`
+- Microsoft 脱敏数据 1-300 mock scorer：`outputs/phase8_microsoft_1_300_mock_20260523/report.json`
+- 原本 VDS `问题汇总.xlsx` 95 题 smoke：`outputs/phase8_vds_question_summary_95_mock_20260523.json`
+- Phase 9 browser smoke：mocked API route 桌面 / 移动视口，截图 `outputs/phase9_workbench_desktop_20260523.png`、`outputs/phase9_workbench_mobile_20260523.png`
+- node --check frontend/app.js
+- git diff --check
+
+### 测试结果
+
+- compileall 通过。
+- Phase 8 focused / backend / baseline 子集通过：Ran 14 tests，OK。
+- 全量 unittest 通过：Ran 135 tests，OK。
+- DABstep dev 1-10：correct=9/10，success_count=10，unexpected_not_applicable=0，format_risk=0，submission_risk=0，trace_redaction_risk=0。
+- DABstep public all 1-450 mock：success_count=450/450，unexpected_not_applicable=0，format_risk=0，submission_risk=0，trace_redaction_risk=0；public all answer 为空，不能本地计算 hidden official accuracy。
+- Microsoft 脱敏数据 1-300 mock scorer：correct=300/300，success_count=300，format_risk=0，submission_risk=0，trace_redaction_risk=0。
+- 原本 VDS `问题汇总.xlsx` 95 题 smoke：total=95，success_count=95，failure_count=0，output_contract_failure_count=0。
+- Phase 9 browser smoke：console/page errors 为空；桌面和移动截图已生成。
+- node --check frontend/app.js 通过。
+- git diff --check 通过。
+
+### 遗留问题
+
+- 当前环境 `OPENAI_API_KEY=absent`、`DEEPSEEK_API_KEY=absent`，所以本轮没有真实 OpenAI / DeepSeek representative / staged 回归；后续有 key 时必须补跑，不能用 mock 冒充真实模型能力。
+- Phase 9 首版 workbench 已能展示后端契约和 trace，但字段确认、join key 确认、低置信度澄清的交互还可继续产品化；这些后续增强仍不得在前端实现核心计算。
+- DABstep dev 仍保留既有 `best_fraud_aci_choice` / ACI associated cost 通用语义口径后续项，不能按单题或固定答案特判。
+- `.playwright-cli/` 是本地既有未跟踪目录，本轮未纳入变更。
+
+### 是否影响主流程
+
+是。Phase 8 修改核心上传表、多文件、多表 join、Verifier 和 trace 链路；Phase 9 新增前端 workbench。但旧单文件上传、inline table、single_agent fallback 和默认 multi_agent 基线均已回归。
+
+### 是否涉及 Benchmark
+
+是。复跑 DABstep dev、DABstep public all、Microsoft 脱敏数据和原本 VDS 95 smoke。标准答案、public proxy、accepted answer、hidden answer 和 task_id 仍只用于 response 之后的离线评分 / 风险观察，未进入 Planner、Executor、Verifier、Correction、prompt、trace 或测试 fixture。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未引入 Microsoft Agent Framework 依赖，未把核心算法写入 adapter。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。多文件 profile、表路由、join plan、join execution summary 和 verification 风险都通过稳定契约表达，可被当前 multi_agent workflow 和未来 framework adapter 复用。
+
+### 是否修改核心数据契约
+
+是。DatasetProfile / TableProfile 增加并使用 `source_file`、`sheet`、`table_name`；LogicForm / AnalysisPlan 增加 `source_tables`、`table_selection_reason`、`join_plan`。
+
+### 是否修改 API 契约
+
+是。新增 `POST /api/data-agent/upload-batch`，并在 API_CONTRACT 中记录多文件 profile、join plan、join execution summary 和 `/workbench` 边界。
+
+### 是否新增或修改错误类型
+
+是。未新增 error_type 常量，但修改了错误 / verification 语义：无可信 join key、多对多风险、多表未 join 和 ID fallback 必须通过 verification / correction_action / warnings / errors 体现，不能伪成功。
+
+### 是否新增或修改运行追踪逻辑
+
+是。RunTrace 增加 `source_tables`、`table_selection_reason`、`join_plan`、`join_execution_summary`；debug 同步暴露 trace-safe join 摘要。
+
+### 是否已同步 README
+
+是。README 已同步 Phase 8/9 完成状态、`upload-batch`、`/workbench`、非退步门禁、真实 provider 限制和前端不得实现核心计算的边界。
+
+---
+
+### 日期时间
+
+2026-05-23 01:12 CST
+
+### 本次目标
+
+按用户要求把 Phase 8 / Phase 9 实施计划和“下一阶段 Goal 滚动更新机制”正式写入项目主目标：Phase 8 作为核心算法回看与多文件/多表泛化闭环的新阶段，Phase 9 作为 Phase 8 完成后的前端产品化阶段。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- README.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- MAIN_GOAL.md 新增 Phase 8 / Phase 9 到当前阶段目标和统一 Phase 状态表。
+- MAIN_GOAL.md 新增 Phase 8 详细治理规则：进入新 Phase 或 8A-8E 子阶段前必须更新当前 Goal 并预写下一阶段 Goal，阶段结束后必须回看验收结果并更新后续 Goal。
+- MAIN_GOAL.md 新增 Phase 8A-8E 实施顺序：多文件 dataset 装配、问题到表精准路由、多表关系与 join plan、Executor / Verifier / trace 闭环、DABstep / 微软脱敏数据 / 原本 VDS 三类基准完整回归。
+- MAIN_GOAL.md 明确 Phase 8 硬门槛：模型能力和泛化能力不得低于当前 DABstep、微软脱敏数据和原本 VDS 基线；Phase 9 必须等待 Phase 8 退出后启动。
+- README.md 同步 GitHub 首页摘要，补充 Phase 8 / Phase 9 定位和前端不得承载核心计算的边界。
+
+### 测试方式
+
+- git diff --check
+- rg -n "Phase 8|Phase 9|8A|8B|8C|8D|8E|滚动 Goal" MAIN_GOAL.md README.md CHANGELOG_AI.md
+
+### 测试结果
+
+- git diff --check 通过。
+- Phase 8 / Phase 9 / 8A-8E / 滚动 Goal 关键词均已在 MAIN_GOAL.md、README.md、CHANGELOG_AI.md 中可检索。
+
+### 遗留问题
+
+- 本轮只落地文档计划和治理规则，不实现 Phase 8 代码。
+- Phase 8A 进入实现前仍需按本次规则再次更新 MAIN_GOAL.md 当前 Goal 和 Phase 8B 下一阶段 Goal。
+- `.playwright-cli/` 仍是本地既有未跟踪目录，本轮未使用、未修改、未纳入变更。
+
+### 是否影响主流程
+
+否。本轮只修改文档和阶段治理规则，不修改 data_agent_core、backend、agent_runtime、multi_agent_workflows 或前端代码。
+
+### 是否涉及 Benchmark
+
+是，文档层面涉及。新增 Phase 8 非退步门禁明确要求 DABstep、微软脱敏数据和原本 VDS 三类回归不得退步；未修改 benchmark runner、scorer、prompt、测试 fixture 或核心分析链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 ms_agent_framework_adapter，也未引入 Microsoft Agent Framework 依赖。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。Phase 8 将多文件、多表、join、Verifier 和 trace 作为核心算法契约完善目标，后续多 Agent 或框架适配必须复用这些稳定契约。
+
+### 是否修改核心数据契约
+
+否。本轮只写计划；`source_tables`、`table_selection_reason`、`join_plan` 等契约扩展留到 Phase 8 实现时再落地。
+
+### 是否修改 API 契约
+
+否。本轮只写计划；`upload-batch`、inline table metadata、selected_tables、join_summary 等 API 契约变化留到 Phase 8 实现时再同步 docs/API_CONTRACT.md。
+
+### 是否新增或修改错误类型
+
+否。本轮未新增错误类型。
+
+### 是否新增或修改运行追踪逻辑
+
+否。本轮未新增 trace 字段；Phase 8D 才会实现 join trace / table selection trace。
+
+### 是否已同步 README
+
+是。README 已同步 Phase 8 / Phase 9 摘要、非退步门禁和前端后置边界。
+
 ## 2026-05-22 - DeepSeek transport retry for offset benchmark runs
 
 ### 修改内容
@@ -3592,5 +4190,168 @@ YYYY-MM-DD HH:MM TZ
 ### 是否已同步 README
 
 是。README 已同步当前 Easy Recovery goal、真实 DeepSeek `69/72`、mock `72/72`、public proxy policy 和 Phase 7.1 / 7.2 职责拆分。
+
+---
+
+### 日期时间
+
+2026-05-23 02:46 CST
+
+### 本次目标
+
+最终收口 Phase 8/9 实施：确认详细实现记录、阶段状态文档、API 契约、前端边界和回归结果已经同步到仓库文档，并在文末追加本次最终验收记录。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- README.md
+- docs/API_CONTRACT.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- MAIN_GOAL.md 标记 Phase 8A-8E 已完成，Phase 9 首版 workbench 已完成，并写明真实 provider key 缺失限制。
+- README.md 同步 Phase 8/9 当前状态、`/api/data-agent/upload-batch`、`/workbench`、三类回归门禁和前端不承载核心计算边界。
+- docs/API_CONTRACT.md 增补 `upload-batch`、多文件 profile 字段、`source_tables`、`table_selection_reason`、`join_plan`、`join_execution_summary` 和 `/workbench` 契约。
+- docs/FEATURE_BACKLOG.md 增补 Phase 8 multi-file / multi-table closure 和 Phase 9 frontend workbench 的完成状态。
+- CHANGELOG_AI.md 记录 Phase 8/9 实施与最终验证结果。
+
+### 测试方式
+
+- git diff --check
+- node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall backend frontend data_agent_core agent_runtime multi_agent_workflows tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- rg -n "Phase 8 已|Phase 9 已|upload-batch|/workbench|source_tables|table_selection_reason|join_plan|join_execution_summary|OPENAI_API_KEY|DEEPSEEK_API_KEY" MAIN_GOAL.md README.md docs/API_CONTRACT.md docs/FEATURE_BACKLOG.md CHANGELOG_AI.md
+
+### 测试结果
+
+- git diff --check 通过。
+- node --check frontend/app.js 通过。
+- compileall 通过。
+- 全量 unittest 通过：Ran 135 tests，OK。
+- 文档关键词均命中，Phase 8/9 完成状态、API 契约、前端入口和真实 provider 限制已同步。
+
+### 遗留问题
+
+- 当前环境没有 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY`，真实 provider representative / staged 回归未执行。
+- `.playwright-cli/` 仍是本地既有未跟踪目录，本轮未纳入变更。
+
+### 是否影响主流程
+
+是。记录并同步 Phase 8 核心算法闭环和 Phase 9 前端 workbench 完成状态。
+
+### 是否涉及 Benchmark
+
+是。文档记录 DABstep、微软脱敏数据和原本 VDS 回归门禁结果；未把标准答案、public proxy、accepted answer 或 hidden answer 引入核心链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。多文件、多表和 join trace 契约可被当前 multi_agent workflow 和未来 adapter 复用。
+
+### 是否修改核心数据契约
+
+是。记录 Phase 8 中已落地的 DatasetProfile / LogicForm / AnalysisPlan / RunTrace 扩展。
+
+### 是否修改 API 契约
+
+是。API_CONTRACT 已同步 `upload-batch` 和 `/workbench`。
+
+### 是否新增或修改错误类型
+
+否。本次最终收口不新增 error_type。
+
+### 是否新增或修改运行追踪逻辑
+
+是。文档同步记录 Phase 8 已落地的 join trace 字段。
+
+### 是否已同步 README
+
+是。README 已同步 Phase 8/9 完成状态。
+
+---
+
+### 日期时间
+
+2026-05-23 11:55 CST
+
+### 本次目标
+
+按用户要求把 VDS 后续计划从笼统的“Phase 7 后续增强”改为明确的 Phase 7.5 - 7.10 编号版，让后续工程项能清楚体现发生在 Phase 7.1 / 7.2 / 7.2G / 7.3 之后，同时不新增 Phase 7.4、不重开 Phase 8/9 主体。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- README.md
+- docs/FEATURE_BACKLOG.md
+- docs/ARCHITECTURE.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- MAIN_GOAL.md 在统一 Phase 状态表和 Phase 7.3 后新增 Phase 7.5+ 后续子阶段计划，覆盖 Tool / Safety、provider-native real smoke、DuckDB read-only runtime、multi-agent parallel / bounded correction、MAF demo、ACI / complex BI、Phase 8 Guardrail 和 Phase 9.1。
+- README.md 将后续 TODO 改为 Phase 编号摘要，避免只写“复杂多 Agent / MAF / tool 后续增强”。
+- docs/FEATURE_BACKLOG.md 新增 Phase 7.5、7.6、7.7、7.8、7.9、7.10 和 Phase 9.1 backlog 条目，并记录目标、影响模块、优先级、验收标准、风险、泛化验证方式、contract / API / tracing / errors 影响。
+- docs/ARCHITECTURE.md 的 TODO 改为按 Phase 7.5 - 7.10 顺序推进，并明确 provider adapter 和 MAF adapter 都不能承载核心算法。
+- CHANGELOG_AI.md 记录本次只是文档编号和执行计划同步，不做代码实现。
+
+### 测试方式
+
+- git diff --check
+- rg -n "Phase 7\\.5|Phase 7\\.6|Phase 7\\.7|Phase 7\\.8|Phase 7\\.9|Phase 7\\.10|Phase 8 Guardrail|Phase 9\\.1|DABstep.*Microsoft.*VDS|codex/vds-phase75" MAIN_GOAL.md README.md docs/FEATURE_BACKLOG.md docs/ARCHITECTURE.md CHANGELOG_AI.md
+- rg -n "Phase 7\\.4|MAF.*强依赖|前端实现.*join|provider-native adapter.*生产默认|provider-native.*生产默认链路" MAIN_GOAL.md README.md docs/FEATURE_BACKLOG.md docs/ARCHITECTURE.md
+
+### 测试结果
+
+- git diff --check 通过。
+- Phase 7.5 / 7.6 / 7.7 / 7.8 / 7.9 / 7.10 / Phase 8 Guardrail / Phase 9.1 关键词扫描均有预期命中，集中在 MAIN_GOAL、README、FEATURE_BACKLOG、ARCHITECTURE 和本条 CHANGELOG。
+- Phase 7.4 标题扫描无命中；未新增 `## Phase 7.4` 或 `### Phase 7.4`。
+- provider-native / MAF / 前端 join 口径扫描只命中既有或本轮新增的禁止事项，例如“不作为生产默认链路”“不成为强依赖”“前端不实现 join”，未发现相反口径。
+
+### 遗留问题
+
+- 本轮只做文档计划同步，尚未实现 Phase 7.5 - 7.10 的代码。
+- 当前工作区已有大量未提交代码和文档改动；本轮只触碰上述文档文件，不回滚、不覆盖其他人的改动。
+
+### 是否影响主流程
+
+否。仅修改文档中的阶段编号、后续计划和治理要求。
+
+### 是否涉及 Benchmark
+
+是。文档新增 Phase 7.5+ 的三数据集 non-regression gate：DABstep dev 1-10 不低于 9/10，DABstep public all 1-450 mock 保持 450/450 且 unexpected_not_applicable=0，Microsoft 1-300 mock scorer 保持 300/300，VDS 95 smoke 保持 95/95；未修改 Benchmark 数据、runner、scorer 或核心链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+是，仅文档层面。新增 Phase 7.9 MAF demo 计划，并明确 MAF 只作为可选 adapter / workflow 承载层，不成为 data_agent_core 或 backend 强依赖，不承载核心算法。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。Phase 7.8 / 7.9 明确先做 Agent 独立测试、有限 executor 并行、bounded correction retry 和 adapter-only MAF demo，避免直接跳到不可审计的复杂编排。
+
+### 是否修改核心数据契约
+
+否。本轮不改代码和 contracts，只记录未来可能影响 contracts 的阶段。
+
+### 是否修改 API 契约
+
+否。本轮不改 API_CONTRACT；Phase 9.1 记录如果后续新增稳定确认字段，必须先更新 API_CONTRACT。
+
+### 是否新增或修改错误类型
+
+否。本轮只写计划。
+
+### 是否新增或修改运行追踪逻辑
+
+否。本轮只写计划；后续 Phase 7.5 / 7.6 / 7.7 / 7.8 可能扩展 trace-safe summary。
+
+### 是否已同步 README
+
+是。README 已同步 Phase 7.5 - 7.10、Phase 8 Guardrail 和 Phase 9.1 的编号摘要。
 
 ---

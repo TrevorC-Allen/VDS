@@ -89,6 +89,22 @@ try:
         finally:
             temp_path.unlink(missing_ok=True)
 
+    @router.post("/upload-batch")
+    async def upload_batch(files: list[UploadFile] = File(...)) -> dict[str, Any]:
+        temp_paths: list[Path] = []
+        original_filenames: list[str | None] = []
+        try:
+            for upload_file in files:
+                suffix = Path(upload_file.filename or "").suffix
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                    temp_file.write(await upload_file.read())
+                    temp_paths.append(Path(temp_file.name))
+                    original_filenames.append(upload_file.filename)
+            return service.upload_datasets(temp_paths, original_filenames=original_filenames)
+        finally:
+            for temp_path in temp_paths:
+                temp_path.unlink(missing_ok=True)
+
     @router.post("/analyze")
     def analyze(payload: AnalyzePayload) -> dict[str, Any]:
         return service.analyze_dataset(

@@ -53,6 +53,7 @@ SUPPORTED_OPERATIONS = {
     "boolean_percentage",
     "boolean_count_ratio",
     "duplicate_check",
+    "data_quality_report",
     "not_applicable",
     "vds_period_rank_change",
     "vds_period_delta_top",

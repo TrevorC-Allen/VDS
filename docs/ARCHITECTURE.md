@@ -244,6 +244,10 @@ VDS 桌面测试数据用于暴露中文 BI 周环比、阈值、异常和多行
 ## TODO
 
 - 扩展 CSV / Excel 表头识别和多 sheet 策略。
-- 将 sqlite fallback 替换或扩展为 DuckDB runtime，但保持核心框架无关。
-- 后续再把 provider 原生 OpenAI / DeepSeek 工具循环接入真实网络 smoke；当前已有 schema / tool call 解析 / mock loop，但不作为生产默认链路。
-- Phase 7 继续扩展真实 Microsoft Agent Framework demo、并行 executor、更完整 Correction Loop、ACI associated cost 通用口径、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 能力，不把核心算法写进 workflow。
+- Phase 7.5：硬化 ToolDispatcher、工具 schema、allowed_roles、timeout、trace-safe summary、Pandas / NumPy 白名单、SQL / DuckDB read-only 限制和文件访问根目录；不开放自由 Python、自由 SQL、shell、网络或任意文件访问。
+- Phase 7.6：接入真实 OpenAI / DeepSeek provider-native tool loop smoke；provider adapter 只能把 tool call 转成内部 ToolCall 并交给 ToolDispatcher，不承载 DatasetProfile、Pandas、SQL、Verifier、Chart、Insight 或 Benchmark 逻辑，也不作为生产默认链路。
+- Phase 7.7：将 sqlite fallback 替换或扩展为 DuckDB read-only runtime，但保持核心框架无关；DuckDB 路径必须继续经过 Result Normalizer、Verifier 和 trace 摘要。
+- Phase 7.8：先为每个 Agent 增加独立测试，再做 Pandas / SQL / DuckDB executor 有限并行和 bounded Correction Loop；Planner、Verifier、Correction 的核心决策不并行。
+- Phase 7.9：扩展真实 Microsoft Agent Framework demo；MAF adapter 只承载 AgentRole、ToolDefinition、WorkflowState 映射，不能把核心算法写进 adapter 或 workflow。
+- Phase 7.10：继续增强 ACI associated cost、fee what-if candidate table、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 能力，所有修复必须归入能力族并通过合成/非 Benchmark 用例。
+- Phase 8 Guardrail / Phase 9.1：Phase 8 只做多文件 / 多表 / join non-regression 守护；Phase 9.1 只做字段确认、join key 确认、澄清交互和评测回看面板，前端不实现指标公式、join 或数据计算。

@@ -12,10 +12,12 @@ from typing import Any
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm
 from data_agent_core.contracts.dataset_contracts import DatasetProfile
 from data_agent_core.contracts.execution_contracts import ExecutionResult
-from data_agent_core.contracts.response_contracts import ChartSpec, InsightResult
 from data_agent_core.core.analysis_planner import build_analysis_plan
+from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
 from data_agent_core.core.schema_profiler import profile_tables
 from data_agent_core.executors import pandas_executor, sql_executor
+from data_agent_core.output.chart_planner import build_chart_spec
+from data_agent_core.output.insight_generator import generate_insight
 from data_agent_core.verifier.result_comparator import compare_results
 from data_agent_core.verifier.rule_checker import verify_execution
 
@@ -147,22 +149,13 @@ def runtime_build_chart_spec() -> Any:
     def build_chart(arguments: dict[str, Any]) -> dict[str, Any]:
         plan = _analysis_plan_from_payload(arguments["analysis_plan"])
         verified_result = dict(arguments["verified_result"])
-        if not _verification_passed(verified_result):
-            return _json_ready(ChartSpec(reason="No chart because verification did not pass."))
-        rows, columns = _rows_and_columns(verified_result)
-        if len(columns) >= 2 and rows:
-            chart_type = "line" if plan.logic_form.task_type == "trend" else "bar"
-            return _json_ready(
-                ChartSpec(
-                    chart_type=chart_type,
-                    x=columns[0],
-                    y=columns[1],
-                    title="Data analysis result",
-                    data=rows,
-                    reason="Selected a basic chart for a verified two-column result.",
-                )
+        return _json_ready(
+            build_chart_spec(
+                plan=plan,
+                execution_result=verified_result.get("pandas_result") or verified_result,
+                verification_passed=_verification_passed(verified_result),
             )
-        return _json_ready(ChartSpec(reason="No chart required for scalar or empty result."))
+        )
 
     return build_chart
 
@@ -173,24 +166,25 @@ def runtime_generate_insight() -> Any:
     def generate(arguments: dict[str, Any]) -> dict[str, Any]:
         question = str(arguments["question"])
         verified_result = dict(arguments["verified_result"])
-        if not _verification_passed(verified_result):
-            return _json_ready(
-                InsightResult(
-                    caveats=["No trusted insight generated because verification did not pass."],
-                )
-            )
-        value = _result_value(verified_result)
-        summary = f"Verified result for question: {question}"
-        if value is not None:
-            summary = f"{summary}. Result: {value}"
         return _json_ready(
-            InsightResult(
-                summary=summary,
-                caveats=["Generated from verified execution result only."],
+            generate_insight(
+                question=question,
+                execution_result=verified_result.get("pandas_result") or verified_result,
+                verification_passed=_verification_passed(verified_result),
+                quality_report=verified_result.get("quality_report"),
             )
         )
 
     return generate
+
+
+def execute_data_quality_report(context: dict[str, Any]) -> dict[str, Any]:
+    """Return a JSON-ready quality report for all available tables."""
+
+    report = build_data_quality_report(_tables_from_context(context), generated_from="analysis_request")
+    payload = report_to_dict(report) or {}
+    payload["answer"] = payload.get("summary") or "数据质量扫描完成。"
+    return payload
 
 
 def _context_for(runtime: DataAgentToolRuntime, dataset_id: str) -> dict[str, Any]:
@@ -231,6 +225,9 @@ def _logic_form_from_payload(payload: dict[str, Any], column_mapping: dict[str, 
         options=dict(payload.get("options") or {}),
         filters=dict(payload.get("filters") or {}),
         parameters=parameters,
+        source_tables=list(payload.get("source_tables") or parameters.get("source_tables") or []),
+        table_selection_reason=str(payload.get("table_selection_reason") or parameters.get("table_selection_reason") or ""),
+        join_plan=dict(payload.get("join_plan") or parameters.get("join_plan") or {}),
         answer_target=payload.get("answer_target") or dict(payload.get("output_format") or {}).get("answer_target"),
         output_format=dict(payload.get("output_format") or {}),
         output_contract=dict(payload.get("output_contract") or {}),
@@ -284,13 +281,6 @@ def _rows_and_columns(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], li
             columns = list(rows[0])
         return rows, columns
     return [], []
-
-
-def _result_value(payload: dict[str, Any]) -> Any:
-    result = payload.get("pandas_result") or payload.get("execution_result") or payload.get("result") or payload
-    if isinstance(result, dict):
-        return result.get("value")
-    return None
 
 
 def _json_ready(value: Any) -> Any:

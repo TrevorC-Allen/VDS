@@ -62,11 +62,19 @@ def _looks_datetime(series: pd.Series) -> bool:
     return float(parsed.notna().mean()) >= 0.8
 
 
-def profile_table(table_name: str, df: pd.DataFrame) -> TableProfile:
+def profile_table(
+    table_name: str,
+    df: pd.DataFrame,
+    *,
+    source_file: str | None = None,
+    sheet: str | None = None,
+) -> TableProfile:
     """Build a TableProfile for one DataFrame."""
 
     columns: list[ColumnProfile] = []
     row_count = len(df)
+    source_file = source_file if source_file is not None else _attr_text(df, "source_file")
+    sheet = sheet if sheet is not None else _attr_text(df, "sheet")
     for name in df.columns:
         series = df[name]
         samples = [v for v in series.dropna().head(5).tolist()]
@@ -85,10 +93,31 @@ def profile_table(table_name: str, df: pd.DataFrame) -> TableProfile:
         row_count=row_count,
         column_count=len(df.columns),
         columns=columns,
+        source_file=source_file,
+        sheet=sheet,
     )
 
 
-def profile_tables(tables: dict[str, pd.DataFrame]) -> dict[str, TableProfile]:
+def profile_tables(
+    tables: dict[str, pd.DataFrame],
+    table_metadata: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, TableProfile]:
     """Profile a mapping of table names to DataFrames."""
 
-    return {name: profile_table(name, df) for name, df in tables.items()}
+    table_metadata = table_metadata or {}
+    return {
+        name: profile_table(
+            name,
+            df,
+            source_file=table_metadata.get(name, {}).get("source_file"),
+            sheet=table_metadata.get(name, {}).get("sheet"),
+        )
+        for name, df in tables.items()
+    }
+
+
+def _attr_text(df: pd.DataFrame, key: str) -> str | None:
+    value = df.attrs.get(key)
+    if value in {None, ""}:
+        return None
+    return str(value)

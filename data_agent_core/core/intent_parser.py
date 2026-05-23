@@ -499,6 +499,14 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             output_format=output_format | {"answer_type": "text"},
         )
 
+    if _is_general_data_quality_report_question(lowered):
+        return make_logic_form(
+            task_type="data_quality",
+            operation="data_quality_report",
+            parameters={"scope": "dataset", "tables": ["payments"]},
+            output_format=output_format | {"answer_type": "text"},
+        )
+
     if _is_fee_factor_direction_question(lowered):
         return make_logic_form(
             task_type="fee_rule",
@@ -1439,15 +1447,36 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         return vds_bi_logic_form
 
     lowered = question.lower()
-    table_name, df = _select_primary_table(tables)
+    output_format = {"guidelines": guidelines}
+    if _is_general_data_quality_report_question(lowered):
+        return make_logic_form(
+            task_type="data_quality",
+            operation="data_quality_report",
+            parameters={"scope": "dataset", "tables": list(tables.keys())},
+            output_format=output_format | {"answer_type": "text"},
+        )
+    table_context = _select_table_context(question, tables)
+    table_name, df = table_context["table_name"], table_context["df"]
     record_count_requested = _is_record_count_metric_question(lowered)
-    metric = None if record_count_requested else _find_metric_column(question, df)
+    metric = None if record_count_requested else table_context.get("metric") or _find_metric_column(question, df)
     filters = _infer_value_filters(question, df, exclude={metric})
     explicit_group_by = _find_group_by_column(question, df)
     if explicit_group_by == metric:
         explicit_group_by = None
-    dimension = explicit_group_by or _find_dimension_column(question, df, metric, exclude=set(filters))
-    output_format = {"guidelines": guidelines}
+    context_dimension = table_context.get("dimension")
+    if context_dimension in filters:
+        context_dimension = None
+    dimension = context_dimension or explicit_group_by or _find_dimension_column(question, df, metric, exclude=set(filters))
+    if dimension != table_context.get("dimension") and not table_context.get("join_plan"):
+        table_context["dimension"] = dimension
+        table_context["table_selection_reason"] = _table_selection_reason(
+            question,
+            table_name,
+            metric,
+            dimension,
+            None,
+            {},
+        )
 
     if _is_top_outlier_group_question(lowered):
         group_by = _find_named_column(question, df) or _extract_group_by(question, default=dimension or "hour_of_day")
@@ -1455,13 +1484,13 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             task_type="ranking",
             operation="top_outlier_group",
             filters=filters,
-            parameters={
+            parameters=_with_table_context({
                 "table": table_name,
                 "group_by": group_by,
                 "metric": metric,
                 "method": "zscore" if "z-score" in lowered or "z score" in lowered else "iqr",
                 "z_threshold": _extract_zscore_threshold(question) or 3.0,
-            },
+            }, table_context),
             output_format=output_format | {"answer_type": _answer_type_for_group_by(group_by)},
         )
 
@@ -1470,7 +1499,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             task_type="ranking",
             operation="top_count",
             filters=filters,
-            parameters={"table": table_name, "group_by": _find_named_column(question, df) or _extract_group_by(question, default=dimension or "hour_of_day")},
+            parameters=_with_table_context({"table": table_name, "group_by": _find_named_column(question, df) or _extract_group_by(question, default=dimension or "hour_of_day")}, table_context),
             output_format=output_format | {"answer_type": "number"},
         )
 
@@ -1480,7 +1509,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             task_type="ranking",
             operation="top_count",
             filters=filters,
-            parameters={"table": table_name, "group_by": group_by},
+            parameters=_with_table_context({"table": table_name, "group_by": group_by}, table_context),
             output_format=output_format | {"answer_type": "text"},
         )
 
@@ -1491,14 +1520,14 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 task_type="aggregation",
                 operation="row_count",
                 filters=(filters | {missing_field: "__NULL__"}) if missing_field else filters,
-                parameters={"table": table_name},
+                parameters=_with_table_context({"table": table_name}, table_context),
                 output_format=output_format | {"answer_type": "number"},
             )
         return make_logic_form(
             task_type="aggregation",
             operation="row_count",
             filters=filters,
-            parameters={"table": table_name},
+            parameters=_with_table_context({"table": table_name}, table_context),
             output_format=output_format | {"answer_type": "number"},
         )
 
@@ -1511,7 +1540,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             operation="metric_per_distinct_entity",
             metric=numerator_metric,
             filters=filters,
-            parameters={"table": table_name, "metric": numerator_metric, "entity_field": field, "aggregation": aggregation},
+            parameters=_with_table_context({"table": table_name, "metric": numerator_metric, "entity_field": field, "aggregation": aggregation}, table_context),
             output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 2)},
         )
 
@@ -1521,7 +1550,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             task_type="aggregation",
             operation="repeat_entity_percentage",
             filters=filters,
-            parameters={"table": table_name, "field": field},
+            parameters=_with_table_context({"table": table_name, "field": field}, table_context),
             output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
         )
 
@@ -1531,7 +1560,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             task_type="schema_query",
             operation="distinct_count",
             filters=filters,
-            parameters={"table": table_name, "field": field},
+            parameters=_with_table_context({"table": table_name, "field": field}, table_context),
             output_format=output_format | {"answer_type": "number"},
         )
 
@@ -1540,11 +1569,11 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             task_type="data_quality",
             operation="outlier_count",
             filters=filters,
-            parameters={
+            parameters=_with_table_context({
                 "table": table_name,
                 "metric": metric,
                 "method": "zscore" if "z-score" in lowered or "z score" in lowered else "iqr",
-            },
+            }, table_context),
             output_format=output_format | {"answer_type": "number"},
         )
 
@@ -1555,7 +1584,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             task_type="data_quality",
             operation="null_check",
             filters=filters,
-            parameters={"table": table_name, "field": field, "mode": _null_check_mode(lowered), **target_condition},
+            parameters=_with_table_context({"table": table_name, "field": field, "mode": _null_check_mode(lowered), **target_condition}, table_context),
             output_format=output_format | {"answer_type": "yes_no" if _null_check_mode(lowered) == "exists" else "percentage" if _null_check_mode(lowered) == "rate" else "number"},
         )
 
@@ -1569,7 +1598,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             metric=ranking_metric,
             group_by=dimension,
             filters=filters,
-            parameters={
+            parameters=_with_table_context({
                 "table": table_name,
                 "metric": None if ranking_metric in {"__row_count__", "row_count", "transaction_count"} else ranking_metric,
                 "ranking_metric": ranking_metric,
@@ -1577,7 +1606,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 "dimension": dimension,
                 "aggregation": aggregation,
                 "limit": _extract_limit(question, default=3),
-            },
+            }, table_context),
             output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
         )
 
@@ -1585,7 +1614,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         return make_logic_form(
             task_type="schema_query",
             operation="field_values",
-            parameters={"table": table_name, "field": _find_named_column(question, df) or _find_entity_column(question, df) or dimension},
+            parameters=_with_table_context({"table": table_name, "field": _find_named_column(question, df) or _find_entity_column(question, df) or dimension}, table_context),
             output_format=output_format | {"answer_type": "list"},
         )
 
@@ -1593,7 +1622,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         return make_logic_form(
             task_type="data_quality",
             operation="duplicate_check",
-            parameters={"table": table_name, "subset": "all"},
+            parameters=_with_table_context({"table": table_name, "subset": "all"}, table_context),
             output_format=output_format | {"answer_type": "yes_no"},
         )
 
@@ -1603,14 +1632,14 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             task_type="ranking",
             operation="filtered_metric_ranking" if filters else "ranking",
             filters=filters,
-            parameters={
+            parameters=_with_table_context({
                 "table": table_name,
                 "metric": metric,
                 "dimension": dimension,
                 "aggregation": aggregation,
                 "sort_order": "asc" if _is_bottom_question(lowered) else "desc",
                 "limit": _extract_limit(question, default=1),
-            },
+            }, table_context),
             answer_target=_ranking_answer_target(question, guidelines, dimension),
             output_format=output_format | _ranking_output_format(question, guidelines, dimension, _extract_limit(question, default=1)),
         )
@@ -1621,12 +1650,12 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         return make_logic_form(
             task_type="aggregation",
             operation="aggregation",
-            parameters={
+            parameters=_with_table_context({
                 "table": table_name,
                 "metric": metric,
                 "dimension": dimension if _has_grouping_language(lowered) else None,
                 "aggregation": aggregation,
-            },
+            }, table_context),
             output_format=output_format
             | {"answer_type": "table" if dimension and _has_grouping_language(lowered) else "number"}
             | ({"decimals": decimals} if decimals is not None else {}),
@@ -1636,18 +1665,18 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         return make_logic_form(
             task_type="filtering",
             operation="filtering",
-            parameters={
+            parameters=_with_table_context({
                 "table": table_name,
                 "conditions": _extract_simple_conditions(question, df),
                 "limit": _extract_limit(question, default=20),
-            },
+            }, table_context),
             output_format=output_format | {"answer_type": "table"},
         )
 
     return make_logic_form(
         task_type="detail_lookup",
         operation="detail_lookup",
-        parameters={"table": table_name, "limit": _extract_limit(question, default=20)},
+        parameters=_with_table_context({"table": table_name, "limit": _extract_limit(question, default=20)}, table_context),
         output_format=output_format | {"answer_type": "table"},
     )
 
@@ -1677,6 +1706,210 @@ def _select_primary_table(tables: dict[str, pd.DataFrame]) -> tuple[str, pd.Data
     if not tables:
         raise ValueError("No parsed tables are available.")
     return max(tables.items(), key=lambda item: (len(item[1]), len(item[1].columns)))
+
+
+def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dict[str, Any]:
+    if not tables:
+        raise ValueError("No parsed tables are available.")
+    explicit_table = _explicit_table_match(question, tables)
+    metric_table, metric = _best_metric_column(question, tables)
+    primary_name = explicit_table or metric_table or _select_primary_table(tables)[0]
+    primary_df = tables[primary_name]
+    if metric is None and not _is_record_count_metric_question(question.lower()):
+        metric = _find_metric_column(question, primary_df)
+    dimension_table, dimension = _best_dimension_column(question, tables, preferred_table=primary_name, metric=metric)
+    join_plan: dict[str, Any] = {}
+    source_tables = [primary_name]
+    if dimension and dimension_table and dimension_table != primary_name:
+        join_plan = _infer_join_plan(primary_name, primary_df, dimension_table, tables[dimension_table])
+        source_tables.append(dimension_table)
+        if not join_plan.get("trusted"):
+            reason = str(join_plan.get("reason") or "")
+            if join_plan.get("many_to_many_risk"):
+                reason = reason or "Join key candidate has many-to-many risk and needs user confirmation."
+            join_plan = join_plan | {
+                "required": True,
+                "trusted": False,
+                "left_table": primary_name,
+                "right_table": dimension_table,
+                "reason": reason or "No trustworthy join key was found for the requested metric and dimension tables.",
+            }
+    return {
+        "table_name": primary_name,
+        "df": primary_df,
+        "metric": metric,
+        "dimension": dimension,
+        "source_tables": source_tables,
+        "join_plan": join_plan,
+        "table_selection_reason": _table_selection_reason(question, primary_name, metric, dimension, explicit_table, join_plan),
+    }
+
+
+def _with_table_context(params: dict[str, Any], table_context: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(params)
+    enriched.setdefault("source_tables", list(table_context.get("source_tables") or [params.get("table")]))
+    if table_context.get("table_selection_reason"):
+        enriched.setdefault("table_selection_reason", table_context["table_selection_reason"])
+    if table_context.get("join_plan"):
+        enriched.setdefault("join_plan", table_context["join_plan"])
+    return enriched
+
+
+def _explicit_table_match(question: str, tables: dict[str, pd.DataFrame]) -> str | None:
+    lowered = _normalize_text(question)
+    best: tuple[int, str] | None = None
+    for table_name, df in tables.items():
+        candidates = [
+            table_name,
+            str(df.attrs.get("table_name") or ""),
+            str(df.attrs.get("source_file") or ""),
+            str(df.attrs.get("sheet") or ""),
+        ]
+        score = 0
+        for candidate in candidates:
+            normalized = _normalize_text(candidate)
+            if normalized and normalized in lowered:
+                score = max(score, len(normalized))
+        if score and (best is None or score > best[0]):
+            best = (score, table_name)
+    return None if best is None else best[1]
+
+
+def _best_metric_column(question: str, tables: dict[str, pd.DataFrame]) -> tuple[str | None, str | None]:
+    best: tuple[int, str, str] | None = None
+    for table_name, df in tables.items():
+        for column in df.columns:
+            column_name = str(column)
+            if not pd.api.types.is_numeric_dtype(df[column]):
+                continue
+            score = _column_question_score(question, column_name)
+            if _metric_name_hint(column_name):
+                score += 2
+            if score > 0 and (best is None or score > best[0]):
+                best = (score, table_name, column_name)
+    if best is not None:
+        return best[1], best[2]
+    return None, None
+
+
+def _best_dimension_column(
+    question: str,
+    tables: dict[str, pd.DataFrame],
+    *,
+    preferred_table: str,
+    metric: str | None,
+) -> tuple[str | None, str | None]:
+    best: tuple[int, str, str] | None = None
+    for table_name, df in tables.items():
+        for column in df.columns:
+            column_name = str(column)
+            if column_name == metric or pd.api.types.is_numeric_dtype(df[column]):
+                continue
+            score = _column_question_score(question, column_name)
+            if score == 0 and table_name == preferred_table and _dimension_name_hint(column_name):
+                score = 1
+            if table_name == preferred_table:
+                score += 1
+            if score > 0 and (best is None or score > best[0]):
+                best = (score, table_name, column_name)
+    if best is not None:
+        return best[1], best[2]
+    preferred_df = tables[preferred_table]
+    return preferred_table, _find_dimension_column(question, preferred_df, metric)
+
+
+def _infer_join_plan(left_table: str, left_df: pd.DataFrame, right_table: str, right_df: pd.DataFrame) -> dict[str, Any]:
+    best: tuple[float, str, str, float, str] | None = None
+    for left_column in left_df.columns:
+        for right_column in right_df.columns:
+            left_name = str(left_column)
+            right_name = str(right_column)
+            name_score = 1.0 if _normalize_field_name(left_name) == _normalize_field_name(right_name) else 0.0
+            if not name_score and not (_id_like(left_name) and _id_like(right_name)):
+                continue
+            left_values = set(left_df[left_column].dropna().astype(str))
+            right_values = set(right_df[right_column].dropna().astype(str))
+            if not left_values or not right_values:
+                continue
+            overlap = len(left_values & right_values) / max(1, min(len(left_values), len(right_values)))
+            right_unique = bool(right_df[right_column].is_unique)
+            left_unique = bool(left_df[left_column].is_unique)
+            relationship = "one_to_one" if left_unique and right_unique else "many_to_one" if right_unique else "many_to_many"
+            score = name_score + overlap + (0.5 if right_unique else 0.0)
+            if best is None or score > best[0]:
+                best = (score, left_name, right_name, overlap, relationship)
+    if best is None:
+        return {"trusted": False, "left_table": left_table, "right_table": right_table, "reason": "No join key candidate found."}
+    score, left_key, right_key, overlap, relationship = best
+    trusted = score >= 1.2 and overlap >= 0.5 and relationship in {"one_to_one", "many_to_one"}
+    return {
+        "trusted": trusted,
+        "join_type": "left",
+        "left_table": left_table,
+        "right_table": right_table,
+        "left_key": left_key,
+        "right_key": right_key,
+        "relationship": relationship,
+        "confidence": round(min(score / 2.5, 1.0), 4),
+        "overlap_rate": round(overlap, 4),
+        "many_to_many_risk": relationship == "many_to_many",
+    }
+
+
+def _table_selection_reason(
+    question: str,
+    table_name: str,
+    metric: str | None,
+    dimension: str | None,
+    explicit_table: str | None,
+    join_plan: dict[str, Any],
+) -> str:
+    parts = [f"selected_table={table_name}"]
+    if explicit_table:
+        parts.append("explicit_table_mention")
+    if metric:
+        parts.append(f"metric={metric}")
+    if dimension:
+        parts.append(f"dimension={dimension}")
+    if join_plan:
+        parts.append("join_plan=" + ("trusted" if join_plan.get("trusted") else "untrusted"))
+    return "; ".join(parts)
+
+
+def _column_question_score(question: str, column_name: str) -> int:
+    normalized_question = _normalize_text(question)
+    normalized_column = _normalize_text(column_name)
+    if normalized_column and normalized_column in normalized_question:
+        return 8 + len(normalized_column)
+    tokens = [token for token in re.split(r"[_\s/()-]+", column_name.lower()) if len(token) >= 2]
+    return sum(2 for token in tokens if token in question.lower())
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"[\s_\-./()（）]+", "", str(value).lower())
+
+
+def _normalize_field_name(value: str) -> str:
+    return _normalize_text(value).replace("编号", "id").replace("代码", "id")
+
+
+def _id_like(value: str) -> bool:
+    normalized = _normalize_field_name(value)
+    return "id" in normalized or normalized.endswith("编号")
+
+
+def _metric_name_hint(value: str) -> bool:
+    lowered = value.lower()
+    return any(token in lowered for token in ("sales", "revenue", "amount", "fee", "cost", "price", "profit", "stock", "quantity")) or any(
+        token in value for token in ("销售", "金额", "收入", "费用", "利润", "库存", "数量", "订单")
+    )
+
+
+def _dimension_name_hint(value: str) -> bool:
+    lowered = value.lower()
+    return any(token in lowered for token in ("city", "country", "product", "customer", "merchant", "category", "region")) or any(
+        token in value for token in ("城市", "产品", "客户", "商户", "类别", "区域", "门店")
+    )
 
 
 def _find_metric_column(question: str, df: pd.DataFrame) -> str | None:
@@ -2108,6 +2341,37 @@ def _is_null_check_question(lowered: str) -> bool:
     return any(token in lowered for token in ("null", "missing", "empty", "blank", "nan", "空值", "缺失", "空白")) and any(
         token in lowered for token in ("count", "number", "how many", "any", "exist", "percentage", "proportion", "share", "rate", "有", "多少", "数量", "个数", "占比", "比例", "百分比")
     )
+
+
+def _is_general_data_quality_report_question(lowered: str) -> bool:
+    broad_subject = any(
+        token in lowered
+        for token in (
+            "data quality",
+            "quality report",
+            "cleaning suggestion",
+            "cleaning suggestions",
+            "clean data",
+            "scan my file",
+            "file problem",
+            "file problems",
+            "dataset problem",
+            "dataset problems",
+            "数据质量",
+            "清洗建议",
+            "数据清洗",
+            "文件有什么问题",
+            "数据有什么问题",
+            "表有什么问题",
+            "扫描文件",
+            "检查文件",
+            "检查数据",
+        )
+    )
+    issue_terms = any(token in lowered for token in ("problem", "issue", "quality", "clean", "scan", "问题", "质量", "清洗", "异常", "扫描", "检查"))
+    file_terms = any(token in lowered for token in ("file", "dataset", "table", "data", "文件", "数据", "表格", "表"))
+    specific_missing_question = any(token in lowered for token in ("which column", "what column", "how many", "percentage", "count", "多少", "哪一列", "哪个字段", "占比"))
+    return broad_subject or (issue_terms and file_terms and not specific_missing_question)
 
 
 def _is_missing_columns_choice_question(lowered: str) -> bool:

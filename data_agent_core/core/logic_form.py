@@ -21,17 +21,24 @@ def make_logic_form(
     options: dict[str, object] | None = None,
     filters: dict[str, object] | None = None,
     parameters: dict[str, object] | None = None,
+    source_tables: list[str] | None = None,
+    table_selection_reason: str = "",
+    join_plan: dict[str, object] | None = None,
     answer_target: str | None = None,
     output_format: dict[str, object] | None = None,
     output_contract: dict[str, object] | None = None,
 ) -> LogicForm:
     """Create a LogicForm with stable empty defaults."""
 
+    parameters_payload = dict(parameters or {})
     output_format_payload = dict(output_format or {})
     if answer_target:
         output_format_payload.setdefault("answer_target", answer_target)
     elif output_format_payload.get("answer_target"):
         answer_target = str(output_format_payload["answer_target"])
+    source_tables_payload = list(source_tables or parameters_payload.get("source_tables") or [])
+    table_selection_reason_payload = table_selection_reason or str(parameters_payload.get("table_selection_reason") or "")
+    join_plan_payload = dict(join_plan or parameters_payload.get("join_plan") or {})
 
     return LogicForm(
         task_type=task_type,
@@ -47,7 +54,10 @@ def make_logic_form(
         objective=objective,
         options=options or {},
         filters=filters or {},
-        parameters=parameters or {},
+        parameters=parameters_payload,
+        source_tables=source_tables_payload,
+        table_selection_reason=table_selection_reason_payload,
+        join_plan=join_plan_payload,
         answer_target=answer_target,
         output_format=output_format_payload,
         output_contract=output_contract or {},
