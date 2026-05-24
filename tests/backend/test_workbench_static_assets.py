@@ -10,9 +10,9 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
     def test_workbench_uses_backend_mounted_asset_paths(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/frontend/styles.css?v=20260524-chart-size"', html)
+        self.assertIn('href="/frontend/styles.css?v=20260524-python-chart"', html)
         self.assertIn('href="/frontend/favicon.svg"', html)
-        self.assertIn('src="/frontend/app.js?v=20260524-chart-size"', html)
+        self.assertIn('src="/frontend/app.js?v=20260524-python-chart"', html)
         self.assertNotIn('href="./styles.css"', html)
         self.assertNotIn('src="./app.js"', html)
 
@@ -20,7 +20,7 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         html = Path("frontend/index.html").read_text(encoding="utf-8")
         backend = Path("backend/main.py").read_text(encoding="utf-8")
 
-        self.assertIn("?v=20260524-chart-size", html)
+        self.assertIn("?v=20260524-python-chart", html)
         self.assertIn("NO_CACHE_HEADERS", backend)
         self.assertIn('"Cache-Control": "no-store, max-age=0"', backend)
         self.assertIn('"Pragma": "no-cache"', backend)
@@ -38,6 +38,16 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("height: auto;", css)
         self.assertIn("max-height: none;", css)
         self.assertIn("min-height: 230px;", css)
+
+    def test_workbench_prefers_backend_rendered_chart_images(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+        css = Path("frontend/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("chart?.image_data_uri", js)
+        self.assertIn("renderChartImage", js)
+        self.assertIn('class="chart-image"', js)
+        self.assertIn(".chart-image", css)
+        self.assertIn("object-fit: contain;", css)
 
     def test_workbench_uses_chat_first_shell(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")

@@ -16,7 +16,7 @@
 - 最新 after-fix proxy observation：`outputs/dabstep_all_1_450_proxy_after_phase10_20260524/all_1_to_450_public_proxy_observation_after_fix.json`，total `420/450 = 93.33%`，Easy `71/72 = 98.61%`，Hard `349/378 = 92.33%`。这是本地 task_scores 后验 proxy，不是 official hidden accuracy；外部 Easy `95` / Hard `84` 只作为提交反馈目标线。
 - Phase 8 已完成 8A-8E：多文件 dataset 装配、`POST /api/data-agent/upload-batch`、问题到表精准路由、多表 join plan、Pandas join materialize、Verifier join 风险校验、trace / debug join 证据均已落地。
 - Phase 9 已完成首版 workbench：`/workbench` 挂载静态前端，支持单/多文件上传、无文件直接对话、问题提交、结果表格、用户可读分析过程和历史回看；前端不实现指标公式、join 或数据计算。
-- Phase 10 已完成首版结果体验增强：后端生成 `chart`、`insight`、`quality_report` 和 `reasoning_trace_view` 稳定字段；前端自动展示柱状图 / 折线图 / 饼图 / KPI、洞察建议和用户可读过程时间线；质量报告、warnings/errors、verification 细节和 join trace 保留在后端/API，不在主界面直接展示；过程展示不暴露完整 Chain of Thought。
+- Phase 10 已完成首版结果体验增强：后端生成 `chart`、`insight`、`quality_report` 和 `reasoning_trace_view` 稳定字段；`chart` 可携带后端 Python 渲染的 SVG `image_data_uri`，Workbench 优先展示该图像，前端仅保留 chart spec fallback；洞察建议和用户可读过程时间线已展示，质量报告、warnings/errors、verification 细节和 join trace 保留在后端/API，不在主界面直接展示；过程展示不暴露完整 Chain of Thought。
 - Workbench 已支持统一 `POST /api/data-agent/message`：无文件时直接进入辅助聊天；有文件时由后端判断普通聊天、数据概览或正式分析，避免“你好 / 你是什么模型”被误送进分析链路。
 - 针对“看一下这个数据 / 看一下整体销售情况 / overall sales summary”这类概览问题，后端会在 `data_agent_core` 生成全表数据概览，返回表规模、关键数值字段、合计/平均/最高/最低和可下钻方向，避免把单个行数或原始多字段明细行当作主答案；前端不计算这些指标。
 - Phase 11 已规划但尚未实现完整会话持久化：后续将新增 `conversation_id` 会话隔离、历史 Chat 续聊、多窗口独立会话、未来 `owner_id / tenant_id / owner_context` 预留。

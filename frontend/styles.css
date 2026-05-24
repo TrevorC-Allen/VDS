@@ -610,6 +610,16 @@ p {
   overflow: visible;
 }
 
+.chart-image {
+  display: block;
+  width: 100%;
+  min-height: 280px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+  object-fit: contain;
+}
+
 .axis-line {
   stroke: #e5e7eb;
   stroke-width: 1;

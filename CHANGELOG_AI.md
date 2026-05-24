@@ -68,6 +68,105 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-24 18:27 CST
+
+### 本次目标
+
+按用户反馈纠正 Workbench 图表“前端手写 SVG 太丑”的实现路径，恢复为后端 Python 渲染图像优先展示。
+
+### 修改文件
+
+- data_agent_core/contracts/response_contracts.py
+- data_agent_core/output/chart_renderer.py
+- data_agent_core/agent/single_agent.py
+- agent_runtime/data_analysis_roles.py
+- frontend/app.js
+- frontend/index.html
+- frontend/styles.css
+- frontend/README.md
+- tests/core/test_phase10_result_experience.py
+- tests/backend/test_workbench_static_assets.py
+- docs/API_CONTRACT.md
+- README.md
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `ChartSpec` 新增 `image_data_uri`、`image_format`、`render_engine` 字段。
+- 新增 `data_agent_core/output/chart_renderer.py`，在后端把已验证的 chart spec 渲染为 SVG data URI；当前 runtime 未安装 matplotlib / seaborn / plotly / altair，因此先使用无外部依赖的 `python_svg` renderer，后续可在同一 renderer 层替换为 matplotlib / seaborn。
+- `single_agent` 和 `multi_agent` 最终响应阶段调用 `attach_rendered_chart()`，避免把大图像 data URI 放进 LLM chart planning 输入。
+- Workbench 前端优先显示 `chart.image_data_uri` 的 `<img class="chart-image">`；旧手写 SVG 只作为没有后端图片时的 fallback。
+- 静态资源版本更新为 `?v=20260524-python-chart`，避免浏览器继续使用旧 CSS / JS。
+- README、MAIN_GOAL、frontend README 和 API_CONTRACT 同步记录后端渲染图像字段及前端边界。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3` 检查当前 runtime 是否安装 matplotlib / seaborn / plotly / altair。
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_phase10_result_experience tests.backend.test_workbench_static_assets`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime backend tests/core tests/backend`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- `curl http://127.0.0.1:8001/workbench`
+- `curl http://127.0.0.1:8001/api/data-agent/run` 使用内联销售表验证后端 API 返回 `chart.image_data_uri`。
+- Playwright CLI 打开 `http://127.0.0.1:8001/workbench?qa=python-chart`，上传 `/tmp/vds_sales_chart.csv`，提问“按城市汇总销售额排名”，验证页面显示 `.chart-image`。
+
+### 测试结果
+
+- 当前 runtime 未安装 matplotlib / seaborn / plotly / altair；本轮没有假设它们存在，也没有把缺失依赖硬编码进主流程。
+- `node --check frontend/app.js` 通过。
+- Focused tests 通过：Ran 15 tests，OK。
+- compileall 通过。
+- Full unittest 通过：Ran 164 tests，OK。
+- `git diff --check` 通过。
+- runtime 已同步并重启，`/workbench` 返回 `styles.css?v=20260524-python-chart` 和 `app.js?v=20260524-python-chart`。
+- API 验证通过：多行销售排名响应 `chart_type=bar`、`render_engine=python_svg`，`image_data_uri` 以 `data:image/svg+xml;base64,` 开头。
+- Playwright Workbench 验证通过：页面显示 `.chart-image`，没有 fallback `.chart-svg`；图像实际尺寸约 820 x 411；console error/warn 为 0；截图 `.playwright-cli/page-2026-05-24T10-27-04-959Z.png`。
+
+### 遗留问题
+
+- 当前环境没有 matplotlib / seaborn 等第三方 Python 绘图库；如后续要指定 matplotlib/seaborn 作为强依赖，需要新增依赖安装和部署规则。本轮先用后端 `python_svg` renderer 解决前端手写图表丑和职责错位问题。
+- 本轮不处理“本周Pro套餐CHR最高Top10客户”被路由成区域订阅收入的问题；那是分析语义命中问题，需另做核心路由修复。
+
+### 是否影响主流程
+
+是。影响最终 `chart` 响应和 Workbench 图表显示，但不改变 Planner / Executor / Verifier 的分析计算逻辑。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。后端渲染在 ChartSpec 最终响应层完成，multi_agent 与 single_agent 都可复用，不绑定具体 provider 或 Agent framework。
+
+### 是否修改核心数据契约
+
+是。`ChartSpec` 新增可选展示字段 `image_data_uri`、`image_format`、`render_engine`。
+
+### 是否修改 API 契约
+
+是。`docs/API_CONTRACT.md` 已补充 chart v2 的后端图像字段。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 已同步 Workbench 优先展示后端 Python 渲染 SVG 图像、前端只保留 fallback 的边界。
+
 2026-05-24 18:08 CST
 
 ### 本次目标

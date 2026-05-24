@@ -249,6 +249,9 @@ chart v2 当前可包含：
 - confidence
 - selection_reason
 - fallback_reason
+- image_data_uri：后端渲染的图表图片 data URI。Workbench 优先展示该图片；为空时才按 chart spec fallback 渲染。
+- image_format：当前可为 `svg`
+- render_engine：当前可为 `python_svg`；后续可切换为 matplotlib / seaborn 等后端 renderer，但前端不应依赖具体 renderer 名称做计算。
 
 insight v2 当前可包含：
 

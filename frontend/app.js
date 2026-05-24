@@ -299,13 +299,22 @@ function renderChart(chart, fallbackRows = [], fallbackColumns = [], answer = ""
     return;
   }
   el.chartPanel.className = "chart-panel";
-  if (type === "line") {
+  if (chart?.image_data_uri) {
+    el.chartPanel.innerHTML = renderChartImage(chart);
+  } else if (type === "line") {
     el.chartPanel.innerHTML = renderLineChart(values, chart);
   } else if (type === "pie" || type === "donut") {
     el.chartPanel.innerHTML = renderPieChart(values, chart, type);
   } else {
     el.chartPanel.innerHTML = renderBarChart(values, chart, type === "horizontal_bar");
   }
+}
+
+function renderChartImage(chart) {
+  return `
+    <div class="chart-title">${escapeHtml(chart?.title || "自动图表")}</div>
+    <img class="chart-image" src="${escapeHtml(chart.image_data_uri)}" alt="${escapeHtml(chart?.title || "分析图表")}" />
+  `;
 }
 
 function renderBarChart(values, chart, horizontal) {

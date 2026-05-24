@@ -19,6 +19,7 @@ from data_agent_core.executors import pandas_executor, sql_executor
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMStageResult, complete_stage_with_llm, plan_with_llm
 from data_agent_core.output.chart_planner import build_chart_spec
+from data_agent_core.output.chart_renderer import attach_rendered_chart
 from data_agent_core.output.insight_generator import generate_insight
 from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
 from data_agent_core.output.response_builder import build_response, classify_not_applicable
@@ -535,20 +536,22 @@ class DataAnalysisAgent:
         raw = stage.raw
         chart_type = raw.get("chart_type")
         if chart_type and chart_type != "none":
-            return ChartSpec(
-                chart_type=str(chart_type),
-                x=raw.get("x") or rule_chart.x,
-                y=raw.get("y") or rule_chart.y,
-                title=raw.get("title") or rule_chart.title,
-                data=rule_chart.data,
-                reason=str(raw.get("reason") or raw.get("reasoning_summary") or rule_chart.reason),
-                encoding=rule_chart.encoding,
-                series=rule_chart.series,
-                confidence=max(rule_chart.confidence, stage.confidence),
-                selection_reason=rule_chart.selection_reason,
-                fallback_reason=rule_chart.fallback_reason,
+            return attach_rendered_chart(
+                ChartSpec(
+                    chart_type=str(chart_type),
+                    x=raw.get("x") or rule_chart.x,
+                    y=raw.get("y") or rule_chart.y,
+                    title=raw.get("title") or rule_chart.title,
+                    data=rule_chart.data,
+                    reason=str(raw.get("reason") or raw.get("reasoning_summary") or rule_chart.reason),
+                    encoding=rule_chart.encoding,
+                    series=rule_chart.series,
+                    confidence=max(rule_chart.confidence, stage.confidence),
+                    selection_reason=rule_chart.selection_reason,
+                    fallback_reason=rule_chart.fallback_reason,
+                )
             )
-        return rule_chart
+        return attach_rendered_chart(rule_chart)
 
     def _quality_report_payload(self) -> dict[str, Any] | None:
         tables = self.context.get("tables") if isinstance(self.context, dict) else None

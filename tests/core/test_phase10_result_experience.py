@@ -15,6 +15,7 @@ from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.core.data_quality import build_data_quality_report
 from data_agent_core.llm.client import MockLLMClient
 from data_agent_core.output.chart_planner import build_chart_spec
+from data_agent_core.output.chart_renderer import attach_rendered_chart
 from data_agent_core.output.insight_generator import generate_insight
 from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
 
@@ -53,6 +54,24 @@ class Phase10ResultExperienceTest(unittest.TestCase):
 
         scalar_result = ExecutionResult(backend="pandas", success=True, value=42, columns=["answer"], rows=[{"answer": 42}])
         self.assertEqual("kpi", build_chart_spec(plan=ranking_plan, execution_result=scalar_result, verification_passed=True).chart_type)
+
+    def test_backend_chart_renderer_attaches_svg_image_data_uri(self) -> None:
+        chart = build_chart_spec(
+            plan=AnalysisPlan(plan_id="plan_rank", logic_form=LogicForm(task_type="ranking", operation="ranking")),
+            execution_result=ExecutionResult(
+                backend="pandas",
+                success=True,
+                columns=["城市", "销售额"],
+                rows=[{"城市": "上海", "销售额": 300}, {"城市": "北京", "销售额": 200}, {"城市": "深圳", "销售额": 120}],
+            ),
+            verification_passed=True,
+        )
+
+        rendered = attach_rendered_chart(chart)
+
+        self.assertTrue(rendered.image_data_uri.startswith("data:image/svg+xml;base64,"))
+        self.assertEqual("svg", rendered.image_format)
+        self.assertEqual("python_svg", rendered.render_engine)
 
     def test_insight_generator_reports_anomaly_and_suggestion_from_verified_rows(self) -> None:
         result = ExecutionResult(

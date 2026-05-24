@@ -37,6 +37,9 @@ class ChartSpec:
     confidence: float = 0.0
     selection_reason: str = ""
     fallback_reason: str = ""
+    image_data_uri: str = ""
+    image_format: str = ""
+    render_engine: str = ""
 
 
 @dataclass
