@@ -68,6 +68,83 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-24 17:45 CST
+
+### 本次目标
+
+按用户要求把 Workbench 对话输入框改成 `Enter` 直接发送消息，同时保留 `Shift+Enter` 换行，避免中文输入法组合输入时误发送。
+
+### 修改文件
+
+- frontend/app.js
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `frontend/app.js` 为 `#question-input` 新增 `keydown` 监听。
+- `handleQuestionKeydown()` 在 `Enter` 且非 `Shift+Enter`、非 IME composing 时 `preventDefault()` 并调用现有 `runAnalysis()`。
+- 静态测试补充 Enter 发送、Shift+Enter 换行和 composing 防误触的代码断言。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- `curl http://127.0.0.1:8001/workbench`
+- Browser 插件尝试输入框验证；因插件虚拟剪贴板能力缺失导致 `locator.fill failed for selector #question-input`，改用 Playwright CLI fallback。
+- Playwright CLI 验证 Enter 发送、Shift+Enter 不发送。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- `tests.backend.test_workbench_static_assets` 通过：Ran 6 tests，OK。
+- `git diff --check` 通过。
+- runtime 已同步并重启，`/workbench` 返回 200。
+- Playwright CLI 验证通过：输入 `回车发送测试` 后按 Enter，状态 `已回复`，`userCount=1`，`assistantCount=1`，输入框清空；新聊天后输入 `第一行`，按 `Shift+Enter` 再输入 `第二行`，未发送，输入框保留 `第一行\n第二行`；随后按 Enter 成功发送，状态 `已回复`，console issue 为 0；截图 `/tmp/vds_enter_send_20260524.png`。
+
+### 遗留问题
+
+- 无。
+
+### 是否影响主流程
+
+是。影响 Workbench 消息提交交互，不改变后端分析、概览或聊天路由。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮只改前端输入键盘交互，不改变对外 API、阶段目标或部署说明。
+
 ### 日期
 
 2026-05-21

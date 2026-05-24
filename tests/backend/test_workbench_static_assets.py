@@ -58,6 +58,14 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("assistant-result-message", js)
         self.assertIn(".assistant-message.thinking-only .result-panel", css)
 
+    def test_workbench_enter_sends_and_shift_enter_keeps_newline(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn('addEventListener("keydown", handleQuestionKeydown)', js)
+        self.assertIn('event.key !== "Enter" || event.shiftKey || event.isComposing', js)
+        self.assertIn("event.preventDefault()", js)
+        self.assertIn("runAnalysis()", js)
+
 
 if __name__ == "__main__":
     unittest.main()

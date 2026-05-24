@@ -53,6 +53,7 @@ el.newChatButton.addEventListener("click", resetConversation);
 el.uploadButton.addEventListener("click", uploadFiles);
 el.runButton.addEventListener("click", runAnalysis);
 el.questionInput.addEventListener("input", updateRunButton);
+el.questionInput.addEventListener("keydown", handleQuestionKeydown);
 
 updateFileSummary();
 
@@ -169,6 +170,14 @@ async function runAnalysis() {
     state.isAnalyzing = false;
     updateRunButton();
   }
+}
+
+function handleQuestionKeydown(event) {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+    return;
+  }
+  event.preventDefault();
+  runAnalysis();
 }
 
 function updateRunButton() {
