@@ -10,11 +10,23 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
     def test_workbench_uses_backend_mounted_asset_paths(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/frontend/styles.css"', html)
+        self.assertIn('href="/frontend/styles.css?v=20260524-enter-cache"', html)
         self.assertIn('href="/frontend/favicon.svg"', html)
-        self.assertIn('src="/frontend/app.js"', html)
+        self.assertIn('src="/frontend/app.js?v=20260524-enter-cache"', html)
         self.assertNotIn('href="./styles.css"', html)
         self.assertNotIn('src="./app.js"', html)
+
+    def test_workbench_assets_are_cache_busted_and_not_cached_by_backend(self) -> None:
+        html = Path("frontend/index.html").read_text(encoding="utf-8")
+        backend = Path("backend/main.py").read_text(encoding="utf-8")
+
+        self.assertIn("?v=20260524-enter-cache", html)
+        self.assertIn("NO_CACHE_HEADERS", backend)
+        self.assertIn('"Cache-Control": "no-store, max-age=0"', backend)
+        self.assertIn('"Pragma": "no-cache"', backend)
+        self.assertIn('"Expires": "0"', backend)
+        self.assertIn("class NoCacheStaticFiles(StaticFiles)", backend)
+        self.assertIn("headers=NO_CACHE_HEADERS", backend)
 
     def test_workbench_uses_chat_first_shell(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")

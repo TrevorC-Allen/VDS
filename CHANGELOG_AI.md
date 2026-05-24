@@ -68,6 +68,85 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-24 17:55 CST
+
+### 本次目标
+
+修复 Workbench 在用户浏览器中仍可能保留旧 `app.js` 导致 Enter 继续换行的问题，从源头避免静态资源缓存挡住键盘交互修复。
+
+### 修改文件
+
+- backend/main.py
+- frontend/index.html
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `frontend/index.html` 将 `styles.css` 和 `app.js` 改为带版本号的 `/frontend/*?v=20260524-enter-cache` 资源地址。
+- `backend/main.py` 新增 `NO_CACHE_HEADERS` 和 `NoCacheStaticFiles`，让 `/workbench` 与 `/frontend/*` 返回 `Cache-Control: no-store, max-age=0`、`Pragma: no-cache`、`Expires: 0`。
+- 静态测试补充资源版本号和后端 no-cache 头的断言，防止以后交互修复再次被旧缓存遮挡。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- `curl -D - http://127.0.0.1:8001/workbench`
+- `curl -D - 'http://127.0.0.1:8001/frontend/app.js?v=20260524-enter-cache'`
+- Browser 插件打开 `http://127.0.0.1:8001/workbench?qa=enter-cache-20260524` 后验证 Enter / Shift+Enter。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- `tests.backend.test_workbench_static_assets` 通过：Ran 7 tests，OK。
+- `git diff --check` 通过。
+- runtime 已同步并重启，`/workbench` 返回 200，响应头包含 no-cache，HTML 引用 `styles.css?v=20260524-enter-cache` 和 `app.js?v=20260524-enter-cache`。
+- 版本化 `app.js` 返回 200，响应头包含 no-cache，内容包含 `handleQuestionKeydown()`。
+- Browser 验证通过：输入 `回车发送验证` 后按 Enter，状态 `已回复`，`userMessages=1`，`assistantMessages=1`，输入框清空；新聊天后输入 `第一行`，按 `Shift+Enter` 再输入 `第二行`，未发送，输入框保留 `第一行\n第二行`；随后按 Enter 成功发送；console error/warn 为 0。
+
+### 遗留问题
+
+无。已从后端响应头和资源 URL 两层处理浏览器旧缓存。
+
+### 是否影响主流程
+
+是。影响 Workbench 静态资源加载和消息输入交互，不改变数据分析、概览或聊天路由逻辑。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。仅修改静态资源 URL 和静态文件缓存响应头，不改变 JSON API。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮只修复 Workbench 静态资源缓存与输入键盘交互，不改变阶段目标、API 使用方式或 GitHub 首页摘要。
+
 2026-05-24 17:45 CST
 
 ### 本次目标
