@@ -68,6 +68,88 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-24 18:08 CST
+
+### 本次目标
+
+修复 Workbench 图表可视化被压成极小色块的问题，让柱状图 / 折线图 SVG 按图表区域正常展开。
+
+### 修改文件
+
+- frontend/app.js
+- frontend/index.html
+- frontend/styles.css
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `frontend/styles.css` 让 `.chart-svg` 明确覆盖全局图标 `svg { width: 18px; height: 18px; }`：设置 `display: block`、`height: auto`、`max-height: none`、`min-height: 230px`，并让 `.chart-panel` 保持足够高度且不裁剪。
+- `frontend/app.js` 让柱状图按实际显示的条数计算柱宽，避免结果行数多时柱子被压细。
+- `frontend/index.html` 更新静态资源版本为 `?v=20260524-chart-size`，确保当前浏览器拿到新 CSS / JS。
+- 静态测试补充图表 SVG 覆盖全局图标尺寸、柱宽按显示条数计算和资源版本号断言。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- `curl http://127.0.0.1:8001/workbench`
+- `curl http://127.0.0.1:8001/frontend/styles.css?v=20260524-chart-size`
+- Browser 插件尝试在 Workbench 页面直接注入测试图表；因浏览器插件只读策略阻止 DOM 写入，改用 Playwright CLI fallback。
+- Playwright CLI 在同源 `/workbench` 页面加载真实 8001 CSS 并渲染图表 SVG fixture，测量实际尺寸。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- `tests.backend.test_workbench_static_assets` 通过：Ran 8 tests，OK。
+- `git diff --check` 通过。
+- runtime 已同步并重启，`/workbench` 返回 `styles.css?v=20260524-chart-size` 和 `app.js?v=20260524-chart-size`。
+- 版本化 CSS 返回 200 且包含 `.chart-svg { height: auto; max-height: none; min-height: 230px; }`。
+- Playwright CLI 渲染测量通过：在 820px 宽图表区域内，`.chart-svg` 实际宽度 820px、高度 304px，`cssMaxHeight=none`，不再是 18px 高；console error/warn 为 0。
+
+### 遗留问题
+
+无。用户截图中的“图表极小”来自前端 CSS 尺寸继承，已修复；本轮不处理后端把“Pro 套餐 CHR Top10 客户”误答成区域订阅收入的分析路由问题。
+
+### 是否影响主流程
+
+是。影响 Workbench 图表展示尺寸和静态资源版本，不改变后端分析链路。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮只修复 Workbench 前端图表展示尺寸，不改变阶段目标、API 使用方式或 GitHub 首页摘要。
+
 2026-05-24 17:55 CST
 
 ### 本次目标

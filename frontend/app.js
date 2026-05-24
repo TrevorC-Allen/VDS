@@ -310,10 +310,11 @@ function renderChart(chart, fallbackRows = [], fallbackColumns = [], answer = ""
 
 function renderBarChart(values, chart, horizontal) {
   const width = 620;
-  const height = Math.max(230, values.length * (horizontal ? 26 : 0) + 170);
+  const displayValues = values.slice(0, horizontal ? 18 : 16);
+  const height = Math.max(230, displayValues.length * (horizontal ? 26 : 0) + 170);
   const max = Math.max(...values.map((item) => Math.abs(item.value)), 1);
   const colors = ["#2563eb", "#0ea5e9", "#4f46e5", "#14b8a6", "#f59e0b", "#64748b"];
-  const bars = values.slice(0, 16).map((item, index) => {
+  const bars = displayValues.map((item, index) => {
     if (horizontal) {
       const barWidth = (Math.abs(item.value) / max) * 410;
       const y = 58 + index * 28;
@@ -323,7 +324,7 @@ function renderBarChart(values, chart, horizontal) {
         <text x="${160 + barWidth}" y="${y + 14}" class="value-label">${formatNumber(item.value)}</text>
       `;
     }
-    const barWidth = Math.max(18, 420 / values.length - 10);
+    const barWidth = Math.max(18, 420 / displayValues.length - 10);
     const x = 70 + index * (barWidth + 10);
     const barHeight = (Math.abs(item.value) / max) * 130;
     const y = 190 - barHeight;

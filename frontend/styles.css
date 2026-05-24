@@ -585,9 +585,9 @@ p {
 .chart-panel {
   display: grid;
   gap: 8px;
-  min-height: 180px;
+  min-height: 260px;
   padding: 4px 0 8px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .chart-panel.empty-state,
@@ -602,8 +602,12 @@ p {
 }
 
 .chart-svg {
+  display: block;
   width: 100%;
-  max-height: 190px;
+  height: auto;
+  max-height: none;
+  min-height: 230px;
+  overflow: visible;
 }
 
 .axis-line {
