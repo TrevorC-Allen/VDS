@@ -451,7 +451,7 @@
 
 优先级：P0，阶段：Phase 7.10。
 
-验收标准：每个新增能力族有合成或非 Benchmark 用例、同类变体、中文字段 / 中文问题用例和旧代表回归；DABstep dev 1-10、DABstep public all 1-450 mock、Microsoft 1-300 和 VDS 95 smoke 不退步。
+验收标准：每个新增能力族有合成或非 Benchmark 用例、同类变体、中文字段 / 中文问题用例和旧代表回归；DABstep dev 1-10、DABstep public all 1-450 mock、Microsoft 1-300、VDS 95 smoke 和当前分支 VDS 标准答案 scorer 不退步。
 
 风险：如果按 task_id、题面、public proxy、accepted answer、hidden answer、固定样本值或当前错误形态修复，就是伪泛化补丁。
 

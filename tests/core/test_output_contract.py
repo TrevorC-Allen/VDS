@@ -113,6 +113,40 @@ class OutputContractTest(unittest.TestCase):
         self.assertEqual(["客户名称", "ARR_row"], response.result["columns"])
         self.assertEqual("vds_current_metric_top_answer_summary", response.debug["user_experience_shaping"]["reason"])
 
+    def test_response_builder_keeps_vds_topn_list_when_rows_have_answers(self) -> None:
+        logic = LogicForm(
+            task_type="ranking",
+            operation="vds_current_filtered_metric_top",
+            metric="CHR_row",
+            group_by="客户名称",
+            parameters={
+                "metric": "CHR_row",
+                "entity": "客户名称",
+                "current_period": "本周",
+                "value_filters": {"套餐名称": ["Pro"]},
+                "sort_order": "desc",
+                "limit": 10,
+            },
+            output_format={"answer_type": "table", "entity_field": "客户名称", "metric": "CHR_row"},
+        )
+        rows = [
+            {"客户名称": "甲客户", "CHR_row": 1.0, "answer": "1. 甲客户：本周CHR=100.00%"},
+            {"客户名称": "乙客户", "CHR_row": 0.0, "answer": "2. 乙客户：本周CHR=0.00%"},
+        ]
+
+        response = build_response(
+            run_id="run_vds_topn",
+            user_question=UserQuestion(dataset_id="ds", question="本周Pro套餐CHR最高的Top10客户？"),
+            plan=AnalysisPlan(plan_id="plan", logic_form=logic),
+            execution_result=ExecutionResult(backend="pandas", success=True, value={"candidate_table": rows}, columns=["客户名称", "CHR_row", "answer"], rows=rows),
+            verification=VerificationResult(passed=True),
+        )
+
+        self.assertTrue(response.success)
+        self.assertIn("1. 甲客户", response.answer)
+        self.assertIn("2. 乙客户", response.answer)
+        self.assertNotIn("最高的是甲客户", response.answer)
+
 
 if __name__ == "__main__":
     unittest.main()

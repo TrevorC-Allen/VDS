@@ -913,6 +913,89 @@ YYYY-MM-DD HH:MM TZ
 
 ---
 
+### 日期时间
+
+2026-05-25 01:39 CST
+
+### 本次目标
+
+继续加固 VDS 中文 BI 标准答案修复后的防回归门禁：把“客户 TopN 问题必须返回客户列表而不是区域聚合”和“TopN 明细不能被压成第一名摘要”固化到测试与阶段验收文档中，避免同类问题重复出现。
+
+### 修改文件
+
+- tests/core/test_output_contract.py
+- tests/core/test_vds_bi_capabilities.py
+- README.md
+- MAIN_GOAL.md
+- docs/PHASE_GATES.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 Response Builder 回归测试，覆盖 VDS TopN 执行结果已经带有逐行 answer 时必须保留完整 TopN 列表，不能退化成“最高的是某客户”的单点摘要。
+- 加强 VDS BI capability 测试，要求 `vds_current_filtered_metric_top` 对“本周 Pro 套餐 CHR 最高 Top10 客户”这类问题保留 `客户名称` 维度、返回候选客户行，并禁止把 `candidate_table` payload 字段或 `区域` fallback 混入展示行。
+- README / MAIN_GOAL / PHASE_GATES / FEATURE_BACKLOG 同步当前分支 VDS 标准答案离线 scorer `95/95` 为后续 Phase 7.5+ 和复杂 BI 能力的非回归门禁。
+- 本轮仍按能力族约束处理：测试锁定实体维度、TopN 输出契约和标准答案 scorer 非回归，不引入 task_id、标准答案、固定客户名或固定题面到 Planner / Executor / Verifier / Response Builder 主链路。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_output_contract tests.core.test_vds_bi_capabilities tests.core.test_vds_standard_scorer -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets -v
+- git diff --check
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+
+### 测试结果
+
+- Focused core / VDS standard scorer tests 通过：Ran 27 tests，OK。
+- Architecture 红线测试通过：Ran 9 tests，OK。
+- `git diff --check` 通过。
+- Full unittest 通过：Ran 178 tests，OK。
+- 当前分支已有 VDS 标准答案离线 scorer 报告 `outputs/vds_standard_answer_recheck_20260525_core_fix_v2/report.json`：total=95，correct=95，accuracy=1.0，success_count=95；本轮把该结果纳入文档门禁和新增测试防线。
+
+### 遗留问题
+
+- `.playwright-cli/` 仍是本地未跟踪目录，本轮不纳入 Git。
+- 真实前端继续测试时，如果出现新的“客户问法退化为区域聚合”或“明细答案被摘要压缩”样例，应优先补同族测试，再判断是否是新的能力族缺口。
+
+### 是否影响主流程
+
+否。本轮只新增测试和文档门禁，不修改 Planner / Executor / Verifier / Response Builder 运行代码。
+
+### 是否涉及 Benchmark
+
+是。涉及 VDS 标准答案离线 scorer 的回归门禁和 benchmark 硬编码红线验证；标准答案仅作为 response 之后的离线 scorer 依据，不进入核心分析链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。新增测试约束的是输出契约和执行结果维度保真，可被当前 multi_agent workflow 和未来 adapter 复用。
+
+### 是否修改核心数据契约
+
+否。未新增或修改稳定数据契约字段。
+
+### 是否修改 API 契约
+
+否。未改后端 API 请求或响应契约。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 已同步当前分支 VDS 标准答案离线 scorer `95/95` 正确率和 Phase 7 当前状态。
+
+---
+
 2026-05-24 18:57 CST
 
 ### 本次目标

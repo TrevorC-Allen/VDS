@@ -185,6 +185,10 @@ class VdsBiCapabilitiesTest(unittest.TestCase):
         self.assertNotIn("实施复杂度", pro_logic.parameters["value_filters"])
         self.assertTrue(pro_result.success, pro_result.errors)
         self.assertEqual(["丙客户", "甲客户", "戊客户"], [row["客户名称"] for row in pro_result.value["candidate_table"]])
+        self.assertEqual(["丙客户", "甲客户", "戊客户"], [row["客户名称"] for row in pro_result.rows])
+        self.assertIn("客户名称", pro_result.columns)
+        self.assertNotIn("candidate_table", pro_result.columns)
+        self.assertNotIn("区域", pro_result.rows[0])
 
         self.assertEqual("vds_current_filtered_metric_top", pause_logic.operation)
         self.assertTrue(pause_result.success, pause_result.errors)

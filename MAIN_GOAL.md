@@ -601,7 +601,7 @@ Phase 7.3 退出条件：
 
 ## Phase 7.5+ 后续子阶段计划
 
-Phase 7.5+ 用于承接 Phase 7.1 / 7.2 / 7.2G / 7.3 之后的增强工作。这里不使用 Phase 7.4，避免和 7.2G / 7.3 既有口径混淆；所有 Phase 7.5+ 工程子阶段都必须保持三套数据不退步：DABstep dev 1-10 不低于 `9/10`，DABstep public all 1-450 mock 保持 `success_count=450/450` 且 `unexpected_not_applicable=0`，Microsoft 脱敏数据 1-300 mock scorer 保持 `300/300`，桌面 VDS `问题汇总.xlsx` 95 题 smoke 保持 `95/95`。`format_risk`、`submission_risk`、`trace_redaction_risk` 必须保持 0，secret scan、hardcoding scan 和 dependency boundary test 必须通过。
+Phase 7.5+ 用于承接 Phase 7.1 / 7.2 / 7.2G / 7.3 之后的增强工作。这里不使用 Phase 7.4，避免和 7.2G / 7.3 既有口径混淆；所有 Phase 7.5+ 工程子阶段都必须保持三套数据不退步：DABstep dev 1-10 不低于 `9/10`，DABstep public all 1-450 mock 保持 `success_count=450/450` 且 `unexpected_not_applicable=0`，Microsoft 脱敏数据 1-300 mock scorer 保持 `300/300`，桌面 VDS `问题汇总.xlsx` 95 题 smoke 保持 `95/95`，当前分支 VDS 标准答案 scorer 保持 `95/95`。`format_risk`、`submission_risk`、`trace_redaction_risk` 必须保持 0，secret scan、hardcoding scan 和 dependency boundary test 必须通过。
 
 并发规则：因为本仓库可能多人同时修改代码，Phase 7.5+ 的工程实现必须使用独立 worktree / branch，例如 `codex/vds-phase75-tool-safety`、`codex/vds-phase76-provider-smoke`、`codex/vds-phase77-duckdb-runtime`、`codex/vds-phase78-multi-agent-retry`、`codex/vds-phase79-maf-demo`、`codex/vds-phase710-aci-bi` 和 `codex/vds-phase91-workbench-confirmation`。所有分支由 integrator 顺序合并；任一阶段导致 DABstep、Microsoft 或 VDS 数据回归退步，必须停止合并并回到对应阶段修复。
 

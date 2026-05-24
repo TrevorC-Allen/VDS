@@ -149,7 +149,7 @@
 4. 新能力必须有合成或非 Benchmark 用例、同类变体用例和旧代表回归用例。
 5. 中文问题、中文字段名、中文业务术语和中文输出格式必须作为主路径验收。
 
-当前状态（2026-05-22）：Not Applicable 归因已区分 true_unsupported / capability_gap，并补齐 row_count、distinct_count、repeat_entity_percentage、outlier_count、top_k_share、filtered_metric_ranking、null_check、季度过滤、fraud likelihood 多维比较、fee what-if candidate table、DABstep 131-180 的 outlier/null-filter 缺口、Microsoft 41-60 的中文零售过滤缺口和 VDS 中文 BI 周期比较第一批能力。Provider-native tool calling adapter 已具备 OpenAI / DeepSeek 兼容 schema、tool call 解析、ToolDispatcher 分发和 mock loop 测试。Microsoft 脱敏数据 1-300 mock 离线 scorer 为 300/300；DABstep public all 1-450 mock 多 Agent 执行覆盖为 450/450，official accuracy 仍因 public all answer 为空而不可本地计算；VDS 桌面 `问题汇总.xlsx` 五域全部 95 题 smoke 为 95/95 成功。tracked-file secret scan、扩大后的 Benchmark 硬编码扫描和 data_agent_core import 边界测试已纳入架构测试。下一步继续用真实 LLM 大规模回归、更多中文真实数据和复杂 BI 问法验证泛化稳定性。
+当前状态（2026-05-25）：Not Applicable 归因已区分 true_unsupported / capability_gap，并补齐 row_count、distinct_count、repeat_entity_percentage、outlier_count、top_k_share、filtered_metric_ranking、null_check、季度过滤、fraud likelihood 多维比较、fee what-if candidate table、DABstep 131-180 的 outlier/null-filter 缺口、Microsoft 41-60 的中文零售过滤缺口和 VDS 中文 BI 周期比较能力。Provider-native tool calling adapter 已具备 OpenAI / DeepSeek 兼容 schema、tool call 解析、ToolDispatcher 分发和 mock loop 测试。Microsoft 脱敏数据 1-300 mock 离线 scorer 为 300/300；DABstep public all 1-450 mock 多 Agent 执行覆盖为 450/450，official accuracy 仍因 public all answer 为空而不可本地计算；VDS 桌面 `问题汇总.xlsx` 五域全部 95 题 smoke 为 95/95 成功，当前分支 VDS 标准答案离线 scorer 也已验证为 95/95 正确。tracked-file secret scan、扩大后的 Benchmark 硬编码扫描和 data_agent_core import 边界测试已纳入架构测试。下一步继续用真实 LLM 大规模回归、更多中文真实数据和复杂 BI 问法验证泛化稳定性。
 
 ## Phase 7.1：DABstep Submission Quality Gate and Easy Capability Closure
 
@@ -158,7 +158,7 @@
 1. Phase 6 多 Agent 默认链路当前状态稳定，`single_agent` 仅作为 fallback。
 2. Phase 7 已完成 DABstep public all 1-450 mock 执行覆盖，且执行覆盖可复现。
 3. DABstep public all 的 hidden official answer 本地不可用，不能把 public proxy 或历史 accepted-answer pool 当作官方答案。
-4. Microsoft 1-300 和桌面 VDS 95 smoke 作为回归基线，不允许因为 DABstep submission 治理退化。
+4. Microsoft 1-300、桌面 VDS 95 smoke 和当前分支 VDS 标准答案 scorer 作为回归基线，不允许因为 DABstep submission 治理退化。
 
 目标：
 
@@ -174,6 +174,6 @@
 3. 提交产物包含 commit hash、report hash、prediction hash 和生成命令。
 4. Easy / Hard 风险报告生成，并明确 hidden official accuracy 只能由 Hugging Face leaderboard 返回，本地不能伪造。
 5. 禁止 task_id、hidden answer、public proxy answer、固定题面、固定样本值进入 Agent workflow、prompt、Planner、Executor、Verifier、Correction、Response Builder 或测试 fixture。
-6. DABstep public all 1-450 mock 覆盖不退化，DABstep dev 1-10 不低于 9/10，Microsoft 1-300 和桌面 VDS 95 smoke 不退化。
+6. DABstep public all 1-450 mock 覆盖不退化，DABstep dev 1-10 不低于 9/10，Microsoft 1-300、桌面 VDS 95 smoke 和当前分支 VDS 标准答案 scorer 不退化。
 
 当前状态（2026-05-22）：Phase 7.1 已作为下一阶段目标写入文档；本轮只做阶段治理和验收定义，不实现 submission gate、Easy 能力族或 scorer 代码。
