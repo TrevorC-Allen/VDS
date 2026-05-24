@@ -83,6 +83,116 @@ class VdsBiCapabilitiesTest(unittest.TestCase):
         self.assertTrue(result.success, result.errors)
         self.assertEqual("甲客户", result.value[0]["客户名称"])
 
+    def test_current_filtered_metric_top_preserves_entity_and_metric_code(self) -> None:
+        tables = {
+            "saas": pd.DataFrame(
+                [
+                    {
+                        "客户名称": "甲客户",
+                        "区域": "华南",
+                        "套餐名称": "Pro",
+                        "订阅状态": "流失",
+                        "实施复杂度": "高",
+                        "是否本周/上周": "本周",
+                        "订阅收入": 10.0,
+                        "ARR_row": 1000.0,
+                        "CHR_row": 0.8,
+                        "NRR_row": 1.1,
+                    },
+                    {
+                        "客户名称": "乙客户",
+                        "区域": "华北",
+                        "套餐名称": "Growth",
+                        "订阅状态": "暂停",
+                        "实施复杂度": "低",
+                        "是否本周/上周": "本周",
+                        "订阅收入": 20.0,
+                        "ARR_row": 3000.0,
+                        "CHR_row": 0.5,
+                        "NRR_row": 0.8,
+                    },
+                    {
+                        "客户名称": "丙客户",
+                        "区域": "华东",
+                        "套餐名称": "Pro",
+                        "订阅状态": "正常续费",
+                        "实施复杂度": "中",
+                        "是否本周/上周": "本周",
+                        "订阅收入": 999999.0,
+                        "ARR_row": 9000.0,
+                        "CHR_row": 0.9,
+                        "NRR_row": 0.9,
+                    },
+                    {
+                        "客户名称": "丁客户",
+                        "区域": "华东",
+                        "套餐名称": "Pro",
+                        "订阅状态": "暂停",
+                        "实施复杂度": "高",
+                        "是否本周/上周": "上周",
+                        "订阅收入": 1000.0,
+                        "ARR_row": 5000.0,
+                        "CHR_row": 0.99,
+                        "NRR_row": 1.2,
+                    },
+                    {
+                        "客户名称": "戊客户",
+                        "区域": "华中",
+                        "套餐名称": "Pro",
+                        "订阅状态": "暂停",
+                        "实施复杂度": "低",
+                        "是否本周/上周": "本周",
+                        "订阅收入": 1.0,
+                        "ARR_row": 2000.0,
+                        "CHR_row": 0.7,
+                        "NRR_row": 1.3,
+                    },
+                    {
+                        "客户名称": "己客户",
+                        "区域": "华南",
+                        "套餐名称": "Starter",
+                        "订阅状态": "正常续费",
+                        "实施复杂度": "高",
+                        "是否本周/上周": "本周",
+                        "订阅收入": 500000.0,
+                        "ARR_row": 4000.0,
+                        "CHR_row": 0.4,
+                        "NRR_row": 0.7,
+                    },
+                ]
+            )
+        }
+
+        logic = parse_generic_table_question("本周流失和暂停对ARR影响最大的Top10客户？", tables)
+        result = execute_plan(build_analysis_plan(logic), {"tables": tables})
+        pro_logic = parse_generic_table_question("本周Pro套餐CHR最高的Top10客户？", tables)
+        pro_result = execute_plan(build_analysis_plan(pro_logic), {"tables": tables})
+        pause_logic = parse_generic_table_question("本周暂停客户ARR最高的前2个客户", tables)
+        pause_result = execute_plan(build_analysis_plan(pause_logic), {"tables": tables})
+        low_logic = parse_generic_table_question("本周正常续费客户NRR最低的Top5客户", tables)
+        low_result = execute_plan(build_analysis_plan(low_logic), {"tables": tables})
+
+        self.assertEqual("vds_current_filtered_metric_top", logic.operation)
+        self.assertEqual("ARR_row", logic.parameters["metric"])
+        self.assertEqual("客户名称", logic.parameters["entity"])
+        self.assertEqual(["流失", "暂停"], logic.parameters["value_filters"]["订阅状态"])
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual(["乙客户", "戊客户", "甲客户"], [row["客户名称"] for row in result.value])
+        self.assertNotIn("区域", result.value[0])
+
+        self.assertEqual("vds_current_filtered_metric_top", pro_logic.operation)
+        self.assertEqual("CHR_row", pro_logic.parameters["metric"])
+        self.assertEqual(["Pro"], pro_logic.parameters["value_filters"]["套餐名称"])
+        self.assertNotIn("实施复杂度", pro_logic.parameters["value_filters"])
+        self.assertTrue(pro_result.success, pro_result.errors)
+        self.assertEqual(["丙客户", "甲客户", "戊客户"], [row["客户名称"] for row in pro_result.value])
+
+        self.assertTrue(pause_result.success, pause_result.errors)
+        self.assertEqual(["乙客户", "戊客户"], [row["客户名称"] for row in pause_result.value])
+        self.assertTrue(low_result.success, low_result.errors)
+        self.assertEqual(["己客户", "丙客户"], [row["客户名称"] for row in low_result.value])
+        self.assertEqual("asc", low_logic.parameters["sort_order"])
+
     def test_current_threshold_peer_anomaly_and_rate_top_are_generic(self) -> None:
         tables = {
             "learning": pd.DataFrame(

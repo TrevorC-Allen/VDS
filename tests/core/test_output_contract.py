@@ -81,6 +81,38 @@ class OutputContractTest(unittest.TestCase):
         self.assertFalse(response.debug["output_contract_validation"]["passed"])
         self.assertEqual(OUTPUT_CONTRACT_VALIDATION_FAILED, response.errors[0]["error_type"])
 
+    def test_response_builder_summarizes_vds_current_metric_top(self) -> None:
+        logic = LogicForm(
+            task_type="ranking",
+            operation="vds_current_filtered_metric_top",
+            metric="ARR_row",
+            group_by="客户名称",
+            parameters={
+                "metric": "ARR_row",
+                "entity": "客户名称",
+                "current_period": "本周",
+                "value_filters": {"订阅状态": ["暂停", "流失"]},
+                "sort_order": "desc",
+                "limit": 10,
+            },
+            output_format={"answer_type": "table", "entity_field": "客户名称", "metric": "ARR_row"},
+        )
+        rows = [{"客户名称": "乙客户", "ARR_row": 3000.0}, {"客户名称": "甲客户", "ARR_row": 1000.0}]
+
+        response = build_response(
+            run_id="run_vds_top",
+            user_question=UserQuestion(dataset_id="ds", question="本周流失和暂停对ARR影响最大的Top10客户？"),
+            plan=AnalysisPlan(plan_id="plan", logic_form=logic),
+            execution_result=ExecutionResult(backend="pandas", success=True, value=rows, columns=["客户名称", "ARR_row"], rows=rows),
+            verification=VerificationResult(passed=True),
+        )
+
+        self.assertTrue(response.success)
+        self.assertIn("ARR 最高的是乙客户", response.answer)
+        self.assertIn("订阅状态为暂停/流失", response.answer)
+        self.assertEqual(["客户名称", "ARR_row"], response.result["columns"])
+        self.assertEqual("vds_current_metric_top_answer_summary", response.debug["user_experience_shaping"]["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

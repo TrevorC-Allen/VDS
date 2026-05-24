@@ -32,6 +32,9 @@ def build_response(
     canonical_answer = canonicalize_final_answer(execution_result.value, plan.logic_form.output_format)
     answer = canonical_answer.answer
     display_result = {"columns": execution_result.columns, "rows": execution_result.rows, "value": execution_result.value}
+    ranking_display_answer = _vds_current_metric_top_answer(plan, execution_result)
+    if ranking_display_answer is not None:
+        answer = ranking_display_answer
     overview_display = _overview_display_payload(user_question.question, plan, execution_result)
     if overview_display is not None:
         answer = overview_display["answer"]
@@ -50,6 +53,12 @@ def build_response(
     warnings = list(execution_result.warnings)
     errors = list(execution_result.errors)
     debug_payload = dict(debug or {})
+    if ranking_display_answer is not None:
+        debug_payload["user_experience_shaping"] = {
+            "applied": True,
+            "reason": "vds_current_metric_top_answer_summary",
+            "operation": plan.logic_form.operation,
+        }
     if overview_display is not None:
         debug_payload["user_experience_shaping"] = {
             "applied": True,
@@ -120,6 +129,46 @@ def format_answer(value: Any, output_format: dict[str, Any]) -> str:
     """Format a raw execution value according to benchmark/API guidelines."""
 
     return canonicalize_final_answer(value, output_format).answer
+
+
+def _vds_current_metric_top_answer(plan: AnalysisPlan, execution_result: ExecutionResult) -> str | None:
+    logic = plan.logic_form
+    if logic.operation != "vds_current_filtered_metric_top":
+        return None
+    rows = _result_rows(execution_result)
+    if not rows:
+        return None
+    params = logic.parameters
+    entity = str(params.get("entity") or logic.group_by or logic.output_format.get("entity_field") or "")
+    metric = str(params.get("metric") or logic.metric or logic.output_format.get("metric") or "")
+    if not entity or not metric or entity not in rows[0] or metric not in rows[0]:
+        return None
+    top_row = rows[0]
+    period = str(params.get("current_period") or "本周")
+    direction = "最低" if str(params.get("sort_order") or "desc") == "asc" else "最高"
+    entity_label = entity.replace("名称", "")
+    metric_label = metric[:-4] if metric.endswith("_row") else metric
+    filter_phrase = _value_filters_phrase(params.get("value_filters") or {})
+    top_value = _to_float(top_row.get(metric))
+    value_text = _format_display_number(top_value) if top_value is not None else str(top_row.get(metric))
+    row_count = len(rows)
+    return (
+        f"{period}{filter_phrase}{entity_label}中，{metric_label} {direction}的是"
+        f"{top_row.get(entity)}（{metric_label}={value_text}）。"
+        f"下表列出本次可返回的 Top{row_count}。"
+    )
+
+
+def _value_filters_phrase(filters: Any) -> str:
+    if not isinstance(filters, dict) or not filters:
+        return ""
+    parts: list[str] = []
+    for column, raw_values in filters.items():
+        values = list(raw_values) if isinstance(raw_values, (list, tuple, set)) else [raw_values]
+        values = [str(value) for value in values if str(value)]
+        if values:
+            parts.append(f"{column}为{'/'.join(values)}")
+    return "" if not parts else "、".join(parts) + "的"
 
 
 def _overview_display_payload(question: str, plan: AnalysisPlan, execution_result: ExecutionResult) -> dict[str, Any] | None:

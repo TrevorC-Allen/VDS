@@ -136,6 +136,41 @@ def parse_vds_bi_question(question: str, tables: dict[str, pd.DataFrame], guidel
             output_format=output_format,
         )
 
+    if _is_current_metric_top_question(question):
+        value_filters = _extract_value_filters(question, df, entity=entity, metric=metric)
+        sort_order = _current_metric_sort_order(question)
+        return make_logic_form(
+            task_type="ranking",
+            operation="vds_current_filtered_metric_top",
+            metric=metric,
+            group_by=entity,
+            objective="minimize" if sort_order == "asc" else "maximize",
+            filters=value_filters,
+            parameters={
+                "table": table_name,
+                "metric": metric,
+                "entity": entity,
+                "current_period": current_period,
+                "value_filters": value_filters,
+                "sort_order": sort_order,
+                "limit": limit,
+            },
+            entity_grain={"entity_field": entity},
+            time_window={"period_column": PERIOD_COLUMN, "current_period": current_period},
+            candidate_set={"filters": value_filters, "limit": limit},
+            output_format=output_format
+            | {
+                "answer_type": "table",
+                "entity_field": entity,
+                "metric": metric,
+            },
+            output_contract={
+                "primary_entity_field": entity,
+                "metric": metric,
+                "sort_order": sort_order,
+            },
+        )
+
     if "较上周增长" in question and ("数量" in question or "占比" in question):
         return make_logic_form(
             task_type="aggregation",
@@ -232,6 +267,22 @@ def _extract_multiplier(question: str, default: float) -> float:
     return float(match.group(1)) if match else default
 
 
+def _is_current_metric_top_question(question: str) -> bool:
+    top_language = ("Top", "top", "前", "最高", "最大", "最低", "最小", "影响最大", "影响最小")
+    if not any(token in question for token in top_language):
+        return False
+    comparison_language = ("与上周相比", "较上周", "环比", "排名下降", "排名上升", "增加最多", "增长最多", "减少最多", "下降最多")
+    if any(token in question for token in comparison_language):
+        return False
+    if "占比" in question or "平均值" in question:
+        return False
+    return True
+
+
+def _current_metric_sort_order(question: str) -> str:
+    return "asc" if any(token in question for token in ("最低", "最小", "影响最小")) else "desc"
+
+
 def _extract_group_column(question: str, df: pd.DataFrame) -> str | None:
     for token, column in (
         ("城市", "城市"),
@@ -271,11 +322,9 @@ def _fallback_peer_group(df: pd.DataFrame) -> str:
 
 
 def _extract_filter_column(question: str, df: pd.DataFrame) -> str | None:
-    for column in ("人员类型", "患者类型", "客户类型", "项目类别", "科室", "货品类别", "套餐名称", "来源渠道", "预约渠道", "下单渠道", "获客渠道"):
-        if column in df.columns:
-            values = df[column].dropna().astype(str).unique()
-            if any(str(value) in question for value in values):
-                return column
+    filters = _extract_value_filters(question, df, entity=None, metric=None)
+    if filters:
+        return next(iter(filters))
     return None
 
 
@@ -283,11 +332,11 @@ def _extract_filter_value(question: str, df: pd.DataFrame) -> str | None:
     column = _extract_filter_column(question, df)
     if not column:
         return None
-    values = sorted((str(value) for value in df[column].dropna().astype(str).unique()), key=len, reverse=True)
-    for value in values:
-        if value in question:
-            return value
-    return None
+    filters = _extract_value_filters(question, df, entity=None, metric=None)
+    value = filters.get(column)
+    if isinstance(value, list):
+        return str(value[0]) if value else None
+    return str(value) if value else None
 
 
 def _extract_category_condition(question: str, df: pd.DataFrame) -> tuple[str, str] | None:
@@ -299,3 +348,112 @@ def _extract_category_condition(question: str, df: pd.DataFrame) -> tuple[str, s
             if value and value in question:
                 return column, value
     return None
+
+
+def _extract_value_filters(question: str, df: pd.DataFrame, *, entity: str | None, metric: str | None) -> dict[str, list[str]]:
+    excluded = {PERIOD_COLUMN}
+    if entity:
+        excluded.add(entity)
+    if metric:
+        excluded.add(metric)
+    filters: dict[str, list[str]] = {}
+    for column in _candidate_filter_columns(df, excluded):
+        values = _matching_filter_values(question, df, column)
+        if values:
+            filters[column] = values
+    return filters
+
+
+def _candidate_filter_columns(df: pd.DataFrame, excluded: set[str]) -> list[str]:
+    priority = (
+        "状态",
+        "订阅状态",
+        "人员类型",
+        "患者类型",
+        "客户类型",
+        "项目类别",
+        "科室",
+        "货品类别",
+        "套餐名称",
+        "产品线",
+        "业务类型",
+        "来源渠道",
+        "预约渠道",
+        "下单渠道",
+        "获客渠道",
+        "支付方式",
+        "付费方式",
+        "配送方式",
+        "行业分层",
+        "实施复杂度",
+        "区域",
+        "城市",
+        "商圈",
+        "学区",
+        "医疗圈",
+        "配送圈",
+    )
+    ordered: list[str] = []
+    for column in priority:
+        if column in df.columns and column not in excluded:
+            ordered.append(column)
+    for column in df.columns:
+        name = str(column)
+        if name in excluded or name in ordered or pd.api.types.is_numeric_dtype(df[column]):
+            continue
+        if len(df[column].dropna().astype(str).unique()) <= 80:
+            ordered.append(name)
+    return ordered
+
+
+def _matching_filter_values(question: str, df: pd.DataFrame, column: str) -> list[str]:
+    if column not in df.columns:
+        return []
+    values = [str(value) for value in df[column].dropna().astype(str).unique() if str(value)]
+    if len(values) > 80:
+        return []
+    matches: list[str] = []
+    for value in sorted(values, key=len, reverse=True):
+        if _filter_value_in_question(value, question, column):
+            matches.append(value)
+    if _looks_status_column(column):
+        for status_value in _status_values_from_question(question, values):
+            if status_value not in matches:
+                matches.append(status_value)
+    return matches
+
+
+def _filter_value_in_question(value: str, question: str, column: str) -> bool:
+    if re.search(r"[\u4e00-\u9fff]", value):
+        if len(value.strip()) == 1:
+            return _single_char_value_in_question(value.strip(), question, column)
+        return value in question
+    return bool(re.search(rf"(?<![A-Za-z0-9_]){re.escape(value)}(?![A-Za-z0-9_])", question, flags=re.I))
+
+
+def _single_char_value_in_question(value: str, question: str, column: str) -> bool:
+    escaped_value = re.escape(value)
+    escaped_column = re.escape(column)
+    if re.search(rf"{escaped_column}\s*(?:为|是|=|等于)?\s*{escaped_value}", question):
+        return True
+    if re.search(rf"{escaped_value}\s*(?:的)?\s*{escaped_column}", question):
+        return True
+    if "复杂度" in column and re.search(rf"(?:复杂度\s*(?:为|是|=|等于)?\s*{escaped_value}|{escaped_value}\s*复杂度)", question):
+        return True
+    return False
+
+
+def _looks_status_column(column: str) -> bool:
+    return "状态" in column or column in {"是否流失", "是否暂停"}
+
+
+def _status_values_from_question(question: str, known_values: list[str]) -> list[str]:
+    tokens = ("流失", "暂停", "已退课", "退课", "取消", "关闭")
+    values: list[str] = []
+    for token in tokens:
+        if token not in question:
+            continue
+        canonical = next((value for value in known_values if token in value or value in token), token)
+        if canonical not in values:
+            values.append(canonical)
+    return values

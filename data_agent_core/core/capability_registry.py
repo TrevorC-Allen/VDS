@@ -83,6 +83,7 @@ VDS_BI_OPERATIONS = frozenset(
         "vds_period_rate_top",
         "vds_current_threshold_top",
         "vds_current_category_share_top",
+        "vds_current_filtered_metric_top",
         "vds_peer_anomaly",
     }
 )

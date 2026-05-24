@@ -747,6 +747,104 @@ YYYY-MM-DD HH:MM TZ
 
 ---
 
+2026-05-24 18:57 CST
+
+### 本次目标
+
+彻底修复 VDS Workbench 中“本周流失和暂停对 ARR 影响最大的 Top10 客户？”等当前周期指标 TopN 问题被误解析为 `区域 / 订阅收入` 排名的问题，并覆盖相近的客户、门店、校区、院区、站点实体粒度问题。
+
+### 修改文件
+
+- data_agent_core/core/vds_bi_intent.py
+- data_agent_core/executors/vds_bi_executor.py
+- data_agent_core/core/capability_registry.py
+- data_agent_core/output/response_builder.py
+- tests/core/test_vds_bi_capabilities.py
+- tests/core/test_output_contract.py
+- README.md
+- MAIN_GOAL.md
+- docs/ARCHITECTURE.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 VDS BI 能力族 `vds_current_filtered_metric_top`，用于“当前周期 + 实体名称粒度 + 显式 `_row` 指标 + TopN/最高/最低 + 可选枚举过滤”问题。
+- 解析层优先锁定 `客户名称 / 门店名称 / 校区名称 / 院区名称 / 站点名称` 等实体字段，并用问题中的 `ARR / CHR / NRR / DAU` 等显式指标映射到对应 `_row` 字段，避免列顺序导致 fallback 选中 `订阅收入`。
+- 枚举过滤支持多值条件，例如 `订阅状态 in [暂停, 流失]`，并支持 `Pro套餐`、`正常续费客户` 等同族筛选。
+- 收紧单字中文枚举值匹配，避免把“最高”的“高”误识别为 `实施复杂度=高`。
+- 执行层按当前周期过滤后，以实体字段聚合指标并排序；`CHR / NRR / ARPA` 等均值型指标继续按均值聚合，其余指标按求和聚合。
+- Response Builder 对该能力的主回答生成中文摘要，例如“本周订阅状态为暂停/流失的客户中，ARR 最高的是……”，表格仍返回完整 TopN。
+- README、MAIN_GOAL、docs/ARCHITECTURE 同步记录该能力族边界和非特调原则。
+
+### 测试方式
+
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_vds_bi_capabilities`
+- 用真实 SaaS Excel 文件 `/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/数据/QueryGPT_SaaS订阅数据_单表版.xlsx` 直接解析执行以下问题：`本周流失和暂停对ARR影响最大的Top10客户？`、`本周Pro套餐CHR最高的Top10客户？`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_output_contract tests.core.test_vds_bi_capabilities`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_semantic_metric_verification tests.core.test_generic_capability_operations tests.backend.test_data_agent_service`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core/core/vds_bi_intent.py data_agent_core/executors/vds_bi_executor.py data_agent_core/output/response_builder.py tests/core/test_vds_bi_capabilities.py tests/core/test_output_contract.py`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- 重新上传 SaaS Excel 到 `http://127.0.0.1:8001/api/data-agent/upload`，再调用 `POST /api/data-agent/message` 验证 Workbench runtime 实际返回。
+
+### 测试结果
+
+- VDS BI focused tests 通过：Ran 8 tests，OK。
+- 真实 SaaS Excel 直接解析执行：`本周流失和暂停对ARR影响最大的Top10客户？` 路由为 `vds_current_filtered_metric_top`，`metric=ARR_row`，`entity=客户名称`，`value_filters={"订阅状态":["暂停","流失"]}`；结果列为 `客户名称 / ARR_row`。
+- 真实 SaaS Excel 直接解析执行：`本周Pro套餐CHR最高的Top10客户？` 路由为 `vds_current_filtered_metric_top`，`metric=CHR_row`，`entity=客户名称`，只过滤 `套餐名称=Pro`，未误加 `实施复杂度=高`。
+- 输出契约 + VDS BI focused tests 通过：Ran 17 tests，OK。
+- 语义校验、通用能力和后端服务 focused tests 通过：Ran 75 tests，OK。
+- compileall 通过。
+- Full unittest 通过：Ran 167 tests，OK。
+- `git diff --check` 通过。
+- Workbench runtime 已同步并重启，`GET /workbench` 返回 200。
+- Runtime 端到端 API 验证通过：重新上传 SaaS Excel 得到 `dataset_id=ds_20260524_110331_cdd5256f`；`POST /api/data-agent/message` 对 `本周流失和暂停对ARR影响最大的Top10客户？` 返回 `success=True`、`answer_type=table`、`operation=vds_current_filtered_metric_top`、结果列 `["客户名称","ARR_row"]`，主回答为“本周订阅状态为暂停/流失的客户中，ARR 最高的是云启客户31（ARR=1,443,416.88）。下表列出本次可返回的 Top7。”
+
+### 遗留问题
+
+- 当前能力覆盖当前周期过滤指标 TopN；跨周期排名变化、delta、rate、阈值和占比仍分别由已有 VDS BI 能力族处理。
+- `.playwright-cli/` 仍是本地既有未跟踪目录，本轮未纳入 Git。
+
+### 是否影响主流程
+
+是。影响 VDS 中文 BI 问题解析、Pandas 执行和最终回答展示；不改变上传、文件解析、API 契约或前端计算边界。
+
+### 是否涉及 Benchmark
+
+否。未使用 Benchmark 标准答案、题号或固定答案；测试为同族合成表和真实本地 SaaS Excel 端到端 smoke。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 Microsoft Agent Framework adapter，也未引入相关依赖。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。新增能力在 data_agent_core 的 LogicForm / Executor / Capability Registry 中表达，可被当前 multi_agent workflow 和未来 adapter 复用。
+
+### 是否修改核心数据契约
+
+是。新增内部 LogicForm operation `vds_current_filtered_metric_top`，扩展 `parameters.value_filters` 多值过滤表达；未修改公开 API 请求/响应字段。
+
+### 是否修改 API 契约
+
+否。仍复用现有 `/api/data-agent/message`、`/api/data-agent/upload` 和稳定响应字段。
+
+### 是否新增或修改错误类型
+
+否。未新增 error_type。
+
+### 是否新增或修改运行追踪逻辑
+
+否。未新增 trace 字段；只改变 LogicForm operation 和 response debug 中已有 `user_experience_shaping` 的 reason。
+
+### 是否已同步 README
+
+是。README、MAIN_GOAL 和 docs/ARCHITECTURE 已同步该能力族、实体粒度锁定和主回答摘要边界。
+
+---
+
 ### 日期时间
 
 2026-05-24 13:50 CST

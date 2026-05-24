@@ -17,6 +17,7 @@ VDS_BI_OPERATIONS = {
     "vds_period_rate_top",
     "vds_current_threshold_top",
     "vds_current_category_share_top",
+    "vds_current_filtered_metric_top",
     "vds_peer_anomaly",
 }
 
@@ -70,6 +71,8 @@ def execute_vds_bi_operation(logic: LogicForm, context: dict[str, Any]) -> Any:
         return _current_threshold_top(df, params)
     if op == "vds_current_category_share_top":
         return _current_category_share_top(df, params)
+    if op == "vds_current_filtered_metric_top":
+        return _current_filtered_metric_top(df, params)
     if op == "vds_peer_anomaly":
         return _peer_anomaly(df, params)
     raise ValueError(f"Unsupported VDS BI operation: {op}")
@@ -180,6 +183,22 @@ def _current_category_share_top(df: pd.DataFrame, params: dict[str, Any]) -> lis
     ]
 
 
+def _current_filtered_metric_top(df: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
+    current_period = str(params.get("current_period") or "本周")
+    data = df[df["是否本周/上周"].astype(str) == current_period]
+    data = _apply_value_filters(data, params.get("value_filters") or {})
+    entity = str(params["entity"])
+    metric = str(params["metric"])
+    if data.empty or entity not in data.columns or metric not in data.columns:
+        return []
+    values = _aggregate_current(data, entity, metric)
+    if values.empty:
+        return []
+    ascending = str(params.get("sort_order") or "desc") == "asc"
+    selected = values.sort_values(ascending=ascending).head(int(params.get("limit") or 10))
+    return [{entity: index, metric: _native_number(value)} for index, value in selected.items()]
+
+
 def _peer_anomaly(df: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
     current_period = str(params.get("current_period") or "本周")
     data = df[df["是否本周/上周"].astype(str) == current_period]
@@ -283,4 +302,24 @@ def _apply_optional_value_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd
     value = params.get("filter_value")
     if not column or not value or str(column) not in df.columns:
         return df
-    return df[df[str(column)].astype(str) == str(value)]
+    return _apply_value_filters(df, {str(column): value})
+
+
+def _apply_value_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.DataFrame:
+    data = df
+    for column, value in filters.items():
+        column_name = str(column)
+        if column_name not in data.columns:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            candidates = {str(item) for item in value if str(item)}
+            if candidates:
+                data = data[data[column_name].astype(str).isin(candidates)]
+        elif value:
+            data = data[data[column_name].astype(str) == str(value)]
+    return data
+
+
+def _native_number(value: Any) -> int | float:
+    numeric = float(value)
+    return int(numeric) if numeric.is_integer() else numeric

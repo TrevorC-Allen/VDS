@@ -19,6 +19,7 @@
 - Phase 10 已完成首版结果体验增强：后端生成 `chart`、`insight`、`quality_report` 和 `reasoning_trace_view` 稳定字段；`chart` 可携带后端 Python 渲染的 SVG `image_data_uri`，Workbench 优先展示该图像，前端仅保留 chart spec fallback；洞察建议和用户可读过程时间线已展示，质量报告、warnings/errors、verification 细节和 join trace 保留在后端/API，不在主界面直接展示；过程展示不暴露完整 Chain of Thought。
 - Workbench 已支持统一 `POST /api/data-agent/message`：无文件时直接进入辅助聊天；有文件时由后端判断普通聊天、数据概览或正式分析，避免“你好 / 你是什么模型”被误送进分析链路。
 - 针对“看一下这个数据 / 看一下整体销售情况 / overall sales summary”这类概览问题，后端会在 `data_agent_core` 生成全表数据概览，返回表规模、关键数值字段、合计/平均/最高/最低和可下钻方向，避免把单个行数或原始多字段明细行当作主答案；前端不计算这些指标。
+- VDS 中文 BI 已补齐当前周期过滤指标 TopN 能力 `vds_current_filtered_metric_top`：当问题要求 `客户/门店/校区/院区/站点` 粒度、`ARR/CHR/NRR/DAU` 等 `_row` 指标、`本周` 和 `Pro套餐/暂停/流失/正常续费` 等筛选时，核心链路会锁定实体名称和显式指标，主回答收敛为中文摘要，不再退回为默认 `区域/订阅收入` 排名或原始逗号列表。
 - Phase 11 已规划但尚未实现完整会话持久化：后续将新增 `conversation_id` 会话隔离、历史 Chat 续聊、多窗口独立会话、未来 `owner_id / tenant_id / owner_context` 预留。
 - Phase 8 完整门禁结果：DABstep dev 1-10 为 `9/10`；DABstep public all 1-450 mock 执行覆盖为 `450/450`；Microsoft 脱敏数据 1-300 mock scorer 为 `300/300`；桌面 VDS `问题汇总.xlsx` 95 题 smoke 为 `95/95`；`format_risk / submission_risk / trace_redaction_risk` 均为 0。
 - Phase 10 验收结果：Full unittest `147 tests OK`，compileall、`node --check frontend/app.js` 和 `git diff --check` 均通过；Phase 10 mock / 离线回归为 DABstep dev `9/10`、DABstep public all `450/450`、Microsoft `300/300`、VDS 95 smoke `95/95`；真实 DeepSeek full 回归为 DABstep public all `450/450` 执行覆盖、Microsoft `300/300`、VDS 95 smoke `95/95`。
