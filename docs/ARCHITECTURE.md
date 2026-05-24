@@ -24,7 +24,7 @@
 
 2026-05-22 更新：ToolDispatcher 已对 timeout_seconds 增加本地 POSIX timeout 执行边界；架构测试新增 tracked-file secret scan，并把 Benchmark 硬编码扫描扩大到 agent_runtime、backend、ms_agent_framework_adapter 和 multi_agent_workflows 的核心源码范围。
 
-2026-05-23 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已进入 planned architecture。后续应在 Workbench 与 DataAgentService 之间增加 Conversation Store / Conversation Service，用 `conversation_id` 管理会话上下文、历史消息、active dataset 和 runs；当前尚未实现，文档只记录后续架构边界。
+2026-05-25 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已完成首个轻量架构落点。`backend/storage/conversation_store.py` 提供本地 JSON conversation store；DataAgentService 的 `/message` 路径负责追加 user / assistant turn；Workbench 左侧历史 Chat 从后端 conversation endpoints 载入并持久化重命名。该层只保存会话和响应快照，不承载核心分析逻辑。
 
 ## 层次边界
 
@@ -34,7 +34,7 @@
 4. ms_agent_framework_adapter 是可选 Microsoft Agent Framework 适配层。
 5. multi_agent_workflows 已承载默认 Phase 6 最小顺序多 Agent workflow。
 6. docs 是工程契约和扩展需求管理目录。
-7. Phase 11 planned Conversation Service 位于 backend 内，负责 `conversation_id`、历史消息、active dataset、runs 和 owner_context 过滤边界；它只能编排已有 upload / analyze 调用，不能承载核心数据分析逻辑。
+7. Phase 11 Conversation Store 位于 backend 内，负责 `conversation_id`、历史消息、dataset 引用、assistant response snapshot 和 owner_context 预留边界；它只能编排已有 message / upload / analyze 调用，不能承载核心数据分析逻辑。
 
 ## 依赖规则
 
@@ -246,32 +246,39 @@ VDS 桌面测试数据用于暴露中文 BI 周环比、阈值、异常和多行
 7. trace 写入 storage/runs/{run_id}/trace.json，debug.trace_path 只用于调试，前端不能依赖它作为稳定契约。
 8. UploadedDatasetAgent 保留为 single_agent fallback。
 
-## Planned Phase 11 会话层
+## Phase 11 会话层
 
-Phase 11 计划新增会话层，但当前尚未实现。该层的目标是让 Workbench 支持多窗口隔离、历史 Chat 续聊和未来用户隔离升级。
+Phase 11 已新增轻量会话层。该层的目标是让 Workbench 支持历史 Chat 续聊，并为后续多窗口隔离和未来用户隔离升级保留后端边界。
 
-计划链路：
+当前链路：
 
-用户打开 `/workbench?conversation_id=...`
+用户打开 `/workbench`
 ↓
-Workbench 读取或创建 conversation
+Workbench 读取 `/api/data-agent/conversations`
 ↓
-Conversation Service 恢复 messages、active_dataset_id、runs
+用户选择历史 Chat 时读取 `/api/data-agent/conversations/{conversation_id}`
 ↓
-上传文件时绑定 conversation_id 和 dataset_id
+Workbench 恢复 messages、dataset_id 和 assistant response snapshot
 ↓
-分析时把 question、run_id、answer summary、safe process summary 追加到 conversation
+发送消息时把当前 `conversation_id` 传给 `/api/data-agent/message`
 ↓
-Workbench 左侧历史 Chat 从 Conversation Service 加载
+DataAgentService 追加 question、run_id、answer、answer_type、success 和 response payload 到 JSON conversation
 
 边界：
 
 1. `conversation_id` 是 UI 续聊和多窗口隔离主键，不替代 `dataset_id` 的数据集身份。
 2. dataset / run / conversation 三者分层：dataset 保存上传数据，run 保存一次分析，conversation 保存对话上下文和这些对象的引用。
-3. v1 可使用本地匿名 owner scope，但 schema 必须预留 `owner_type`、`owner_id`、`tenant_id`、`created_by` 或统一 `owner_context`。
+3. v1 可使用本地匿名 owner scope，但 schema 必须预留 `owner_id`、`tenant_id` 和 `owner_context`。
 4. 未来真实用户隔离必须由后端 owner filter 强制执行，不能只靠前端隐藏历史 Chat。
 5. 安静过程展示只消费 trace-safe `reasoning_trace_view` 摘要；默认展示一条小号浅灰的最新过程摘要，点击后展开结构化步骤，不展示完整 Chain of Thought、raw prompt、raw reasoning tokens、quality_report、warnings、verification 或 join trace。
 6. Conversation Service 不能实现 join、排序、聚合、评分、图表选择或核心分析逻辑；这些仍属于 backend 调用 data_agent_core / multi_agent_workflows 后返回的结果。
+
+未完成边界：
+
+1. URL `/workbench?conversation_id=...` 自动恢复仍未接入。
+2. 多窗口同一 conversation 的实时同步仍未实现。
+3. 跨进程重启后可恢复 profile 和消息，但继续分析仍需要内存表存在或重新上传。
+4. 真实登录、鉴权、owner filter 强制校验和多租户隔离仍未实现。
 
 ## TODO
 
@@ -283,4 +290,4 @@ Workbench 左侧历史 Chat 从 Conversation Service 加载
 - Phase 7.9：扩展真实 Microsoft Agent Framework demo；MAF adapter 只承载 AgentRole、ToolDefinition、WorkflowState 映射，不能把核心算法写进 adapter 或 workflow。
 - Phase 7.10：继续增强 ACI associated cost、fee what-if candidate table、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 能力，所有修复必须归入能力族并通过合成/非 Benchmark 用例。
 - Phase 8 Guardrail / Phase 9.1：Phase 8 只做多文件 / 多表 / join non-regression 守护；Phase 9.1 只做字段确认、join key 确认、澄清交互和评测回看面板，前端不实现指标公式、join 或数据计算。
-- Phase 11：先实现 Conversation Store / Service、owner_context 过滤边界和旧 dataset_id 调用兼容，再接前端历史 Chat 与 GPT-like 安静过程 UX；不得把本地匿名会话误写成已实现登录权限。
+- Phase 11：后续继续补 URL conversation_id 恢复、多窗口同步、跨进程 dataset 表恢复和 owner filter 强制校验；不得把本地匿名会话误写成已实现登录权限。

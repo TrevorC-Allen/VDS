@@ -2,7 +2,7 @@
 
 本仓库用于从头构建可评测、可复现、可扩展的数据分析 Agent 内核。
 
-当前 Phase 6 的最小可运行多 Agent workflow 已经作为默认链路启用；Phase 7 系列已完成泛化验证、Provider 原生工具链增强基线、submission 风险治理和最终输出契约硬化。Phase 8 已完成核心算法回看与多文件/多表泛化闭环；Phase 9 已在 Phase 8 通过后交付首版前端 workbench；Phase 10 已补齐结果可视化、洞察建议、数据质量扫描和安全过程可视化，并继续收敛 GPT-like 用户体验。Phase 11 仍规划为会话隔离和历史续聊持久化，当前尚未实现完整 conversation store。
+当前 Phase 6 的最小可运行多 Agent workflow 已经作为默认链路启用；Phase 7 系列已完成泛化验证、Provider 原生工具链增强基线、submission 风险治理和最终输出契约硬化。Phase 8 已完成核心算法回看与多文件/多表泛化闭环；Phase 9 已在 Phase 8 通过后交付首版前端 workbench；Phase 10 已补齐结果可视化、洞察建议、数据质量扫描和安全过程可视化，并继续收敛 GPT-like 用户体验。Phase 11 已启动轻量会话隔离与历史续聊实现，当前具备本地 JSON conversation store、`conversation_id`、历史载入和重命名持久化；真实登录、权限和多租户隔离仍未实现。
 
 最新状态速览：
 
@@ -21,7 +21,7 @@
 - 针对“看一下这个数据 / 看一下整体销售情况 / overall sales summary”这类概览问题，后端会在 `data_agent_core` 生成全表数据概览，返回表规模、关键数值字段、合计/平均/最高/最低和可下钻方向，避免把单个行数或原始多字段明细行当作主答案；前端不计算这些指标。
 - VDS 中文 BI 已恢复并扩展标准答案所需的通用能力族：周期排名变化、TopN 增减、增长数量占比、阈值计数、同圈层异常、分组环比、当前期过滤指标 TopN、各区域 Top 实体、状态影响和三周期 TopN 都在 `data_agent_core` 内按 schema / 实体 / `_row` 指标执行，不再退回为默认 `区域/订阅收入` 排名。
 - 当前分支已新增桌面 VDS 标准答案离线 scorer / runner；标准答案只在 response 生成后评分，不进入 Agent workflow、prompt、Planner、Executor、Verifier、Correction 或 trace。最新 mock 验证为 `outputs/vds_standard_answer_recheck_20260525_core_fix_v2/report.json`，桌面 VDS 五域 `95/95` 正确、`success_count=95/95`。
-- Phase 11 已规划但尚未实现完整会话持久化：后续将新增 `conversation_id` 会话隔离、历史 Chat 续聊、多窗口独立会话、未来 `owner_id / tenant_id / owner_context` 预留。
+- Phase 11 已启动首个落点：Workbench `/message` 会自动写入本地 JSON conversation store，历史 Chat 可通过 `conversation_id` 载入旧消息并持久化重命名；API 已预留 `owner_id / tenant_id / owner_context`，但当前仍是本地匿名存储，不代表已经具备真实登录、鉴权或多租户权限隔离。
 - Phase 8 完整门禁结果：DABstep dev 1-10 为 `9/10`；DABstep public all 1-450 mock 执行覆盖为 `450/450`；Microsoft 脱敏数据 1-300 mock scorer 为 `300/300`；桌面 VDS `问题汇总.xlsx` 95 题 smoke 为 `95/95`，当前分支桌面 VDS 标准答案 scorer 也已回归到 `95/95`；`format_risk / submission_risk / trace_redaction_risk` 均为 0。
 - Phase 10 验收结果：Full unittest `147 tests OK`，compileall、`node --check frontend/app.js` 和 `git diff --check` 均通过；Phase 10 mock / 离线回归为 DABstep dev `9/10`、DABstep public all `450/450`、Microsoft `300/300`、VDS 95 smoke `95/95`；真实 DeepSeek full 回归为 DABstep public all `450/450` 执行覆盖、Microsoft `300/300`、VDS 95 smoke `95/95`。
 - DAB Hard Recovery v2 当前门禁：focused tests `73 OK`、full unittest `152 OK`、architecture hardcoding/secret/dependency `8 OK`、DAB dev `9/10`、DAB all mock `450/450`、Microsoft `300/300`、VDS 95 smoke `95/95`、Phase 8 multi-file/join focused `5 OK`，`git diff --check` 通过。
@@ -105,11 +105,11 @@ Phase 9 首版 workbench 由 backend 挂载：
 /frontend/
 ```
 
-它只调用稳定后端 API，不在浏览器中实现核心分析逻辑。多文件上传使用 `/api/data-agent/upload-batch`；用户发送问题时，前端会先调用上传接口取得 dataset，再统一提交到 `/api/data-agent/message`，由后端决定普通聊天、数据概览或正式分析。用户选择文件后只显示底部附件状态，不在消息区生成上传结果、profile 或错误面板。主界面展示最终答案、结果表、自动图表、洞察建议、用户可读分析过程和历史记录；每一轮用户消息都会创建独立 assistant 回复，不复用上一轮结果容器。左侧历史记录支持当前单页会话内重命名，Enter 保存、Escape 取消、失焦保存；这仍是前端会话状态，不代表后端会话标题持久化已经实现。后端审计字段如 `source_tables`、`table_selection_reason`、`join_plan`、`join_execution_summary`、verification、warnings、errors 和 `quality_report` 不在主界面直接暴露。
+它只调用稳定后端 API，不在浏览器中实现核心分析逻辑。多文件上传使用 `/api/data-agent/upload-batch`；用户发送问题时，前端会先调用上传接口取得 dataset，再统一提交到 `/api/data-agent/message`，由后端决定普通聊天、数据概览或正式分析。用户选择文件后只显示底部附件状态，不在消息区生成上传结果、profile 或错误面板。主界面展示最终答案、结果表、自动图表、洞察建议、用户可读分析过程和历史记录；每一轮用户消息都会创建独立 assistant 回复，不复用上一轮结果容器。左侧历史记录来自后端 conversation store，支持载入旧 user / assistant 消息并持久化重命名，Enter 保存、Escape 取消、失焦保存。后端审计字段如 `source_tables`、`table_selection_reason`、`join_plan`、`join_execution_summary`、verification、warnings、errors 和 `quality_report` 不在主界面直接暴露。
 
-Phase 11 计划把 Workbench 升级为可恢复的会话式体验：URL 使用 `/workbench?conversation_id=...` 定位会话，左侧历史 Chat 来自后端会话列表。当前已落地的是单页内的 GPT-like 安静过程展示和无文件对话，不代表 conversation endpoints 或后端会话持久化已经实现。
+Phase 11 已启动可恢复会话式体验：`/api/data-agent/message` 返回并延续 `conversation_id`，左侧历史 Chat 来自后端会话列表。当前仍未完成 URL `/workbench?conversation_id=...` 自动定位、多窗口实时同步、跨进程 DataFrame 恢复、真实登录鉴权和多租户隔离。
 
-本机开发环境可用 `scripts/run_workbench_server.sh` 启动 8001；当前 Mac 已配置用户级 LaunchAgent `com.trevorcui.vds.workbench` 自动启动并保活 `~/.vds-workbench-runtime/VDS` runtime 副本。以后打开 `http://127.0.0.1:8001/workbench` 应可直接使用；如需把当前仓库改动同步到常驻服务目录，运行 `scripts/sync_workbench_runtime.sh`。如需真实 provider，先在 `.env.local` 设置对应环境变量并同步 runtime，没有配置时默认 `VDS_LLM_PROVIDER=mock`。
+本机开发环境可用 `scripts/run_workbench_server.sh` 启动 8001；当前 Mac 已配置用户级 LaunchAgent `com.trevorcui.vds.workbench` 自动启动并保活 `~/.vds-workbench-runtime/VDS` runtime 副本。以后打开 `http://127.0.0.1:8001/workbench` 应可直接使用；如需把当前仓库改动同步到常驻服务目录，运行 `scripts/sync_workbench_runtime.sh`，该脚本会保留 runtime `storage` 目录，避免删除本地会话历史。如需真实 provider，先在 `.env.local` 设置对应环境变量并同步 runtime，没有配置时默认 `VDS_LLM_PROVIDER=mock`。
 
 ## Core Test
 
@@ -157,7 +157,7 @@ VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runti
 - Phase 9：Frontend Productization After Core Algorithm Freeze。已完成首版静态 workbench；前端只负责上传、无文件对话入口、确认、澄清、展示和评测面板，不承载核心计算。
 - Phase 9.1：Workbench Confirmation and Review Panels。后续增强字段确认、join key 确认、低置信度澄清和评测回看面板，前端仍不实现指标公式、join、排序、聚合或评分。
 - Phase 10：Visualization, Insight, Data Quality and Safe Process View。已完成 ChartSpec v2、InsightResult v2、DataQualityReport、reasoning_trace_view 和 workbench 展示；前端只渲染后端契约，不做核心计算或 raw CoT 展示，并将质量、warnings/errors、verification 和 join trace 作为后端审计信息处理，不在主界面直接展示。
-- Phase 11：Conversation Isolation and Session Persistence。已规划，尚未实现完整会话存储；目标是 `conversation_id` 会话隔离、历史续聊、多窗口独立会话、未来用户/租户隔离字段预留。GPT-like 安静过程展示已先作为 Workbench UX hardening 落地。
+- Phase 11：Conversation Isolation and Session Persistence。首个轻量实现已落地：`conversation_id`、本地 JSON conversation store、历史列表载入、旧消息恢复和历史重命名持久化；真实登录、鉴权、多租户隔离和跨进程 dataset 表数据恢复仍是后续工作。
 
 后续 TODO：
 

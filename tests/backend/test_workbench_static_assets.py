@@ -10,9 +10,9 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
     def test_workbench_uses_backend_mounted_asset_paths(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/frontend/styles.css?v=20260524-history-rename"', html)
+        self.assertIn('href="/frontend/styles.css?v=20260525-conversation-store"', html)
         self.assertIn('href="/frontend/favicon.svg"', html)
-        self.assertIn('src="/frontend/app.js?v=20260524-history-rename"', html)
+        self.assertIn('src="/frontend/app.js?v=20260525-conversation-store"', html)
         self.assertNotIn('href="./styles.css"', html)
         self.assertNotIn('src="./app.js"', html)
 
@@ -20,13 +20,19 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         html = Path("frontend/index.html").read_text(encoding="utf-8")
         backend = Path("backend/main.py").read_text(encoding="utf-8")
 
-        self.assertIn("?v=20260524-history-rename", html)
+        self.assertIn("?v=20260525-conversation-store", html)
         self.assertIn("NO_CACHE_HEADERS", backend)
         self.assertIn('"Cache-Control": "no-store, max-age=0"', backend)
         self.assertIn('"Pragma": "no-cache"', backend)
         self.assertIn('"Expires": "0"', backend)
         self.assertIn("class NoCacheStaticFiles(StaticFiles)", backend)
         self.assertIn("headers=NO_CACHE_HEADERS", backend)
+
+    def test_runtime_sync_preserves_workbench_storage(self) -> None:
+        script = Path("scripts/sync_workbench_runtime.sh").read_text(encoding="utf-8")
+
+        self.assertIn('--exclude "storage"', script)
+        self.assertIn("--delete", script)
 
     def test_workbench_chart_svg_overrides_global_icon_svg_size(self) -> None:
         js = Path("frontend/app.js").read_text(encoding="utf-8")
@@ -113,10 +119,24 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn('event.key === "Escape"', js)
         self.assertIn("dataset.cancelRename", js)
         self.assertIn('input.addEventListener("blur"', js)
+        self.assertIn('fetch(`/api/data-agent/conversations/${encodeURIComponent(runId)}`', js)
         self.assertIn(".history-item", css)
+        self.assertIn(".history-item.active", css)
         self.assertIn(".history-rename-button", css)
         self.assertIn(".history-rename-input", css)
         self.assertIn(".history-item.editing .history-title", css)
+
+    def test_workbench_loads_persistent_conversations(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("conversationId", js)
+        self.assertIn("loadConversations()", js)
+        self.assertIn('"/api/data-agent/conversations?limit=30"', js)
+        self.assertIn("loadConversation", js)
+        self.assertIn("restoreConversation", js)
+        self.assertIn('item.last_answer_type === "chat" ? "chat" : "analysis"', js)
+        self.assertIn("conversation_id: state.conversationId", js)
+        self.assertIn("updateHistory: false", js)
 
 
 if __name__ == "__main__":

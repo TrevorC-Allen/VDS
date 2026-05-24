@@ -48,11 +48,45 @@ def message_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     return service.respond_to_message(
         dataset_id=str(payload.get("dataset_id") or ""),
+        conversation_id=str(payload.get("conversation_id") or ""),
+        owner_id=str(payload.get("owner_id") or ""),
+        tenant_id=str(payload.get("tenant_id") or ""),
+        owner_context=payload.get("owner_context") if isinstance(payload.get("owner_context"), dict) else None,
         question=str(payload.get("question") or ""),
         execution_mode=str(payload.get("execution_mode") or "dual"),
         guidelines=str(payload.get("guidelines") or ""),
         agent_mode=str(payload.get("agent_mode") or "multi_agent"),
     )
+
+
+def create_conversation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Non-FastAPI helper mirroring POST /api/data-agent/conversations."""
+
+    return service.create_conversation(
+        title=str(payload.get("title") or ""),
+        dataset_id=str(payload.get("dataset_id") or ""),
+        owner_id=str(payload.get("owner_id") or ""),
+        tenant_id=str(payload.get("tenant_id") or ""),
+        owner_context=payload.get("owner_context") if isinstance(payload.get("owner_context"), dict) else None,
+    )
+
+
+def conversations_payload(limit: int = 50) -> dict[str, Any]:
+    """Non-FastAPI helper mirroring GET /api/data-agent/conversations."""
+
+    return service.list_conversations(limit=limit)
+
+
+def conversation_payload(conversation_id: str) -> dict[str, Any]:
+    """Non-FastAPI helper mirroring GET /api/data-agent/conversations/{id}."""
+
+    return service.get_conversation(conversation_id)
+
+
+def rename_conversation_payload(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Non-FastAPI helper mirroring PATCH /api/data-agent/conversations/{id}."""
+
+    return service.rename_conversation(conversation_id, title=str(payload.get("title") or ""))
 
 
 def profile_payload(dataset_id: str) -> dict[str, Any]:
@@ -96,9 +130,23 @@ try:
     class MessagePayload(BaseModel):
         question: str
         dataset_id: str = ""
+        conversation_id: str = ""
+        owner_id: str = ""
+        tenant_id: str = ""
+        owner_context: dict[str, Any] | None = None
         execution_mode: str = "dual"
         guidelines: str = ""
         agent_mode: str = "multi_agent"
+
+    class CreateConversationPayload(BaseModel):
+        title: str = ""
+        dataset_id: str = ""
+        owner_id: str = ""
+        tenant_id: str = ""
+        owner_context: dict[str, Any] | None = None
+
+    class RenameConversationPayload(BaseModel):
+        title: str
 
     class RunPayload(BaseModel):
         question: str
@@ -159,10 +207,36 @@ try:
         return service.respond_to_message(
             question=payload.question,
             dataset_id=payload.dataset_id,
+            conversation_id=payload.conversation_id,
+            owner_id=payload.owner_id,
+            tenant_id=payload.tenant_id,
+            owner_context=payload.owner_context,
             execution_mode=payload.execution_mode,
             guidelines=payload.guidelines,
             agent_mode=payload.agent_mode,
         )
+
+    @router.post("/conversations")
+    def create_conversation(payload: CreateConversationPayload) -> dict[str, Any]:
+        return service.create_conversation(
+            title=payload.title,
+            dataset_id=payload.dataset_id,
+            owner_id=payload.owner_id,
+            tenant_id=payload.tenant_id,
+            owner_context=payload.owner_context,
+        )
+
+    @router.get("/conversations")
+    def conversations(limit: int = 50) -> dict[str, Any]:
+        return service.list_conversations(limit=limit)
+
+    @router.get("/conversations/{conversation_id}")
+    def conversation(conversation_id: str) -> dict[str, Any]:
+        return service.get_conversation(conversation_id)
+
+    @router.patch("/conversations/{conversation_id}")
+    def rename_conversation(conversation_id: str, payload: RenameConversationPayload) -> dict[str, Any]:
+        return service.rename_conversation(conversation_id, payload.title)
 
     @router.post("/run")
     def run(payload: RunPayload) -> dict[str, Any]:

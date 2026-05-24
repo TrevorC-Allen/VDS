@@ -915,6 +915,113 @@ YYYY-MM-DD HH:MM TZ
 
 ### 日期时间
 
+2026-05-25 02:05 CST
+
+### 本次目标
+
+继续改进 VDS Workbench 系统体验，补齐 Phase 11 会话持久化首个落点：历史 Chat 不再只依赖前端内存，普通对话、分析结果和历史重命名都能落到后端 `conversation_id` 会话记录中。
+
+### 修改文件
+
+- backend/storage/conversation_store.py
+- backend/services/data_agent_service.py
+- backend/routers/data_agent.py
+- frontend/app.js
+- frontend/index.html
+- frontend/styles.css
+- frontend/README.md
+- scripts/sync_workbench_runtime.sh
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- README.md
+- MAIN_GOAL.md
+- docs/API_CONTRACT.md
+- docs/ARCHITECTURE.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 backend JSON conversation store，负责 `conversation_id`、title、dataset_id、user / assistant messages、assistant response payload、created_at / updated_at 以及 `owner_id / tenant_id / owner_context` 预留字段。
+- `POST /api/data-agent/message` 增加可选 `conversation_id` / owner 预留字段；如果没有 conversation_id，后端自动创建新会话；每轮消息都会追加 user turn 和 assistant response snapshot，并在响应中返回 conversation metadata。
+- 新增 conversation API：`POST /api/data-agent/conversations`、`GET /api/data-agent/conversations`、`GET /api/data-agent/conversations/{conversation_id}`、`PATCH /api/data-agent/conversations/{conversation_id}`。
+- Workbench 页面启动时从后端加载历史 Chat；点击历史项可恢复旧 user / assistant 消息；发送新消息会延续当前 `conversation_id`；历史重命名通过 PATCH 持久化，不再只存在当前页面内存。
+- 修复刷新后普通聊天历史被标成“已完成分析”的标签问题：conversation summary 返回 `last_answer_type`，前端按最后一次 assistant answer_type 区分“已回复”和“已完成分析”。
+- `scripts/sync_workbench_runtime.sh` 排除 runtime `storage` 目录，避免以后同步代码时因 `rsync --delete` 删除 Workbench 会话历史和运行期数据。
+- README、MAIN_GOAL、API_CONTRACT、ARCHITECTURE、FEATURE_BACKLOG 和 frontend README 同步 Phase 11 当前状态：已落地轻量本地匿名会话存储；URL 恢复、多窗口实时同步、跨进程 DataFrame 恢复、真实登录鉴权和多租户隔离仍未完成。
+- 本轮仍保持前端边界：前端只调用 API、展示消息和图表、恢复历史，不实现指标公式、join、排序、聚合、评分或分析逻辑。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets -v
+- node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime backend multi_agent_workflows tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- git diff --check
+- scripts/sync_workbench_runtime.sh
+- launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+- Playwright CLI smoke：打开 `http://127.0.0.1:8001/workbench`，验证历史列表来自后端、点击历史恢复旧消息、Enter 发送继续同一会话、重命名后刷新页面仍保留标题。
+
+### 测试结果
+
+- Backend / Workbench focused tests 通过：Ran 24 tests，OK。
+- `node --check frontend/app.js` 通过。
+- compileall 通过。
+- Architecture hardcoding / secret / dependency tests 通过：Ran 9 tests，OK。
+- Full unittest 通过：Ran 181 tests，OK。
+- `git diff --check` 通过。
+- 8001 runtime 已同步并重启；真实页面 smoke 显示历史 Chat 可加载、旧消息可恢复、Enter 可发送、重命名可持久化。
+- 已验证 runtime `storage` 保留：创建会话 `conv_20260524_180849_2d9e6c56` 后再次执行 sync + restart，`GET /api/data-agent/conversations` 仍返回该会话。
+
+### 遗留问题
+
+- 当前 conversation store 是本地 JSON 文件存储，不是生产数据库。
+- 当前可恢复 messages、profile 和 response snapshot；跨进程重启后继续分析仍需要内存表存在或重新上传，因为 DataFrame 表数据仍由现有 TempFileStore 进程内持有。
+- URL `/workbench?conversation_id=...` 自动恢复、多窗口同会话实时同步、真实登录鉴权、owner filter 强制校验和多租户隔离仍未实现。
+- 本轮第一次同步 runtime 时旧脚本尚未排除 `storage`，会清掉当时 runtime 里的临时 smoke 会话；已立即修正脚本，后续同步不会再删除 runtime storage。
+- `.playwright-cli/` 仍是本地 Playwright 运行产物目录，本轮不纳入 Git。
+
+### 是否影响主流程
+
+是。影响 Workbench `/message` API、历史 Chat、前端会话恢复和后端本地会话存储；不改变核心分析算法。
+
+### 是否涉及 Benchmark
+
+否。本轮不修改 benchmark runner、标准答案、scorer 或核心分析能力；仍保持 benchmark answer / task_id 不进入主链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。conversation store 只保存会话和 response snapshot，不依赖具体 Agent 框架；未来 multi-agent / provider adapter 仍可复用同一 `/message` 会话边界。
+
+### 是否修改核心数据契约
+
+是。新增 backend shell 层 conversation schema 和 `/message` response extension：`conversation_id` 与 `conversation` metadata。未修改 data_agent_core contracts。
+
+### 是否修改 API 契约
+
+是。新增 conversation endpoints，并扩展 `/message` 的可选 request 字段和 response metadata；已同步 `docs/API_CONTRACT.md`。
+
+### 是否新增或修改错误类型
+
+否。conversation not found / rename failed 暂复用 `LOGIC_FORM_ERROR` 标准错误响应。
+
+### 是否新增或修改运行追踪逻辑
+
+否。未新增 RunTrace 字段；conversation store 只保存用户可见消息和 response snapshot，不保存 raw CoT、raw prompt 或 hidden reasoning。
+
+### 是否已同步 README
+
+是。README 已同步 Phase 11 首个轻量会话持久化能力和未完成边界。
+
+---
+
+### 日期时间
+
 2026-05-25 01:39 CST
 
 ### 本次目标

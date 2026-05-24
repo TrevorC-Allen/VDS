@@ -191,6 +191,11 @@ svg {
   align-items: center;
 }
 
+.history-item.active {
+  background: #fff;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
 .history-item-text {
   min-width: 0;
 }

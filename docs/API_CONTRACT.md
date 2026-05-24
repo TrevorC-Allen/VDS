@@ -26,11 +26,13 @@
 
 2026-05-23 更新：Phase 10 首版结果体验增强已落地。analyze 响应稳定返回或预留 `chart`、`insight`、`quality_report`、`reasoning_trace_view`；upload/profile 响应可返回 `quality_report`。`reasoning_trace_view` 只允许展示结构化阶段摘要，不允许返回完整 Chain of Thought、raw reasoning tokens、raw prompt、API key 或 hidden benchmark answer。
 
-2026-05-23 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已进入 planned contract。本节新增的 conversation endpoints、`conversation_id` 和 owner 隔离字段均为计划契约，当前尚未实现；旧的 `dataset_id` 调用方式必须继续兼容。
+2026-05-23 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已进入 planned contract。旧的 `dataset_id` 调用方式必须继续兼容。
 
-2026-05-24 更新：Workbench UX hardening 新增已实现接口 `POST /api/data-agent/chat`，用于没有上传 dataset 时的普通 VDS 对话；该接口不生成业务结论、不创建持久化 conversation，也不替代 Phase 11 planned conversation APIs。针对概览类问题，Response Builder 可把明细型执行结果收敛为汇总指标表和短回答，避免主答案直接展示原始明细行。
+2026-05-24 更新：Workbench UX hardening 新增已实现接口 `POST /api/data-agent/chat`，用于没有上传 dataset 时的普通 VDS 对话；该接口不生成业务结论，且直接调用 `/chat` 时不自动创建 conversation。Workbench 主路径使用 `/message`，由 `/message` 负责 Phase 11 conversation 持久化。针对概览类问题，Response Builder 可把明细型执行结果收敛为汇总指标表和短回答，避免主答案直接展示原始明细行。
 
 2026-05-24 更新：Workbench 新增统一消息入口 `POST /api/data-agent/message`。前端不再根据 `dataset_id` 自行决定 chat/analyze；后端统一判断普通聊天、数据概览或正式分析。有 dataset 时，“你好 / 你是什么模型”等普通对话返回 `answer_type=chat`；“看一下这个数据”等泛概览请求返回 `answer_type=overview` 和 `指标 / 数值` 汇总表；正式分析问题继续复用 analyze 链路。
+
+2026-05-25 更新：Phase 11 首个会话持久化落点已实现。新增本地 JSON conversation store，`POST /api/data-agent/message` 可选接收并返回 `conversation_id`，历史列表、历史详情、新建会话和重命名接口已可用。`owner_id`、`tenant_id`、`owner_context` 仅为未来隔离预留；当前不代表真实登录、鉴权或多租户权限。
 
 ## 全局响应规则
 
@@ -46,48 +48,65 @@
 10. 多文件 / 多表场景中，后端必须显式返回或记录表选择和 join 依据；低置信度路由、无可信 join key 或多对多风险必须以结构化 warning / error / verification 体现。
 11. Phase 10 前端只能渲染后端 `chart`、`insight`、`quality_report`、`reasoning_trace_view` 字段，不得自行推断图表类型、异常规则、清洗动作或分析过程。
 12. `reasoning_trace_view` 是安全过程视图，不是完整 Chain of Thought；任何 `chain_of_thought`、`cot`、`hidden_reasoning`、`full_reasoning` 字段都不得进入稳定响应。
-13. Phase 11 planned conversation API 必须以后端 `conversation_id` 作为会话连续性主键；前端不得用本地内存 run history 冒充可恢复历史。
-14. Phase 11 planned owner 字段只用于预留未来隔离边界；v1 本地匿名实现不得宣称已经具备真实登录、鉴权、多租户或企业级权限。
+13. Phase 11 conversation API 必须以后端 `conversation_id` 作为会话连续性主键；前端不得用本地内存 run history 冒充可恢复历史。
+14. Phase 11 owner 字段只用于预留未来隔离边界；v1 本地匿名实现不得宣称已经具备真实登录、鉴权、多租户或企业级权限。
 15. GPT-like 过程展示只能使用安全摘要字段，默认显示单行浅灰小字摘要，点击后展开结构化步骤；不得在主界面展示 raw CoT、后端审计 JSON、quality_report、warnings、verification 或 join trace。
 16. 无 dataset 对话只能进入 `/message` 或 `/chat` 的辅助回复路径；如果用户要求真实业务结论，必须提示需要上传相关数据，不能根据空上下文编造指标结果。
 17. Workbench 前端不得用 `dataset_id` 存在与否自行把文本判成分析问题；普通聊天、数据概览和正式分析的路由必须由 backend / data_agent_core 决定。
 
-## Planned Phase 11 Conversation APIs
+## Phase 11 Conversation APIs
 
-目标：为 Workbench 提供可恢复的会话层，使每个对话、窗口和历史 Chat 都能通过 `conversation_id` 明确隔离。该能力当前为计划契约，尚未实现。
+目标：为 Workbench 提供可恢复的会话层，使每个对话和历史 Chat 都能通过 `conversation_id` 明确隔离。当前已实现本地 JSON conversation store、历史列表、历史详情、重命名和 `/message` 自动追加消息；URL 恢复、多窗口实时同步、真实登录和多租户隔离仍是后续工作。
 
-计划 endpoints：
+当前 endpoints：
 
 - `POST /api/data-agent/conversations`
 - `GET /api/data-agent/conversations`
 - `GET /api/data-agent/conversations/{conversation_id}`
 - `PATCH /api/data-agent/conversations/{conversation_id}`
 
-计划中的 conversation 字段：
+当前 conversation 字段：
 
 - conversation_id
 - title
-- active_dataset_id
+- dataset_id
 - messages
-- runs
 - created_at
 - updated_at
-- owner_type
 - owner_id
 - tenant_id
-- created_by
+- owner_context
 
-计划中的 owner 语义：
+assistant message payload 当前保存：
 
-- v1 可使用 `owner_type=local_anonymous` 表示本地匿名会话。
-- `owner_id`、`tenant_id`、`created_by` 和 `owner_context` 只作为未来用户隔离预留字段。
+- run_id
+- answer_type
+- success
+- payload：后端稳定响应快照，用于历史消息恢复
+
+owner 语义：
+
+- v1 为空 owner 时表示本地匿名会话。
+- `owner_id`、`tenant_id` 和 `owner_context` 只作为未来用户隔离预留字段。
 - 未来接入真实认证后，所有 list / get / update / upload / analyze 都必须通过 backend owner filter 过滤，不能只靠前端隐藏历史记录。
 
 兼容策略：
 
 - 现有只传 `dataset_id` 的 upload / analyze / profile / run 调用继续可用。
-- `conversation_id` 在 Phase 11 初始实现中应为可选字段；由 Workbench UI 优先创建并传入。
+- `conversation_id` 在当前实现中为可选字段；未传入时，`/message` 自动创建新会话并在响应里返回。
 - 老客户端不传 `conversation_id` 时，后端不得破坏当前数据分析链路。
+
+`POST /api/data-agent/message` 当前 request extension：
+
+- conversation_id，可选；为空时后端自动创建。
+- owner_id，可选；未来由认证层注入或校验。
+- tenant_id，可选；未来由认证层注入或校验。
+- owner_context，可选；仅保存 JSON-safe 摘要，不参与权限判断。
+
+`POST /api/data-agent/message` 当前 response extension：
+
+- conversation_id
+- conversation：包含 conversation_id、title、dataset_id、updated_at、message_count。
 
 Quiet Process UX 契约：
 
@@ -546,11 +565,11 @@ inline table 对象也可携带 `source_file` 和 `sheet`，用于 Phase 8 多�
 - 前端只调用 `/api/data-agent/upload`、`/api/data-agent/upload-batch` 和 `/api/data-agent/message`。
 - 前端不得实现指标公式、join、排序聚合或评分逻辑；这些逻辑必须保留在 backend / data_agent_core。
 
-Phase 11 planned behavior：
+Phase 11 current / future behavior：
 
-- URL 使用 `/workbench?conversation_id=...` 定位当前会话。
-- 无 `conversation_id` 的新窗口默认创建独立会话。
-- 左侧历史 Chat 从 conversation API 加载，不再只依赖前端内存。
+- 当前左侧历史 Chat 从 conversation API 加载，不再只依赖前端内存。
+- 当前无 `conversation_id` 的 `/message` 会自动创建独立会话。
+- 后续 URL 使用 `/workbench?conversation_id=...` 定位当前会话。
 - 过程展示默认只显示一条小号浅灰摘要，点击后展开安全结构化步骤。
 
 ## TODO

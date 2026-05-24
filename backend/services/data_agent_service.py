@@ -14,6 +14,7 @@ from backend.schemas.data_agent_schema import (
     error_response,
     to_json_ready,
 )
+from backend.storage.conversation_store import ConversationStore
 from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.agent.single_agent import UploadedDatasetAgent
 from data_agent_core.core.message_intent import classify_workbench_message, is_dataset_overview_question
@@ -32,9 +33,11 @@ class DataAgentService:
         self,
         *,
         file_store: TempFileStore | None = None,
+        conversation_store: ConversationStore | None = None,
         llm_client: LLMClient | None = None,
     ) -> None:
         self.file_store = file_store or TempFileStore()
+        self.conversation_store = conversation_store or ConversationStore(self.file_store.root / "conversations")
         self.llm_client = llm_client
 
     def upload_dataset(self, file_path: str | Path, original_filename: str | None = None) -> dict[str, Any]:
@@ -175,6 +178,10 @@ class DataAgentService:
         *,
         question: str,
         dataset_id: str = "",
+        conversation_id: str = "",
+        owner_id: str = "",
+        tenant_id: str = "",
+        owner_context: dict[str, Any] | None = None,
         execution_mode: str = "dual",
         guidelines: str = "",
         agent_mode: str = "multi_agent",
@@ -183,17 +190,139 @@ class DataAgentService:
 
         cleaned_question = question.strip()
         if not dataset_id:
-            return self.chat_without_dataset(question=cleaned_question, agent_mode=agent_mode)
+            response = self.chat_without_dataset(question=cleaned_question, agent_mode=agent_mode)
+            return self._record_conversation_turn(
+                response,
+                conversation_id=conversation_id,
+                question=cleaned_question,
+                dataset_id="",
+                owner_id=owner_id,
+                tenant_id=tenant_id,
+                owner_context=owner_context,
+            )
         intent = classify_workbench_message(cleaned_question, has_dataset=True)
         if intent == "chat":
-            return self.chat_with_dataset(dataset_id=dataset_id, question=cleaned_question, agent_mode=agent_mode)
-        return self.analyze_dataset(
-            dataset_id=dataset_id,
+            response = self.chat_with_dataset(dataset_id=dataset_id, question=cleaned_question, agent_mode=agent_mode)
+        else:
+            response = self.analyze_dataset(
+                dataset_id=dataset_id,
+                question=cleaned_question,
+                execution_mode=execution_mode,
+                guidelines=guidelines,
+                agent_mode=agent_mode,
+            )
+        return self._record_conversation_turn(
+            response,
+            conversation_id=conversation_id,
             question=cleaned_question,
-            execution_mode=execution_mode,
-            guidelines=guidelines,
-            agent_mode=agent_mode,
+            dataset_id=dataset_id,
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            owner_context=owner_context,
         )
+
+    def create_conversation(
+        self,
+        *,
+        title: str = "",
+        dataset_id: str = "",
+        owner_id: str = "",
+        tenant_id: str = "",
+        owner_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create an empty persistent workbench conversation."""
+
+        record = self.conversation_store.create_conversation(
+            title=title,
+            dataset_id=dataset_id,
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            owner_context=owner_context,
+        )
+        return _conversation_response(record)
+
+    def list_conversations(self, *, limit: int = 50, owner_id: str = "", tenant_id: str = "") -> dict[str, Any]:
+        """Return recent persistent workbench conversations."""
+
+        return to_json_ready(
+            {
+                "response_version": RESPONSE_VERSION,
+                "success": True,
+                "conversations": self.conversation_store.list_conversations(
+                    limit=limit,
+                    owner_id=owner_id,
+                    tenant_id=tenant_id,
+                ),
+                "warnings": [],
+                "errors": [],
+            }
+        )
+
+    def get_conversation(self, conversation_id: str) -> dict[str, Any]:
+        """Return one persistent workbench conversation."""
+
+        record = self.conversation_store.get_conversation(conversation_id)
+        if record is None:
+            return error_response(
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message=f"Conversation not found: {conversation_id}",
+                    failed_step="get_conversation",
+                    recoverable=True,
+                    suggested_fix="Start a new conversation or choose another history item.",
+                )
+            )
+        return _conversation_response(record)
+
+    def rename_conversation(self, conversation_id: str, title: str) -> dict[str, Any]:
+        """Rename one persistent workbench conversation."""
+
+        record = self.conversation_store.rename_conversation(conversation_id, title)
+        if record is None:
+            return error_response(
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message=f"Conversation could not be renamed: {conversation_id}",
+                    failed_step="rename_conversation",
+                    recoverable=True,
+                    suggested_fix="Use a non-empty title and an existing conversation_id.",
+                )
+            )
+        return _conversation_response(record)
+
+    def _record_conversation_turn(
+        self,
+        response: dict[str, Any],
+        *,
+        conversation_id: str,
+        question: str,
+        dataset_id: str,
+        owner_id: str,
+        tenant_id: str,
+        owner_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Persist a completed workbench turn and attach conversation metadata."""
+
+        if not question.strip():
+            return response
+        record = self.conversation_store.append_turn(
+            conversation_id=conversation_id,
+            question=question,
+            response=response,
+            dataset_id=dataset_id,
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            owner_context=owner_context,
+        )
+        response["conversation_id"] = record["conversation_id"]
+        response["conversation"] = {
+            "conversation_id": record["conversation_id"],
+            "title": record.get("title") or "",
+            "dataset_id": record.get("dataset_id") or "",
+            "updated_at": record.get("updated_at"),
+            "message_count": len(record.get("messages") or []),
+        }
+        return to_json_ready(response)
 
     def chat_without_dataset(
         self,
@@ -477,6 +606,20 @@ def _attach_external_metadata(response: dict[str, Any], *, request_id: str | Non
     response.setdefault("debug", {})
     response["debug"]["api_source"] = source_name
     return to_json_ready(response)
+
+
+def _conversation_response(record: dict[str, Any]) -> dict[str, Any]:
+    """Build a stable conversation API response."""
+
+    return to_json_ready(
+        {
+            "response_version": RESPONSE_VERSION,
+            "success": True,
+            "conversation": record,
+            "warnings": [],
+            "errors": [],
+        }
+    )
 
 
 def _chat_answer(question: str, *, has_dataset: bool) -> str:

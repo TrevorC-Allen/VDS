@@ -12,6 +12,7 @@ rsync -a --delete \
   --exclude "__pycache__" \
   --exclude ".pytest_cache" \
   --exclude "outputs" \
+  --exclude "storage" \
   "$REPO_ROOT/" "$RUNTIME_ROOT/"
 
 chmod +x "$RUNTIME_ROOT/scripts/run_workbench_server.sh"

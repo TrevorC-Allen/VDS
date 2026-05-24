@@ -519,21 +519,21 @@
 
 优先级：P0，阶段：Phase 11。
 
-状态：Planned / Not implemented yet。本条只记录计划和边界，不代表 conversation endpoints、`conversation_id` 或 owner isolation 已经可用。
+状态：First implementation landed。已新增本地 JSON conversation store、`conversation_id`、conversation list / get / rename endpoints，`/message` 自动追加 user / assistant turn，Workbench 可从后端历史列表载入旧消息并持久化重命名。URL 恢复、多窗口实时同步、跨进程 DataFrame 恢复、真实登录鉴权和多租户隔离仍未完成。
 
-验收标准：新增 `conversation_id` 会话层；每个会话独立保存消息、当前 dataset、runs 和最近结果；无 `conversation_id` 的新窗口默认创建独立会话；带同一 `conversation_id` 的窗口恢复同一历史；历史 Chat 从后端会话列表加载；旧 `dataset_id` analyze / upload 调用继续兼容。
+验收标准：新增 `conversation_id` 会话层；每个会话独立保存消息、当前 dataset、runs 和最近结果；无 `conversation_id` 的新消息默认创建独立会话；历史 Chat 从后端会话列表加载；旧 `dataset_id` analyze / upload 调用继续兼容。未完成项继续要求 URL `conversation_id` 恢复、多窗口同会话同步和跨进程 dataset 表恢复。
 
 UX 验收标准：过程展示默认只占一行，使用小号浅灰文字展示最新安全摘要，例如“用户提到了‘城市订单金额’，我会先确认城市字段和金额字段。”；右侧或末尾提供 `查看过程` / `查看 N 步` 点击提示；展开后只显示用户可理解的结构化步骤，不展示后端审计 JSON、quality_report、warnings、verification、join trace 或完整 Chain of Thought。
 
-未来用户隔离预留：conversation schema 必须预留 `owner_type`、`owner_id`、`tenant_id`、`created_by` 或统一 `owner_context`；v1 可使用 local anonymous scope，但所有 list / get / update / upload / analyze 的服务层接口都要保留 backend owner filter 边界，不能只靠前端隐藏历史。
+未来用户隔离预留：conversation schema 当前预留 `owner_id`、`tenant_id` 和 `owner_context`；v1 可使用 local anonymous scope，但所有 list / get / update / upload / analyze 的服务层接口都要保留 backend owner filter 边界，不能只靠前端隐藏历史。
 
 风险：如果只用 browser localStorage 存完整历史，会导致多窗口、重启和未来多用户隔离不可控；如果把 raw CoT 或后端术语直接展示给用户，会破坏安全边界和 GPT-like 体验；如果前端根据历史自行做 join、聚合、排序或评分，会破坏核心算法边界。
 
-测试方式：backend 单测覆盖 create/list/get/update conversation、upload 绑定会话、analyze 追加到正确会话、两个会话互不串线、旧无 `conversation_id` 调用兼容、raw CoT 禁止字段不出现在响应；前端测试覆盖 URL `conversation_id` 恢复、新建聊天生成新会话、历史列表加载和安静过程展开；浏览器 smoke 覆盖两个窗口上传不同 CSV 并提问、回到历史会话继续提问、同一 URL 恢复同一会话。
+测试方式：backend 单测覆盖 create/list/get/update conversation、message 追加到正确会话、旧无 `conversation_id` 调用兼容；前端静态测试覆盖 conversation list、history get、rename PATCH、旧消息恢复和安静过程展开。后续还需浏览器 smoke 覆盖两个窗口上传不同 CSV 并提问、回到历史会话继续提问、URL 恢复同一会话。
 
-是否影响 contracts：是。新增 planned conversation schema 和可选 `conversation_id` / owner 字段。
+是否影响 contracts：是。新增 conversation schema 和可选 `conversation_id` / owner 字段。
 
-是否影响 API_CONTRACT：是。必须先记录 planned endpoints 和兼容策略，再实现。
+是否影响 API_CONTRACT：是。已记录当前 endpoints、response extension 和后续边界。
 
 是否影响 tracing：是。只能复用或派生 trace-safe `reasoning_trace_view` 摘要，不新增 raw CoT、raw prompt 或 raw reasoning token 暴露面。
 
@@ -544,4 +544,4 @@ UX 验收标准：过程展示默认只占一行，使用小号浅灰文字展�
 - 新功能进入开发前，先确认是否影响 contracts / API_CONTRACT / tracing / errors。
 - Phase 7.5 - 7.10 必须按编号推进，且每个工程阶段都要通过 DABstep、Microsoft 和 VDS 三数据集 non-regression gate。
 - Phase 8 后续只做 Guardrail，不重开 Phase 8 主体；Phase 9 后续按 Phase 9.1 做确认和回看面板，不把核心计算搬到前端。
-- Phase 11 启动前先实现后端会话持久化和 owner_context 边界，再接前端历史 Chat；不得把本地匿名会话误写成已实现登录权限。
+- Phase 11 后续继续补 URL conversation_id 恢复、多窗口同步、跨进程 dataset 表恢复和 owner filter 强制校验；不得把本地匿名会话误写成已实现登录权限。

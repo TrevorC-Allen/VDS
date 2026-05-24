@@ -197,6 +197,39 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertIn("上传数据后", response["answer"])
         self.assertEqual("chat_without_dataset", response["debug"]["agent_mode"])
 
+    def test_message_conversation_persists_history_and_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = Path(temp_dir) / "storage"
+            service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+
+            first = service.respond_to_message(question="你好")
+            conversation_id = first["conversation_id"]
+            second = service.respond_to_message(conversation_id=conversation_id, question="你是谁")
+            renamed = service.rename_conversation(conversation_id, "VDS 助手介绍")
+            listed = service.list_conversations()
+            loaded = service.get_conversation(conversation_id)
+            reloaded_service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+            loaded_after_restart = reloaded_service.get_conversation(conversation_id)
+
+        self.assertTrue(first["success"])
+        self.assertTrue(conversation_id.startswith("conv_"))
+        self.assertEqual(conversation_id, second["conversation_id"])
+        self.assertEqual("VDS 助手介绍", renamed["conversation"]["title"])
+        self.assertEqual(conversation_id, listed["conversations"][0]["conversation_id"])
+        self.assertEqual("VDS 助手介绍", listed["conversations"][0]["title"])
+        self.assertEqual("chat", listed["conversations"][0]["last_answer_type"])
+        self.assertEqual(4, len(loaded["conversation"]["messages"]))
+        self.assertEqual("user", loaded["conversation"]["messages"][0]["role"])
+        self.assertEqual("assistant", loaded["conversation"]["messages"][1]["role"])
+        self.assertEqual("chat", loaded["conversation"]["messages"][1]["payload"]["answer_type"])
+        self.assertEqual("VDS 助手介绍", loaded_after_restart["conversation"]["title"])
+
     def test_analyze_unknown_dataset_returns_standard_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             service = DataAgentService(

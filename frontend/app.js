@@ -1,5 +1,6 @@
 const state = {
   datasetId: "",
+  conversationId: "",
   profile: null,
   selectedTable: "",
   runHistory: [],
@@ -56,6 +57,7 @@ el.questionInput.addEventListener("input", updateRunButton);
 el.questionInput.addEventListener("keydown", handleQuestionKeydown);
 
 updateFileSummary();
+loadConversations();
 
 function updateFileSummary() {
   const files = [...el.fileInput.files];
@@ -148,6 +150,7 @@ async function runAnalysis() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         dataset_id: state.datasetId,
+        conversation_id: state.conversationId,
         question,
         execution_mode: el.executionMode.value,
         agent_mode: el.agentMode.value,
@@ -243,7 +246,13 @@ function renderFieldTable(table) {
     .join("");
 }
 
-function renderResult(result) {
+function renderResult(result, options = {}) {
+  if (result.conversation_id) {
+    state.conversationId = result.conversation_id;
+  }
+  if (result.dataset_id) {
+    state.datasetId = result.dataset_id;
+  }
   const rows = result.result?.rows || [];
   const columns = result.result?.columns || [];
   const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset" || result.debug?.agent_mode === "chat_with_dataset";
@@ -256,7 +265,9 @@ function renderResult(result) {
   renderChart(isOverviewShaped ? null : result.chart, rows, columns, result.answer);
   renderInsight(!isChat && result.success && !isOverviewShaped ? result.insight : null);
   renderProcess(result.reasoning_trace_view || [], result);
-  pushHistory(result);
+  if (options.updateHistory !== false) {
+    pushHistory(result);
+  }
   revealMessage(el.resultMessage, "start");
 }
 
@@ -634,14 +645,26 @@ function renderUserFacingError(title, message) {
 
 function pushHistory(result) {
   const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset" || result.debug?.agent_mode === "chat_with_dataset";
-  state.runHistory.unshift({
-    runId: result.run_id || `history_${Date.now()}`,
+  const conversation = result.conversation || {};
+  const conversationId = result.conversation_id || conversation.conversation_id || state.conversationId || result.run_id || `history_${Date.now()}`;
+  if (conversationId) {
+    state.conversationId = conversationId;
+  }
+  const existing = state.runHistory.findIndex((entry) => entry.runId === conversationId);
+  const item = {
+    runId: conversationId,
     success: result.success,
     answer: result.answer,
     question: result.question,
-    title: result.question,
+    title: conversation.title || result.question,
     mode: isChat ? "chat" : "analysis",
-  });
+    updatedAt: conversation.updated_at || new Date().toISOString(),
+    messageCount: conversation.message_count || 0,
+  };
+  if (existing >= 0) {
+    state.runHistory.splice(existing, 1);
+  }
+  state.runHistory.unshift(item);
   state.runHistory = state.runHistory.slice(0, 8);
   renderHistory();
 }
@@ -657,7 +680,7 @@ function renderHistory() {
       (item) => {
         const title = item.title || item.question || "未命名对话";
         return `
-        <li class="history-item" data-run-id="${escapeHtml(item.runId || "")}">
+        <li class="history-item${item.runId === state.conversationId ? " active" : ""}" data-run-id="${escapeHtml(item.runId || "")}">
           <div class="history-item-text">
             <strong>${escapeHtml(item.mode === "chat" ? "已回复" : item.success ? "已完成分析" : "需要继续确认")}</strong>
             <span class="history-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
@@ -673,6 +696,12 @@ function renderHistory() {
     .join("");
   el.runHistory.querySelectorAll(".history-rename-button").forEach((button) => {
     button.addEventListener("click", () => startHistoryRename(button.closest(".history-item")?.dataset.runId || ""));
+  });
+  el.runHistory.querySelectorAll(".history-item").forEach((item) => {
+    item.addEventListener("click", (event) => {
+      if (event.target.closest("button, input")) return;
+      loadConversation(item.dataset.runId || "");
+    });
   });
   el.runHistory.querySelectorAll(".history-title").forEach((title) => {
     title.addEventListener("dblclick", () => startHistoryRename(title.closest(".history-item")?.dataset.runId || ""));
@@ -709,7 +738,7 @@ function handleHistoryRenameKeydown(event) {
   }
 }
 
-function commitHistoryRename(runId, rawTitle) {
+async function commitHistoryRename(runId, rawTitle) {
   const item = state.runHistory.find((entry) => entry.runId === runId);
   if (!item) return;
   const title = String(rawTitle || "").trim();
@@ -717,6 +746,117 @@ function commitHistoryRename(runId, rawTitle) {
     item.title = title;
   }
   renderHistory();
+  if (!title || !runId.startsWith("conv_")) {
+    return;
+  }
+  try {
+    const response = await fetch(`/api/data-agent/conversations/${encodeURIComponent(runId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    const conversation = payload.conversation || {};
+    item.title = conversation.title || title;
+    item.updatedAt = conversation.updated_at || item.updatedAt;
+    renderHistory();
+  } catch (error) {
+    setApiStatus("error", `重命名失败：${String(error.message || error)}`);
+    loadConversations();
+  }
+}
+
+async function loadConversations() {
+  try {
+    const response = await fetch("/api/data-agent/conversations?limit=30");
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    state.runHistory = (payload.conversations || []).map((item) => ({
+      runId: item.conversation_id,
+      success: true,
+      answer: item.last_message || "",
+      question: item.last_message || "",
+      title: item.title || "未命名对话",
+      mode: item.last_answer_type === "chat" ? "chat" : "analysis",
+      updatedAt: item.updated_at,
+      messageCount: item.message_count || 0,
+      datasetId: item.dataset_id || "",
+    }));
+    renderHistory();
+  } catch {
+    renderHistory();
+  }
+}
+
+async function loadConversation(conversationId) {
+  if (!conversationId || !conversationId.startsWith("conv_")) return;
+  try {
+    const response = await fetch(`/api/data-agent/conversations/${encodeURIComponent(conversationId)}`);
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    await restoreConversation(payload.conversation || {});
+    setApiStatus("ready", "历史已载入");
+  } catch (error) {
+    setApiStatus("error", `历史载入失败：${String(error.message || error)}`);
+  }
+}
+
+async function restoreConversation(conversation) {
+  state.conversationId = conversation.conversation_id || "";
+  state.datasetId = conversation.dataset_id || "";
+  state.profile = null;
+  state.selectedTable = "";
+  [...el.chatMessages.querySelectorAll(".user-message, .assistant-result-message")].forEach((message) => message.remove());
+  bindResultMessage(el.resultTemplate);
+  el.resultMessage.classList.add("hidden");
+  const messages = conversation.messages || [];
+  el.welcomeMessage?.classList.toggle("hidden", Boolean(messages.length));
+  for (const message of messages) {
+    if (message.role === "user") {
+      appendUserMessage(message.content || "");
+    } else if (message.payload) {
+      const assistantMessage = createAssistantResultMessage();
+      bindResultMessage(assistantMessage);
+      el.chatMessages.append(el.resultMessage);
+      renderResult(message.payload, { updateHistory: false });
+    }
+  }
+  if (state.datasetId) {
+    await restoreDatasetProfile(state.datasetId);
+  } else {
+    renderProfile();
+    el.datasetChip.textContent = "未上传数据";
+    el.datasetStatus.textContent = "等待上传数据集";
+  }
+  renderHistory();
+  scrollToLatest();
+}
+
+async function restoreDatasetProfile(datasetId) {
+  try {
+    const response = await fetch(`/api/data-agent/datasets/${encodeURIComponent(datasetId)}/profile`);
+    const profile = await response.json();
+    if (!response.ok || !profile.success) {
+      throw new Error(errorText(profile) || `HTTP ${response.status}`);
+    }
+    state.profile = profile;
+    state.datasetId = profile.dataset_id || datasetId;
+    state.selectedTable = profile.tables?.[0]?.table_name || "";
+    renderProfile();
+    setApiStatus("ready", "数据集已就绪");
+  } catch {
+    state.profile = null;
+    renderProfile();
+    el.datasetChip.textContent = state.datasetId ? "数据记录已关联" : "未上传数据";
+    el.datasetStatus.textContent = state.datasetId ? `${state.datasetId} / 需重新上传后继续分析` : "等待上传数据集";
+  }
 }
 
 function clearResult() {
@@ -773,6 +913,7 @@ function scrollToMessageStart(message) {
 
 function resetConversation() {
   state.datasetId = "";
+  state.conversationId = "";
   state.profile = null;
   state.selectedTable = "";
   state.hasPendingUpload = false;
