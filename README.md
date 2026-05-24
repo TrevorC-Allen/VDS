@@ -37,6 +37,7 @@
 - `docs/ARCHITECTURE.md`：主架构层、多 Agent 映射、Tool Calling、Benchmark 和上传文件链路。
 - `docs/PHASE_GATES.md`：阶段门槛、禁止伪泛化补丁和中文优先要求。
 - `docs/BENCHMARK_RULES.md`：Benchmark 数据、标准答案隔离、评分与回归边界。
+- `docs/VDS_BI_STANDARD_ANSWER_ROOT_CAUSE.md`：桌面 VDS 中文 BI 标准答案错误根因、修复计划、红线和泛用性验收。
 
 README 是 GitHub 默认首页的状态摘要。以后任何阶段、状态、主目标、项目规则、API、Benchmark 口径或用户可见能力变更，都必须同步检查并更新根 `README.md`；如果本轮确认 README 不需要修改，必须在 `CHANGELOG_AI.md` 记录原因。
 

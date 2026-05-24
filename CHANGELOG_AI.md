@@ -68,6 +68,78 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-25 01:33 CST
+
+### 本次目标
+
+补齐 VDS 中文 BI 标准答案错误的根因分析、修复计划、红线和泛用性验收说明，避免后续再次混淆 smoke、离线 scorer 和当前分支真实能力。
+
+### 修改文件
+
+- docs/VDS_BI_STANDARD_ANSWER_ROOT_CAUSE.md
+- README.md
+- MAIN_GOAL.md
+- data_agent_core/README.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增根因复盘文档，明确本次错误来自分支能力回退、实体粒度/指标未强绑定、枚举筛选语义不足、TopN 输出被压缩以及 smoke / scorer 口径混淆。
+- 在文档中固化修复计划：恢复 VDS BI 通用能力族、扩展当前期过滤指标 TopN、恢复离线标准答案 scorer、修正候选表展示和补充架构隔离测试。
+- 写明红线：标准答案、题号、固定实体值、固定输出顺序不得进入核心链路；标准答案只能在 response 后评分；新增逻辑必须抽象为能力族并覆盖同类变体。
+- 写明后续泛用性验收命令，包括 VDS 能力族单测、架构隔离测试和桌面 VDS 95 题标准答案 runner。
+- README、MAIN_GOAL 和 data_agent_core README 同步该复盘文档及当前分支 VDS 标准答案 `95/95` 口径。
+
+### 测试方式
+
+- `git diff --check`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_no_benchmark_hardcoding tests.core.test_vds_bi_capabilities tests.core.test_vds_standard_scorer -v`
+
+### 测试结果
+
+- `git diff --check` 通过。
+- Focused redline / VDS BI / VDS scorer tests 通过：Ran 22 tests，OK。
+
+### 遗留问题
+
+- 本轮仅补齐复盘和后续验收文档；真实 provider 大规模回归仍按后续 Phase 7.6 / Phase 10 流程执行。
+
+### 是否影响主流程
+
+否。仅文档和项目状态说明，不改变 parser、executor、API 或 Workbench runtime。
+
+### 是否涉及 Benchmark
+
+是。记录 VDS 标准答案离线 scorer 的使用边界和后续验收命令；未修改 benchmark 数据、标准答案或核心分析链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。文档要求继续保持标准答案隔离，不改变多 Agent 架构。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README、MAIN_GOAL 和 data_agent_core README 已同步。
+
 2026-05-25 01:08 CST
 
 ### 本次目标

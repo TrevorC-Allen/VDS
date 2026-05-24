@@ -40,7 +40,7 @@ LLM API key 只能从环境变量读取，不能写入仓库、trace、文档或
 - Phase 3：Benchmark runner、metrics、error_analysis、trace 和错误归因已可测。
 - Phase 5：内部白名单工具能力已由 agent_runtime 包装，真实执行仍回到 data_agent_core。
 - Phase 6：多 Agent workflow 默认调用本目录核心能力。
-- Phase 7：DABstep public all 1-450 mock 执行覆盖 450/450，Microsoft 脱敏数据 1-300 mock 离线 scorer 300/300，桌面 VDS `问题汇总.xlsx` 95 题 smoke 95/95；继续推进 ACI associated cost、DuckDB runtime、真实 provider tool loop 和复杂中文 BI 泛化能力。
+- Phase 7：DABstep public all 1-450 mock 执行覆盖 450/450，Microsoft 脱敏数据 1-300 mock 离线 scorer 300/300，桌面 VDS `问题汇总.xlsx` 95 题 smoke 95/95；当前分支已恢复桌面 VDS 标准答案离线 scorer 到 95/95，且标准答案只在 response 生成后评分；继续推进 ACI associated cost、DuckDB runtime、真实 provider tool loop 和复杂中文 BI 泛化能力。
 
 ## TODO
 
