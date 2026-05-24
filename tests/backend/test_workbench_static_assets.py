@@ -40,6 +40,14 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertNotIn("join_plan", html)
         self.assertNotIn("dataset_id:", html)
 
+    def test_workbench_allows_chat_without_uploaded_dataset(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn('"/api/data-agent/chat"', js)
+        self.assertIn('answer_type === "chat"', js)
+        self.assertNotIn("!state.datasetId || !question", js)
+        self.assertIn("当前没有上传数据，我会直接回复可讨论的部分，不编造业务结论。", js)
+
 
 if __name__ == "__main__":
     unittest.main()

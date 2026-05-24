@@ -10,7 +10,7 @@
 
 ## 当前阶段目标
 
-当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环。Phase 11 已规划为会话隔离、历史续聊和 GPT-like 安静过程展示阶段，当前状态为 Planned / Not implemented yet。
+当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环，并继续收敛 Workbench GPT-like 用户体验。Phase 11 已规划为会话隔离和历史续聊持久化阶段，当前状态为 Planned / Not implemented yet。
 
 1. 已搭建 data_agent_core 核心算法目录
 2. 已搭建 data_agent_core/contracts 数据契约目录
@@ -40,7 +40,7 @@
 26. Phase 8 已作为正式新阶段完成：Core Algorithm Review, Multi-file / Multi-table Generalization Closure。已补齐多文件 dataset 装配、问题到表路由、多表 join plan、Pandas join materialize、Verifier 校验和 trace 闭环；模型能力和泛化能力回归门禁未退步。
 27. Phase 9 已作为 Phase 8 之后的正式前端阶段完成首版：Frontend Productization After Core Algorithm Freeze。已提供静态 workbench，多文件上传、profile 预览、分析提交、用户可读分析过程和历史回看均依赖后端 API 契约；前端不实现指标公式、join 或数据计算。
 28. Phase 10 已作为 Phase 9 之后的正式结果体验阶段完成首版：Visualization, Insight, Data Quality and Safe Process View。后端稳定生成 `chart`、`insight`、`quality_report`、`reasoning_trace_view`；前端只把图表、洞察和安全过程摘要转成用户可读体验，不展示后端质量报告、warnings/errors、verification 细节、join trace，不实现核心计算、异常规则、清洗动作或完整 Chain of Thought。
-29. Phase 11 已作为 Phase 10 之后的正式规划阶段：Conversation Isolation, Session Persistence and Quiet Process UX。当前状态为 Planned / Not implemented yet；目标是每个 `conversation_id` 独立保存上下文，多窗口默认独立会话，可从历史 Chat 回到旧会话继续分析，并预留 `owner_id`、`tenant_id`、`owner_context` 以支持未来用户隔离。
+29. Phase 11 已作为 Phase 10 之后的正式规划阶段：Conversation Isolation and Session Persistence。当前状态为 Planned / Not implemented yet；目标是每个 `conversation_id` 独立保存上下文，多窗口默认独立会话，可从历史 Chat 回到旧会话继续分析，并预留 `owner_id`、`tenant_id`、`owner_context` 以支持未来用户隔离。
 
 ## 统一 Phase 状态表
 
@@ -64,7 +64,7 @@
 18. Phase 8 Guardrail：核心算法回看与多文件/多表泛化闭环已完成 8A-8E；后续只做 non-regression 守护，不重开 Phase 8 主体。
 19. Phase 9.1：Workbench Confirmation and Review Panels，在 Phase 9 首版 workbench 后继续做字段确认、join key 确认、澄清交互和评测回看；前端仍不承载指标公式、join 或数据计算。
 20. Phase 10：Visualization, Insight, Data Quality and Safe Process View，已完成 ChartSpec v2、InsightResult v2、DataQualityReport、safe `reasoning_trace_view` 和 workbench 渲染。自动清洗不属于 Phase 10，后续必须开新 Phase 并要求用户确认。
-21. Phase 11：Conversation Isolation, Session Persistence and Quiet Process UX，状态为 Planned / Not implemented yet。目标是新增 `conversation_id` 会话层、历史续聊、多窗口隔离、未来用户隔离字段预留，以及 GPT-like 小号浅灰单行过程摘要 + 点击展开详情的安静过程展示。
+21. Phase 11：Conversation Isolation and Session Persistence，状态为 Planned / Not implemented yet。目标是新增 `conversation_id` 会话层、历史续聊、多窗口隔离和未来用户隔离字段预留；GPT-like 小号浅灰单行过程摘要 + 点击展开详情已作为 Workbench UX hardening 先行落地。
 
 ## 当前实现状态
 
@@ -113,11 +113,12 @@
 41. 当前新增 Phase 8 / Phase 9 实施治理规则：每进入新 Phase 或 Phase 内子阶段，必须先在 MAIN_GOAL.md 更新当前阶段 Goal，并预写下一阶段 Goal；每完成一个阶段，必须回看验收结果并更新后续 Goal。Phase 8 期间模型能力和泛化能力不得低于 DABstep、微软脱敏数据和原本 VDS 当前基线；Phase 9 必须等待 Phase 8 完成后启动。
 42. Phase 8 已完成 8A-8E：`POST /api/data-agent/upload-batch` 支持一次上传多文件；profile 保留 `source_file`、`sheet`、`table_name`；inline table 同步支持 metadata；LogicForm / AnalysisPlan / trace 增加 `source_tables`、`table_selection_reason`、`join_plan`；Pandas executor 可受控 materialize 可信 join；Verifier 对无可信 join key、多对多风险、多表未 join 和 ID fallback 进行阻断或澄清。
 43. Phase 8 非退步门禁已通过：DABstep dev 1-10 为 `9/10`，DABstep public all 1-450 mock 执行覆盖为 `450/450`，微软脱敏数据 1-300 mock scorer 为 `300/300`，原本 VDS `问题汇总.xlsx` 95 题 smoke 为 `95/95`；`format_risk`、`submission_risk`、`trace_redaction_risk` 均为 0。
-44. Phase 9 已完成首版前端 workbench：`frontend/` 提供静态页面，`backend/main.py` 挂载 `/frontend` 和 `/workbench`；页面只调用 `/api/data-agent/upload`、`/api/data-agent/upload-batch`、`/api/data-agent/analyze`，展示 profile、结果、用户可读分析过程和历史记录，不实现核心计算。
+44. Phase 9 已完成首版前端 workbench：`frontend/` 提供静态页面，`backend/main.py` 挂载 `/frontend` 和 `/workbench`；页面只调用 `/api/data-agent/upload`、`/api/data-agent/upload-batch`、`/api/data-agent/analyze` 和无 dataset 对话用的 `/api/data-agent/chat`，展示结果、用户可读过程和历史记录，不实现核心计算。
 45. Phase 8/9 已补跑真实 DeepSeek representative 回归：DABstep dev 1-10 真实 DeepSeek 为 `9/10`；微软脱敏数据 1-20 真实 DeepSeek 为 `20/20`；原本 VDS `问题汇总.xlsx` 五域代表集 15 题真实 DeepSeek 在修复 LLM candidate_set 归一化后为 `15/15`，输出契约失败为 0。
 46. Phase 10 已完成首版：`data_agent_core/output/chart_planner.py` 自动选择 bar / horizontal_bar / line / pie / donut / histogram / KPI；`insight_generator.py` 只基于已验证结果生成摘要、异常、波动和建议；`core/data_quality.py` 在上传和分析时扫描缺失、重复、类型、日期、离群和 key 风险；`reasoning_trace_view.py` 只展示结构化阶段摘要，不暴露完整 Chain of Thought。Workbench 已展示图表、洞察和用户可读过程时间线；质量报告、warnings/errors、verification 细节和 join trace 保留在后端/API，不在主界面直接展示。
 47. Phase 10 当前验收已通过：Full unittest `147 tests OK`，compileall、`node --check frontend/app.js` 和 `git diff --check` 通过；DABstep dev `9/10`、DABstep public all mock `450/450`、Microsoft 1-300 mock `300/300`、原本 VDS 95 smoke `95/95`；真实 DeepSeek full 回归已完成，汇总为 DABstep public all `success_count=450/450`、Microsoft `correct=300/300`、原本 VDS 95 smoke `success_count=95/95`，输出 `outputs/phase10_full_real_three_dataset_deepseek_20260523_summary_after_fix.json`。DABstep public all answer 为空，不能据此宣称 hidden official accuracy。
 48. DAB Hard Recovery v2 已完成第一轮代码落点：新增 DABstep all-450 post-response proxy observation 工具，可从 Phase 10 after-fix report 和本地 `task_scores` 重新生成 Easy / Hard、operation、capability family 和 format/list-order 风险口径；输出 `outputs/dabstep_all_1_450_proxy_after_phase10_20260524/all_1_to_450_public_proxy_observation_after_fix.json` 显示 total `420/450 = 93.33%`、Easy `71/72 = 98.61%`、Hard `349/378 = 92.33%`。代码层面补齐数字 fee ID list canonicalization、fee ID engine 稳定排序和 Fee / ACI candidate table 语义校验；非回归门禁通过 DAB dev `9/10`、DAB all mock `450/450`、Microsoft `300/300`、VDS 95 smoke `95/95`、Phase 8 multi-file/join focused `5 OK`、full unittest `152 OK`。该 proxy 仍只作为 response 之后风险观察，不代表 official hidden accuracy，也不进入 Planner / Executor / Verifier / Correction / prompt / trace。
+49. Workbench UX hardening 已补齐两个用户可见缺口：没有上传文件时，前端可调用 `POST /api/data-agent/chat` 与 VDS 直接对话，但不会编造业务结论；“看一下整体销售情况”这类概览问题由 `data_agent_core/output/response_builder.py` 在最终响应层把明细型结果收敛为短回答和汇总指标表，防止主答案直接返回原始多字段明细行。前端仍只负责调用 API 和展示，不实现指标计算、join、排序或聚合。
 
 ## 架构原则
 
@@ -838,7 +839,7 @@ Phase 8 当前退出结果：
 3. 过程可视化不能展示 raw CoT、raw reasoning tokens、raw prompt、API key、benchmark hidden answer，也不在主界面直接展示后端审计 JSON、warnings/errors、verification 细节或 join trace。
 4. 不得把 DABstep public all full real 执行覆盖冒充 hidden official accuracy；public all 本地没有 expected answer，只能验证执行覆盖、风险门禁和 trace。
 
-## Phase 11：Conversation Isolation / Session Persistence / Quiet Process UX
+## Phase 11：Conversation Isolation / Session Persistence
 
 当前 Goal：把 Workbench 从单页内存状态升级为可恢复的对话式数据分析体验。状态：Planned / Not implemented yet；本节只记录后续实现计划和边界，不代表功能已经落地。
 
@@ -849,7 +850,7 @@ Phase 8 当前退出结果：
 3. 左侧历史 Chat 从后端会话列表恢复，不再只依赖浏览器内存中的 run history。
 4. 用户可以随时从历史 Chat 回到旧会话，继续上传、提问和分析。
 5. 预留 `owner_id`、`tenant_id`、`owner_context`、`created_by` 等字段，为未来真实登录、多用户隔离和租户隔离升级做准备。
-6. 过程展示采用 GPT-like 安静形态：默认只显示一条小号浅灰的最新过程摘要，用户点击后再展开结构化步骤详情。
+6. 过程展示已先行采用 GPT-like 安静形态：默认只显示一条小号浅灰的最新过程摘要，用户点击后再展开结构化步骤详情；Phase 11 后续只把它接入可恢复会话。
 
 计划中的后端会话结构：
 
@@ -907,8 +908,8 @@ Phase 9 范围：
 
 1. `frontend/index.html`、`frontend/styles.css`、`frontend/app.js`、`frontend/README.md` 提供首版静态 workbench。
 2. `backend/main.py` 在存在 `frontend/` 目录时挂载 `/frontend` 静态资源，并提供 `/workbench`。
-3. 前端支持单文件 / 多文件上传，单文件调用 `/api/data-agent/upload`，多文件调用 `/api/data-agent/upload-batch`。
-4. 前端支持 profile 预览、问题提交、结果表格、自动图表、insight 摘要、用户可读分析过程和本地 run history；verification、warnings、errors、join plan trace、join execution summary 保留在后端/API。
+3. 前端支持单文件 / 多文件上传，单文件调用 `/api/data-agent/upload`，多文件调用 `/api/data-agent/upload-batch`，无 dataset 对话调用 `/api/data-agent/chat`。
+4. 前端支持问题提交、结果表格、自动图表、insight 摘要、用户可读安静过程和本地 run history；verification、warnings、errors、join plan trace、join execution summary 和 quality_report 保留在后端/API。
 5. 前端 smoke 使用 mocked API route 验证桌面和移动视口无 console / page error，截图保存在 `outputs/phase9_workbench_desktop_20260523.png` 和 `outputs/phase9_workbench_mobile_20260523.png`。
 
 Phase 9 禁止：
@@ -1006,7 +1007,11 @@ Phase 9 禁止：
 
 用于接收 dataset_id 和用户问题，返回分析结果、校验信息、解释建议和图表配置。
 
-3. GET /api/data-agent/datasets/{dataset_id}/profile
+3. POST /api/data-agent/chat
+
+用于没有上传 dataset 时的 VDS 普通对话，只讨论分析思路、指标口径和字段设计；需要真实业务结论时必须上传数据。
+
+4. GET /api/data-agent/datasets/{dataset_id}/profile
 
 用于返回指定数据集的文件信息、字段画像和状态。
 

@@ -217,6 +217,10 @@ svg {
   backdrop-filter: blur(16px);
 }
 
+.chat-topbar > div:first-child {
+  min-width: 0;
+}
+
 h1,
 h2,
 h3,
@@ -254,8 +258,12 @@ p {
 
 #dataset-status {
   margin-top: 2px;
+  max-width: min(760px, 58vw);
+  overflow: hidden;
   color: var(--muted);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-strip {
@@ -539,7 +547,7 @@ p {
 
 .result-stack {
   display: grid;
-  gap: 8px;
+  gap: 14px;
 }
 
 .result-stack .analysis-block {
@@ -557,14 +565,13 @@ p {
 }
 
 .answer-box {
-  margin: 2px 0 12px;
-  border-radius: 14px;
-  padding: 14px 16px;
-  background: #f7f7f8;
+  margin: 2px 0 14px;
+  padding: 0;
+  background: transparent;
   color: #111827;
-  font-size: 18px;
-  font-weight: 650;
-  line-height: 1.45;
+  font-size: 16px;
+  font-weight: 470;
+  line-height: 1.72;
   word-break: break-word;
 }
 
@@ -701,28 +708,99 @@ p {
   margin-top: 4px;
 }
 
+#result-message.thinking-only .result-panel,
+#result-message.thinking-only .insight-panel {
+  display: none;
+}
+
+.process-panel {
+  color: var(--muted);
+}
+
+.process-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.thinking-dot {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.thinking-dot::after {
+  position: absolute;
+  inset: -5px;
+  border-radius: inherit;
+  background: rgba(37, 99, 235, 0.12);
+  content: "";
+  transform: scale(0.7);
+  animation: thought-pulse 1.5s ease-in-out infinite;
+}
+
+.process-panel:not(.is-active) .thinking-dot::after {
+  display: none;
+}
+
+.process-panel.is-failed .thinking-dot {
+  background: var(--red);
+}
+
+#process-summary {
+  color: #7a7f89;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.process-details {
+  margin-top: 6px;
+  padding-left: 15px;
+}
+
+.process-details summary {
+  width: fit-content;
+  color: #8b8f98;
+  font-size: 12px;
+  line-height: 1.35;
+  cursor: pointer;
+  user-select: none;
+}
+
+.process-details summary:hover {
+  color: var(--accent);
+}
+
+.process-details[open] summary {
+  color: var(--accent);
+}
+
 .process-timeline li {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
   gap: 10px;
   align-items: flex-start;
-  padding: 7px 0;
+  padding: 6px 0;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
 .process-timeline strong {
   display: block;
   color: #111827;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 620;
 }
 
 .step-dot {
   display: grid;
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   margin-top: 2px;
   place-items: center;
   border: 1px solid #c7d2fe;
@@ -731,8 +809,8 @@ p {
 }
 
 .step-dot::after {
-  width: 7px;
-  height: 7px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: var(--accent);
   content: "";
@@ -761,22 +839,22 @@ p {
 }
 
 .composer-shell {
-  padding: 12px 24px 22px;
+  padding: 12px 24px 24px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0), #fff 34%);
 }
 
 .composer {
   max-width: var(--composer);
   margin: 0 auto;
-  border: 1px solid var(--line-strong);
-  border-radius: 26px;
+  border: 1px solid #d9d9e3;
+  border-radius: 28px;
   background: #fff;
-  box-shadow: var(--shadow-soft);
+  box-shadow: 0 16px 48px rgba(15, 23, 42, 0.1);
 }
 
 .composer:focus-within {
-  border-color: #cbd5e1;
-  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.11);
+  border-color: #c7d2fe;
+  box-shadow: 0 18px 50px rgba(37, 99, 235, 0.12);
 }
 
 .composer textarea {
@@ -835,14 +913,12 @@ p {
 }
 
 .icon-button:hover {
-  background: #f3f4f6;
-  color: #111827;
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--accent);
 }
 
 .upload-button {
-  min-height: 32px;
-  flex: 0 0 auto;
-  padding: 5px 11px;
+  display: none;
 }
 
 .file-status {
@@ -857,7 +933,7 @@ p {
 
 .file-status strong {
   color: #374151;
-  font-weight: 600;
+  font-weight: 540;
   white-space: nowrap;
 }
 
@@ -885,6 +961,19 @@ select {
 
 .hidden {
   display: none !important;
+}
+
+@keyframes thought-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.68);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 @media (max-width: 980px) {

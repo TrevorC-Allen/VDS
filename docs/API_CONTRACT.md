@@ -28,6 +28,8 @@
 
 2026-05-23 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已进入 planned contract。本节新增的 conversation endpoints、`conversation_id` 和 owner 隔离字段均为计划契约，当前尚未实现；旧的 `dataset_id` 调用方式必须继续兼容。
 
+2026-05-24 更新：Workbench UX hardening 新增已实现接口 `POST /api/data-agent/chat`，用于没有上传 dataset 时的普通 VDS 对话；该接口不生成业务结论、不创建持久化 conversation，也不替代 Phase 11 planned conversation APIs。针对概览类问题，Response Builder 可把明细型执行结果收敛为汇总指标表和短回答，避免主答案直接展示原始明细行。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
@@ -45,6 +47,7 @@
 13. Phase 11 planned conversation API 必须以后端 `conversation_id` 作为会话连续性主键；前端不得用本地内存 run history 冒充可恢复历史。
 14. Phase 11 planned owner 字段只用于预留未来隔离边界；v1 本地匿名实现不得宣称已经具备真实登录、鉴权、多租户或企业级权限。
 15. GPT-like 过程展示只能使用安全摘要字段，默认显示单行浅灰小字摘要，点击后展开结构化步骤；不得在主界面展示 raw CoT、后端审计 JSON、quality_report、warnings、verification 或 join trace。
+16. 无 dataset 对话只能进入 `/chat` 的辅助回复路径；如果用户要求真实业务结论，必须提示需要上传相关数据，不能根据空上下文编造指标结果。
 
 ## Planned Phase 11 Conversation APIs
 
@@ -222,6 +225,13 @@ Phase 11 planned request extension：
 - warnings
 - errors
 - debug
+
+概览类问题展示规则：
+
+- 当用户问题明显是“整体情况 / 总体概览 / overall summary”且执行结果是多行多列明细时，后端 Response Builder 可以把 `answer` 和 `result` 转换为用户可读的汇总展示。
+- 该转换只能基于已执行、已校验的 `ExecutionResult`，不得绕过 Planner、Executor 或 Verifier 直接推断结果。
+- API 可在 `debug.user_experience_shaping` 记录是否发生展示收敛、原始行列数和使用的指标/维度字段；前端不得把该 debug 字段作为计算输入。
+- 展示结果建议使用 `["指标", "数值"]` 这样的短表，避免把原始明细行作为主答案或主结果表。
 
 chart v2 当前可包含：
 
@@ -442,6 +452,42 @@ inline table 对象也可携带 `source_file` 和 `sheet`，用于 Phase 8 多�
 - `/run`：适合外部系统已经有 JSON 表格数据，需要一次性调用 Agent。
 - `/upload` + `/analyze`：适合文件上传后多次复用同一个 dataset_id。
 
+## POST /api/data-agent/chat
+
+目标：没有上传 dataset 时，允许 Workbench 仍然像聊天一样向 VDS 提问，用于讨论分析目标、指标口径、字段设计或使用方式。
+
+请求：
+
+- question：必填，自然语言问题。
+- agent_mode：可选，保留 `multi_agent` / `single_agent` 兼容字段；当前只用于输入校验，不触发数据分析 workflow。
+
+稳定响应字段：
+
+- response_version
+- success
+- run_id
+- dataset_id：固定为空字符串
+- question
+- answer_type：固定为 `chat`
+- execution_mode：固定为 `chat`
+- answer
+- logic_form：null
+- result：空 columns / rows
+- verification
+- insight：null
+- chart：null
+- quality_report：null
+- reasoning_trace_view
+- warnings
+- errors
+- debug
+
+边界：
+
+- `/chat` 不读取临时 dataset store，不运行 Pandas / SQL / Verifier，不生成业务数据结论。
+- 用户要求真实销售、收入、订单、经营等结论时，回答必须说明需要上传相关数据。
+- `/chat` 不是 Phase 11 conversation persistence；不会创建可恢复会话、owner 过滤或历史续聊记录。
+
 ## GET /api/data-agent/datasets/{dataset_id}/profile
 
 目标：返回指定数据集的文件信息、字段画像和状态。
@@ -467,7 +513,7 @@ inline table 对象也可携带 `source_file` 和 `sheet`，用于 Phase 8 多�
 - 仅在 backend 运行且 repo 存在 `frontend/` 目录时可用。
 - `/workbench` 返回 `frontend/index.html`。
 - `/frontend/*` 返回静态资源。
-- 前端只调用 `/api/data-agent/upload`、`/api/data-agent/upload-batch`、`/api/data-agent/analyze`。
+- 前端只调用 `/api/data-agent/upload`、`/api/data-agent/upload-batch`、`/api/data-agent/analyze` 和无 dataset 时的 `/api/data-agent/chat`。
 - 前端不得实现指标公式、join、排序聚合或评分逻辑；这些逻辑必须保留在 backend / data_agent_core。
 
 Phase 11 planned behavior：

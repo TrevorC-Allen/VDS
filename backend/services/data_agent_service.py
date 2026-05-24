@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.schemas.data_agent_schema import (
+    RESPONSE_VERSION,
     VALID_AGENT_MODES,
     VALID_EXECUTION_MODES,
     dataset_profile_response,
@@ -156,6 +157,76 @@ class DataAgentService:
                 ),
             )
 
+    def chat_without_dataset(
+        self,
+        *,
+        question: str,
+        agent_mode: str = "multi_agent",
+    ) -> dict[str, Any]:
+        """Return a VDS assistant reply when no dataset has been uploaded yet."""
+
+        run_id = "run_" + uuid.uuid4().hex[:16]
+        cleaned_question = question.strip()
+        if not cleaned_question:
+            return error_response(
+                run_id=run_id,
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message="question is required for chat.",
+                    failed_step="chat_without_dataset",
+                    recoverable=True,
+                    suggested_fix="Ask a data-analysis question or describe the dataset you plan to upload.",
+                ),
+            )
+        if agent_mode not in VALID_AGENT_MODES:
+            return error_response(
+                run_id=run_id,
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message=f"Unsupported agent_mode: {agent_mode}",
+                    failed_step="chat_without_dataset",
+                    recoverable=True,
+                    suggested_fix="Use multi_agent or single_agent.",
+                ),
+            )
+
+        answer = _dataset_free_chat_answer(cleaned_question)
+        return to_json_ready(
+            {
+                "response_version": RESPONSE_VERSION,
+                "success": True,
+                "run_id": run_id,
+                "dataset_id": "",
+                "question": cleaned_question,
+                "answer_type": "chat",
+                "execution_mode": "chat",
+                "answer": answer,
+                "logic_form": None,
+                "result": {"columns": [], "rows": [], "value": None},
+                "verification": {"passed": True, "confidence": 1.0, "notes": ["No dataset was required for this chat reply."]},
+                "insight": None,
+                "chart": None,
+                "quality_report": None,
+                "reasoning_trace_view": [
+                    {
+                        "step_id": "intent",
+                        "name": "理解问题",
+                        "status": "completed",
+                        "summary": f"用户提到了“{cleaned_question[:40]}”，当前没有上传数据，我会先按分析助手方式回应。",
+                    },
+                    {
+                        "step_id": "guidance",
+                        "name": "给出下一步",
+                        "status": "completed",
+                        "summary": "如果需要真实业务结论，需要上传包含相关字段的数据；如果只是讨论口径、字段或分析方案，可以继续直接对话。",
+                    },
+                ],
+                "warnings": [],
+                "errors": [],
+                "debug": {"agent_mode": "chat_without_dataset", "requires_dataset": False},
+            }
+        )
+
     def get_dataset_profile(self, dataset_id: str) -> dict[str, Any]:
         """Return a stored dataset profile by dataset_id."""
 
@@ -283,3 +354,16 @@ def _attach_external_metadata(response: dict[str, Any], *, request_id: str | Non
     response.setdefault("debug", {})
     response["debug"]["api_source"] = source_name
     return to_json_ready(response)
+
+
+def _dataset_free_chat_answer(question: str) -> str:
+    lowered = question.lower()
+    if any(token in question for token in ("你好", "您好", "hello", "hi")):
+        return "你好，我是 VDS。你可以直接和我讨论分析思路、指标口径、字段设计，也可以上传 CSV 或 Excel 后让我基于数据给出结论。"
+    if any(token in question for token in ("能做什么", "怎么用", "功能", "帮助", "help")):
+        return "我可以先帮你梳理分析目标、确认需要的字段和指标口径；上传数据后，我可以做聚合、排序、趋势、对比、多文件命中和多表关联分析。"
+    if any(token in question for token in ("字段", "口径", "指标", "维度", "关联", "数据表")) or "join" in lowered:
+        return "可以先不用上传文件。你把字段名、表结构或想看的指标告诉我，我可以帮你整理分析口径、推荐维度、判断是否需要多表关联。"
+    if any(token in lowered for token in ("sales", "revenue", "overall", "summary")) or any(token in question for token in ("销售", "收入", "整体", "概览", "情况")):
+        return "可以，我先理解为你想做数据概览。真实结论需要上传相关销售或收入数据；上传后我会优先返回汇总指标、趋势和关键下钻方向，而不是直接展开明细行。"
+    return "可以继续聊。当前还没有上传数据，所以我不会编造业务结论；你可以描述分析目标、数据字段或上传文件后让我基于真实数据分析。"

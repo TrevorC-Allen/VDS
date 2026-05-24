@@ -5,10 +5,14 @@ const state = {
   runHistory: [],
   progressTimer: null,
   progressStep: 0,
+  isUploading: false,
+  isAnalyzing: false,
+  hasPendingUpload: false,
 };
 
 const el = {
   chatMessages: document.querySelector("#chat-messages"),
+  welcomeMessage: document.querySelector(".welcome-message"),
   profileMessage: document.querySelector("#profile-message"),
   resultMessage: document.querySelector("#result-message"),
   newChatButton: document.querySelector("#new-chat-button"),
@@ -28,10 +32,14 @@ const el = {
   fieldTableBody: document.querySelector("#field-table-body"),
   answer: document.querySelector("#answer"),
   chartPanel: document.querySelector("#chart-panel"),
+  resultTitle: document.querySelector("#result-title"),
   resultStatus: document.querySelector("#result-status"),
   resultTable: document.querySelector("#result-table"),
+  insightPanel: document.querySelector(".insight-panel"),
   insightSummary: document.querySelector("#insight-summary"),
   insightList: document.querySelector("#insight-list"),
+  processDetails: document.querySelector("#process-details"),
+  processPanel: document.querySelector(".process-panel"),
   processSummary: document.querySelector("#process-summary"),
   processTimeline: document.querySelector("#process-timeline"),
   runHistory: document.querySelector("#run-history"),
@@ -49,24 +57,30 @@ updateFileSummary();
 function updateFileSummary() {
   const files = [...el.fileInput.files];
   if (!files.length) {
+    state.hasPendingUpload = false;
     el.fileSummary.textContent = "选择文件";
     el.fileDetail.textContent = "CSV / Excel 支持多选";
     el.uploadButton.disabled = true;
+    updateRunButton();
     return;
   }
-  el.fileSummary.textContent = `${files.length} 个文件待上传`;
+  state.hasPendingUpload = true;
+  el.fileSummary.textContent = `${files.length} 个文件已附加`;
   el.fileDetail.textContent = files.map((file) => file.name).join(" / ");
   el.uploadButton.disabled = false;
+  updateRunButton();
 }
 
 async function uploadFiles() {
   const files = [...el.fileInput.files];
   if (!files.length) {
     setApiStatus("error", "请选择文件");
-    return;
+    return null;
   }
+  state.isUploading = true;
   setApiStatus("idle", "上传中");
   el.uploadButton.disabled = true;
+  updateRunButton();
   try {
     const payload = new FormData();
     const endpoint = files.length === 1 ? "/api/data-agent/upload" : "/api/data-agent/upload-batch";
@@ -84,41 +98,70 @@ async function uploadFiles() {
     state.datasetId = profile.dataset_id;
     state.selectedTable = profile.tables?.[0]?.table_name || "";
     renderProfile();
-    revealMessage(el.profileMessage);
-    clearResult();
+    el.profileMessage.classList.add("hidden");
+    if (el.answer.textContent === "上传失败") {
+      el.resultMessage.classList.add("hidden");
+    }
     setApiStatus("ready", "数据集已就绪");
-    el.fileSummary.textContent = `${files.length} 个文件已上传`;
-    el.fileDetail.textContent = "可以开始提问";
+    state.hasPendingUpload = false;
+    el.fileSummary.textContent = `${files.length} 个文件已就绪`;
+    el.fileDetail.textContent = "已准备好，直接提问即可";
+    return profile;
   } catch (error) {
     setApiStatus("error", "上传失败");
-    renderUserFacingError("上传失败", String(error.message || error));
+    state.datasetId = "";
+    state.profile = null;
+    state.selectedTable = "";
+    state.hasPendingUpload = true;
+    el.fileSummary.textContent = `${files.length} 个文件上传失败`;
+    el.fileDetail.textContent = `上传失败：${String(error.message || error)}`;
+    if (el.answer.textContent === "上传失败") {
+      el.resultMessage.classList.add("hidden");
+    }
+    return null;
   } finally {
-    el.uploadButton.disabled = false;
+    state.isUploading = false;
+    el.uploadButton.disabled = !state.hasPendingUpload;
     updateRunButton();
   }
 }
 
 async function runAnalysis() {
   const question = el.questionInput.value.trim();
-  if (!state.datasetId || !question) {
+  if (!question || state.isUploading || state.isAnalyzing) {
     updateRunButton();
     return;
   }
+  if (state.hasPendingUpload) {
+    const uploaded = await uploadFiles();
+    if (!uploaded) {
+      updateRunButton();
+      return;
+    }
+  }
+  state.isAnalyzing = true;
+  el.runButton.disabled = true;
   appendUserMessage(question);
   el.questionInput.value = "";
   renderProgress(question);
-  setApiStatus("idle", "分析中");
-  el.runButton.disabled = true;
+  setApiStatus("idle", state.datasetId ? "分析中" : "回复中");
   try {
-    const response = await fetch("/api/data-agent/analyze", {
+    const endpoint = state.datasetId ? "/api/data-agent/analyze" : "/api/data-agent/chat";
+    const body = state.datasetId
+      ? {
+          dataset_id: state.datasetId,
+          question,
+          execution_mode: el.executionMode.value,
+          agent_mode: el.agentMode.value,
+        }
+      : {
+          question,
+          agent_mode: el.agentMode.value,
+        };
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        dataset_id: state.datasetId,
-        question,
-        execution_mode: el.executionMode.value,
-        agent_mode: el.agentMode.value,
-      }),
+      body: JSON.stringify(body),
     });
     const result = await response.json();
     if (!response.ok) {
@@ -127,18 +170,21 @@ async function runAnalysis() {
     stopProgress();
     result.question = question;
     renderResult(result);
-    setApiStatus(result.success ? "ready" : "error", result.success ? "分析完成" : "需要继续确认");
+    const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset";
+    setApiStatus(result.success ? "ready" : "error", result.success ? (isChat ? "已回复" : "分析完成") : "需要继续确认");
   } catch (error) {
     stopProgress();
     setApiStatus("error", "分析失败");
     renderUserFacingError("分析失败", String(error.message || error));
   } finally {
+    state.isAnalyzing = false;
     updateRunButton();
   }
 }
 
 function updateRunButton() {
-  el.runButton.disabled = !state.datasetId || !el.questionInput.value.trim();
+  const hasQuestion = Boolean(el.questionInput.value.trim());
+  el.runButton.disabled = !hasQuestion || state.isUploading || state.isAnalyzing;
 }
 
 function renderProfile() {
@@ -202,11 +248,15 @@ function renderFieldTable(table) {
 function renderResult(result) {
   const rows = result.result?.rows || [];
   const columns = result.result?.columns || [];
+  const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset";
+  const isOverviewShaped = Boolean(result.debug?.user_experience_shaping?.applied);
+  el.resultMessage.classList.remove("thinking-only");
+  el.resultTitle.textContent = isChat ? "VDS" : "分析结果";
   el.answer.textContent = result.answer || "-";
-  el.resultStatus.textContent = result.success ? "已完成" : "需要继续确认";
+  el.resultStatus.textContent = isChat ? "已回复" : result.success ? "已完成" : "需要继续确认";
   renderRows(rows, columns);
-  renderChart(result.chart, rows, columns, result.answer);
-  renderInsight(result.insight);
+  renderChart(isOverviewShaped ? null : result.chart, rows, columns, result.answer);
+  renderInsight(!isChat && result.success && !isOverviewShaped ? result.insight : null);
   renderProcess(result.reasoning_trace_view || [], result);
   pushHistory(result);
   revealMessage(el.resultMessage, "start");
@@ -214,8 +264,8 @@ function renderResult(result) {
 
 function renderRows(rows, columns) {
   if (!rows.length) {
-    el.resultTable.className = "result-table empty-state";
-    el.resultTable.textContent = "本次没有表格行。";
+    el.resultTable.className = "result-table hidden";
+    el.resultTable.textContent = "";
     return;
   }
   const safeColumns = columns.length ? columns : Object.keys(rows[0]);
@@ -347,34 +397,43 @@ function renderPieChart(values, chart, type) {
 }
 
 function renderInsight(insight) {
-  el.insightSummary.textContent = insight?.summary || "暂无洞察。";
+  const suggestions = (insight?.business_suggestions || insight?.suggestions || []).filter(isUserFacingInsightText);
+  const summary = cleanInsightSummary(insight?.summary || "");
+  const hasInsight = Boolean(summary || suggestions.length);
+  el.insightPanel?.classList.toggle("hidden", !hasInsight);
+  if (!hasInsight) {
+    el.insightSummary.textContent = "";
+    el.insightList.innerHTML = "";
+    return;
+  }
+  el.insightSummary.textContent = summary;
   const items = [];
-  (insight?.business_suggestions || insight?.suggestions || []).forEach((text) => items.push({ label: "建议", text }));
+  suggestions.forEach((text) => items.push({ label: "建议", text }));
   el.insightList.innerHTML = items.length
     ? items.map((item) => `<li><strong>${escapeHtml(item.label)}</strong>${escapeHtml(item.text)}</li>`).join("")
-    : `<li class="muted-cell">暂无建议。</li>`;
+    : "";
 }
 
 function renderProgress(question) {
   stopProgress();
-  el.answer.textContent = "正在分析你的问题...";
-  el.resultStatus.textContent = "处理中";
-  el.resultTable.className = "result-table empty-state";
-  el.resultTable.textContent = "结果表会显示在这里。";
-  el.chartPanel.className = "chart-panel empty-state";
-  el.chartPanel.textContent = "分析完成后会生成适合的图表或重点结果。";
-  el.insightSummary.textContent = "正在理解你的问题。";
-  el.insightList.innerHTML = "";
+  el.resultMessage.classList.add("thinking-only");
+  el.resultTable.className = "result-table hidden";
+  el.resultTable.textContent = "";
+  el.chartPanel.className = "chart-panel hidden";
+  el.chartPanel.textContent = "";
+  el.insightPanel?.classList.add("hidden");
+  el.chatMessages.append(el.resultMessage);
   revealMessage(el.resultMessage);
 
-  const steps = buildLiveSteps(question);
+  const steps = buildLiveSteps(question, Boolean(state.datasetId));
   const update = () => {
+    const currentStep = steps[state.progressStep] || steps[steps.length - 1];
     renderProcessItems(
       steps.map((step, index) => ({
         ...step,
         status: index < state.progressStep ? "completed" : index === state.progressStep ? "active" : "pending",
       })),
-      `正在处理：${steps[state.progressStep]?.title || "生成回答"}`,
+      currentStep?.summary || "正在整理回答。",
     );
     state.progressStep = Math.min(state.progressStep + 1, steps.length - 1);
   };
@@ -400,11 +459,15 @@ function renderProcess(steps, result = {}) {
     renderProcessItems([], "提问后显示分析过程。");
     return;
   }
-  renderProcessItems(friendlySteps, "已完成本次分析过程。");
+  renderProcessItems(friendlySteps, result.question ? `已完成：围绕“${shortLabel(result.question, 28)}”整理出回答。` : "已完成本次分析。");
 }
 
 function renderProcessItems(steps, summary) {
   el.processSummary.textContent = summary;
+  const hasActiveStep = steps.some((step) => step.status === "active");
+  const hasFailedStep = steps.some((step) => step.status === "failed");
+  el.processPanel?.classList.toggle("is-active", hasActiveStep);
+  el.processPanel?.classList.toggle("is-failed", hasFailedStep);
   if (!steps.length) {
     el.processTimeline.innerHTML = `<li class="muted-cell">提问后显示分析过程。</li>`;
     return;
@@ -424,18 +487,36 @@ function renderProcessItems(steps, summary) {
     .join("");
 }
 
-function buildLiveSteps(question) {
+function buildLiveSteps(question, hasDataset) {
+  const shortQuestion = shortLabel(question, 30);
+  if (!hasDataset) {
+    return [
+      { title: "理解问题", summary: `用户提到了“${shortQuestion}”，我会先判断这是聊天、口径讨论还是需要数据的问题。` },
+      { title: "整理回复", summary: "当前没有上传数据，我会直接回复可讨论的部分，不编造业务结论。" },
+    ];
+  }
   return [
-    { title: "理解你的问题", summary: `正在判断你想问什么：${question}` },
-    { title: "选择相关数据", summary: "正在从已上传文件里找到最相关的表。" },
-    { title: "匹配字段含义", summary: "正在识别指标、维度和可能需要关联的字段。" },
-    { title: "制定分析方式", summary: "正在确认是排序、汇总、对比还是其他分析。" },
-    { title: "执行分析", summary: "正在计算结果并组织可展示的数据。" },
-    { title: "生成回答", summary: "正在整理最终答案、图表和用户可读说明。" },
+    { title: "理解问题", summary: `用户提到了“${shortQuestion}”，我会先判断真正想比较或查找什么。` },
+    { title: "选择数据", summary: "我会从已上传文件里找最相关的数据表，避免拿错文件回答。" },
+    { title: "匹配字段", summary: "我会确认哪些字段像指标、哪些字段像维度，以及是否需要多表关联。" },
+    { title: "制定分析方式", summary: "我会判断这是排序、汇总、对比还是需要 join 后再回答。" },
+    { title: "执行分析", summary: "我正在让后端执行分析，并等待可验证的结构化结果。" },
+    { title: "生成回答", summary: "我会把结果整理成直接回答，而不是把后端审计细节丢给用户。" },
   ];
 }
 
 function buildFriendlySteps(steps, result) {
+  const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset";
+  if (isChat) {
+    const chatSteps = steps.length
+      ? steps.map((step) => ({
+          title: friendlyStepTitle(String(step.name || step.title || "")),
+          summary: friendlySummaryFallback(step),
+          status: step.status || "completed",
+        }))
+      : [{ title: "整理回复", summary: "已根据当前对话直接回复。", status: "completed" }];
+    return chatSteps;
+  }
   const sourceTables = result.debug?.source_tables || result.logic_form?.source_tables || [];
   const selection = parseSelectionReason(result.debug?.table_selection_reason || result.logic_form?.table_selection_reason || "");
   const joinText = friendlyJoinText(result.debug?.join_plan || result.logic_form?.join_plan || {});
@@ -449,10 +530,12 @@ function buildFriendlySteps(steps, result) {
       title: "匹配字段",
       summary: [selection.metric ? `指标是 ${selection.metric}` : "", selection.dimension ? `维度是 ${selection.dimension}` : ""].filter(Boolean).join("，") || "已找到回答问题需要的字段。",
     },
-    { title: "关联数据", summary: joinText },
     { title: "执行分析", summary: "完成计算，并检查结果可以用于回答。" },
-    { title: "生成回答", summary: result.answer ? `答案是 ${result.answer}。` : "已生成最终回答。" },
+    { title: "生成回答", summary: result.answer ? `答案是 ${shortLabel(result.answer, 90)}。` : "已生成最终回答。" },
   ];
+  if (result.debug?.join_plan?.trusted || result.logic_form?.join_plan?.trusted) {
+    compact.splice(3, 0, { title: "关联数据", summary: joinText });
+  }
   return compact.map((step) => ({ ...step, status: "completed" }));
 }
 
@@ -526,24 +609,26 @@ function friendlyJoinText(joinPlan) {
 
 function renderUserFacingError(title, message) {
   stopProgress();
+  el.resultMessage.classList.remove("thinking-only");
   el.answer.textContent = title;
   el.resultStatus.textContent = "需要处理";
-  el.resultTable.className = "result-table empty-state";
-  el.resultTable.textContent = "本次没有生成结果表。";
-  el.chartPanel.className = "chart-panel empty-state";
-  el.chartPanel.classList.remove("hidden");
-  el.chartPanel.textContent = "本次没有生成图表。";
+  el.resultTable.className = "result-table hidden";
+  el.resultTable.textContent = "";
+  el.chartPanel.className = "chart-panel hidden";
+  el.chartPanel.textContent = "";
   renderInsight(null);
   renderProcessItems([{ title, summary: message || "请检查上传文件或稍后重试。", status: "failed" }], "处理没有完成。");
   revealMessage(el.resultMessage);
 }
 
 function pushHistory(result) {
+  const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset";
   state.runHistory.unshift({
     runId: result.run_id,
     success: result.success,
     answer: result.answer,
     question: result.question,
+    mode: isChat ? "chat" : "analysis",
   });
   state.runHistory = state.runHistory.slice(0, 8);
   el.historyCount.textContent = String(state.runHistory.length);
@@ -551,7 +636,7 @@ function pushHistory(result) {
     .map(
       (item) => `
         <li>
-          <strong>${escapeHtml(item.success ? "已完成分析" : "需要继续确认")}</strong>
+          <strong>${escapeHtml(item.mode === "chat" ? "已回复" : item.success ? "已完成分析" : "需要继续确认")}</strong>
           <span>${escapeHtml(item.question || "")}</span>
         </li>
       `,
@@ -562,6 +647,7 @@ function pushHistory(result) {
 function clearResult() {
   stopProgress();
   el.resultMessage?.classList.add("hidden");
+  el.resultMessage?.classList.remove("thinking-only");
   el.answer.textContent = "-";
   el.resultStatus.textContent = "尚未运行";
   el.resultTable.className = "result-table empty-state";
@@ -574,6 +660,7 @@ function clearResult() {
 }
 
 function appendUserMessage(question) {
+  el.welcomeMessage?.classList.add("hidden");
   const message = document.createElement("article");
   message.className = "message user-message";
   message.innerHTML = `
@@ -613,8 +700,10 @@ function resetConversation() {
   state.datasetId = "";
   state.profile = null;
   state.selectedTable = "";
+  state.hasPendingUpload = false;
   el.fileInput.value = "";
   [...el.chatMessages.querySelectorAll(".user-message")].forEach((message) => message.remove());
+  el.welcomeMessage?.classList.remove("hidden");
   el.profileMessage.classList.add("hidden");
   el.resultMessage.classList.add("hidden");
   updateFileSummary();
@@ -637,6 +726,19 @@ function errorText(payload) {
   const firstError = payload?.errors?.[0];
   if (!firstError) return "";
   return firstError.error_message || firstError.message || JSON.stringify(firstError);
+}
+
+function cleanInsightSummary(summary) {
+  const text = String(summary || "").replace(/^Verified result:\s*/i, "").trim();
+  return isUserFacingInsightText(text) ? text : "";
+}
+
+function isUserFacingInsightText(text) {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  return !["数据质量", "高严重度", "quality_report", "verification", "warnings", "errors", "join trace", "Join / Verification"].some((token) =>
+    value.includes(token),
+  );
 }
 
 function stringifyIssue(issue) {

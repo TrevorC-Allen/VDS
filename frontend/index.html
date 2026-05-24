@@ -108,15 +108,17 @@
               </section>
 
               <section class="analysis-block process-panel" aria-labelledby="process-title">
-                <div class="block-header compact process-header">
-                  <div>
-                  <h2 id="process-title">正在做什么</h2>
-                    <p id="process-summary">我会在这里展示当前正在处理的步骤。</p>
-                  </div>
+                <h2 id="process-title" class="visually-hidden">正在做什么</h2>
+                <div class="process-line">
+                  <span class="thinking-dot" aria-hidden="true"></span>
+                  <p id="process-summary">提问后，我会用一行摘要说明当前正在处理什么。</p>
                 </div>
-                <ol id="process-timeline" class="process-timeline" aria-live="polite">
-                  <li class="muted-cell">提问后显示分析过程。</li>
-                </ol>
+                <details id="process-details" class="process-details">
+                  <summary>查看处理过程</summary>
+                  <ol id="process-timeline" class="process-timeline" aria-live="polite">
+                    <li class="muted-cell">提问后显示分析过程。</li>
+                  </ol>
+                </details>
               </section>
             </div>
           </article>

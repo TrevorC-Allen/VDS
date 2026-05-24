@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+
+import pandas as pd
 
 from backend.services.data_agent_service import DataAgentService
 from backend.storage.temp_file_store import TempFileStore
@@ -70,6 +73,73 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual("销售文件.csv", profiles["销售文件"]["source_file"])
         self.assertEqual("库存文件.csv", profiles["库存文件"]["source_file"])
         self.assertEqual(["产品", "销售额"], [column["name"] for column in profiles["销售文件"]["columns"]])
+
+    def test_upload_excel_datetime_profile_is_json_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            xlsx_path = root / "sales_dates.xlsx"
+            pd.DataFrame(
+                {
+                    "日期": [pd.Timestamp("2026-05-01"), pd.Timestamp("2026-05-02")],
+                    "销售额": [100, 250],
+                }
+            ).to_excel(xlsx_path, index=False)
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(xlsx_path, original_filename="销售日期.xlsx")
+
+        self.assertTrue(upload["success"])
+        json.dumps(upload, ensure_ascii=False)
+        first_table = upload["tables"][0]
+        date_column = next(column for column in first_table["columns"] if column["name"] == "日期")
+        self.assertEqual("2026-05-01T00:00:00", date_column["sample_values"][0])
+
+    def test_overview_sales_question_returns_summary_not_raw_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "saas_sales.csv"
+            csv_path.write_text(
+                "记录ID,日期,城市,客户类型,订阅收入,备注\n"
+                "SS001,2026-01-01,上海,大客户,1000,实施中\n"
+                "SS002,2026-01-02,北京,试用客户,300,标准服务\n"
+                "SS003,2026-01-03,上海,中型企业,700,续费窗口\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(csv_path, original_filename="SaaS销售.csv")
+            response = service.analyze_dataset(
+                dataset_id=upload["dataset_id"],
+                question="看一下整体销售情况",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(response["success"])
+        self.assertLess(len(response["answer"]), 260)
+        self.assertIn("订阅收入合计", response["answer"])
+        self.assertNotIn("SS001,2026-01-01,上海,大客户", response["answer"])
+        self.assertEqual(["指标", "数值"], response["result"]["columns"])
+        self.assertTrue(response["debug"]["user_experience_shaping"]["applied"])
+
+    def test_chat_without_dataset_returns_vds_reply(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = DataAgentService(
+                file_store=TempFileStore(Path(temp_dir) / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            response = service.chat_without_dataset(question="没有文件时你能做什么？")
+
+        self.assertTrue(response["success"])
+        self.assertEqual("chat", response["answer_type"])
+        self.assertEqual("", response["dataset_id"])
+        self.assertIn("上传数据后", response["answer"])
+        self.assertEqual("chat_without_dataset", response["debug"]["agent_mode"])
 
     def test_analyze_unknown_dataset_returns_standard_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

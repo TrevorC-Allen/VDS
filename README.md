@@ -2,7 +2,7 @@
 
 本仓库用于从头构建可评测、可复现、可扩展的数据分析 Agent 内核。
 
-当前 Phase 6 的最小可运行多 Agent workflow 已经作为默认链路启用；Phase 7 系列已完成泛化验证、Provider 原生工具链增强基线、submission 风险治理和最终输出契约硬化。Phase 8 已完成核心算法回看与多文件/多表泛化闭环；Phase 9 已在 Phase 8 通过后交付首版前端 workbench；Phase 10 已补齐结果可视化、洞察建议、数据质量扫描和安全过程可视化。Phase 11 已规划为会话隔离、历史续聊和 GPT-like 安静过程展示，当前尚未实现。
+当前 Phase 6 的最小可运行多 Agent workflow 已经作为默认链路启用；Phase 7 系列已完成泛化验证、Provider 原生工具链增强基线、submission 风险治理和最终输出契约硬化。Phase 8 已完成核心算法回看与多文件/多表泛化闭环；Phase 9 已在 Phase 8 通过后交付首版前端 workbench；Phase 10 已补齐结果可视化、洞察建议、数据质量扫描和安全过程可视化，并继续收敛 GPT-like 用户体验。Phase 11 仍规划为会话隔离和历史续聊持久化，当前尚未实现完整 conversation store。
 
 最新状态速览：
 
@@ -15,9 +15,11 @@
 - 当前工作目标已推进到 DAB Hard Recovery v2：先用 Phase 10 after-fix full real report 重新生成 all-450 Easy/Hard proxy observation，再按 Fee / ACI / format / verifier 能力族修复；旧 all-450 proxy hard `75.40%` 只保留为历史风险样本，不代表当前 after-fix 口径。
 - 最新 after-fix proxy observation：`outputs/dabstep_all_1_450_proxy_after_phase10_20260524/all_1_to_450_public_proxy_observation_after_fix.json`，total `420/450 = 93.33%`，Easy `71/72 = 98.61%`，Hard `349/378 = 92.33%`。这是本地 task_scores 后验 proxy，不是 official hidden accuracy；外部 Easy `95` / Hard `84` 只作为提交反馈目标线。
 - Phase 8 已完成 8A-8E：多文件 dataset 装配、`POST /api/data-agent/upload-batch`、问题到表精准路由、多表 join plan、Pandas join materialize、Verifier join 风险校验、trace / debug join 证据均已落地。
-- Phase 9 已完成首版 workbench：`/workbench` 挂载静态前端，支持单/多文件上传、profile 预览、问题提交、结果表格、用户可读分析过程和历史回看；前端不实现指标公式、join 或数据计算。
+- Phase 9 已完成首版 workbench：`/workbench` 挂载静态前端，支持单/多文件上传、无文件直接对话、问题提交、结果表格、用户可读分析过程和历史回看；前端不实现指标公式、join 或数据计算。
 - Phase 10 已完成首版结果体验增强：后端生成 `chart`、`insight`、`quality_report` 和 `reasoning_trace_view` 稳定字段；前端自动展示柱状图 / 折线图 / 饼图 / KPI、洞察建议和用户可读过程时间线；质量报告、warnings/errors、verification 细节和 join trace 保留在后端/API，不在主界面直接展示；过程展示不暴露完整 Chain of Thought。
-- Phase 11 已规划但尚未实现：后续将新增 `conversation_id` 会话隔离、历史 Chat 续聊、多窗口独立会话、未来 `owner_id / tenant_id / owner_context` 预留，以及 GPT-like 小号浅灰单行过程摘要 + 点击展开详情的安静过程展示。
+- Workbench 已支持 `POST /api/data-agent/chat`：没有上传文件时也可以直接和 VDS 讨论分析思路、指标口径和字段设计；如果用户要求真实业务结论，后端会明确需要上传数据，不编造结果。
+- 针对“看一下整体销售情况 / overall sales summary”这类概览问题，Response Builder 会把明细型执行结果收敛为汇总指标表和短回答，避免把整张原始明细行直接塞进主答案；该处理在 `data_agent_core` 完成，不由前端计算。
+- Phase 11 已规划但尚未实现完整会话持久化：后续将新增 `conversation_id` 会话隔离、历史 Chat 续聊、多窗口独立会话、未来 `owner_id / tenant_id / owner_context` 预留。
 - Phase 8 完整门禁结果：DABstep dev 1-10 为 `9/10`；DABstep public all 1-450 mock 执行覆盖为 `450/450`；Microsoft 脱敏数据 1-300 mock scorer 为 `300/300`；桌面 VDS `问题汇总.xlsx` 95 题 smoke 为 `95/95`；`format_risk / submission_risk / trace_redaction_risk` 均为 0。
 - Phase 10 验收结果：Full unittest `147 tests OK`，compileall、`node --check frontend/app.js` 和 `git diff --check` 均通过；Phase 10 mock / 离线回归为 DABstep dev `9/10`、DABstep public all `450/450`、Microsoft `300/300`、VDS 95 smoke `95/95`；真实 DeepSeek full 回归为 DABstep public all `450/450` 执行覆盖、Microsoft `300/300`、VDS 95 smoke `95/95`。
 - DAB Hard Recovery v2 当前门禁：focused tests `73 OK`、full unittest `152 OK`、architecture hardcoding/secret/dependency `8 OK`、DAB dev `9/10`、DAB all mock `450/450`、Microsoft `300/300`、VDS 95 smoke `95/95`、Phase 8 multi-file/join focused `5 OK`，`git diff --check` 通过。
@@ -100,9 +102,11 @@ Phase 9 首版 workbench 由 backend 挂载：
 /frontend/
 ```
 
-它只调用稳定后端 API，不在浏览器中实现核心分析逻辑。多文件上传使用 `/api/data-agent/upload-batch`，分析仍走 `/api/data-agent/analyze`。主界面展示上传状态、数据概览、最终答案、结果表、自动图表、洞察建议、用户可读分析过程和历史记录；后端审计字段如 `source_tables`、`table_selection_reason`、`join_plan`、`join_execution_summary`、verification、warnings、errors 和 `quality_report` 不在主界面直接暴露。
+它只调用稳定后端 API，不在浏览器中实现核心分析逻辑。多文件上传使用 `/api/data-agent/upload-batch`，有 dataset 时分析走 `/api/data-agent/analyze`，没有 dataset 时普通对话走 `/api/data-agent/chat`；用户选择文件后只显示底部附件状态，不在消息区生成上传结果、profile 或错误面板；用户发送问题时，前端会先调用上传接口取得 dataset，再提交分析请求。主界面展示最终答案、结果表、自动图表、洞察建议、用户可读分析过程和历史记录；后端审计字段如 `source_tables`、`table_selection_reason`、`join_plan`、`join_execution_summary`、verification、warnings、errors 和 `quality_report` 不在主界面直接暴露。
 
-Phase 11 计划把 Workbench 升级为可恢复的会话式体验：URL 使用 `/workbench?conversation_id=...` 定位会话，左侧历史 Chat 来自后端会话列表，过程展示默认只保留一条浅灰小字摘要并支持点击查看详情。该能力当前只是计划，不代表现有 API 已支持 conversation endpoints。
+Phase 11 计划把 Workbench 升级为可恢复的会话式体验：URL 使用 `/workbench?conversation_id=...` 定位会话，左侧历史 Chat 来自后端会话列表。当前已落地的是单页内的 GPT-like 安静过程展示和无文件对话，不代表 conversation endpoints 或后端会话持久化已经实现。
+
+本机开发环境可用 `scripts/run_workbench_server.sh` 启动 8001；当前 Mac 已配置用户级 LaunchAgent `com.trevorcui.vds.workbench` 自动启动并保活 `~/.vds-workbench-runtime/VDS` runtime 副本。以后打开 `http://127.0.0.1:8001/workbench` 应可直接使用；如需把当前仓库改动同步到常驻服务目录，运行 `scripts/sync_workbench_runtime.sh`。如需真实 provider，先在 `.env.local` 设置对应环境变量并同步 runtime，没有配置时默认 `VDS_LLM_PROVIDER=mock`。
 
 ## Core Test
 
@@ -147,10 +151,10 @@ VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runti
 - Phase 7.10：ACI Associated Cost and Complex BI Expansion。继续补齐 `best_fraud_aci_choice`、associated cost、fee what-if candidate table 和复杂中文 BI 能力，禁止按题号、proxy 或固定样本特调。
 - Phase 8：Core Algorithm Review, Multi-file / Multi-table Generalization Closure。已完成 8A-8E，多文件路由、多表 join 和三类基准非退步门禁通过。
 - Phase 8 Guardrail：已完成阶段的多文件 / 多表 / join non-regression 守护；后续不重开 Phase 8 主体。
-- Phase 9：Frontend Productization After Core Algorithm Freeze。已完成首版静态 workbench；前端只负责上传、确认、澄清、展示和评测面板，不承载核心计算。
+- Phase 9：Frontend Productization After Core Algorithm Freeze。已完成首版静态 workbench；前端只负责上传、无文件对话入口、确认、澄清、展示和评测面板，不承载核心计算。
 - Phase 9.1：Workbench Confirmation and Review Panels。后续增强字段确认、join key 确认、低置信度澄清和评测回看面板，前端仍不实现指标公式、join、排序、聚合或评分。
 - Phase 10：Visualization, Insight, Data Quality and Safe Process View。已完成 ChartSpec v2、InsightResult v2、DataQualityReport、reasoning_trace_view 和 workbench 展示；前端只渲染后端契约，不做核心计算或 raw CoT 展示，并将质量、warnings/errors、verification 和 join trace 作为后端审计信息处理，不在主界面直接展示。
-- Phase 11：Conversation Isolation, Session Persistence and Quiet Process UX。已规划，尚未实现；目标是 `conversation_id` 会话隔离、历史续聊、多窗口独立会话、未来用户/租户隔离字段预留，以及 GPT-like 安静过程展示。
+- Phase 11：Conversation Isolation and Session Persistence。已规划，尚未实现完整会话存储；目标是 `conversation_id` 会话隔离、历史续聊、多窗口独立会话、未来用户/租户隔离字段预留。GPT-like 安静过程展示已先作为 Workbench UX hardening 落地。
 
 后续 TODO：
 
@@ -163,4 +167,4 @@ VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runti
 - Phase 8 Guardrail 后续继续在代码变更后补跑 staged / full real 回归，记录 provider、model、cost / latency、report hash 和失败归因；当前 Phase 10 after-fix full real 已完成，但 DABstep public all 仍不能本地计算 hidden official accuracy。
 - Phase 9.1 持续扩展字段确认、join key 确认、澄清交互和评测回看面板，但核心指标公式、join 和数据计算仍必须留在后端 / data_agent_core。
 - Phase 10 后续只做体验和契约回归增强；如要自动清洗数据，必须开新 Phase 并要求用户确认清洗动作，不能在 Phase 10 自动改原始数据。
-- Phase 11 后续先落地会话 API 和持久化边界，再接前端历史 Chat 与安静过程 UX；v1 可为本地匿名隔离，但必须预留未来 `owner_context` 过滤，不能把计划写成已实现登录权限。
+- Phase 11 后续先落地会话 API 和持久化边界，再接前端历史 Chat 续聊；v1 可为本地匿名隔离，但必须预留未来 `owner_context` 过滤，不能把计划写成已实现登录权限。

@@ -328,6 +328,380 @@ YYYY-MM-DD HH:MM TZ
 
 ### 日期时间
 
+2026-05-24 13:13 CST
+
+### 本次目标
+
+按用户反馈自查并修正 Workbench 两个核心体验问题：`看一下整体销售情况` 不能把原始多字段明细行直接作为主答案返回；没有上传文件时也必须能像 GPT-like 对话一样和 VDS 直接聊天。
+
+### 修改文件
+
+- data_agent_core/output/response_builder.py
+- backend/services/data_agent_service.py
+- backend/routers/data_agent.py
+- frontend/app.js
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- README.md
+- frontend/README.md
+- docs/API_CONTRACT.md
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- Response Builder 新增概览类问题展示收敛：当问题命中“整体 / 总体 / 概览 / overall summary”且执行结果是多行多列明细时，把主答案收敛为短业务概览，把主结果表收敛为 `指标 / 数值` 汇总表，并在 debug 记录 `user_experience_shaping` 证据。
+- 新增 `DataAgentService.chat_without_dataset()` 和 `POST /api/data-agent/chat`：无 dataset 时允许 VDS 直接回应分析思路、字段设计、指标口径和使用方式；涉及真实销售/收入/经营结论时明确需要上传数据，不编造业务结果。
+- Workbench 提交逻辑改为只要求有问题文本即可发送；有待上传文件时先静默上传再 analyze，没有 dataset 时调用 `/api/data-agent/chat`。
+- 无文件 chat 结果隐藏表格、图表和洞察面板，只显示 VDS 回复和轻量过程摘要。
+- 概览收敛结果隐藏原始明细图表和洞察建议，避免出现空白图表区、数据质量建议或后端审计语气。
+- 用户首次发送消息后隐藏欢迎语，减少首屏占用，让结果更接近 GPT-like 对话排版。
+- 静态测试补充 Workbench 必须包含 `/api/data-agent/chat` 且不能再以缺失 dataset 禁用发送按钮。
+- README、frontend README、API_CONTRACT 和 MAIN_GOAL 同步说明：无文件 chat 已实现；完整 conversation persistence 仍是 Phase 11 planned；前端仍不承载指标、join、排序、聚合或评分。
+
+### 测试方式
+
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets tests.core.test_output_contract tests.core.test_phase10_result_experience
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- git diff --check
+- scripts/sync_workbench_runtime.sh
+- launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+- curl 验证 `GET /workbench` 返回 200。
+- Browser 插件验证无文件对话：输入 `没有文件时你能做什么？`，确认发送按钮启用、状态为 `已回复`、表格/洞察隐藏、console warning/error 为 0。
+- Playwright CLI fallback 验证本地文件上传：上传 `/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/数据/QueryGPT_SaaS订阅数据_单表版.xlsx`，输入 `看一下整体销售情况`，等待 `/upload` 和 `/analyze` 均返回 200。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- 目标后端/核心测试通过：Ran 26 tests，OK。
+- 完整 unittest 通过：Ran 156 tests，OK。
+- `git diff --check` 通过。
+- 运行副本已同步并重启，`127.0.0.1:8001` 当前由 LaunchAgent 监听，`/workbench` 返回 200。
+- 无文件 chat smoke：`POST /api/data-agent/chat` 返回 200；发送按钮 `sendEnabled=true`；状态 `已回复`；无 `Dataset not found`；表格、图表、洞察面板均隐藏；console warning/error 为 0；截图 `/tmp/vds_workbench_no_file_chat_20260524_v2.png`。
+- 上传 SaaS Excel 概览 smoke：`POST /api/data-agent/upload` 和 `/api/data-agent/analyze` 均返回 200；答案长度 117；结果表头为 `["指标", "数值"]`，6 行汇总；不包含 `SS2025000001` 或 `SaaS订阅, SS2025000001` 原始明细前缀；不包含 `数据质量` / `高严重度`；图表和洞察面板隐藏；欢迎语隐藏；截图 `/tmp/vds_workbench_overview_fix_20260524_v3.png`。
+
+### 遗留问题
+
+- 当前 `/api/data-agent/chat` 是无 dataset 的轻量对话入口，不是 Phase 11 会话持久化；历史续聊、conversation store、多窗口隔离和 owner_context 过滤仍按 Phase 11 计划处理。
+- 概览收敛是结果展示层能力；更复杂的业务口径解释、趋势/维度自动下钻仍需要继续在 Planner / Executor / Insight 能力族里增强，不能放到前端计算。
+- `.playwright-cli/` 仍是本地 Playwright 运行目录，本轮不纳入 Git。
+
+### 是否影响主流程
+
+是。影响 Workbench 用户可见提问、无文件对话和概览类结果展示；核心执行仍由 data_agent_core / backend 完成。
+
+### 是否涉及 Benchmark
+
+否。没有修改 Benchmark runner、scorer、task_id、标准答案或 proxy 观察逻辑。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 MAF adapter 或相关依赖。
+
+### 是否影响未来多 Agent 迁移
+
+否。无文件 chat 是 backend shell 的辅助入口；上传后 analyze 仍走当前 multi_agent workflow。概览收敛位于 Response Builder，不改变 Planner / Executor / Verifier 的职责边界。
+
+### 是否修改核心数据契约
+
+是。稳定响应字段未删改，但新增已实现的 `/chat` 响应形态；analyze 的 `result` 在概览类问题下可能从明细表收敛为展示汇总表。
+
+### 是否修改 API 契约
+
+是。新增 `POST /api/data-agent/chat` 并同步 docs/API_CONTRACT.md；明确它不等于 Phase 11 conversation APIs。
+
+### 是否新增或修改错误类型
+
+否。继续复用现有 `LOGIC_FORM_ERROR` 做空 question 或非法 agent_mode 的标准错误。
+
+### 是否新增或修改运行追踪逻辑
+
+否。只新增无 dataset chat 的安全 `reasoning_trace_view` 摘要；不新增 raw CoT 或后端审计展示。
+
+### 是否已同步 README
+
+是。README、frontend README、API_CONTRACT 和 MAIN_GOAL 均已同步。
+
+---
+
+### 日期时间
+
+2026-05-24 11:49 CST
+
+### 本次目标
+
+修复真实 `/workbench` 前端可见回归：上传 Excel 失败、发送按钮不可点、上传后主界面乱跳结果、消息顺序不符合 GPT-like 对话，以及本地 `8001` 端口需要能直接打开使用。
+
+### 修改文件
+
+- backend/schemas/data_agent_schema.py
+- tests/backend/test_data_agent_service.py
+- frontend/index.html
+- frontend/app.js
+- frontend/styles.css
+- frontend/README.md
+- README.md
+- scripts/run_workbench_server.sh
+- scripts/sync_workbench_runtime.sh
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 后端 `to_json_ready()` 增加 pandas / numpy scalar、非有限 float、datetime / Timestamp 的 JSON-safe 递归转换，修复 Excel 字段样例里 `Timestamp` 导致上传返回 500 的问题。
+- 新增 Excel datetime profile 回归测试，确保上传响应可以被 `json.dumps()` 序列化。
+- 前端发送按钮逻辑改为：有问题且已有 dataset 或待上传附件时可发送；发送时自动先上传待上传文件，再调用 analyze。
+- 上传选择和上传成功保持静默：只更新底部 composer 附件状态，不展示 profile 卡片、结果面板、warnings、quality 或 verification 术语。
+- 移除主界面上传失败结果面板；上传失败只在底部附件状态和顶部轻量状态中提示。
+- 把过程展示改成 GPT-like 安静样式：默认只显示一行小号浅灰摘要，`查看处理过程` 点击后才展开结构化步骤，不展示 raw Chain of Thought。
+- 修复结果消息 DOM 顺序：每次提问后把 assistant 结果消息移动到当前 user 消息之后，避免出现“先回答、后显示用户问题”。
+- 结果区减少占位噪音：无图表、无表格、无洞察时隐藏对应区域；非成功结果不再展示可能混入数据质量/警告语气的洞察面板。
+- 顶部长文件名状态做单行截断，避免多文件上传后挤乱 topbar。
+- 新增 `scripts/run_workbench_server.sh` 和 `scripts/sync_workbench_runtime.sh`，配合本机 LaunchAgent 让 `http://127.0.0.1:8001/workbench` 可直接打开；由于 macOS TCC 限制，LaunchAgent 使用 `~/.vds-workbench-runtime/VDS` 运行副本。
+- README / frontend README 同步本地 Workbench 启动、运行副本和端口说明。
+
+### 测试方式
+
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets
+- git diff --check
+- curl 验证 `GET /workbench`、`GET /frontend/app.js`、`GET /frontend/styles.css` 均返回 200。
+- 同步运行副本并重启 LaunchAgent：`scripts/sync_workbench_runtime.sh && launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- Browser 插件打开 `http://127.0.0.1:8001/workbench`，检查页面标题、首屏、console errors/warnings 和静默初始状态。
+- Playwright fallback 在真实 `8001/workbench` 选择 5 个本地 Excel 文件，输入 `哪个城市销售额最高？`，点击发送并等待 upload-batch / analyze 响应。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- Backend/static asset unittest 通过：Ran 10 tests，OK。
+- `git diff --check` 通过。
+- curl 结果：`/workbench`、`/frontend/app.js`、`/frontend/styles.css` 均为 200。
+- LaunchAgent 正在运行，`127.0.0.1:8001` 有监听；当前运行副本已同步到 `~/.vds-workbench-runtime/VDS`。
+- Browser 检查：页面标题为 `Virtual Data Scientist Workbench`，console errors/warnings 为 0；初始状态 `resultHidden=true`、`profileHidden=true`、无 `.upload-card` / `#dropzone`。
+- Playwright 5-Excel smoke：选择文件后 `fileSummary=5 个文件已附加`、`resultHidden=true`、`profileHidden=true`；输入问题后发送按钮可点；`POST /api/data-agent/upload-batch` 返回 200，`POST /api/data-agent/analyze` 返回 200；最终 `fileSummary=5 个文件已就绪`、`historyCount=1`、消息顺序为 welcome -> user -> assistant，console/page issues 为空。
+
+### 遗留问题
+
+- 当前 smoke 使用 `VDS_LLM_PROVIDER=mock`；mock 结果质量仍由后端当前分析链路决定，本轮只修复上传、前端交互、排版和本地端口可用性，不改核心分析、join、排序、聚合或评分逻辑。
+- `.playwright-cli/` 仍是本地 Playwright 运行目录，本轮不纳入 Git。
+- 多会话隔离、历史续聊和未来用户隔离仍按 Phase 11 文档规划，尚未实现。
+
+### 是否影响主流程
+
+是。影响 Workbench 用户可见上传和提问流程，但不修改核心分析算法。
+
+### 是否涉及 Benchmark
+
+否。没有修改 Benchmark runner、scorer、task_id、标准答案或 proxy 观察逻辑。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。前端仍只调用 upload / analyze API，不承载 Agent 编排、join、聚合、排序或评分逻辑。
+
+### 是否修改核心数据契约
+
+否。只增强响应序列化安全性，不改变稳定字段形态。
+
+### 是否修改 API 契约
+
+否。未新增或删除 API 字段。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。过程展示只使用已有 safe summary，不展示 raw Chain of Thought。
+
+### 是否已同步 README
+
+是。README 和 frontend README 已同步本地 Workbench 端口、LaunchAgent / runtime copy 和验证说明。
+
+---
+
+### 日期时间
+
+2026-05-24 11:11 CST
+
+### 本次目标
+
+让本机打开 `http://127.0.0.1:8001/workbench` 时可以直接使用，不再依赖手动临时启动进程。
+
+### 修改文件
+
+- scripts/run_workbench_server.sh
+- scripts/sync_workbench_runtime.sh
+- README.md
+- CHANGELOG_AI.md
+- /Users/trevorcui/Library/LaunchAgents/com.trevorcui.vds.workbench.plist
+
+### 修改内容
+
+- 新增 `scripts/run_workbench_server.sh`，固定从 `/Users/trevorcui/Documents/VDS` 启动 `backend.main:app`，默认监听 `127.0.0.1:8001`。
+- 新增 `scripts/sync_workbench_runtime.sh`，用于把当前仓库同步到 `~/.vds-workbench-runtime/VDS` 常驻服务目录。
+- 启动脚本会读取 `.env.local`，没有显式 provider 配置时默认 `VDS_LLM_PROVIDER=mock`；脚本会检查并安装缺失的 `fastapi`、`uvicorn`、`python-multipart` 服务依赖。
+- 新增用户级 macOS LaunchAgent `com.trevorcui.vds.workbench`，`RunAtLoad` + `KeepAlive` 保活 8001 服务。
+- 由于 macOS 后台进程无法直接访问 `Documents/VDS`，LaunchAgent 实际从 `~/.vds-workbench-runtime/VDS` runtime 副本启动；当前已同步本仓库内容到该 runtime。
+- README 记录本机 LaunchAgent、runtime 副本和启动脚本，说明以后打开 `/workbench` 应可直接使用。
+
+### 测试方式
+
+- bash -n scripts/run_workbench_server.sh
+- bash -n scripts/sync_workbench_runtime.sh
+- bash -n /Users/trevorcui/.vds-workbench-runtime/VDS/scripts/run_workbench_server.sh
+- plutil -lint /Users/trevorcui/Library/LaunchAgents/com.trevorcui.vds.workbench.plist
+- launchctl bootstrap / bootout / kickstart 用户级 LaunchAgent
+- launchctl print gui/$(id -u)/com.trevorcui.vds.workbench
+- lsof -iTCP:8001 -sTCP:LISTEN -nP
+- curl -sS -D - --max-time 5 http://127.0.0.1:8001/workbench -o /tmp/vds-workbench.html
+- curl -I --max-time 5 http://127.0.0.1:8001/frontend/app.js
+- KeepAlive smoke：kill 当前 uvicorn pid，等待 launchd 自动重启，再访问 `/workbench`
+- git diff --check
+
+### 测试结果
+
+- repo 启动脚本和 runtime 启动脚本 `bash -n` 通过。
+- runtime 同步脚本 `bash -n` 通过。
+- LaunchAgent plist `plutil -lint` 通过。
+- LaunchAgent 已成功 bootstrap / kickstart，`launchctl print` 显示 `state = running`。
+- 8001 监听正常，当前由 launchd 管理的 uvicorn 进程监听 `127.0.0.1:8001`。
+- `/workbench` 返回 `HTTP/1.1 200 OK`，HTML 正确引用 `/frontend/styles.css` 和 `/frontend/app.js`。
+- `/frontend/app.js` 和 `/frontend/styles.css` 均返回 200。
+- KeepAlive smoke 通过：kill 当前 uvicorn 后，launchd 自动拉起新 pid，`/workbench` 仍返回 200。
+
+### 遗留问题
+
+- 当前 LaunchAgent 是本机用户级配置，不是跨机器部署方案。
+- 如果要使用真实 provider，必须确认 `.env.local` 中 provider 和 key 配置正确；否则脚本默认使用 mock。
+
+### 是否影响主流程
+
+是。影响本机 Workbench 启动方式，但不修改后端 API 行为或核心分析逻辑。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。只是本地服务启动方式。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 已记录本机常驻 8001 的启动脚本和 LaunchAgent。
+
+---
+
+### 日期时间
+
+2026-05-24 11:07 CST
+
+### 本次目标
+
+修复 Workbench 选择文件并输入问题后发送按钮仍不可点击的问题；让 GPT-like composer 支持直接发送，前端自动先上传待选文件，再提交分析请求。
+
+### 修改文件
+
+- frontend/app.js
+- frontend/README.md
+- README.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `updateRunButton()` 改为在“已有 dataset”或“存在待上传文件”时都允许发送，不再强制用户先点击小型上传按钮。
+- `runAnalysis()` 在存在待上传文件时先调用上传 API，上传成功后再追加用户消息并调用 `/api/data-agent/analyze`。
+- 增加 `state.hasPendingUpload`、`state.isUploading`、`state.isAnalyzing`，避免重复点击和重新选文件后误用旧 dataset。
+- 上传成功后禁用并隐藏独立上传按钮，文件状态显示“已上传”；重新选择文件后再次进入待上传状态。
+- README / frontend README 同步说明 composer 会先上传待选文件再分析，前端仍不实现核心计算。
+
+### 测试方式
+
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets
+- git diff --check
+- Playwright smoke：打开 `http://127.0.0.1:8001/workbench`，上传 `/tmp/vds_sales_smoke.csv` 和 `/tmp/vds_city_smoke.csv`，输入“哪个城市销售额最高？”，检查发送按钮 `disabled=false`，点击发送后等待自动 `upload-batch` 和 `analyze` 完成。
+- Playwright console / network 检查。
+
+### 测试结果
+
+- node syntax check 通过。
+- backend static workbench tests 通过：Ran 3 tests，OK。
+- git diff --check 通过。
+- Playwright 发送按钮状态验证通过：选中文件并输入问题后 `disabled=false`。
+- Playwright 自动上传并分析通过：`POST /api/data-agent/upload-batch` 200，`POST /api/data-agent/analyze` 200，状态为“分析完成”，答案为“北京, 250”，历史数量为 1。
+- Browser console 检查：0 errors，0 warnings。
+
+### 遗留问题
+
+- 当前本地 8001 服务仍以 `VDS_LLM_PROVIDER=mock` 运行；真实 provider 链路需要用真实环境变量重启。
+- `.playwright-cli/` 仍是本地未跟踪目录，本轮未纳入 Git。
+
+### 是否影响主流程
+
+是。修复 Workbench 用户提交路径，但只改变前端调用顺序和按钮状态；后端 upload / analyze 核心契约不变。
+
+### 是否涉及 Benchmark
+
+否。未修改 Benchmark 数据、runner、scorer 或核心能力逻辑。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。前端仍只调用后端稳定 API，不接触 multi_agent workflow 内部实现。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。仍使用既有 `/api/data-agent/upload`、`/api/data-agent/upload-batch` 和 `/api/data-agent/analyze`。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 已同步说明选择文件后可直接发送，前端会先上传再分析。
+
+---
+
+### 日期时间
+
 2026-05-23 17:41 CST
 
 ### 本次目标

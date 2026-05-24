@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
+import math
 from pathlib import Path
 from typing import Any
 
@@ -93,9 +94,18 @@ def to_json_ready(value: Any) -> Any:
         return [to_json_ready(item) for item in value]
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     if hasattr(value, "item"):
         try:
-            return value.item()
+            scalar = value.item()
+            if scalar is not value:
+                return to_json_ready(scalar)
+        except (TypeError, ValueError):
+            pass
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
         except (TypeError, ValueError):
             pass
     return value
