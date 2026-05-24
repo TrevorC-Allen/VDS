@@ -15,7 +15,7 @@
 - 当前工作目标已推进到 DAB Hard Recovery v2：先用 Phase 10 after-fix full real report 重新生成 all-450 Easy/Hard proxy observation，再按 Fee / ACI / format / verifier 能力族修复；旧 all-450 proxy hard `75.40%` 只保留为历史风险样本，不代表当前 after-fix 口径。
 - 最新 after-fix proxy observation：`outputs/dabstep_all_1_450_proxy_after_phase10_20260524/all_1_to_450_public_proxy_observation_after_fix.json`，total `420/450 = 93.33%`，Easy `71/72 = 98.61%`，Hard `349/378 = 92.33%`。这是本地 task_scores 后验 proxy，不是 official hidden accuracy；外部 Easy `95` / Hard `84` 只作为提交反馈目标线。
 - Phase 8 已完成 8A-8E：多文件 dataset 装配、`POST /api/data-agent/upload-batch`、问题到表精准路由、多表 join plan、Pandas join materialize、Verifier join 风险校验、trace / debug join 证据均已落地。
-- Phase 9 已完成首版 workbench：`/workbench` 挂载静态前端，支持单/多文件上传、无文件直接对话、问题提交、结果表格、用户可读分析过程和历史回看；前端不实现指标公式、join 或数据计算。
+- Phase 9 已完成首版 workbench：`/workbench` 挂载静态前端，支持单/多文件上传、无文件直接对话、问题提交、结果表格、用户可读分析过程、历史回看和单页会话内历史重命名；前端不实现指标公式、join 或数据计算。
 - Phase 10 已完成首版结果体验增强：后端生成 `chart`、`insight`、`quality_report` 和 `reasoning_trace_view` 稳定字段；`chart` 可携带后端 Python 渲染的 SVG `image_data_uri`，Workbench 优先展示该图像，前端仅保留 chart spec fallback；洞察建议和用户可读过程时间线已展示，质量报告、warnings/errors、verification 细节和 join trace 保留在后端/API，不在主界面直接展示；过程展示不暴露完整 Chain of Thought。
 - Workbench 已支持统一 `POST /api/data-agent/message`：无文件时直接进入辅助聊天；有文件时由后端判断普通聊天、数据概览或正式分析，避免“你好 / 你是什么模型”被误送进分析链路。
 - 针对“看一下这个数据 / 看一下整体销售情况 / overall sales summary”这类概览问题，后端会在 `data_agent_core` 生成全表数据概览，返回表规模、关键数值字段、合计/平均/最高/最低和可下钻方向，避免把单个行数或原始多字段明细行当作主答案；前端不计算这些指标。
@@ -102,7 +102,7 @@ Phase 9 首版 workbench 由 backend 挂载：
 /frontend/
 ```
 
-它只调用稳定后端 API，不在浏览器中实现核心分析逻辑。多文件上传使用 `/api/data-agent/upload-batch`；用户发送问题时，前端会先调用上传接口取得 dataset，再统一提交到 `/api/data-agent/message`，由后端决定普通聊天、数据概览或正式分析。用户选择文件后只显示底部附件状态，不在消息区生成上传结果、profile 或错误面板。主界面展示最终答案、结果表、自动图表、洞察建议、用户可读分析过程和历史记录；每一轮用户消息都会创建独立 assistant 回复，不复用上一轮结果容器。后端审计字段如 `source_tables`、`table_selection_reason`、`join_plan`、`join_execution_summary`、verification、warnings、errors 和 `quality_report` 不在主界面直接暴露。
+它只调用稳定后端 API，不在浏览器中实现核心分析逻辑。多文件上传使用 `/api/data-agent/upload-batch`；用户发送问题时，前端会先调用上传接口取得 dataset，再统一提交到 `/api/data-agent/message`，由后端决定普通聊天、数据概览或正式分析。用户选择文件后只显示底部附件状态，不在消息区生成上传结果、profile 或错误面板。主界面展示最终答案、结果表、自动图表、洞察建议、用户可读分析过程和历史记录；每一轮用户消息都会创建独立 assistant 回复，不复用上一轮结果容器。左侧历史记录支持当前单页会话内重命名，Enter 保存、Escape 取消、失焦保存；这仍是前端会话状态，不代表后端会话标题持久化已经实现。后端审计字段如 `source_tables`、`table_selection_reason`、`join_plan`、`join_execution_summary`、verification、warnings、errors 和 `quality_report` 不在主界面直接暴露。
 
 Phase 11 计划把 Workbench 升级为可恢复的会话式体验：URL 使用 `/workbench?conversation_id=...` 定位会话，左侧历史 Chat 来自后端会话列表。当前已落地的是单页内的 GPT-like 安静过程展示和无文件对话，不代表 conversation endpoints 或后端会话持久化已经实现。
 

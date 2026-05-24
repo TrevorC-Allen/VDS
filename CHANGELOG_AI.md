@@ -68,6 +68,90 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-24 18:38 CST
+
+### 本次目标
+
+为 Workbench 左侧每个历史对话增加可重命名能力，避免历史 Chat 只能显示原始问题文本。
+
+### 修改文件
+
+- frontend/app.js
+- frontend/styles.css
+- frontend/index.html
+- tests/backend/test_workbench_static_assets.py
+- README.md
+- frontend/README.md
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `pushHistory()` 保存独立 `title` 字段，历史列表改由 `renderHistory()` 统一渲染。
+- 每个历史项新增重命名按钮和编辑输入框，支持点击按钮或双击标题进入编辑。
+- Enter 保存新标题，Escape 取消本次编辑，输入框失焦保存；空标题不会覆盖原有标题。
+- 补充历史项重命名的侧边栏布局、按钮、输入框和编辑态样式，避免标题、按钮和输入框互相挤压。
+- 静态资源版本更新为 `?v=20260524-history-rename`，避免浏览器继续使用旧 JS / CSS。
+- README、frontend README、MAIN_GOAL 同步说明：当前支持单页会话内历史重命名，但不代表 Phase 11 后端会话标题持久化已完成。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- `curl -s http://127.0.0.1:8001/workbench | rg -n "20260524-history-rename|frontend/app.js|frontend/styles.css"`
+- Browser plugin 打开 `http://127.0.0.1:8001/workbench?qa=history-rename`，发送“你好”生成历史项，重命名为“自定义历史标题”，再测试 Escape 取消编辑。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- Focused static tests 通过：Ran 10 tests，OK。
+- `git diff --check` 通过。
+- runtime 已同步并重启，`/workbench` 返回 `styles.css?v=20260524-history-rename` 和 `app.js?v=20260524-history-rename`。
+- Browser 验证通过：页面标题为 `Virtual Data Scientist Workbench`，发送“你好”后产生 1 条历史记录；点击重命名按钮后 Enter 保存为“自定义历史标题”；再次编辑后 Escape 保持原标题不变；console error/warn 为 0；截图已保存到 `/tmp/vds-history-rename.png`。
+
+### 遗留问题
+
+- 当前重命名只保存在前端单页状态中；刷新页面或未来进入后端历史会话列表后仍需要 Phase 11 conversation store 支持持久化标题。
+
+### 是否影响主流程
+
+是。影响 Workbench 左侧历史 Chat 展示和交互，不改变数据上传、消息路由、分析执行或后端结果生成逻辑。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。该改动仅在 Workbench 展示层，仍调用既有 `/api/data-agent/message` 和后端分析链路。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 和 frontend README 已同步当前单页历史重命名能力及其非持久化边界。
+
 2026-05-24 18:27 CST
 
 ### 本次目标

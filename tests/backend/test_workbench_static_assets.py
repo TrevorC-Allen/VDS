@@ -10,9 +10,9 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
     def test_workbench_uses_backend_mounted_asset_paths(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/frontend/styles.css?v=20260524-python-chart"', html)
+        self.assertIn('href="/frontend/styles.css?v=20260524-history-rename"', html)
         self.assertIn('href="/frontend/favicon.svg"', html)
-        self.assertIn('src="/frontend/app.js?v=20260524-python-chart"', html)
+        self.assertIn('src="/frontend/app.js?v=20260524-history-rename"', html)
         self.assertNotIn('href="./styles.css"', html)
         self.assertNotIn('src="./app.js"', html)
 
@@ -20,7 +20,7 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         html = Path("frontend/index.html").read_text(encoding="utf-8")
         backend = Path("backend/main.py").read_text(encoding="utf-8")
 
-        self.assertIn("?v=20260524-python-chart", html)
+        self.assertIn("?v=20260524-history-rename", html)
         self.assertIn("NO_CACHE_HEADERS", backend)
         self.assertIn('"Cache-Control": "no-store, max-age=0"', backend)
         self.assertIn('"Pragma": "no-cache"', backend)
@@ -98,6 +98,25 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn('event.key !== "Enter" || event.shiftKey || event.isComposing', js)
         self.assertIn("event.preventDefault()", js)
         self.assertIn("runAnalysis()", js)
+
+    def test_workbench_history_items_can_be_renamed(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+        css = Path("frontend/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("renderHistory()", js)
+        self.assertIn("startHistoryRename", js)
+        self.assertIn("commitHistoryRename", js)
+        self.assertIn("handleHistoryRenameKeydown", js)
+        self.assertIn("history-rename-button", js)
+        self.assertIn("history-rename-input", js)
+        self.assertIn('event.key === "Enter"', js)
+        self.assertIn('event.key === "Escape"', js)
+        self.assertIn("dataset.cancelRename", js)
+        self.assertIn('input.addEventListener("blur"', js)
+        self.assertIn(".history-item", css)
+        self.assertIn(".history-rename-button", css)
+        self.assertIn(".history-rename-input", css)
+        self.assertIn(".history-item.editing .history-title", css)
 
 
 if __name__ == "__main__":

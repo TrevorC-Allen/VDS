@@ -134,7 +134,7 @@ svg {
 }
 
 .new-chat-button:hover,
-.run-history li:hover {
+.run-history .history-item:hover {
   background: var(--sidebar-hover);
 }
 
@@ -184,6 +184,17 @@ svg {
   line-height: 1.35;
 }
 
+.history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 6px;
+  align-items: center;
+}
+
+.history-item-text {
+  min-width: 0;
+}
+
 .run-history strong {
   display: block;
   margin-bottom: 2px;
@@ -197,6 +208,66 @@ svg {
 .run-history span,
 .history-empty {
   color: var(--muted);
+}
+
+.history-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-rename-button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.history-item:hover .history-rename-button,
+.history-item:focus-within .history-rename-button,
+.history-item.editing .history-rename-button {
+  opacity: 1;
+}
+
+.history-rename-button:hover {
+  background: #fff;
+  color: var(--accent);
+}
+
+.history-rename-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.history-rename-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: #111827;
+  padding: 0 7px;
+  outline: none;
+  font-size: 13px;
+}
+
+.history-rename-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+.history-item.editing .history-title {
+  display: none;
 }
 
 .chat-workspace {

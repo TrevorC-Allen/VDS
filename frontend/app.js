@@ -635,24 +635,88 @@ function renderUserFacingError(title, message) {
 function pushHistory(result) {
   const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset" || result.debug?.agent_mode === "chat_with_dataset";
   state.runHistory.unshift({
-    runId: result.run_id,
+    runId: result.run_id || `history_${Date.now()}`,
     success: result.success,
     answer: result.answer,
     question: result.question,
+    title: result.question,
     mode: isChat ? "chat" : "analysis",
   });
   state.runHistory = state.runHistory.slice(0, 8);
+  renderHistory();
+}
+
+function renderHistory() {
   el.historyCount.textContent = String(state.runHistory.length);
+  if (!state.runHistory.length) {
+    el.runHistory.innerHTML = `<li class="history-empty">上传数据并提问后，这里会显示最近的分析记录。</li>`;
+    return;
+  }
   el.runHistory.innerHTML = state.runHistory
     .map(
-      (item) => `
-        <li>
-          <strong>${escapeHtml(item.mode === "chat" ? "已回复" : item.success ? "已完成分析" : "需要继续确认")}</strong>
-          <span>${escapeHtml(item.question || "")}</span>
+      (item) => {
+        const title = item.title || item.question || "未命名对话";
+        return `
+        <li class="history-item" data-run-id="${escapeHtml(item.runId || "")}">
+          <div class="history-item-text">
+            <strong>${escapeHtml(item.mode === "chat" ? "已回复" : item.success ? "已完成分析" : "需要继续确认")}</strong>
+            <span class="history-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
+            <input class="history-rename-input hidden" type="text" maxlength="80" value="${escapeHtml(title)}" aria-label="重命名历史对话" />
+          </div>
+          <button class="history-rename-button" type="button" title="重命名" aria-label="重命名历史对话">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 20 8-8-4-4-8 8-2 6 6-2Z"></path><path d="m14 6 4 4"></path></svg>
+          </button>
         </li>
-      `,
+      `;
+      },
     )
     .join("");
+  el.runHistory.querySelectorAll(".history-rename-button").forEach((button) => {
+    button.addEventListener("click", () => startHistoryRename(button.closest(".history-item")?.dataset.runId || ""));
+  });
+  el.runHistory.querySelectorAll(".history-title").forEach((title) => {
+    title.addEventListener("dblclick", () => startHistoryRename(title.closest(".history-item")?.dataset.runId || ""));
+  });
+  el.runHistory.querySelectorAll(".history-rename-input").forEach((input) => {
+    input.addEventListener("keydown", handleHistoryRenameKeydown);
+    input.addEventListener("blur", () => {
+      if (input.dataset.cancelRename === "true") return;
+      commitHistoryRename(input.closest(".history-item")?.dataset.runId || "", input.value);
+    });
+  });
+}
+
+function startHistoryRename(runId) {
+  const row = el.runHistory.querySelector(`[data-run-id="${cssEscape(runId)}"]`);
+  if (!row) return;
+  row.classList.add("editing");
+  const input = row.querySelector(".history-rename-input");
+  input?.classList.remove("hidden");
+  input?.focus();
+  input?.select();
+}
+
+function handleHistoryRenameKeydown(event) {
+  const runId = event.currentTarget.closest(".history-item")?.dataset.runId || "";
+  if (event.key === "Enter") {
+    event.preventDefault();
+    commitHistoryRename(runId, event.currentTarget.value);
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.currentTarget.dataset.cancelRename = "true";
+    renderHistory();
+  }
+}
+
+function commitHistoryRename(runId, rawTitle) {
+  const item = state.runHistory.find((entry) => entry.runId === runId);
+  if (!item) return;
+  const title = String(rawTitle || "").trim();
+  if (title) {
+    item.title = title;
+  }
+  renderHistory();
 }
 
 function clearResult() {
@@ -807,4 +871,9 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return window.CSS.escape(value);
+  return String(value).replace(/["\\]/g, "\\$&");
 }
