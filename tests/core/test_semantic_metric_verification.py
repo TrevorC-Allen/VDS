@@ -413,6 +413,66 @@ class SemanticMetricVerificationTest(unittest.TestCase):
         self.assertEqual("repair_denominator", verification.correction_action["action"])
         self.assertEqual("销售额", verification.correction_action["field"])
 
+    def test_verifier_rejects_fee_selection_outside_candidate_table(self) -> None:
+        plan = build_analysis_plan(
+            LogicForm(
+                task_type="fee_rule",
+                operation="best_fraud_aci_choice",
+                filters={"merchant": "SyntheticMerchant", "year": 2023, "month": 1},
+                output_format={"answer_type": "scheme_fee"},
+            )
+        )
+        primary = ExecutionResult(
+            backend="pandas",
+            success=True,
+            value={
+                "selected": "Z",
+                "fee": 1.0,
+                "candidate_table": [{"aci": "D", "fee": 2.0}, {"aci": "E", "fee": 1.0}],
+            },
+        )
+
+        verification = verify_execution(
+            primary,
+            plan=plan,
+            user_question=UserQuestion(
+                dataset_id="synthetic_fee_rules",
+                question="For fraudulent transactions, which ACI leads to the lowest possible fees?",
+            ),
+        )
+
+        self.assertFalse(verification.passed)
+        self.assertFalse(verification.semantic_passed)
+        self.assertEqual("reselect_from_candidate_table", verification.correction_action["action"])
+
+    def test_verifier_rejects_fee_candidate_table_without_numeric_fee(self) -> None:
+        plan = build_analysis_plan(
+            LogicForm(
+                task_type="fee_rule",
+                operation="aci_fee_extreme",
+                parameters={"transaction_value": 10.0},
+                output_format={"answer_type": "aci"},
+            )
+        )
+        primary = ExecutionResult(
+            backend="pandas",
+            success=True,
+            value={"selected": "A", "candidate_table": [{"aci": "A", "fee": None}]},
+        )
+
+        verification = verify_execution(
+            primary,
+            plan=plan,
+            user_question=UserQuestion(
+                dataset_id="synthetic_fee_rules",
+                question="Which ACI is the most expensive for a transaction of 10 euros?",
+            ),
+        )
+
+        self.assertFalse(verification.passed)
+        self.assertFalse(verification.semantic_passed)
+        self.assertEqual("repair_fee_candidate_table", verification.correction_action["action"])
+
 
 if __name__ == "__main__":
     unittest.main()

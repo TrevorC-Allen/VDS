@@ -342,6 +342,32 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
             self.assertEqual(["MerchantA", "MerchantB"], engine.fee_restriction_affected_merchants(fee_id=10, year=2023))
             self.assertEqual(["MerchantA"], engine.fee_restriction_affected_merchants(fee_id=10, new_account_type="B", year=2023))
 
+    def test_applicable_fee_ids_are_returned_as_stable_numeric_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "fees.json").write_text(
+                json.dumps(
+                    [
+                        _fee_rule(200, "GlobalCard", ["B"], fixed_amount=0.10, rate=0),
+                        _fee_rule(100, "GlobalCard", ["A"], fixed_amount=0.10, rate=0),
+                    ]
+                )
+            )
+            (root / "merchant_data.json").write_text(
+                json.dumps([{"merchant": "SyntheticMerchant", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5411}])
+            )
+            (root / "merchant_category_codes.csv").write_text("mcc,description\n5411,Grocery Stores\n")
+            (root / "payments.csv").write_text(
+                "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+                "SyntheticMerchant,2023,1,0,0,10.0,true,false,false,B,GlobalCard,NL,NL\n"
+                "SyntheticMerchant,2023,2,0,0,10.0,true,false,false,A,GlobalCard,NL,NL\n"
+            )
+
+            engine = DabstepFeeEngine(root)
+
+            self.assertEqual([100, 200], engine.applicable_fee_ids_for_merchant_period("SyntheticMerchant", year=2023, month=1))
+            self.assertEqual([100, 200], engine.fee_ids_for_filters(card_scheme="GlobalCard"))
+
     def test_row_and_distinct_count_work_for_english_and_chinese_questions(self) -> None:
         table = pd.DataFrame(
             [

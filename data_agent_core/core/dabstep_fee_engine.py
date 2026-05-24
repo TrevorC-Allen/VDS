@@ -298,7 +298,7 @@ class DabstepFeeEngine:
     ) -> list[int]:
         """Return fee IDs matching high-level rule filters."""
 
-        return [
+        return sorted({
             rule.fee_id for rule in self.rules
             if self.rule_matches_filters(
                 rule,
@@ -308,7 +308,7 @@ class DabstepFeeEngine:
                 is_credit=is_credit,
                 merchant_category_code=merchant_category_code,
             )
-        ]
+        })
 
     def average_fee_for_rule_filters(
         self,
@@ -365,7 +365,7 @@ class DabstepFeeEngine:
         if not matched_rules:
             raise ValueError("No matching fee rules.")
         total = sum(rule.fee_for_amount(transaction_value) for rule in matched_rules)
-        return total, [rule.fee_id for rule in matched_rules]
+        return total, sorted({rule.fee_id for rule in matched_rules})
 
     def payments_for_period(
         self,
@@ -409,7 +409,7 @@ class DabstepFeeEngine:
                 ):
                     if fee_id not in ids:
                         ids.append(fee_id)
-            return ids
+            return sorted(ids)
         if month is None and day_of_year is not None:
             month = month_from_day_of_year(year, day_of_year)
         if month is None:
@@ -426,7 +426,7 @@ class DabstepFeeEngine:
             for rule in self.matching_rules_for_transaction(row, merchant_meta, stats):
                 if rule.fee_id not in ids:
                     ids.append(rule.fee_id)
-        return ids
+        return sorted(ids)
 
     def total_fees(
         self,

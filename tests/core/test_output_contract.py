@@ -54,6 +54,15 @@ class OutputContractTest(unittest.TestCase):
         self.assertEqual("A, B", format_answer(["A", "B"], {"answer_type": "list"}))
         self.assertEqual("GlobalCard:1.25", format_answer({"card_scheme": "GlobalCard", "fee": 1.25}, {"answer_type": "scheme_fee", "decimals": 2}))
 
+    def test_numeric_list_canonicalizer_sorts_ids_without_changing_text_lists(self) -> None:
+        numeric_answer = canonicalize_final_answer([384, 141, 787], {"answer_type": "list"})
+        numeric_string = canonicalize_final_answer("384, 141, 787", {"answer_type": "list"})
+        text_answer = canonicalize_final_answer(["B", "A"], {"answer_type": "list"})
+
+        self.assertEqual("141, 384, 787", numeric_answer.answer)
+        self.assertEqual("141, 384, 787", numeric_string.answer)
+        self.assertEqual("B, A", text_answer.answer)
+
     def test_response_builder_marks_output_contract_failure_recoverable(self) -> None:
         logic = LogicForm(
             task_type="generic",

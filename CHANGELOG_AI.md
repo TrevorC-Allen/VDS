@@ -242,8 +242,6 @@ YYYY-MM-DD HH:MM TZ
 
 否。未修改 RunTrace；仅在 API debug 中增加 trace-safe 的 `api_source`，并返回调用方提供的 `request_id`。
 
----
-
 ### 日期时间
 
 2026-05-23 23:10 CST
@@ -4804,5 +4802,108 @@ YYYY-MM-DD HH:MM TZ
 ### 是否已同步 README
 
 是。README 已同步 Phase 10 full real after-fix 验收结果和 DABstep hidden accuracy 边界。
+
+---
+### 日期时间
+
+2026-05-24 01:34 CST
+
+### 本次目标
+
+实现 DAB Hard Recovery v2：先统一 Phase 10 after-fix all-450 Easy/Hard proxy 口径，再补齐 Fee ID 列表格式、Fee / ACI candidate table 语义校验，并确保 DAB、Microsoft、VDS 和多文件/join 能力不退步。
+
+### 修改文件
+
+- data_agent_core/benchmark/dabstep_proxy_observation.py
+- data_agent_core/output/output_contract.py
+- data_agent_core/core/dabstep_fee_engine.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/verifier/rule_checker.py
+- tests/benchmark/test_dabstep_proxy_observation.py
+- tests/core/test_output_contract.py
+- tests/core/test_generic_capability_operations.py
+- tests/core/test_semantic_metric_verification.py
+- README.md
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 DABstep post-response proxy observation CLI，可从 Phase 10 after-fix report / predictions 和本地 task_scores 生成 all-450 Easy / Hard、operation、capability family、format/list-order 风险和 provenance hash。
+- 用 Phase 10 after-fix full real report 重新生成 all-450 proxy observation：total `420/450 = 93.33%`，Easy `71/72 = 98.61%`，Hard `349/378 = 92.33%`；旧 all-450 proxy hard `75.40%` 只保留为历史风险样本。
+- Output Contract 对数字型 list 做稳定 numeric sort；Fee ID output_format 显式标记 sort/dedupe；fee engine 对 fee IDs 和 matched fee IDs 返回稳定升序集合。
+- Verifier 新增 Fee / ACI candidate table 检查：候选表必须存在、fee 字段必须可数值化、selected 必须来自 candidate dimension，失败时触发 bounded correction action。
+- 新增 focused tests 覆盖 proxy observation、数字 list canonicalizer、applicable fee IDs 稳定排序和 Fee / ACI candidate table 语义拒绝。
+- README / MAIN_GOAL 同步 DAB Hard Recovery v2 当前口径、输出路径、非回归门禁和 hidden accuracy 边界。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_output_contract tests.core.test_generic_capability_operations tests.core.test_semantic_metric_verification tests.benchmark.test_dabstep_proxy_observation
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.dabstep_proxy_observation --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --report outputs/phase10_full_real_dabstep_all_deepseek_20260523_combined_after_fix.json --output outputs/dabstep_all_1_450_proxy_after_phase10_20260524/all_1_to_450_public_proxy_observation_after_fix.json --old-proxy outputs/dabstep_all_1_450_deepseek_real_combined_20260522/all_1_to_450_public_proxy_observation.json --external-easy-target 0.95 --external-hard-target 0.84
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets tests.architecture.test_dependency_boundaries
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core tests/core tests/benchmark tests/architecture
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --output-dir outputs/dabstep_hard_recovery_v2_dev_mock
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m data_agent_core.benchmark.benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split all --limit 450 --output-dir outputs/dabstep_hard_recovery_v2_all_mock
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root /Users/trevorcui/Desktop/微软脱敏数据 --limit 300 --offset 0 --output-dir outputs/dab_hard_recovery_v2_microsoft_1_300_mock_20260524
+- VDS_LLM_PROVIDER=mock inline VDS 95 smoke runner for `/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/问题/问题汇总.xlsx`, output `outputs/dab_hard_recovery_v2_vds_question_summary_95_mock_20260524.json`
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_phase8_multitable_capabilities
+- git diff --check
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+
+### 测试结果
+
+- Focused tests 通过：Ran 73 tests，OK。
+- Phase 10 after-fix all-450 proxy observation 已生成：total `420/450 = 93.33%`，Easy `71/72 = 98.61%`，Hard `349/378 = 92.33%`；source report sha256=`31db5c942c242b6aaee1874d1d7ae964e9f112f31d4cb52f28097c0269765c50`，report_content_sha256=`8c15be2323ddd965a857e7c1777bbf8284e26d921195bf8aa178e792eefcde50`。
+- Architecture tests 通过：Ran 8 tests，OK。
+- compileall 通过。
+- DABstep dev 1-10 mock：total=10，correct=9，accuracy=0.9，success_count=10。
+- DABstep all 1-450 mock：total=450，success_count=450，unexpected_not_applicable=0，true_unsupported=3，format_risk=0，submission_risk=0，trace_redaction_risk=0，accuracy=null。
+- Microsoft 1-300 mock scorer：total=300，correct=300，accuracy=1.0，success_count=300，format_risk=0，semantic_risk=0，submission_risk=0，trace_redaction_risk=0。
+- 原本 VDS `问题汇总.xlsx` 95 题 smoke：total=95，success_count=95，failure_count=0，output_contract_failure_count=0。
+- Phase 8 multi-file/join focused：Ran 5 tests，OK。
+- `git diff --check` 通过。
+- Full unittest 通过：Ran 152 tests，OK。
+
+### 遗留问题
+
+- 当前新 proxy 已超过用户提供 Easy 95 / Hard 84 目标线，但仍是本地 task_scores 后验 proxy，不是 official hidden accuracy。
+- 剩余 proxy false 仍集中在 `fee_extreme_by_dimension`、`fee_rate_delta`、`group_average`、`fee_restriction_affected_merchants`、`best_fraud_aci_choice`、`fraud_rate_filtered`、`aci_fee_extreme`；后续继续按能力族增强，不按题号或固定答案特调。
+- `.playwright-cli/` 仍是本地既有未跟踪目录，本轮未纳入 Git。
+
+### 是否影响主流程
+
+是。修改 output canonicalizer、fee engine 和 verifier，但均为通用能力族增强，并已跑 DAB / Microsoft / VDS / 多文件 join 非回归门禁。
+
+### 是否涉及 Benchmark
+
+是。新增 DABstep proxy observation 工具和测试；task_scores / proxy 只用于 response 之后的后验观察和报告，不进入 Planner、Executor、Verifier、Correction、prompt 或 trace。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 Microsoft Agent Framework adapter，也未引入相关依赖。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。输出规范化和 Verifier candidate table 检查位于核心通用链路，可被当前 multi_agent workflow 和未来 adapter 复用。
+
+### 是否修改核心数据契约
+
+否。未新增稳定 API 字段；只扩展 output_format 内部可选排序标记和 benchmark observation 报告结构。
+
+### 是否修改 API 契约
+
+否。未改后端 API 请求或响应契约。
+
+### 是否新增或修改错误类型
+
+否。未新增 error_type；Verifier 使用已有 correction_action 风格返回修复方向。
+
+### 是否新增或修改运行追踪逻辑
+
+否。未新增 trace 字段；proxy observation 工具不读取或写入核心 trace 逻辑。
+
+### 是否已同步 README
+
+是。README 已同步 DAB Hard Recovery v2 最新 proxy 口径、非回归门禁和 hidden accuracy 边界。
 
 ---

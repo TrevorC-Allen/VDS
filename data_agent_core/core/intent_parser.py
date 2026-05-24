@@ -1156,7 +1156,7 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             task_type="fee_rule",
             operation="fee_ids_for_filters",
             filters={"account_type": _extract_account_type(question), "aci": _extract_aci(question)},
-            output_format=output_format | {"answer_type": "list"},
+            output_format=output_format | {"answer_type": "list", "sort_values": True, "dedupe_values": True},
         )
 
     if "applicable fee ids" in lowered or "fee ids applicable" in lowered:
@@ -1169,7 +1169,7 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
                 "month": _extract_month(question),
                 "day_of_year": _extract_day_of_year(question),
             },
-            output_format=output_format | {"answer_type": "list"},
+            output_format=output_format | {"answer_type": "list", "sort_values": True, "dedupe_values": True},
         )
 
     if "total fees" in lowered:
