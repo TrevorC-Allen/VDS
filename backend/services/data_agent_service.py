@@ -16,10 +16,12 @@ from backend.schemas.data_agent_schema import (
 )
 from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.agent.single_agent import UploadedDatasetAgent
+from data_agent_core.core.message_intent import classify_workbench_message, is_dataset_overview_question
 from data_agent_core.core.file_parser import parse_dataset_file
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import FILE_PARSE_ERROR, LOGIC_FORM_ERROR
 from data_agent_core.llm.client import LLMClient
+from data_agent_core.output.dataset_overview import build_dataset_overview_response
 from multi_agent_workflows.end_to_end_data_analysis_workflow import DataAnalysisMultiAgentWorkflow
 
 
@@ -127,6 +129,17 @@ class DataAgentService:
 
         try:
             profile = self.file_store.get_profile(dataset_id)
+            if is_dataset_overview_question(question):
+                return to_json_ready(
+                    build_dataset_overview_response(
+                        run_id=run_id,
+                        dataset_id=dataset_id,
+                        question=question.strip(),
+                        tables=tables,
+                        profile=profile,
+                        agent_mode=agent_mode,
+                    )
+                )
             if agent_mode == "single_agent":
                 agent = UploadedDatasetAgent(tables=tables, dataset_id=dataset_id, llm_client=self.llm_client)
                 response, trace = agent.analyze(question=question, guidelines=guidelines, execution_mode=execution_mode)
@@ -156,6 +169,31 @@ class DataAgentService:
                     suggested_fix="Check that the question references columns present in the uploaded dataset.",
                 ),
             )
+
+    def respond_to_message(
+        self,
+        *,
+        question: str,
+        dataset_id: str = "",
+        execution_mode: str = "dual",
+        guidelines: str = "",
+        agent_mode: str = "multi_agent",
+    ) -> dict[str, Any]:
+        """Route one workbench message to chat, overview, or full analysis."""
+
+        cleaned_question = question.strip()
+        if not dataset_id:
+            return self.chat_without_dataset(question=cleaned_question, agent_mode=agent_mode)
+        intent = classify_workbench_message(cleaned_question, has_dataset=True)
+        if intent == "chat":
+            return self.chat_with_dataset(dataset_id=dataset_id, question=cleaned_question, agent_mode=agent_mode)
+        return self.analyze_dataset(
+            dataset_id=dataset_id,
+            question=cleaned_question,
+            execution_mode=execution_mode,
+            guidelines=guidelines,
+            agent_mode=agent_mode,
+        )
 
     def chat_without_dataset(
         self,
@@ -190,7 +228,7 @@ class DataAgentService:
                 ),
             )
 
-        answer = _dataset_free_chat_answer(cleaned_question)
+        answer = _chat_answer(cleaned_question, has_dataset=False)
         return to_json_ready(
             {
                 "response_version": RESPONSE_VERSION,
@@ -224,6 +262,91 @@ class DataAgentService:
                 "warnings": [],
                 "errors": [],
                 "debug": {"agent_mode": "chat_without_dataset", "requires_dataset": False},
+            }
+        )
+
+    def chat_with_dataset(
+        self,
+        *,
+        dataset_id: str,
+        question: str,
+        agent_mode: str = "multi_agent",
+    ) -> dict[str, Any]:
+        """Return an ordinary assistant reply while keeping dataset context available."""
+
+        run_id = "run_" + uuid.uuid4().hex[:16]
+        cleaned_question = question.strip()
+        if not cleaned_question:
+            return error_response(
+                dataset_id=dataset_id,
+                run_id=run_id,
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message="question is required for chat.",
+                    failed_step="chat_with_dataset",
+                    recoverable=True,
+                    suggested_fix="Ask a data-analysis question or send a normal chat message.",
+                ),
+            )
+        if agent_mode not in VALID_AGENT_MODES:
+            return error_response(
+                dataset_id=dataset_id,
+                run_id=run_id,
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message=f"Unsupported agent_mode: {agent_mode}",
+                    failed_step="chat_with_dataset",
+                    recoverable=True,
+                    suggested_fix="Use multi_agent or single_agent.",
+                ),
+            )
+        if self.file_store.get_tables(dataset_id) is None:
+            return error_response(
+                dataset_id=dataset_id,
+                run_id=run_id,
+                error=ErrorResult(
+                    error_type=FILE_PARSE_ERROR,
+                    error_message=f"Dataset not found in temporary store: {dataset_id}",
+                    failed_step="chat_with_dataset",
+                    recoverable=True,
+                    suggested_fix="Upload the dataset again before continuing this chat.",
+                ),
+            )
+
+        answer = _chat_answer(cleaned_question, has_dataset=True)
+        return to_json_ready(
+            {
+                "response_version": RESPONSE_VERSION,
+                "success": True,
+                "run_id": run_id,
+                "dataset_id": dataset_id,
+                "question": cleaned_question,
+                "answer_type": "chat",
+                "execution_mode": "chat",
+                "answer": answer,
+                "logic_form": None,
+                "result": {"columns": [], "rows": [], "value": None},
+                "verification": {"passed": True, "confidence": 1.0, "notes": ["No data analysis was required for this chat reply."]},
+                "insight": None,
+                "chart": None,
+                "quality_report": None,
+                "reasoning_trace_view": [
+                    {
+                        "step_id": "intent",
+                        "name": "理解问题",
+                        "status": "completed",
+                        "summary": "这是普通对话或助手身份问题，不需要调用数据分析链路。",
+                    },
+                    {
+                        "step_id": "reply",
+                        "name": "直接回复",
+                        "status": "completed",
+                        "summary": "已保留当前数据集上下文，后续分析问题仍可继续使用已上传数据。",
+                    },
+                ],
+                "warnings": [],
+                "errors": [],
+                "debug": {"agent_mode": "chat_with_dataset", "requires_dataset": False, "message_intent": "chat"},
             }
         )
 
@@ -356,11 +479,18 @@ def _attach_external_metadata(response: dict[str, Any], *, request_id: str | Non
     return to_json_ready(response)
 
 
-def _dataset_free_chat_answer(question: str) -> str:
+def _chat_answer(question: str, *, has_dataset: bool) -> str:
     lowered = question.lower()
-    if any(token in question for token in ("你好", "您好", "hello", "hi")):
+    compact = lowered.replace(" ", "")
+    if any(token in question for token in ("你好", "您好")) or lowered in {"hello", "hi", "hey"} or lowered.startswith(("hello ", "hi ", "hey ")):
+        if has_dataset:
+            return "你好，我是 VDS。当前数据已就绪，你可以直接问具体分析问题，也可以让我先做数据概览。"
         return "你好，我是 VDS。你可以直接和我讨论分析思路、指标口径、字段设计，也可以上传 CSV 或 Excel 后让我基于数据给出结论。"
-    if any(token in question for token in ("能做什么", "怎么用", "功能", "帮助", "help")):
+    if any(token in question for token in ("你是什么模型", "你是哪个模型", "底层模型", "什么模型", "你是谁", "介绍一下你")):
+        return "我是 VDS 数据分析助手，运行在当前 VDS 后端和可配置 LLM provider 之上。我的职责是理解数据问题、调用受控分析链路，并把结果整理成可核对的回答。"
+    if any(token in compact for token in ("能做什么", "怎么用", "功能", "帮助")) or "help" in lowered:
+        if has_dataset:
+            return "当前数据已经上传。你可以问概览、排序、汇总、趋势、对比、多文件命中文件或多表关联问题；如果只是聊天或讨论口径，我也会直接回复。"
         return "我可以先帮你梳理分析目标、确认需要的字段和指标口径；上传数据后，我可以做聚合、排序、趋势、对比、多文件命中和多表关联分析。"
     if any(token in question for token in ("字段", "口径", "指标", "维度", "关联", "数据表")) or "join" in lowered:
         return "可以先不用上传文件。你把字段名、表结构或想看的指标告诉我，我可以帮你整理分析口径、推荐维度、判断是否需要多表关联。"

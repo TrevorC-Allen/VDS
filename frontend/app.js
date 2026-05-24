@@ -8,12 +8,14 @@ const state = {
   isUploading: false,
   isAnalyzing: false,
   hasPendingUpload: false,
+  activeResultMessage: null,
 };
 
 const el = {
   chatMessages: document.querySelector("#chat-messages"),
   welcomeMessage: document.querySelector(".welcome-message"),
   profileMessage: document.querySelector("#profile-message"),
+  resultTemplate: document.querySelector("#result-message"),
   resultMessage: document.querySelector("#result-message"),
   newChatButton: document.querySelector("#new-chat-button"),
   fileInput: document.querySelector("#file-input"),
@@ -99,9 +101,6 @@ async function uploadFiles() {
     state.selectedTable = profile.tables?.[0]?.table_name || "";
     renderProfile();
     el.profileMessage.classList.add("hidden");
-    if (el.answer.textContent === "上传失败") {
-      el.resultMessage.classList.add("hidden");
-    }
     setApiStatus("ready", "数据集已就绪");
     state.hasPendingUpload = false;
     el.fileSummary.textContent = `${files.length} 个文件已就绪`;
@@ -115,9 +114,6 @@ async function uploadFiles() {
     state.hasPendingUpload = true;
     el.fileSummary.textContent = `${files.length} 个文件上传失败`;
     el.fileDetail.textContent = `上传失败：${String(error.message || error)}`;
-    if (el.answer.textContent === "上传失败") {
-      el.resultMessage.classList.add("hidden");
-    }
     return null;
   } finally {
     state.isUploading = false;
@@ -144,24 +140,17 @@ async function runAnalysis() {
   appendUserMessage(question);
   el.questionInput.value = "";
   renderProgress(question);
-  setApiStatus("idle", state.datasetId ? "分析中" : "回复中");
+  setApiStatus("idle", "处理中");
   try {
-    const endpoint = state.datasetId ? "/api/data-agent/analyze" : "/api/data-agent/chat";
-    const body = state.datasetId
-      ? {
-          dataset_id: state.datasetId,
-          question,
-          execution_mode: el.executionMode.value,
-          agent_mode: el.agentMode.value,
-        }
-      : {
-          question,
-          agent_mode: el.agentMode.value,
-        };
-    const response = await fetch(endpoint, {
+    const response = await fetch("/api/data-agent/message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        dataset_id: state.datasetId,
+        question,
+        execution_mode: el.executionMode.value,
+        agent_mode: el.agentMode.value,
+      }),
     });
     const result = await response.json();
     if (!response.ok) {
@@ -170,7 +159,7 @@ async function runAnalysis() {
     stopProgress();
     result.question = question;
     renderResult(result);
-    const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset";
+    const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset" || result.debug?.agent_mode === "chat_with_dataset";
     setApiStatus(result.success ? "ready" : "error", result.success ? (isChat ? "已回复" : "分析完成") : "需要继续确认");
   } catch (error) {
     stopProgress();
@@ -248,7 +237,7 @@ function renderFieldTable(table) {
 function renderResult(result) {
   const rows = result.result?.rows || [];
   const columns = result.result?.columns || [];
-  const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset";
+  const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset" || result.debug?.agent_mode === "chat_with_dataset";
   const isOverviewShaped = Boolean(result.debug?.user_experience_shaping?.applied);
   el.resultMessage.classList.remove("thinking-only");
   el.resultTitle.textContent = isChat ? "VDS" : "分析结果";
@@ -416,6 +405,8 @@ function renderInsight(insight) {
 
 function renderProgress(question) {
   stopProgress();
+  const message = createAssistantResultMessage();
+  bindResultMessage(message);
   el.resultMessage.classList.add("thinking-only");
   el.resultTable.className = "result-table hidden";
   el.resultTable.textContent = "";
@@ -495,8 +486,9 @@ function buildLiveSteps(question, hasDataset) {
       { title: "整理回复", summary: "当前没有上传数据，我会直接回复可讨论的部分，不编造业务结论。" },
     ];
   }
+  const maybeChat = "我会先判断这是普通对话、数据概览，还是需要正式分析。";
   return [
-    { title: "理解问题", summary: `用户提到了“${shortQuestion}”，我会先判断真正想比较或查找什么。` },
+    { title: "理解问题", summary: `用户提到了“${shortQuestion}”，${maybeChat}` },
     { title: "选择数据", summary: "我会从已上传文件里找最相关的数据表，避免拿错文件回答。" },
     { title: "匹配字段", summary: "我会确认哪些字段像指标、哪些字段像维度，以及是否需要多表关联。" },
     { title: "制定分析方式", summary: "我会判断这是排序、汇总、对比还是需要 join 后再回答。" },
@@ -506,7 +498,7 @@ function buildLiveSteps(question, hasDataset) {
 }
 
 function buildFriendlySteps(steps, result) {
-  const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset";
+  const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset" || result.debug?.agent_mode === "chat_with_dataset";
   if (isChat) {
     const chatSteps = steps.length
       ? steps.map((step) => ({
@@ -622,7 +614,7 @@ function renderUserFacingError(title, message) {
 }
 
 function pushHistory(result) {
-  const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset";
+  const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset" || result.debug?.agent_mode === "chat_with_dataset";
   state.runHistory.unshift({
     runId: result.run_id,
     success: result.success,
@@ -701,8 +693,10 @@ function resetConversation() {
   state.profile = null;
   state.selectedTable = "";
   state.hasPendingUpload = false;
+  state.activeResultMessage = null;
   el.fileInput.value = "";
-  [...el.chatMessages.querySelectorAll(".user-message")].forEach((message) => message.remove());
+  [...el.chatMessages.querySelectorAll(".user-message, .assistant-result-message")].forEach((message) => message.remove());
+  bindResultMessage(el.resultTemplate);
   el.welcomeMessage?.classList.remove("hidden");
   el.profileMessage.classList.add("hidden");
   el.resultMessage.classList.add("hidden");
@@ -715,6 +709,31 @@ function resetConversation() {
   el.questionInput.value = "";
   updateRunButton();
   scrollToLatest();
+}
+
+function createAssistantResultMessage() {
+  const message = el.resultTemplate.cloneNode(true);
+  message.removeAttribute("id");
+  message.classList.add("assistant-result-message");
+  message.classList.remove("hidden");
+  message.querySelectorAll("[id]").forEach((node) => node.removeAttribute("id"));
+  return message;
+}
+
+function bindResultMessage(message) {
+  state.activeResultMessage = message;
+  el.resultMessage = message;
+  el.resultTitle = message.querySelector(".result-panel h2");
+  el.resultStatus = message.querySelector(".result-panel .block-header p");
+  el.answer = message.querySelector(".answer-box");
+  el.chartPanel = message.querySelector(".chart-panel");
+  el.resultTable = message.querySelector(".result-table");
+  el.insightPanel = message.querySelector(".insight-panel");
+  el.insightSummary = message.querySelector(".insight-summary");
+  el.insightList = message.querySelector(".compact-list");
+  el.processPanel = message.querySelector(".process-panel");
+  el.processSummary = message.querySelector(".process-line p");
+  el.processTimeline = message.querySelector(".process-timeline");
 }
 
 function setApiStatus(status, text) {

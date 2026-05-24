@@ -192,9 +192,11 @@ def _result_rows(execution_result: ExecutionResult) -> list[dict[str, Any]]:
 
 def _looks_like_overview_question(question: str) -> bool:
     text = question.lower()
-    overview_tokens = ("整体", "总体", "概览", "总览", "情况", "看一下", "分析一下", "overview", "summary", "summarize", "overall")
-    business_tokens = ("销售", "收入", "订单", "订阅", "业绩", "经营", "sales", "revenue", "amount", "business")
-    return any(token in text for token in overview_tokens) and any(token in text for token in business_tokens)
+    compact = text.replace(" ", "")
+    overview_tokens = ("整体", "总体", "概览", "总览", "情况", "看一下", "看下", "看看", "分析一下", "overview", "summary", "summarize", "overall", "look at")
+    subject_tokens = ("数据", "这个表", "文件", "销售", "收入", "订单", "订阅", "业绩", "经营", "sales", "revenue", "amount", "business", "dataset", "table")
+    specific_tokens = ("哪个", "最高", "最低", "top", "排名", "多少", "占比", "增长", "对比", "趋势", "按", "筛选", "列出", "质量", "空值", "重复")
+    return any(token in text for token in overview_tokens) and any(token in compact or token in text for token in subject_tokens) and not any(token in compact for token in specific_tokens)
 
 
 def _preferred_metric_column(rows: list[dict[str, Any]], columns: list[str], question: str) -> str | None:

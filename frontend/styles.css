@@ -708,8 +708,8 @@ p {
   margin-top: 4px;
 }
 
-#result-message.thinking-only .result-panel,
-#result-message.thinking-only .insight-panel {
+.assistant-message.thinking-only .result-panel,
+.assistant-message.thinking-only .insight-panel {
   display: none;
 }
 

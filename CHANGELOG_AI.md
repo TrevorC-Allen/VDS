@@ -328,6 +328,71 @@ YYYY-MM-DD HH:MM TZ
 
 ### 日期时间
 
+2026-05-24 13:50 CST
+
+### 本次目标
+
+按用户复测反馈继续自查 Workbench 普通消息链路：已有 dataset 时 `你好` / `你是什么模型` 必须在主对话区有可见回复；`看一下这个数据` 必须返回有意义的数据概览，不能返回单个 `720` 或 `answer=720` 表；修复必须从路由和展示源头处理，不能继续逐句补丁。
+
+### 修改文件
+
+- data_agent_core/core/message_intent.py
+- data_agent_core/output/dataset_overview.py
+- data_agent_core/output/response_builder.py
+- backend/services/data_agent_service.py
+- backend/routers/data_agent.py
+- frontend/app.js
+- frontend/styles.css
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- README.md
+- frontend/README.md
+- docs/API_CONTRACT.md
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `data_agent_core/core/message_intent.py`：统一判断 Workbench 消息是普通聊天、泛数据概览还是正式分析；有 dataset 时普通问候和模型身份问题不再被强制送入 analyze。
+- 新增 `data_agent_core/output/dataset_overview.py`：针对“看一下这个数据 / 看一下整体销售情况”生成全表概览，返回行列规模、主要字段、优先数值指标、合计/平均/最高/最低、最高维度和下钻方向，避免把行数或前几行明细当答案。
+- `DataAgentService.analyze_dataset()` 对泛概览问题先走 core 概览响应；新增 `respond_to_message()` 和 `chat_with_dataset()`；router 新增 `POST /api/data-agent/message`。
+- Workbench 前端提交统一改为 `/api/data-agent/message`，不再用 `state.datasetId ? analyze : chat` 在浏览器里做语义路由。
+- 前端每一轮 `renderProgress()` 都 clone 一个独立 assistant result message，避免复用 `#result-message` 导致旧回复从主聊天区消失。
+- `response_builder` 的概览识别扩展到“看一下这个数据 / 这个表 / dataset overview”等非销售特定表达。
+- 文档同步说明：`/message` 是当前 Workbench 统一入口；`/chat` 仍保留为无文件辅助对话接口；Phase 11 conversation persistence 仍未实现。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js` 通过。
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets` 通过：Ran 16 tests，OK。
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_output_contract tests.core.test_phase10_result_experience` 通过：Ran 13 tests，OK。
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- Browser 插件打开 `http://127.0.0.1:8001/workbench` 做首屏、title、console 检查。
+- Playwright CLI fallback 做文件上传和多轮消息验证；fallback 原因：Browser 插件当前受控 API 不暴露本地文件选择 / `setInputFiles`。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- 目标后端 / 核心测试通过：Ran 29 tests，OK。
+- 完整 unittest 通过：Ran 159 tests，OK。
+- `git diff --check` 通过。
+- runtime 已同步到 `/Users/trevorcui/.vds-workbench-runtime/VDS` 并重启；`127.0.0.1:8001` 新 PID `17679` 监听，`GET /workbench` 返回 200。
+- Browser 插件首屏检查通过：URL/title 正确，页面非空，无框架 overlay，console warning/error 为 0。
+- 上传 SaaS Excel 后连续发送 `你好`、`你是什么模型`、`看一下这个数据`：`/upload` 200，`/message` 3 次 200；主聊天区 `userCount=3`、`assistantCount=3`；前两条 assistant 为 `VDS / 已回复` 且无表格；第三条为 `分析结果 / 已完成`，表头为 `["指标","数值"]`，答案包含 `订阅收入合计 17,353,545.69`，不是 `answer=720`，无 `SS2025...` 原始明细倾倒，console issue 为 0；截图 `/tmp/vds_workbench_message_fix_20260524.png`。
+- 追加验证 `看一下整体销售情况`：`/upload` 200，`/message` 200；答案包含 `订阅收入合计 17,353,545.69`，表头为 `["指标","数值"]`，`single720=false`，`rawRecord=false`，console issue 为 0。
+- 无文件聊天复测：新聊天后发送 `没有文件时你能做什么？`，`/message` 200，状态 `已回复`，`datasetChip=未上传数据`，`assistantCount=1`，表格隐藏，console issue 为 0；截图 `/tmp/vds_workbench_no_file_message_20260524.png`。
+
+### 是否影响主流程
+
+是。影响 Workbench 消息入口、普通聊天、泛数据概览和多轮展示；核心计算仍在 backend / data_agent_core，前端仍不承载指标、join、排序、聚合或评分。
+
+### 是否涉及 Benchmark
+
+不涉及 benchmark 题目或 scorer；新增的是 Workbench 普通消息路由和泛概览体验能力。
+
 2026-05-24 13:13 CST
 
 ### 本次目标

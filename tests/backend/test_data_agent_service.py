@@ -127,6 +127,62 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual(["指标", "数值"], response["result"]["columns"])
         self.assertTrue(response["debug"]["user_experience_shaping"]["applied"])
 
+    def test_generic_dataset_overview_message_uses_full_table_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "saas_sales.csv"
+            csv_path.write_text(
+                "记录ID,月份,区域,城市,订阅收入,毛利\n"
+                "SS001,2026-01,华东,上海,1000,600\n"
+                "SS002,2026-01,华北,北京,300,180\n"
+                "SS003,2026-02,华东,杭州,700,420\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(csv_path, original_filename="SaaS销售.csv")
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="看一下这个数据",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(response["success"])
+        self.assertEqual("overview", response["answer_type"])
+        self.assertIn("3 行、6 列", response["answer"])
+        self.assertIn("订阅收入", response["answer"])
+        self.assertNotEqual("3", response["answer"])
+        self.assertEqual(["指标", "数值"], response["result"]["columns"])
+        self.assertTrue(response["debug"]["user_experience_shaping"]["applied"])
+        self.assertEqual("dataset_overview", response["debug"]["message_intent"])
+
+    def test_dataset_present_message_routes_meta_chat_without_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            csv_path.write_text("city,sales\nShanghai,100\nBeijing,150\n", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(csv_path)
+            greeting = service.respond_to_message(dataset_id=upload["dataset_id"], question="你好")
+            model = service.respond_to_message(dataset_id=upload["dataset_id"], question="你是什么模型")
+
+        self.assertTrue(greeting["success"])
+        self.assertEqual("chat", greeting["answer_type"])
+        self.assertEqual("chat_with_dataset", greeting["debug"]["agent_mode"])
+        self.assertIn("当前数据已就绪", greeting["answer"])
+        self.assertEqual([], greeting["result"]["rows"])
+        self.assertTrue(model["success"])
+        self.assertEqual("chat", model["answer_type"])
+        self.assertIn("VDS 数据分析助手", model["answer"])
+        self.assertEqual("chat_with_dataset", model["debug"]["agent_mode"])
+
     def test_chat_without_dataset_returns_vds_reply(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             service = DataAgentService(

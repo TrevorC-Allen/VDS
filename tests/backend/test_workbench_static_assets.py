@@ -43,10 +43,20 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
     def test_workbench_allows_chat_without_uploaded_dataset(self) -> None:
         js = Path("frontend/app.js").read_text(encoding="utf-8")
 
-        self.assertIn('"/api/data-agent/chat"', js)
+        self.assertIn('"/api/data-agent/message"', js)
         self.assertIn('answer_type === "chat"', js)
         self.assertNotIn("!state.datasetId || !question", js)
+        self.assertNotIn('state.datasetId ? "/api/data-agent/analyze"', js)
         self.assertIn("当前没有上传数据，我会直接回复可讨论的部分，不编造业务结论。", js)
+
+    def test_workbench_creates_one_assistant_result_per_turn(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+        css = Path("frontend/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("createAssistantResultMessage", js)
+        self.assertIn("cloneNode(true)", js)
+        self.assertIn("assistant-result-message", js)
+        self.assertIn(".assistant-message.thinking-only .result-panel", css)
 
 
 if __name__ == "__main__":

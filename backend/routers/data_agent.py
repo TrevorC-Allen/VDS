@@ -43,6 +43,18 @@ def chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def message_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Non-FastAPI helper mirroring POST /api/data-agent/message."""
+
+    return service.respond_to_message(
+        dataset_id=str(payload.get("dataset_id") or ""),
+        question=str(payload.get("question") or ""),
+        execution_mode=str(payload.get("execution_mode") or "dual"),
+        guidelines=str(payload.get("guidelines") or ""),
+        agent_mode=str(payload.get("agent_mode") or "multi_agent"),
+    )
+
+
 def profile_payload(dataset_id: str) -> dict[str, Any]:
     """Non-FastAPI helper mirroring GET profile."""
 
@@ -79,6 +91,13 @@ try:
 
     class ChatPayload(BaseModel):
         question: str
+        agent_mode: str = "multi_agent"
+
+    class MessagePayload(BaseModel):
+        question: str
+        dataset_id: str = ""
+        execution_mode: str = "dual"
+        guidelines: str = ""
         agent_mode: str = "multi_agent"
 
     class RunPayload(BaseModel):
@@ -132,6 +151,16 @@ try:
     def chat(payload: ChatPayload) -> dict[str, Any]:
         return service.chat_without_dataset(
             question=payload.question,
+            agent_mode=payload.agent_mode,
+        )
+
+    @router.post("/message")
+    def message(payload: MessagePayload) -> dict[str, Any]:
+        return service.respond_to_message(
+            question=payload.question,
+            dataset_id=payload.dataset_id,
+            execution_mode=payload.execution_mode,
+            guidelines=payload.guidelines,
             agent_mode=payload.agent_mode,
         )
 

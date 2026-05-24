@@ -113,12 +113,12 @@
 41. 当前新增 Phase 8 / Phase 9 实施治理规则：每进入新 Phase 或 Phase 内子阶段，必须先在 MAIN_GOAL.md 更新当前阶段 Goal，并预写下一阶段 Goal；每完成一个阶段，必须回看验收结果并更新后续 Goal。Phase 8 期间模型能力和泛化能力不得低于 DABstep、微软脱敏数据和原本 VDS 当前基线；Phase 9 必须等待 Phase 8 完成后启动。
 42. Phase 8 已完成 8A-8E：`POST /api/data-agent/upload-batch` 支持一次上传多文件；profile 保留 `source_file`、`sheet`、`table_name`；inline table 同步支持 metadata；LogicForm / AnalysisPlan / trace 增加 `source_tables`、`table_selection_reason`、`join_plan`；Pandas executor 可受控 materialize 可信 join；Verifier 对无可信 join key、多对多风险、多表未 join 和 ID fallback 进行阻断或澄清。
 43. Phase 8 非退步门禁已通过：DABstep dev 1-10 为 `9/10`，DABstep public all 1-450 mock 执行覆盖为 `450/450`，微软脱敏数据 1-300 mock scorer 为 `300/300`，原本 VDS `问题汇总.xlsx` 95 题 smoke 为 `95/95`；`format_risk`、`submission_risk`、`trace_redaction_risk` 均为 0。
-44. Phase 9 已完成首版前端 workbench：`frontend/` 提供静态页面，`backend/main.py` 挂载 `/frontend` 和 `/workbench`；页面只调用 `/api/data-agent/upload`、`/api/data-agent/upload-batch`、`/api/data-agent/analyze` 和无 dataset 对话用的 `/api/data-agent/chat`，展示结果、用户可读过程和历史记录，不实现核心计算。
+44. Phase 9 已完成首版前端 workbench：`frontend/` 提供静态页面，`backend/main.py` 挂载 `/frontend` 和 `/workbench`；页面只调用 `/api/data-agent/upload`、`/api/data-agent/upload-batch` 和统一消息入口 `/api/data-agent/message`，展示结果、用户可读过程和历史记录，不实现核心计算。
 45. Phase 8/9 已补跑真实 DeepSeek representative 回归：DABstep dev 1-10 真实 DeepSeek 为 `9/10`；微软脱敏数据 1-20 真实 DeepSeek 为 `20/20`；原本 VDS `问题汇总.xlsx` 五域代表集 15 题真实 DeepSeek 在修复 LLM candidate_set 归一化后为 `15/15`，输出契约失败为 0。
 46. Phase 10 已完成首版：`data_agent_core/output/chart_planner.py` 自动选择 bar / horizontal_bar / line / pie / donut / histogram / KPI；`insight_generator.py` 只基于已验证结果生成摘要、异常、波动和建议；`core/data_quality.py` 在上传和分析时扫描缺失、重复、类型、日期、离群和 key 风险；`reasoning_trace_view.py` 只展示结构化阶段摘要，不暴露完整 Chain of Thought。Workbench 已展示图表、洞察和用户可读过程时间线；质量报告、warnings/errors、verification 细节和 join trace 保留在后端/API，不在主界面直接展示。
 47. Phase 10 当前验收已通过：Full unittest `147 tests OK`，compileall、`node --check frontend/app.js` 和 `git diff --check` 通过；DABstep dev `9/10`、DABstep public all mock `450/450`、Microsoft 1-300 mock `300/300`、原本 VDS 95 smoke `95/95`；真实 DeepSeek full 回归已完成，汇总为 DABstep public all `success_count=450/450`、Microsoft `correct=300/300`、原本 VDS 95 smoke `success_count=95/95`，输出 `outputs/phase10_full_real_three_dataset_deepseek_20260523_summary_after_fix.json`。DABstep public all answer 为空，不能据此宣称 hidden official accuracy。
 48. DAB Hard Recovery v2 已完成第一轮代码落点：新增 DABstep all-450 post-response proxy observation 工具，可从 Phase 10 after-fix report 和本地 `task_scores` 重新生成 Easy / Hard、operation、capability family 和 format/list-order 风险口径；输出 `outputs/dabstep_all_1_450_proxy_after_phase10_20260524/all_1_to_450_public_proxy_observation_after_fix.json` 显示 total `420/450 = 93.33%`、Easy `71/72 = 98.61%`、Hard `349/378 = 92.33%`。代码层面补齐数字 fee ID list canonicalization、fee ID engine 稳定排序和 Fee / ACI candidate table 语义校验；非回归门禁通过 DAB dev `9/10`、DAB all mock `450/450`、Microsoft `300/300`、VDS 95 smoke `95/95`、Phase 8 multi-file/join focused `5 OK`、full unittest `152 OK`。该 proxy 仍只作为 response 之后风险观察，不代表 official hidden accuracy，也不进入 Planner / Executor / Verifier / Correction / prompt / trace。
-49. Workbench UX hardening 已补齐两个用户可见缺口：没有上传文件时，前端可调用 `POST /api/data-agent/chat` 与 VDS 直接对话，但不会编造业务结论；“看一下整体销售情况”这类概览问题由 `data_agent_core/output/response_builder.py` 在最终响应层把明细型结果收敛为短回答和汇总指标表，防止主答案直接返回原始多字段明细行。前端仍只负责调用 API 和展示，不实现指标计算、join、排序或聚合。
+49. Workbench UX hardening 已补齐普通消息路由和多轮展示缺口：前端统一调用 `POST /api/data-agent/message`，由后端判断无文件聊天、有文件普通聊天、泛数据概览或正式分析；“你好 / 你是什么模型”不会再因已有 dataset 被误送入分析链路；“看一下这个数据 / 看一下整体销售情况”由 `data_agent_core/output/dataset_overview.py` 或 Response Builder 收敛为全表汇总概览，防止主答案只返回行数或原始多字段明细行。前端每轮创建独立 assistant 回复，仍只负责调用 API 和展示，不实现指标计算、join、排序或聚合。
 
 ## 架构原则
 
@@ -908,7 +908,7 @@ Phase 9 范围：
 
 1. `frontend/index.html`、`frontend/styles.css`、`frontend/app.js`、`frontend/README.md` 提供首版静态 workbench。
 2. `backend/main.py` 在存在 `frontend/` 目录时挂载 `/frontend` 静态资源，并提供 `/workbench`。
-3. 前端支持单文件 / 多文件上传，单文件调用 `/api/data-agent/upload`，多文件调用 `/api/data-agent/upload-batch`，无 dataset 对话调用 `/api/data-agent/chat`。
+3. 前端支持单文件 / 多文件上传，单文件调用 `/api/data-agent/upload`，多文件调用 `/api/data-agent/upload-batch`，所有用户消息统一调用 `/api/data-agent/message`。
 4. 前端支持问题提交、结果表格、自动图表、insight 摘要、用户可读安静过程和本地 run history；verification、warnings、errors、join plan trace、join execution summary 和 quality_report 保留在后端/API。
 5. 前端 smoke 使用 mocked API route 验证桌面和移动视口无 console / page error，截图保存在 `outputs/phase9_workbench_desktop_20260523.png` 和 `outputs/phase9_workbench_mobile_20260523.png`。
 
@@ -1007,11 +1007,15 @@ Phase 9 禁止：
 
 用于接收 dataset_id 和用户问题，返回分析结果、校验信息、解释建议和图表配置。
 
-3. POST /api/data-agent/chat
+3. POST /api/data-agent/message
+
+用于 Workbench 统一提交用户消息，由后端判断普通聊天、数据概览或正式分析。
+
+4. POST /api/data-agent/chat
 
 用于没有上传 dataset 时的 VDS 普通对话，只讨论分析思路、指标口径和字段设计；需要真实业务结论时必须上传数据。
 
-4. GET /api/data-agent/datasets/{dataset_id}/profile
+5. GET /api/data-agent/datasets/{dataset_id}/profile
 
 用于返回指定数据集的文件信息、字段画像和状态。
 
