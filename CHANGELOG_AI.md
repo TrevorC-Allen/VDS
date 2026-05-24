@@ -68,6 +68,100 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-25 01:08 CST
+
+### 本次目标
+
+对照桌面 VDS 95 题标准答案修复当前分支中文 BI 错误，彻底解决同类问题被误路由成默认区域/订阅收入排名的问题。
+
+### 修改文件
+
+- data_agent_core/core/vds_bi_intent.py
+- data_agent_core/executors/vds_bi_executor.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/output/response_builder.py
+- data_agent_core/core/capability_registry.py
+- data_agent_core/benchmark/vds_standard_scorer.py
+- multi_agent_workflows/vds_desktop_benchmark_runner.py
+- tests/core/test_vds_bi_capabilities.py
+- tests/core/test_vds_standard_scorer.py
+- tests/architecture/test_no_benchmark_hardcoding.py
+- README.md
+- MAIN_GOAL.md
+- docs/ARCHITECTURE.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 恢复并合并桌面 VDS 标准答案所需中文 BI 能力族：周期排名变化、TopN 增减、增长数量占比、阈值计数、同圈层异常、分组环比、各区域 Top 实体、状态影响、三周期 TopN 和当前期过滤指标 TopN。
+- 保留并扩展 `vds_current_filtered_metric_top`，支持 `Pro套餐`、`暂停/流失/正常续费` 等枚举过滤时锁定客户/门店/校区/院区/站点实体粒度和显式 `_row` 指标，避免退回到 `区域/订阅收入`。
+- 新增桌面 VDS 标准答案离线 scorer / runner；标准答案只在 response 生成后评分，不进入 Agent workflow、prompt、Planner、Executor、Verifier、Correction 或 trace。
+- Pandas Executor 展示结构化 `candidate_table` 时返回候选表行，避免 Workbench 把整个 payload 字典显示成一行。
+- 当前指标 TopN 的主回答改为完整 Top 列表，避免把 Top10 压缩成第一名摘要导致标准答案和用户预期丢失。
+- 架构硬编码测试显式允许 benchmark runner 在后验评分阶段读取标准答案，并新增 VDS runner 不传 task_id/answer 给 Agent 的测试。
+- README、MAIN_GOAL、ARCHITECTURE、FEATURE_BACKLOG 同步当前分支 VDS 标准答案 `95/95` 口径。
+
+### 测试方式
+
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_vds_bi_capabilities tests.core.test_vds_standard_scorer -v`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.vds_desktop_benchmark_runner --question-workbook "/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/问题/问题汇总.xlsx" --answer-workbook "/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/问题/标准GPT答案汇总.xlsx" --data-root "/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/数据" --output-dir outputs/vds_standard_answer_recheck_20260525_core_fix_v2`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets -v`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_output_contract tests.core.test_semantic_metric_verification tests.core.test_generic_capability_operations tests.backend.test_data_agent_service -v`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime backend multi_agent_workflows tests`
+- `git diff --check`
+
+### 测试结果
+
+- Focused VDS BI / scorer tests：Ran 17 tests，OK。
+- 桌面 VDS 标准答案 scorer：total 95，correct 95，accuracy 1.0，success_count 95。
+- Architecture hardcoding / secret / dependency tests：Ran 9 tests，OK。
+- Focused output / semantic / generic / backend tests：Ran 84 tests，OK。
+- Full unittest：Ran 177 tests，OK。
+- compileall 通过。
+- `git diff --check` 通过。
+
+### 遗留问题
+
+- 本轮验证使用 mock provider；真实 provider 大规模回归仍需后续按既有 Phase 7.6 / Phase 10 真实回归流程执行。
+
+### 是否影响主流程
+
+是。影响 VDS 中文 BI 意图解析、执行器结果、Workbench 结构化表格展示和最终回答格式。
+
+### 是否涉及 Benchmark
+
+是。新增桌面 VDS 标准答案离线 scorer / runner，并复跑 95 题；标准答案只用于 response 后评分，不进入核心分析链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。能力仍在 `data_agent_core` 和既有 runner / tests 中，未引入具体 Agent 框架依赖。
+
+### 是否修改核心数据契约
+
+否。未修改 contracts；仅让 executor 的 `candidate_table` 更合理地进入展示 rows。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README、MAIN_GOAL、docs/ARCHITECTURE.md、docs/FEATURE_BACKLOG.md 已同步当前分支 VDS 标准答案 `95/95` 口径。
+
 2026-05-24 18:38 CST
 
 ### 本次目标

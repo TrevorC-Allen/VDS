@@ -402,7 +402,7 @@ Rule NO.1：
 3. Provider-native adapter 已有 mock/fake client loop，但真实 OpenAI / DeepSeek 网络 tool loop 尚未作为生产默认链路启用。
 4. 多 Agent 当前是内部顺序 workflow，复杂并行 executor、真实 Microsoft cloud workflow 和多轮代码级自纠仍属后续增强。
 5. DABstep public all answer 为空，all 100-130 / 131+ 的 official 本地准确率仍不可计算；public proxy 只能后验观察，不能进入核心链路。
-6. 已完成 DABstep public all 1-450 mock 执行覆盖、Microsoft 脱敏数据 1-300 mock 离线 scorer 和桌面 VDS 95 题 smoke；仍需继续做真实 LLM 大规模回归、更多中文真实业务表、更多字段别名、多表场景和更复杂中文 BI 能力验证。
+6. 已完成 DABstep public all 1-450 mock 执行覆盖、Microsoft 脱敏数据 1-300 mock 离线 scorer、桌面 VDS 95 题 smoke；当前分支已恢复桌面 VDS 标准答案离线 scorer / runner，并通过 `outputs/vds_standard_answer_recheck_20260525_core_fix_v2/report.json` 验证 `95/95` 正确。标准答案只在 response 生成后评分，不进入核心分析链路。仍需继续做真实 LLM 大规模回归、更多中文真实业务表、更多字段别名、多表场景和更复杂中文 BI 能力验证。
 7. 真实 LLM 多 Agent 评测耗时仍偏长，后续可优化 provider 调用次数和 stage 缓存，但不能牺牲 trace、Verifier 和受控工具边界。
 8. 当前 Pandas / SQL 不等价主要是 coverage gap，不是 SQL correctness gap：SQL 仍是 sqlite fallback / SQL-compatible 子集，fee-rule 能力主要由 Pandas 路径和 shared rule engine 承载；更深层风险是 Agent 能力族抽象、Planner 泛化字段和 Verifier 语义验收还不够稳定，不能把 executor parity 误当成 Agent 泛化能力完成。
 9. 当前还缺少统一风险报告，把 format risk、semantic risk、capability coverage、official hidden score 不可本地复现、public proxy observation、真实 provider cost / latency 和 submission provenance 分开记录；不能只用 success_count 或 mock 覆盖率代表可提交质量。

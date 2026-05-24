@@ -85,6 +85,13 @@ VDS_BI_OPERATIONS = frozenset(
         "vds_current_category_share_top",
         "vds_current_filtered_metric_top",
         "vds_peer_anomaly",
+        "vds_period_group_comparison",
+        "vds_current_rank_with_period_change",
+        "vds_group_top_entities",
+        "vds_status_impact_top",
+        "vds_current_share_top",
+        "vds_current_top",
+        "vds_three_period_top",
     }
 )
 

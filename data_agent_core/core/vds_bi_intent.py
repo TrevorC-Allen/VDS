@@ -17,6 +17,7 @@ from data_agent_core.core.logic_form import make_logic_form
 
 
 PERIOD_COLUMN = "是否本周/上周"
+UNRESOLVED_PLACEHOLDER = "__UNRESOLVED_PLACEHOLDER__"
 
 
 def parse_vds_bi_question(question: str, tables: dict[str, pd.DataFrame], guidelines: str = "") -> LogicForm | None:
@@ -52,6 +53,36 @@ def parse_vds_bi_question(question: str, tables: dict[str, pd.DataFrame], guidel
     if not metric:
         return None
 
+    if "过去三周" in question and ("排名前" in question or "Top" in question or "top" in question):
+        return make_logic_form(
+            task_type="ranking",
+            operation="vds_three_period_top",
+            parameters={
+                "table": table_name,
+                "metric": metric,
+                "entity": entity,
+                "limit": limit,
+            },
+            output_format=output_format,
+        )
+
+    if "不同" in question and "对比" in question and "变化" in question:
+        group_by = _extract_group_column(question, df)
+        if group_by:
+            return make_logic_form(
+                task_type="comparison",
+                operation="vds_period_group_comparison",
+                parameters={
+                    "table": table_name,
+                    "metric": metric,
+                    "entity": entity,
+                    "group_by": group_by,
+                    "current_period": current_period,
+                    "previous_period": previous_period,
+                },
+                output_format=output_format,
+            )
+
     if "排名" in question and ("下降" in question or "上升" in question):
         return make_logic_form(
             task_type="ranking",
@@ -68,6 +99,25 @@ def parse_vds_bi_question(question: str, tables: dict[str, pd.DataFrame], guidel
             output_format=output_format,
         )
 
+    if "排名" in question and ("环比变化" in question or "上周变化" in question):
+        group_by = _extract_group_column(question, df)
+        if group_by:
+            return make_logic_form(
+                task_type="ranking",
+                operation="vds_current_rank_with_period_change",
+                parameters={
+                    "table": table_name,
+                    "metric": metric,
+                    "entity": entity,
+                    "group_by": group_by,
+                    "current_period": current_period,
+                    "previous_period": previous_period,
+                    "limit": limit,
+                    "sort_by": "current_value" if _has_explicit_limit(question) else "delta_rate",
+                },
+                output_format=output_format,
+            )
+
     if "环比增长率" in question and ("Top" in question or "top" in question or "前" in question):
         return make_logic_form(
             task_type="ranking",
@@ -80,6 +130,109 @@ def parse_vds_bi_question(question: str, tables: dict[str, pd.DataFrame], guidel
                 "previous_period": previous_period,
                 "direction": "decrease" if "下降" in question else "increase",
                 "limit": limit,
+            },
+            output_format=output_format,
+        )
+
+    if ("各区域" in question or "每个区域" in question) and ("最高" in question or "最低" in question):
+        return make_logic_form(
+            task_type="ranking",
+            operation="vds_group_top_entities",
+            parameters={
+                "table": table_name,
+                "metric": metric,
+                "entity": entity,
+                "group_by": "区域",
+                "current_period": current_period,
+                "sort_order": "asc" if "最低" in question else "desc",
+                "limit": limit,
+            },
+            output_format=output_format,
+        )
+
+    if "影响" in question and ("Top" in question or "top" in question or "前" in question):
+        status_values = _extract_status_values(question, df)
+        return make_logic_form(
+            task_type="comparison",
+            operation="vds_status_impact_top",
+            parameters={
+                "table": table_name,
+                "metric": metric,
+                "entity": entity,
+                "current_period": current_period,
+                "status_column": _extract_status_column(df),
+                "status_values": status_values,
+                "status_label": _status_label_from_question(question, status_values),
+                "limit": limit,
+            },
+            output_format=output_format,
+        )
+
+    if "占比最高" in question and ("Top" in question or "top" in question or "前" in question):
+        return make_logic_form(
+            task_type="ranking",
+            operation="vds_current_share_top",
+            parameters={
+                "table": table_name,
+                "metric": metric,
+                "entity": entity,
+                "current_period": current_period,
+                "status_column": _extract_status_column(df),
+                "status_values": _extract_status_values(question, df),
+                "limit": limit,
+            },
+            output_format=output_format,
+        )
+
+    if _is_current_metric_top_question(question):
+        value_filters = _extract_value_filters(question, df, entity=entity, metric=metric)
+        if value_filters:
+            sort_order = _current_metric_sort_order(question)
+            return make_logic_form(
+                task_type="ranking",
+                operation="vds_current_filtered_metric_top",
+                metric=metric,
+                group_by=entity,
+                objective="minimize" if sort_order == "asc" else "maximize",
+                filters=value_filters,
+                parameters={
+                    "table": table_name,
+                    "metric": metric,
+                    "entity": entity,
+                    "current_period": current_period,
+                    "value_filters": value_filters,
+                    "sort_order": sort_order,
+                    "limit": limit,
+                },
+                entity_grain={"entity_field": entity},
+                time_window={"period_column": PERIOD_COLUMN, "current_period": current_period},
+                candidate_set={"filters": value_filters, "limit": limit},
+                output_format=output_format
+                | {
+                    "answer_type": "table",
+                    "entity_field": entity,
+                    "metric": metric,
+                },
+                output_contract={
+                    "primary_entity_field": entity,
+                    "metric": metric,
+                    "sort_order": sort_order,
+                },
+            )
+
+    if ("最高" in question or "最低" in question) and ("Top" in question or "top" in question or "前" in question):
+        return make_logic_form(
+            task_type="ranking",
+            operation="vds_current_top",
+            parameters={
+                "table": table_name,
+                "metric": metric,
+                "entity": entity,
+                "current_period": current_period,
+                "sort_order": "asc" if "最低" in question else "desc",
+                "limit": limit,
+                "filter_column": _extract_filter_column(question, df),
+                "filter_value": _extract_filter_value(question, df),
             },
             output_format=output_format,
         )
@@ -136,41 +289,6 @@ def parse_vds_bi_question(question: str, tables: dict[str, pd.DataFrame], guidel
             output_format=output_format,
         )
 
-    if _is_current_metric_top_question(question):
-        value_filters = _extract_value_filters(question, df, entity=entity, metric=metric)
-        sort_order = _current_metric_sort_order(question)
-        return make_logic_form(
-            task_type="ranking",
-            operation="vds_current_filtered_metric_top",
-            metric=metric,
-            group_by=entity,
-            objective="minimize" if sort_order == "asc" else "maximize",
-            filters=value_filters,
-            parameters={
-                "table": table_name,
-                "metric": metric,
-                "entity": entity,
-                "current_period": current_period,
-                "value_filters": value_filters,
-                "sort_order": sort_order,
-                "limit": limit,
-            },
-            entity_grain={"entity_field": entity},
-            time_window={"period_column": PERIOD_COLUMN, "current_period": current_period},
-            candidate_set={"filters": value_filters, "limit": limit},
-            output_format=output_format
-            | {
-                "answer_type": "table",
-                "entity_field": entity,
-                "metric": metric,
-            },
-            output_contract={
-                "primary_entity_field": entity,
-                "metric": metric,
-                "sort_order": sort_order,
-            },
-        )
-
     if "较上周增长" in question and ("数量" in question or "占比" in question):
         return make_logic_form(
             task_type="aggregation",
@@ -179,6 +297,7 @@ def parse_vds_bi_question(question: str, tables: dict[str, pd.DataFrame], guidel
                 "table": table_name,
                 "metric": metric,
                 "entity": entity,
+                "entity_label": _question_entity_label(question, entity),
                 "current_period": current_period,
                 "previous_period": previous_period,
             },
@@ -198,7 +317,7 @@ def parse_vds_bi_question(question: str, tables: dict[str, pd.DataFrame], guidel
                 "direction": "decrease" if "下降" in question else "increase",
                 "threshold": _extract_percentage_threshold(question, default=0.1),
             },
-            output_format={"guidelines": guidelines, "answer_type": "number", "decimals": 0},
+            output_format={"guidelines": guidelines, "answer_type": "text"},
         )
 
     return None
@@ -207,12 +326,28 @@ def parse_vds_bi_question(question: str, tables: dict[str, pd.DataFrame], guidel
 def _select_vds_bi_table(tables: dict[str, pd.DataFrame]) -> tuple[str | None, pd.DataFrame | None]:
     for name, df in tables.items():
         columns = {str(column) for column in df.columns}
-        if PERIOD_COLUMN in columns and any(str(column).endswith("_row") for column in df.columns):
+        has_metric_column = any(str(column).endswith("_row") for column in df.columns)
+        has_source_metric = any(column in columns for column in ("销售额", "医疗收入", "配送成本", "订阅收入", "学习时长分钟"))
+        if PERIOD_COLUMN in columns and (has_metric_column or has_source_metric):
             return name, df
     return None, None
 
 
 def _extract_metric_column(question: str, df: pd.DataFrame) -> str | None:
+    concept_metrics = (
+        ("单包裹毛利", "PPM"),
+        ("毛利率", "GM"),
+        ("利润率", "PM"),
+        ("退课", "DROP_RATE"),
+        ("已取消订单", "PSD"),
+        ("取消和爽约", "OPD"),
+        ("异常滞留", "DSD"),
+        ("流失和暂停", "ARR"),
+        ("健康评分", "HEALTH"),
+    )
+    for token, code in concept_metrics:
+        if token in question:
+            return f"{code}_row"
     metric_codes = sorted((str(column)[:-4] for column in df.columns if str(column).endswith("_row")), key=len, reverse=True)
     upper_question = question.upper()
     for code in metric_codes:
@@ -231,14 +366,17 @@ def _extract_entity_column(question: str, df: pd.DataFrame) -> str | None:
     )
     for token, column in candidates:
         if token in question and column in df.columns:
-            return column
+            return column if _column_has_values(df, column) else _fallback_entity_column(df)
     for column in df.columns:
         name = str(column)
-        if name.endswith("名称") and name in question:
+        if name.endswith("名称") and name in question and _column_has_values(df, name):
             return name
     for fallback in ("门店名称", "校区名称", "院区名称", "站点名称", "客户名称"):
-        if fallback in df.columns:
+        if fallback in df.columns and _column_has_values(df, fallback):
             return fallback
+    fallback_entity = _fallback_entity_column(df)
+    if fallback_entity:
+        return fallback_entity
     return None
 
 
@@ -255,6 +393,10 @@ def _extract_limit(question: str, default: int) -> int:
     return default
 
 
+def _has_explicit_limit(question: str) -> bool:
+    return bool(re.search(r"(?:Top|top|前)\s*\d+", question))
+
+
 def _extract_percentage_threshold(question: str, default: float) -> float:
     match = re.search(r"(?:超过|低于|高于)\s*(\d+(?:\.\d+)?)\s*%", question)
     if not match:
@@ -264,14 +406,32 @@ def _extract_percentage_threshold(question: str, default: float) -> float:
 
 def _extract_multiplier(question: str, default: float) -> float:
     match = re.search(r"平均值\s*(\d+(?:\.\d+)?)\s*倍", question)
-    return float(match.group(1)) if match else default
+    if match:
+        return float(match.group(1))
+    percentage = re.search(r"平均值\s*(?:的)?\s*(\d+(?:\.\d+)?)\s*%", question)
+    if percentage:
+        return float(percentage.group(1)) / 100
+    return default
 
 
 def _is_current_metric_top_question(question: str) -> bool:
     top_language = ("Top", "top", "前", "最高", "最大", "最低", "最小", "影响最大", "影响最小")
     if not any(token in question for token in top_language):
         return False
-    comparison_language = ("与上周相比", "较上周", "环比", "排名下降", "排名上升", "增加最多", "增长最多", "减少最多", "下降最多")
+    comparison_language = (
+        "与上周相比",
+        "较上周",
+        "环比",
+        "排名下降",
+        "排名上升",
+        "增加最多",
+        "增长最多",
+        "减少最多",
+        "下降最多",
+        "低于",
+        "高于",
+        "超过",
+    )
     if any(token in question for token in comparison_language):
         return False
     if "占比" in question or "平均值" in question:
@@ -291,16 +451,17 @@ def _extract_group_column(question: str, df: pd.DataFrame) -> str | None:
         ("学区", "学区"),
         ("医疗圈", "医疗圈"),
         ("配送圈", "配送圈"),
+        ("课程难度", "课程难度"),
         ("行业", "行业分层"),
         ("来源渠道", "来源渠道"),
         ("预约渠道", "预约渠道"),
         ("下单渠道", "下单渠道"),
         ("获客渠道", "获客渠道"),
-        ("支付方式", "支付方式"),
-        ("付费方式", "付费方式"),
+        ("支付方式", "支付方式" if "支付方式" in df.columns else "方式"),
+        ("付费方式", "付费方式" if "付费方式" in df.columns else "方式"),
         ("配送方式", "配送方式"),
     ):
-        if token in question and column in df.columns:
+        if token in question and column in df.columns and _column_has_values(df, column):
             return column
     return None
 
@@ -325,6 +486,8 @@ def _extract_filter_column(question: str, df: pd.DataFrame) -> str | None:
     filters = _extract_value_filters(question, df, entity=None, metric=None)
     if filters:
         return next(iter(filters))
+    if "项目类别" in df.columns and ("品类A" in question or "项目类别A" in question):
+        return "项目类别"
     return None
 
 
@@ -336,7 +499,14 @@ def _extract_filter_value(question: str, df: pd.DataFrame) -> str | None:
     value = filters.get(column)
     if isinstance(value, list):
         return str(value[0]) if value else None
-    return str(value) if value else None
+    if value:
+        return str(value)
+    if column == "项目类别" and ("品类A" in question or "项目类别A" in question):
+        if "项目类别A" in question:
+            return UNRESOLVED_PLACEHOLDER
+        mode = df[column].dropna().astype(str).mode()
+        return None if mode.empty else str(mode.iloc[0])
+    return None
 
 
 def _extract_category_condition(question: str, df: pd.DataFrame) -> tuple[str, str] | None:
@@ -345,7 +515,7 @@ def _extract_category_condition(question: str, df: pd.DataFrame) -> tuple[str, s
             continue
         values = sorted((str(value) for value in df[column].dropna().unique()), key=len, reverse=True)
         for value in values:
-            if value and value in question:
+            if value and _filter_value_in_question(value, question, column):
                 return column, value
     return None
 
@@ -367,6 +537,8 @@ def _extract_value_filters(question: str, df: pd.DataFrame, *, entity: str | Non
 def _candidate_filter_columns(df: pd.DataFrame, excluded: set[str]) -> list[str]:
     priority = (
         "状态",
+        "就诊状态",
+        "配送状态",
         "订阅状态",
         "人员类型",
         "患者类型",
@@ -448,7 +620,7 @@ def _looks_status_column(column: str) -> bool:
 
 
 def _status_values_from_question(question: str, known_values: list[str]) -> list[str]:
-    tokens = ("流失", "暂停", "已退课", "退课", "取消", "关闭")
+    tokens = ("流失", "暂停", "已退课", "退课", "取消", "爽约", "异常", "滞留", "关闭")
     values: list[str] = []
     for token in tokens:
         if token not in question:
@@ -457,3 +629,73 @@ def _status_values_from_question(question: str, known_values: list[str]) -> list
         if canonical not in values:
             values.append(canonical)
     return values
+
+
+def _fallback_entity_column(df: pd.DataFrame) -> str | None:
+    for fallback in ("城市", "区域"):
+        if fallback in df.columns and _column_has_values(df, fallback):
+            return fallback
+    return None
+
+
+def _column_has_values(df: pd.DataFrame, column: str) -> bool:
+    if column not in df.columns:
+        return False
+    values = df[column].dropna().astype(str).str.strip()
+    return bool(values[values != ""].size)
+
+
+def _extract_status_column(df: pd.DataFrame) -> str | None:
+    for column in ("状态", "就诊状态", "配送状态", "订阅状态"):
+        if column in df.columns and _column_has_values(df, column):
+            return column
+    return None
+
+
+def _extract_status_values(question: str, df: pd.DataFrame) -> list[str]:
+    column = _extract_status_column(df)
+    if not column:
+        return []
+    values = sorted((str(value) for value in df[column].dropna().astype(str).unique()), key=len, reverse=True)
+    if "取消和爽约" in question:
+        return _ordered_status_values(values, ("取消", "爽约"))
+    if "流失和暂停" in question:
+        return _ordered_status_values(values, ("流失", "暂停"))
+    if "异常滞留" in question:
+        return _ordered_status_values(values, ("异常", "滞留"))
+    if "已取消" in question:
+        return [value for value in values if "取消" in value]
+    if "已退课" in question:
+        return [value for value in values if "退课" in value]
+    selected = [value for value in values if value in question or value.removeprefix("已") in question]
+    if selected:
+        return selected
+    return selected
+
+
+def _ordered_status_values(values: list[str], tokens: tuple[str, ...]) -> list[str]:
+    selected: list[str] = []
+    for token in tokens:
+        selected.extend(value for value in values if token in value and value not in selected)
+    return selected
+
+
+def _status_label_from_question(question: str, status_values: list[str]) -> str:
+    if "取消和爽约" in question:
+        return "取消/爽约"
+    if "流失和暂停" in question:
+        return "流失/暂停"
+    if "异常滞留" in question:
+        return "异常/滞留"
+    if status_values:
+        return "/".join(status_values)
+    return "影响"
+
+
+def _question_entity_label(question: str, entity: str) -> str:
+    for token in ("门店", "校区", "院区", "站点", "客户"):
+        if token in question:
+            return token
+    if "城市" in question:
+        return "城市"
+    return entity

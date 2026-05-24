@@ -143,6 +143,9 @@ def _vds_current_metric_top_answer(plan: AnalysisPlan, execution_result: Executi
     metric = str(params.get("metric") or logic.metric or logic.output_format.get("metric") or "")
     if not entity or not metric or entity not in rows[0] or metric not in rows[0]:
         return None
+    row_answers = [str(row.get("answer")).strip() for row in rows if row.get("answer")]
+    if row_answers:
+        return "；".join(row_answers)
     top_row = rows[0]
     period = str(params.get("current_period") or "本周")
     direction = "最低" if str(params.get("sort_order") or "desc") == "asc" else "最高"

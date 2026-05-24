@@ -194,14 +194,14 @@ VDS 桌面测试数据用于暴露中文 BI 周环比、阈值、异常和多行
 当前 VDS BI 能力边界：
 
 1. `vds_bi_intent` 只根据上传表 schema、中文实体词和指标 `_row` 字段生成 `vds_*` LogicForm。
-2. `vds_bi_executor` 只执行周期比较、排名变化、TopN delta、当前周期过滤指标 TopN、增长数量占比、阈值计数、同圈层异常和维度环比增长率。
+2. `vds_bi_executor` 只执行周期比较、排名变化、TopN delta、当前周期过滤指标 TopN、增长数量占比、阈值计数、同圈层异常、分组环比、状态影响、各组 Top 实体、三周期 TopN 和维度环比增长率。
 3. 同一套能力必须能迁移到门店、校区、院区、站点和客户，不允许只服务某一个 Excel 文件。
 4. LLM stage payload 必须 JSON-safe，pandas Timestamp 等对象必须转为可序列化摘要，不能因复杂表格值中断 Verifier / Insight。
 5. VDS 标准答案或人工答案只能用于后验评分或人工检查，不进入 prompt、Planner、Executor、Verifier、Correction、测试 fixture 或 trace。
 
-2026-05-24 更新：`vds_current_filtered_metric_top` 作为当前周期过滤指标 TopN 能力族落地。该能力用 schema 中的实体名称列和显式 `_row` 指标锁定执行粒度，支持多值枚举过滤，并在 Response Builder 收敛为中文摘要，避免“本周 Pro 套餐 CHR 最高 Top10 客户”“本周流失和暂停对 ARR 影响最大的 Top10 客户”等问题被通用默认排名误解析为区域维度、订阅收入指标或原始逗号列表。
+2026-05-25 更新：当前分支恢复 VDS 标准答案所需的完整中文 BI 能力族，并保留 `vds_current_filtered_metric_top` 对当前周期枚举过滤 TopN 的实体/指标锁定能力。`本周 Pro 套餐 CHR 最高 Top10 客户` 会返回客户 TopN 列表，`本周流失和暂停对 ARR 影响最大的 Top10 客户` 会走状态影响能力族，不会再被通用默认排名误解析为区域维度或订阅收入指标。
 
-当前验证：桌面 VDS `问题汇总.xlsx` 五域全部 95 题 smoke 为 95/95 成功；该结果是执行覆盖 smoke，不等同于完整人工答案准确率。
+当前验证：桌面 VDS `问题汇总.xlsx` 五域全部 95 题标准答案 scorer 为 `95/95`，报告在 `outputs/vds_standard_answer_recheck_20260525_core_fix_v2/report.json`。标准答案仍只在离线 runner 评分阶段使用，不进入核心分析链路。
 
 ## 语言优先级
 

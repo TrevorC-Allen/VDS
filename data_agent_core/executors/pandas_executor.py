@@ -272,6 +272,14 @@ def _result_rows(value: Any) -> tuple[list[str], list[dict[str, Any]]]:
                     columns.append(str(key))
         return columns, value
     if isinstance(value, dict):
+        candidate_table = value.get("candidate_table")
+        if isinstance(candidate_table, list) and all(isinstance(row, dict) for row in candidate_table):
+            columns: list[str] = []
+            for row in candidate_table:
+                for key in row:
+                    if key not in columns:
+                        columns.append(str(key))
+            return columns, candidate_table
         return list(value.keys()), [value]
     return ["answer"], [{"answer": value}]
 
