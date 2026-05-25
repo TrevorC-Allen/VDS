@@ -143,6 +143,83 @@ svg {
   height: 17px;
 }
 
+.project-panel {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 6px;
+}
+
+.project-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 3px;
+  color: var(--muted);
+}
+
+.project-header h2,
+.project-header span,
+.project-summary {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.project-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px 34px 34px;
+  gap: 6px;
+}
+
+.project-controls select {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: #111827;
+  padding: 0 8px;
+  outline: none;
+  font-size: 13px;
+}
+
+.project-controls .icon-button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.project-controls .icon-button:hover {
+  color: var(--accent);
+  border-color: rgba(37, 99, 235, 0.35);
+}
+
+.project-controls .icon-button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.project-controls .icon-button.danger:hover:not(:disabled) {
+  color: #b42318;
+  border-color: rgba(180, 35, 24, 0.32);
+}
+
+.project-summary {
+  overflow: hidden;
+  padding: 0 3px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .history-panel {
   display: flex;
   min-height: 0;
@@ -186,7 +263,7 @@ svg {
 
 .history-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
+  grid-template-columns: minmax(0, 1fr) 28px 28px 28px;
   gap: 6px;
   align-items: center;
 }
@@ -216,7 +293,9 @@ svg {
   color: var(--muted);
 }
 
-.history-rename-button {
+.history-rename-button,
+.history-project-button,
+.history-delete-button {
   display: grid;
   width: 28px;
   height: 28px;
@@ -231,17 +310,29 @@ svg {
 }
 
 .history-item:hover .history-rename-button,
+.history-item:hover .history-project-button,
+.history-item:hover .history-delete-button,
 .history-item:focus-within .history-rename-button,
+.history-item:focus-within .history-project-button,
+.history-item:focus-within .history-delete-button,
 .history-item.editing .history-rename-button {
   opacity: 1;
 }
 
-.history-rename-button:hover {
+.history-rename-button:hover,
+.history-project-button:hover {
   background: #fff;
   color: var(--accent);
 }
 
-.history-rename-button svg {
+.history-delete-button:hover {
+  background: #fff;
+  color: #b42318;
+}
+
+.history-rename-button svg,
+.history-project-button svg,
+.history-delete-button svg {
   width: 15px;
   height: 15px;
 }
@@ -676,6 +767,7 @@ p {
   font-size: 16px;
   font-weight: 470;
   line-height: 1.72;
+  white-space: pre-wrap;
   word-break: break-word;
 }
 
@@ -820,6 +912,103 @@ p {
   color: #374151;
   font-size: 15px;
   line-height: 1.62;
+}
+
+.insight-card {
+  display: grid;
+  gap: 5px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fbfbfc;
+}
+
+.insight-card strong {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 12px;
+}
+
+.insight-card p {
+  margin: 0;
+  color: #1f2937;
+  font-size: 13px;
+  line-height: 1.48;
+}
+
+.insight-card span {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.artifact-list {
+  display: grid;
+  gap: 10px;
+}
+
+.artifact-list.inline {
+  margin-top: 8px;
+}
+
+.artifact-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfbfc;
+}
+
+.artifact-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.artifact-card-header strong {
+  color: #111827;
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.artifact-card-header span,
+.artifact-card small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.artifact-card p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.artifact-card pre {
+  max-height: 240px;
+  margin: 9px 0 0;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px;
+  background: #111827;
+  color: #f9fafb;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.artifact-card code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  white-space: pre;
+}
+
+.artifact-card small {
+  display: block;
+  margin-top: 8px;
 }
 
 .process-header h2 + p {

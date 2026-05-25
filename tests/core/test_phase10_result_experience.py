@@ -17,9 +17,11 @@ from data_agent_core.core.data_quality import build_data_quality_report
 from data_agent_core.llm.client import MockLLMClient
 from data_agent_core.output.chart_planner import build_chart_spec
 from data_agent_core.output.chart_renderer import attach_rendered_chart
+from data_agent_core.output.execution_artifacts import build_execution_artifacts
 from data_agent_core.output.insight_generator import generate_insight
 from data_agent_core.output.process_narrative import build_process_view_v2, process_view_monitor_payload
 from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
+from data_agent_core.tracing.live_monitor import sanitize_monitor_payload
 
 
 class Phase10ResultExperienceTest(unittest.TestCase):
@@ -56,6 +58,65 @@ class Phase10ResultExperienceTest(unittest.TestCase):
 
         scalar_result = ExecutionResult(backend="pandas", success=True, value=42, columns=["answer"], rows=[{"answer": 42}])
         self.assertEqual("kpi", build_chart_spec(plan=ranking_plan, execution_result=scalar_result, verification_passed=True).chart_type)
+
+    def test_chart_planner_prefers_table_for_payment_detail_rows(self) -> None:
+        plan = AnalysisPlan(
+            plan_id="plan_detail",
+            logic_form=LogicForm(task_type="detail_lookup", operation="detail_lookup"),
+        )
+        rows = [
+            {
+                "psp_reference": 20034594130 + index,
+                "merchant": "Belles_cookbook_store" if index % 2 else "Crossfit_Hanna",
+                "card_scheme": "GlobalCard",
+                "year": 2023,
+                "hour_of_day": index,
+                "minute_of_hour": index + 10,
+                "day_of_year": 30 + index,
+                "eur_amount": 10.0 + index,
+                "card_bin": 4556 + index,
+                "aci": "F",
+            }
+            for index in range(8)
+        ]
+        result = ExecutionResult(
+            backend="pandas",
+            success=True,
+            columns=list(rows[0]),
+            rows=rows,
+        )
+
+        chart = build_chart_spec(plan=plan, execution_result=result, verification_passed=True)
+
+        self.assertIsNone(chart.chart_type)
+        self.assertEqual("detail_rows_prefer_table", chart.fallback_reason)
+
+    def test_execution_artifacts_are_safe_reproducibility_cards(self) -> None:
+        plan = AnalysisPlan(
+            plan_id="plan_safe_code",
+            logic_form=LogicForm(
+                task_type="ranking",
+                operation="ranking",
+                metric="Sales_TASK_ID_raw_prompt",
+                group_by="city",
+                source_tables=["orders"],
+            ),
+        )
+        result = ExecutionResult(
+            backend="pandas",
+            success=True,
+            columns=["city", "Sales_TASK_ID_raw_prompt"],
+            rows=[{"city": "Shanghai", "Sales_TASK_ID_raw_prompt": 300}],
+        )
+
+        artifacts = build_execution_artifacts(plan=plan, execution_result=result, verification_passed=True)
+        payload = str(artifacts).lower()
+
+        self.assertTrue(artifacts)
+        self.assertIn("python", {item["language"] for item in artifacts})
+        self.assertNotIn("task_id", payload)
+        self.assertNotIn("raw_prompt", payload)
+        self.assertNotIn("chain_of_thought", payload)
 
     def test_backend_chart_renderer_attaches_svg_image_data_uri(self) -> None:
         chart = build_chart_spec(
@@ -309,6 +370,43 @@ class Phase10ResultExperienceTest(unittest.TestCase):
             set(payload["process_view_v2"]["steps"][0]),
         )
         for forbidden in ("task_id", "raw prompt", "standard answer", "public proxy", "scorer", "secret"):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_monitor_payload_sanitizer_blocks_cot_prompts_keys_and_scorer_material(self) -> None:
+        payload = sanitize_monitor_payload(
+            {
+                "safe": "我先检查文件结构",
+                "chain_of_thought": "hidden reasoning",
+                "raw_prompt": "system prompt",
+                "reasoning_tokens": [1, 2, 3],
+                "api_key": "sk-secret",
+                "task_id": "abc",
+                "standard_answer": "gold",
+                "hidden_answer": "hidden",
+                "public_proxy": "score",
+                "scorer": "judge",
+                "nested": {"authorization": "Bearer token", "summary": "safe note"},
+            }
+        )
+        serialized = str(payload).lower()
+
+        self.assertIn("safe note", serialized)
+        for forbidden in (
+            "chain_of_thought",
+            "hidden reasoning",
+            "raw_prompt",
+            "system prompt",
+            "reasoning_tokens",
+            "api_key",
+            "sk-secret",
+            "task_id",
+            "standard_answer",
+            "hidden_answer",
+            "public_proxy",
+            "scorer",
+            "authorization",
+            "bearer token",
+        ):
             self.assertNotIn(forbidden, serialized)
 
     def test_backend_returns_quality_chart_insight_and_trace_for_quality_question(self) -> None:

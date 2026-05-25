@@ -68,6 +68,123 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-25 14:55 CST
+
+### 本次目标
+
+按 Phase 12 方案实现 Workbench 的 GPT-like general 回答、结构化 Insight、安全代码展示、活动流过程展示、语义图表规划防线和数据 + 说明文件自动绑定，同时确保既有模型能力和基准能力不下降。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- README.md
+- docs/API_CONTRACT.md
+- frontend/README.md
+- agent_runtime/data_analysis_roles.py
+- backend/services/data_agent_service.py
+- backend/storage/temp_file_store.py
+- data_agent_core/agent/single_agent.py
+- data_agent_core/contracts/response_contracts.py
+- data_agent_core/core/message_intent.py
+- data_agent_core/output/chart_planner.py
+- data_agent_core/output/dataset_overview.py
+- data_agent_core/output/execution_artifacts.py
+- data_agent_core/output/insight_generator.py
+- data_agent_core/output/process_narrative.py
+- data_agent_core/output/response_builder.py
+- frontend/app.js
+- frontend/index.html
+- frontend/styles.css
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_phase10_result_experience.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `overview_report` 契约和 general / overview 问法识别，使“看一下这个表单 / 总结一下这个表 / 介绍一下这个数据集”等问题返回结构化表画像，而不是单个聚合数。
+- 增强 dataset overview 输出：表整体情况、字段含义、主要分布、数值指标摘要、布尔状态占比、可继续追问方向和缺失边界说明。
+- 新增安全 `execution_artifacts`，前端展示 Python / SQL 代码卡片和执行摘要；代码只作为可复现 artifact，不开放浏览器执行，不展示完整 Chain of Thought、raw prompt 或 backend trace。
+- 增强 Insight 生成逻辑，建议包含 observation、evidence 和 recommended action，避免只输出模板化建议。
+- 扩展 `process_view_v2` 的 overview 活动流，展示识别概览请求、读取主表画像、识别字段、执行概览代码、生成概览报告等安全步骤。
+- 强化 `chart_planner`，明细结果优先表格，避免把 ID / reference / bin / year / hour / minute / day_of_year 当作图表指标。
+- Workbench 主界面去除高级选项 / Rule Mode / Benchmark 控件，文件入口支持 dataset 与 `.md/.txt/.yaml/.yml` 说明文件、规则型 `.json` 一起上传。
+- 后端 batch upload 自动把说明 / 用户规则文件绑定为 `user_analysis` knowledge，并在 message 阶段合并显式规则和自动绑定规则；DABstep context package 与 benchmark rule 路径保持隔离。
+- README、API contract、frontend README 和 MAIN_GOAL 已同步 Phase 12 的契约、边界和真实 smoke 状态。
+
+### 测试方式
+
+- node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime multi_agent_workflows backend tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_phase10_result_experience tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/phase12_dabstep_dev10_mock_20260525
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root /Users/trevorcui/Desktop/微软脱敏数据 --output-dir outputs/phase12_microsoft_300_mock_20260525
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.vds_desktop_benchmark_runner --question-workbook /Users/trevorcui/Desktop/Virtual\ Data\ Scientist测试数据/问题/问题汇总.xlsx --answer-workbook /Users/trevorcui/Desktop/Virtual\ Data\ Scientist测试数据/问题/标准GPT答案汇总.xlsx --data-root /Users/trevorcui/Desktop/Virtual\ Data\ Scientist测试数据/数据 --output-dir outputs/phase12_vds_95_mock_20260525
+- 尝试 DABstep all 1-450 mock：输出目录 `outputs/phase12_dabstep_all_450_mock_20260525`。
+- scripts/sync_workbench_runtime.sh
+- launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+- curl `http://127.0.0.1:8001/api/data-agent/upload-batch`，混合上传 `/tmp/vds_phase12_subscription.csv` 和 `/tmp/vds_phase12_manual.md`。
+- Browser 验证 `http://127.0.0.1:8001/workbench` 无高级选项、无 Rule Mode、显示“数据和说明文件支持多选”。
+- Playwright 真实页面 smoke：混合上传 CSV + Markdown，提问“总结一下这个表”，展开“查看处理过程”，截图保存为 `output/playwright/phase12-smoke/workbench-overview-activity-code.png`。
+- git diff --check
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- `compileall` 通过。
+- focused unittest 通过：53 tests OK。
+- full unittest 通过：207 tests OK。
+- DABstep dev10 mock：total=10、scored=10、correct=9、accuracy=0.9、success_count=10，保持既有 `best_fraud_aci_choice` 已知缺口。
+- Microsoft 300 mock：total=300、correct=300、accuracy=1.0、success_count=300。
+- VDS 95 mock：total=95、correct=95、accuracy=1.0、success_count=95。
+- DABstep all 1-450 mock 本轮尝试约 18 分钟后终止，目录中留下 306 条 trace，但没有生成最终 predictions / report；该项不能记为通过，后续需要单独补跑。
+- Batch upload API 返回 `auto_bound_user_rule_file_ids`，确认 Markdown 说明文件被自动绑定为 user analysis rule。
+- Browser shell 验证通过：无“高级选项”、无“Rule Mode”、无旧“CSV / Excel / JSON”文案，存在“数据和说明文件支持多选”。
+- Playwright smoke 通过：真实 `127.0.0.1:8001/workbench` 可见 overview 主回答、Insight 建议、展开后的安全过程流和代码卡片。
+- `git diff --check` 通过。
+
+### 遗留问题
+
+- DABstep all 1-450 mock 本轮未完整跑完，不能宣称 all-450 非回归已通过；当前只记录为已尝试且保留 306 条 trace。
+- Phase 12 仍是首轮体验实现，后续还需要继续提升图表审美、更多业务表类型的 natural overview、以及更强的 Insight 业务驱动归因。
+
+### 是否影响主流程
+
+是。影响 Workbench 普通上传、general 问答、回答渲染、过程展示和代码 artifact 展示；核心分析仍由后端 / data_agent_core 生成，前端只渲染稳定契约。
+
+### 是否涉及 Benchmark
+
+是。涉及 DABstep / Microsoft / VDS 非回归验证和 DABstep context package 隔离，但不把 task_id、标准答案、hidden answer、proxy answer、scorer 或 benchmark metadata 放入普通 Agent 链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。没有新增 Microsoft Agent Framework 依赖，也没有改变 adapter 作为可选承载层的边界。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。`execution_artifacts`、`overview_report`、`process_view_v2` 和规则文件自动绑定都通过后端契约进入 Workbench，保持 ToolDispatcher / Result Normalizer / Verifier / Correction Planner 的边界。
+
+### 是否修改核心数据契约
+
+是。`FinalResponse` 新增 `overview_report` 和 `execution_artifacts`，并扩展 overview / insight / process_view_v2 的安全展示契约。
+
+### 是否修改 API 契约
+
+是。upload-batch profile 新增自动绑定用户规则文件信息，message response 可返回 `overview_report` 和 `execution_artifacts`。
+
+### 是否新增或修改错误类型
+
+否。未新增错误类型；DAB context package incomplete 的错误路径保持原有语义。
+
+### 是否新增或修改运行追踪逻辑
+
+是。overview 场景的 `process_view_v2` 扩展为活动流式安全过程，仍不展示完整 Chain of Thought、raw prompt、raw trace JSON 或 API key。
+
+### 是否已同步 README
+
+是。`README.md`、`docs/API_CONTRACT.md`、`frontend/README.md` 和 `MAIN_GOAL.md` 已同步 Phase 12 首轮实现和边界。
+
 2026-05-25 13:33 CST
 
 ### 本次目标
@@ -6815,3 +6932,170 @@ YYYY-MM-DD HH:MM TZ
 ### 是否已同步 README
 
 是。README 已同步 Rule Mode / Benchmark 规则上传状态、边界和 Workbench 行为。
+
+### 日期时间
+
+2026-05-25 15:19 CST
+
+### 本次目标
+
+为 VDS 项目新增 GPT-like parity redline：文件解析、回答结构、Insight、图表/表格、过程流、代码 artifact、Workbench 排版样式和用户可见文案必须无限接近 GPT / ChatGPT Data Analysis 同类结果；修改完成后必须对比并思考“GPT 会不会这样做”，差距很大直接打回重写。
+
+### 修改文件
+
+- README.md
+- MAIN_GOAL.md
+- docs/PHASE_GATES.md
+- docs/EVALUATION_GATE.md
+- docs/FEATURE_BACKLOG.md
+- docs/ARCHITECTURE.md
+- tests/architecture/test_project_redlines.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 在 MAIN_GOAL 架构原则中新增 GPT-like parity redline，并把它写入 Phase 12 验收标准和禁止事项。
+- 在 PHASE_GATES 总红线中要求体验类修改必须对照 GPT / ChatGPT Data Analysis 或冻结标准 GPT 参考结果，差距大时打回重写。
+- 在 EVALUATION_GATE 中新增 GPT-like Parity Review，明确要检查文件识别、回答组织、图表/代码/过程流、Workbench 排版和交互形态。
+- 在 FEATURE_BACKLOG 和 ARCHITECTURE 中同步 Phase 12 体验红线、适用范围、验收边界和记录要求。
+- 在 README 最新状态和 TODO 中增加红线入口，保证 GitHub 首页能看到该规则。
+- 新增架构文档守护测试，防止核心文档遗漏或删除 GPT-like parity redline。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_project_redlines -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets tests.architecture.test_project_redlines -v
+- git diff --check
+
+### 测试结果
+
+- 新增红线文档守护测试通过：Ran 1 test，OK。
+- 架构测试组通过：Ran 10 tests，OK。
+- `git diff --check` 通过。
+
+### 遗留问题
+
+- 本轮只新增项目红线、评测流程和文档守护测试，没有接入自动实时 GPT 调用；后续每次体验类修改仍需要人工或冻结参考 artifact 做 GPT-like parity review。
+- 当前工作区已有大量未提交修改，本轮未回滚、未整理这些并行改动。
+
+### 是否影响主流程
+
+是，影响验收流程。后续影响文件解析、回答、排版、图表、过程流或用户可见文案的修改，不能只以单测 / smoke 通过作为完成标准。
+
+### 是否涉及 Benchmark
+
+间接涉及。Benchmark、标准答案和 scorer 仍只能在 response 生成后用于评估；GPT-like parity redline 不能成为把标准答案、proxy answer 或 hidden answer 写入核心链路的理由。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。红线约束最终用户体验和验收标准，不改变 agent_runtime / multi_agent_workflows / data_agent_core 的分层边界。
+
+### 是否修改核心数据契约
+
+否。本轮只改项目规则、评测文档和架构测试。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 已同步 GPT-like parity redline 和后续 TODO。
+
+### 日期时间
+
+2026-05-25 16:02 CST
+
+### 本次目标
+
+修复并纳入 Phase 12.1：Workbench 和 generic eval 中说明型问题会把原始明细拼接成答案的问题；同时落实主页面 monitor SSE 活动流、默认一行过程、代码进过程详情、Insight 卡片化和清洗策略安全边界。
+
+### 修改文件
+
+- backend/services/data_agent_service.py
+- data_agent_core/core/message_intent.py
+- data_agent_core/output/dataset_overview.py
+- data_agent_core/output/cleaning_guidance.py
+- data_agent_core/output/process_narrative.py
+- data_agent_core/output/response_builder.py
+- frontend/app.js
+- frontend/styles.css
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_phase10_result_experience.py
+- MAIN_GOAL.md
+- README.md
+- docs/API_CONTRACT.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 修复概览意图：`这几个表什么意思，有什么字段`、`这个数据主要讲什么`、字段含义/有什么字段类问法进入 overview，不再被“几/字段/什么”误判成明细分析。
+- 扩展宽泛 readiness 问法：`适合做哪些分析`、`这个数据正常吗`、`这个数据能不能用`、`能不能做趋势 / 环比 / 同比` 等进入 overview，不再退化成单独行数。
+- 新增多表 overview：返回表名、来源、行列规模、可能含义和关键字段；排除编号/代码/发票号/客户号作为指标，长文本分布不展开原始取值。
+- 单表 overview 增加业务含义和字段角色修正：订单 / 零售交易型数据会说明为交易明细，`InvoiceDate` 识别为时间字段，`Country` 识别为地理维度。
+- 新增清洗策略安全路径：清洗规则、影响行数/比例、缺失删除填充保留、是否修改原始数据等问题进入 cleaning guidance，只做模拟和边界说明，不修改文件，不返回命中明细。
+- 新增后端 raw detail exit guard：正式分析链路若最终 `answer` 像 CSV / 原始明细行拼接，会在返回前改写为安全 overview 或澄清，避免绕过前置 intent route 的同类事故。
+- Workbench 主界面接入 monitor SSE：发送前订阅当前 `monitor_run_id`，消费安全事件白名单，默认只显示一行 activity summary，详情中保留实时步骤；无 EventSource 时保留本地进度 fallback。
+- 前端新增渲染熔断：overview / cleaning_simulation / general 问法只展示紧凑契约表，拒绝在主界面展开宽明细表。
+- 代码 artifact 从主答案独立面板移入“查看处理过程”详情；Insight 改成卡片，拆 observation / evidence / action，并限制数量。
+- API 和 MAIN_GOAL 明确 Phase 12.1 子目标：streaming_activity_view、general_overview_no_raw_dump、cleaning_guidance_no_raw_dump、frontend_render_guard、process_code_placement、insight_cards。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile data_agent_core/core/message_intent.py data_agent_core/output/dataset_overview.py data_agent_core/output/cleaning_guidance.py data_agent_core/output/process_narrative.py backend/services/data_agent_service.py data_agent_core/output/response_builder.py`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets tests.core.test_phase10_result_experience -v`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 scripts/run_generic_dataset_eval.py --files '/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx' --dataset-name uk_retail_phase12_1_final --output-dir outputs/eval_gate/uk_retail_phase12_1_final --generate-vds-answers --print-summary`
+- `jq` / `rg` 检查 `outputs/eval_gate/uk_retail_phase12_1_final/comparison.md|json` 是否仍包含 UK retail 原始明细串或单独行数退化。
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- Browser 验证 `http://127.0.0.1:8001/workbench`：载入历史对话并再次从输入框提交 `这个数据主要讲什么？`。
+
+### 测试结果
+
+- Python compile 通过。
+- `node --check frontend/app.js` 通过。
+- Focused tests 通过：Ran 63 tests，OK。
+- 手工服务层验证：`这几个表什么意思，有什么字段`、`这个数据主要讲什么？`、`给出建议清洗规则、影响行数、影响比例，并说明是否需要用户确认。`、`你会直接修改原始数据吗？` 均不再返回 raw detail dump。
+- Generic UK retail gate：`outputs/eval_gate/uk_retail_phase12_1_final`，candidate score `7 / 35`。该分数仍低，不能当作 generic gate 通过；但本轮 blocker 指标通过：`comparison.md/json` 未命中 `WHITE HANGING HEART`、`536365,`、`HAND WARMER` 等原始明细串，关键宽泛问法未退化成 `541909` 单独行数。
+- `generic_uploaded_002`（`这个数据主要讲什么？`）已回答为订单 / 零售交易明细表，正确识别 `InvoiceDate` 为时间字段、`Country` 为地理维度。
+- 真实 Workbench smoke：`127.0.0.1:8001/workbench` 已同步 runtime 后验证；历史载入和新提交 `这个数据主要讲什么？` 均显示多表 overview 紧凑表，无 raw dump、无主答案区代码面板、过程默认一行且可展开，console error/warn 为空。
+- 截图：`/tmp/vds_phase12_1/workbench_phase12_1_smoke.png`、`/tmp/vds_phase12_1/workbench_phase12_1_live_question.png`。
+
+### 遗留问题
+
+- Generic UK retail candidate score 仍只有 `7 / 35`，说明还有不少标准回复措辞、质量扫描、readiness 细项要继续补；但本轮用户指出的 raw dump / 行数退化 / `这个数据主要讲什么` blocker 已有后端出口、前端熔断、generic eval 和真实浏览器证据。
+- 本轮没有重跑 full unittest discover，也没有重跑 DABstep / Microsoft / VDS 95 全量门禁；此次改动集中在 Phase 12.1 体验链路和 focused non-regression。
+
+### 是否影响主流程
+
+是。说明型问题会在进入完整 multi-agent 之前被后端收敛成 overview 或 cleaning guidance；正式分析出口也会阻断 CSV / 明细行拼接答案，防止错误 planner / executor 输出污染用户体验。
+
+### 是否涉及 Benchmark
+
+间接涉及。修复来自 generic eval `comparison.md` 暴露的失败模式，但未把标准答案、proxy、scorer 或 case_id 写入 Agent 链路；新增 sanitizer 测试继续阻断这些字段进入 monitor payload。
+
+### 是否修改 API 契约
+
+是。记录 `cleaning_simulation` 响应、multi-table overview 紧凑表、raw detail exit guard、主页面 monitor SSE 消费白名单，以及代码 artifact 只在过程详情展示的前端契约。
+
+### 是否新增或修改运行追踪逻辑
+
+是。`data_scan_note`、`code_artifact_ready` 和 `answer_outline_ready` 作为安全 monitor 事件进入主页面 activity stream；最终 JSON 仍是权威结果。
+
+### 是否已同步 README
+
+是。README 已同步 Phase 12.1 的当前状态、Workbench 展示契约、generic eval 证据和真实浏览器 smoke 结果。

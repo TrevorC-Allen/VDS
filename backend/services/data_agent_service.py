@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -23,14 +24,16 @@ from backend.schemas.data_agent_schema import (
     to_json_ready,
 )
 from backend.storage.conversation_store import ConversationStore
+from backend.storage.project_store import ProjectStore, build_project_context
 from backend.storage.temp_file_store import StoredRuleFile, TempFileStore
 from data_agent_core.agent.single_agent import DataAnalysisAgent, UploadedDatasetAgent
 from data_agent_core.benchmark.evaluator import question_scorer
-from data_agent_core.core.message_intent import classify_workbench_message, is_dataset_overview_question
+from data_agent_core.core.message_intent import classify_workbench_message, is_cleaning_guidance_question, is_dataset_overview_question
 from data_agent_core.core.file_parser import parse_dataset_file
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import FILE_PARSE_ERROR, LOGIC_FORM_ERROR
 from data_agent_core.llm.client import LLMClient
+from data_agent_core.output.cleaning_guidance import build_cleaning_guidance_response
 from data_agent_core.output.dataset_overview import build_dataset_overview_response
 from data_agent_core.output.process_narrative import build_chat_process_view, process_view_monitor_payload
 from data_agent_core.tracing.live_monitor import emit_monitor_event
@@ -45,10 +48,12 @@ class DataAgentService:
         *,
         file_store: TempFileStore | None = None,
         conversation_store: ConversationStore | None = None,
+        project_store: ProjectStore | None = None,
         llm_client: LLMClient | None = None,
     ) -> None:
         self.file_store = file_store or TempFileStore()
         self.conversation_store = conversation_store or ConversationStore(self.file_store.root / "conversations")
+        self.project_store = project_store or ProjectStore(self.file_store.root / "projects")
         self.llm_client = llm_client
 
     def upload_dataset(
@@ -113,8 +118,31 @@ class DataAgentService:
                 return _rule_files_response(records)
             if rule_scope:
                 raise ValueError("dataset uploads must not include rule_scope.")
-            stored = self.file_store.save_uploaded_files(file_paths, original_filenames=original_filenames)
-            return dataset_profile_response(stored.profile)
+            _raise_if_rule_only_dabstep_partial(file_paths, original_filenames)
+            dataset_paths, dataset_names, rule_paths, rule_names = _split_dataset_and_auto_rule_files(
+                file_paths,
+                original_filenames,
+            )
+            if not dataset_paths:
+                raise ValueError("Upload at least one dataset file together with optional rule files.")
+            stored = self.file_store.save_uploaded_files(dataset_paths, original_filenames=dataset_names)
+            bound_rules: list[StoredRuleFile] = []
+            if rule_paths:
+                bound_rules = self.file_store.save_rule_files(
+                    rule_paths,
+                    original_filenames=rule_names,
+                    rule_scope=USER_ANALYSIS_RULE_SCOPE,
+                    dataset_id=stored.dataset_id,
+                )
+            response = dataset_profile_response(stored.profile)
+            if bound_rules:
+                response["auto_bound_user_rule_file_ids"] = [record.file_id for record in bound_rules]
+                response["auto_bound_rule_files"] = [_public_rule_record(record) for record in bound_rules]
+                response.setdefault("warnings", [])
+                response["warnings"].append(
+                    "已自动识别并绑定用户分析规则文件：" + ", ".join(record.file_name for record in bound_rules)
+                )
+            return to_json_ready(response)
         except Exception as exc:  # noqa: BLE001 - service must normalize API errors.
             return error_response(
                 error=ErrorResult(
@@ -204,6 +232,7 @@ class DataAgentService:
             guidelines, user_rule_context = self._guidelines_with_user_rule(
                 guidelines,
                 user_rule_file_id=user_rule_file_id,
+                dataset_id=dataset_id,
             )
         except Exception as exc:  # noqa: BLE001 - normalized API error.
             return error_response(
@@ -245,6 +274,44 @@ class DataAgentService:
             profile = self.file_store.get_profile(dataset_id)
             dataset_kind = self.file_store.get_dataset_kind(dataset_id)
             analysis_context = self.file_store.get_analysis_context(dataset_id)
+            emit_monitor_event(
+                monitor_run_id,
+                "data_scan_note",
+                title="检查文件结构",
+                summary=f"我先检查已上传数据结构：{len(tables)} 张表。",
+                stage="service",
+                status="completed",
+                payload={"dataset_id": dataset_id, "table_count": len(tables)},
+            )
+            if is_cleaning_guidance_question(question):
+                response = to_json_ready(
+                    build_cleaning_guidance_response(
+                        run_id=run_id,
+                        dataset_id=dataset_id,
+                        question=question.strip(),
+                        tables=tables,
+                        agent_mode=agent_mode,
+                    )
+                )
+                emit_monitor_event(
+                    monitor_run_id,
+                    "answer_outline_ready",
+                    title="清洗建议已整理",
+                    summary="已整理清洗规则、影响范围和用户确认边界。",
+                    stage="cleaning_guidance",
+                    status="completed",
+                    payload={"run_id": run_id, "dataset_id": dataset_id, "answer_type": response.get("answer_type")},
+                )
+                emit_monitor_event(
+                    monitor_run_id,
+                    "workflow_completed",
+                    title="清洗模拟完成",
+                    summary="本次问题命中清洗策略路径，只生成模拟和安全边界说明。",
+                    stage="cleaning_guidance",
+                    status="completed",
+                    payload=process_view_monitor_payload(response),
+                )
+                return response
             if is_dataset_overview_question(question):
                 response = to_json_ready(
                     build_dataset_overview_response(
@@ -255,6 +322,25 @@ class DataAgentService:
                         profile=profile,
                         agent_mode=agent_mode,
                     )
+                )
+                if response.get("execution_artifacts"):
+                    emit_monitor_event(
+                        monitor_run_id,
+                        "code_artifact_ready",
+                        title="复现代码已准备",
+                        summary="概览复现代码已准备好，最终会放在处理过程详情中。",
+                        stage="dataset_overview",
+                        status="completed",
+                        payload={"run_id": run_id, "dataset_id": dataset_id, "artifact_count": len(response.get("execution_artifacts") or [])},
+                    )
+                emit_monitor_event(
+                    monitor_run_id,
+                    "answer_outline_ready",
+                    title="概览回答已整理",
+                    summary="已整理表含义、关键字段、洞察和可追问方向。",
+                    stage="dataset_overview",
+                    status="completed",
+                    payload={"run_id": run_id, "dataset_id": dataset_id, "answer_type": response.get("answer_type")},
                 )
                 emit_monitor_event(
                     monitor_run_id,
@@ -343,6 +429,32 @@ class DataAgentService:
                 payload["debug"]["monitor_run_id"] = monitor_run_id
             if dataset_kind == "dabstep_context":
                 payload["debug"]["knowledge_files"] = ["manual.md", "fees.json", "merchant_data.json"]
+            payload = _suppress_raw_detail_answer(
+                payload,
+                question=question,
+                tables=tables,
+                profile=profile,
+                agent_mode=agent_mode,
+            )
+            if payload.get("execution_artifacts"):
+                emit_monitor_event(
+                    monitor_run_id,
+                    "code_artifact_ready",
+                    title="复现代码已准备",
+                    summary="安全复现代码已准备好，最终会放在处理过程详情中。",
+                    stage="service",
+                    status="completed",
+                    payload={"run_id": payload.get("run_id"), "dataset_id": dataset_id, "artifact_count": len(payload.get("execution_artifacts") or [])},
+                )
+            emit_monitor_event(
+                monitor_run_id,
+                "answer_outline_ready",
+                title="回答结构已整理",
+                summary="最终回答、图表、洞察和过程视图已整理完成。",
+                stage="service",
+                status="completed",
+                payload={"run_id": payload.get("run_id"), "dataset_id": dataset_id, "answer_type": payload.get("answer_type")},
+            )
             emit_monitor_event(
                 monitor_run_id,
                 "response_ready",
@@ -381,6 +493,7 @@ class DataAgentService:
         question: str,
         dataset_id: str = "",
         conversation_id: str = "",
+        project_id: str = "",
         owner_id: str = "",
         tenant_id: str = "",
         owner_context: dict[str, Any] | None = None,
@@ -393,15 +506,37 @@ class DataAgentService:
         """Route one workbench message to chat, overview, or full analysis."""
 
         cleaned_question = question.strip()
+        project_context = {"enabled": False}
+        if project_id:
+            project = self.project_store.get_project(project_id)
+            if project is None:
+                return error_response(
+                    error=ErrorResult(
+                        error_type=LOGIC_FORM_ERROR,
+                        error_message=f"Project not found: {project_id}",
+                        failed_step="respond_to_message",
+                        recoverable=True,
+                        suggested_fix="Choose an existing project or clear project_id.",
+                    )
+                )
+            project_context = build_project_context(project)
+            dataset_id = dataset_id or str(project_context.get("default_dataset_id") or "")
+            guidelines = _combine_guidelines(
+                str(project_context.get("instructions_guidelines") or ""),
+                guidelines,
+                str(project_context.get("memory_guidelines") or ""),
+                str(project_context.get("source_guidelines") or ""),
+            )
         emit_monitor_event(
             monitor_run_id,
             "message_requested",
             title="收到用户消息",
-            summary=f"conversation={conversation_id or 'new'}，dataset={dataset_id or '-'}",
+            summary=f"conversation={conversation_id or 'new'}，project={project_id or '-'}，dataset={dataset_id or '-'}",
             stage="message",
             status="active",
             payload={
                 "conversation_id": conversation_id,
+                "project_id": project_id,
                 "dataset_id": dataset_id,
                 "question": cleaned_question,
                 "execution_mode": execution_mode,
@@ -410,11 +545,13 @@ class DataAgentService:
         )
         if not dataset_id:
             response = self.chat_without_dataset(question=cleaned_question, agent_mode=agent_mode, monitor_run_id=monitor_run_id)
+            _attach_project_metadata(response, project_context)
             return self._record_conversation_turn(
                 response,
                 conversation_id=conversation_id,
                 question=cleaned_question,
                 dataset_id="",
+                project_id=project_id,
                 owner_id=owner_id,
                 tenant_id=tenant_id,
                 owner_context=owner_context,
@@ -427,6 +564,16 @@ class DataAgentService:
                 agent_mode=agent_mode,
                 monitor_run_id=monitor_run_id,
             )
+        elif intent == "cleaning_guidance":
+            response = self.analyze_dataset(
+                dataset_id=dataset_id,
+                question=cleaned_question,
+                execution_mode=execution_mode,
+                guidelines=guidelines,
+                agent_mode=agent_mode,
+                user_rule_file_id=user_rule_file_id,
+                monitor_run_id=monitor_run_id,
+            )
         else:
             response = self.analyze_dataset(
                 dataset_id=dataset_id,
@@ -437,11 +584,13 @@ class DataAgentService:
                 user_rule_file_id=user_rule_file_id,
                 monitor_run_id=monitor_run_id,
             )
+        _attach_project_metadata(response, project_context)
         return self._record_conversation_turn(
             response,
             conversation_id=conversation_id,
             question=cleaned_question,
             dataset_id=dataset_id,
+            project_id=project_id,
             owner_id=owner_id,
             tenant_id=tenant_id,
             owner_context=owner_context,
@@ -587,22 +736,46 @@ class DataAgentService:
                 ),
             )
 
-    def _guidelines_with_user_rule(self, guidelines: str, *, user_rule_file_id: str = "") -> tuple[str, dict[str, Any]]:
-        """Append an explicitly selected user analysis rule to the existing guidelines."""
+    def _guidelines_with_user_rule(
+        self,
+        guidelines: str,
+        *,
+        user_rule_file_id: str = "",
+        dataset_id: str = "",
+    ) -> tuple[str, dict[str, Any]]:
+        """Append explicit and auto-bound user analysis rules to guidelines."""
 
-        if not user_rule_file_id:
+        rule_ids: list[str] = []
+        if user_rule_file_id:
+            rule_ids.append(user_rule_file_id)
+        for file_id in self.file_store.get_bound_rule_file_ids(dataset_id, rule_scope=USER_ANALYSIS_RULE_SCOPE):
+            if file_id not in rule_ids:
+                rule_ids.append(file_id)
+        if not rule_ids:
             return guidelines, {"enabled": False}
-        rule_context = self.file_store.get_rule_context(
-            user_rule_file_id,
-            expected_scope=USER_ANALYSIS_RULE_SCOPE,
+        contexts = [
+            self.file_store.get_rule_context(file_id, expected_scope=USER_ANALYSIS_RULE_SCOPE)
+            for file_id in rule_ids
+        ]
+        public_contexts = [_public_rule_context(context) for context in contexts]
+        context_payload: dict[str, Any] = {
+            "enabled": True,
+            "auto_bound": bool(dataset_id and not user_rule_file_id),
+            "files": public_contexts,
+        }
+        if public_contexts:
+            context_payload.update(public_contexts[0])
+        return (
+            _combine_guidelines(guidelines, *[_user_rule_guidelines(context) for context in contexts]),
+            context_payload,
         )
-        return _combine_guidelines(guidelines, _user_rule_guidelines(rule_context)), _public_rule_context(rule_context)
 
     def create_conversation(
         self,
         *,
         title: str = "",
         dataset_id: str = "",
+        project_id: str = "",
         owner_id: str = "",
         tenant_id: str = "",
         owner_context: dict[str, Any] | None = None,
@@ -612,13 +785,23 @@ class DataAgentService:
         record = self.conversation_store.create_conversation(
             title=title,
             dataset_id=dataset_id,
+            project_id=project_id,
             owner_id=owner_id,
             tenant_id=tenant_id,
             owner_context=owner_context,
         )
+        if project_id:
+            self.project_store.attach_conversation(project_id, record["conversation_id"])
         return _conversation_response(record)
 
-    def list_conversations(self, *, limit: int = 50, owner_id: str = "", tenant_id: str = "") -> dict[str, Any]:
+    def list_conversations(
+        self,
+        *,
+        limit: int = 50,
+        owner_id: str = "",
+        tenant_id: str = "",
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
         """Return recent persistent workbench conversations."""
 
         return to_json_ready(
@@ -629,6 +812,7 @@ class DataAgentService:
                     limit=limit,
                     owner_id=owner_id,
                     tenant_id=tenant_id,
+                    project_id=project_id,
                 ),
                 "warnings": [],
                 "errors": [],
@@ -654,18 +838,416 @@ class DataAgentService:
     def rename_conversation(self, conversation_id: str, title: str) -> dict[str, Any]:
         """Rename one persistent workbench conversation."""
 
-        record = self.conversation_store.rename_conversation(conversation_id, title)
+        record = self.update_conversation(conversation_id, title=title)
+        if record.get("success") is False:
+            return record
+        return record
+
+    def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Update conversation title or project assignment."""
+
+        current = self.conversation_store.get_conversation(conversation_id)
+        if current is None:
+            return error_response(
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message=f"Conversation not found: {conversation_id}",
+                    failed_step="update_conversation",
+                    recoverable=True,
+                    suggested_fix="Choose an existing conversation.",
+                )
+            )
+        if project_id:
+            project = self.project_store.get_project(project_id)
+            if project is None:
+                return _project_not_found_response(project_id, failed_step="update_conversation")
+        previous_project_id = str(current.get("project_id") or "")
+        record = self.conversation_store.update_conversation(
+            conversation_id,
+            title=title,
+            project_id=project_id,
+        )
         if record is None:
             return error_response(
                 error=ErrorResult(
                     error_type=LOGIC_FORM_ERROR,
-                    error_message=f"Conversation could not be renamed: {conversation_id}",
-                    failed_step="rename_conversation",
+                    error_message=f"Conversation could not be updated: {conversation_id}",
+                    failed_step="update_conversation",
                     recoverable=True,
-                    suggested_fix="Use a non-empty title and an existing conversation_id.",
+                    suggested_fix="Use an existing conversation_id and valid project_id.",
                 )
             )
+        new_project_id = str(record.get("project_id") or "")
+        if previous_project_id and previous_project_id != new_project_id:
+            self.project_store.detach_conversation(previous_project_id, record["conversation_id"])
+        if new_project_id:
+            self.project_store.attach_conversation(new_project_id, record["conversation_id"])
         return _conversation_response(record)
+
+    def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
+        """Delete one persistent workbench conversation."""
+
+        record = self.conversation_store.delete_conversation(conversation_id)
+        if record is None:
+            return error_response(
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message=f"Conversation not found: {conversation_id}",
+                    failed_step="delete_conversation",
+                    recoverable=True,
+                    suggested_fix="Choose an existing conversation.",
+                )
+            )
+        project_id = str(record.get("project_id") or "")
+        if project_id:
+            self.project_store.detach_conversation(project_id, conversation_id)
+        return to_json_ready(
+            {
+                "response_version": RESPONSE_VERSION,
+                "success": True,
+                "deleted": True,
+                "conversation_id": conversation_id,
+                "warnings": [],
+                "errors": [],
+            }
+        )
+
+    def create_project(
+        self,
+        *,
+        name: str = "",
+        description: str = "",
+        instructions: str = "",
+        owner_id: str = "",
+        tenant_id: str = "",
+        owner_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a project workspace."""
+
+        record = self.project_store.create_project(
+            name=name,
+            description=description,
+            instructions=instructions,
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            owner_context=owner_context,
+        )
+        return _project_response(record)
+
+    def list_projects(self, *, limit: int = 50, owner_id: str = "", tenant_id: str = "") -> dict[str, Any]:
+        """Return recent project workspaces."""
+
+        return to_json_ready(
+            {
+                "response_version": RESPONSE_VERSION,
+                "success": True,
+                "projects": self.project_store.list_projects(limit=limit, owner_id=owner_id, tenant_id=tenant_id),
+                "warnings": [],
+                "errors": [],
+            }
+        )
+
+    def get_project(self, project_id: str) -> dict[str, Any]:
+        """Return one project workspace."""
+
+        record = self.project_store.get_project(project_id)
+        if record is None:
+            return _project_not_found_response(project_id, failed_step="get_project")
+        return _project_response(record)
+
+    def update_project(
+        self,
+        project_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        instructions: str | None = None,
+        default_dataset_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Update one project workspace."""
+
+        record = self.project_store.update_project(
+            project_id,
+            name=name,
+            description=description,
+            instructions=instructions,
+            default_dataset_id=default_dataset_id,
+        )
+        if record is None:
+            return _project_not_found_response(project_id, failed_step="update_project")
+        return _project_response(record)
+
+    def delete_project(self, project_id: str) -> dict[str, Any]:
+        """Delete one project metadata record."""
+
+        project = self.project_store.get_project(project_id)
+        if project is None or not self.project_store.delete_project(project_id):
+            return _project_not_found_response(project_id, failed_step="delete_project")
+        detached_count = 0
+        for conversation_id in project.get("conversation_ids") or []:
+            updated = self.conversation_store.update_conversation(str(conversation_id), project_id="")
+            if updated is not None:
+                detached_count += 1
+        return to_json_ready(
+            {
+                "response_version": RESPONSE_VERSION,
+                "success": True,
+                "deleted": True,
+                "detached_conversation_count": detached_count,
+                "warnings": [],
+                "errors": [],
+            }
+        )
+
+    def create_project_source(
+        self,
+        project_id: str,
+        *,
+        source_type: str = "note",
+        title: str = "",
+        content: str = "",
+        dataset_id: str = "",
+        file_id: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Attach a text or reference source to a project."""
+
+        if self.project_store.get_project(project_id) is None:
+            return _project_not_found_response(project_id, failed_step="create_project_source")
+        source = self.project_store.add_source(
+            project_id,
+            source_type=source_type,
+            title=title,
+            content=content,
+            dataset_id=dataset_id,
+            file_id=file_id,
+            metadata=metadata,
+        )
+        if source is None:
+            return error_response(
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message="Project source could not be created.",
+                    failed_step="create_project_source",
+                    recoverable=True,
+                    suggested_fix="Use a valid project_id and non-empty source content or reference.",
+                )
+            )
+        return _project_source_response(self.project_store.get_project(project_id), source)
+
+    def upload_project_sources(
+        self,
+        project_id: str,
+        file_paths: list[str | Path],
+        *,
+        original_filenames: list[str | None] | None = None,
+        file_role: str = DATASET_FILE_ROLE,
+        rule_scope: str = "",
+        bind_dataset_id: str = "",
+    ) -> dict[str, Any]:
+        """Upload dataset/rule files and attach resulting references to a project."""
+
+        if self.project_store.get_project(project_id) is None:
+            return _project_not_found_response(project_id, failed_step="upload_project_sources")
+        try:
+            normalized_file_role = _normalize_file_role(file_role)
+        except Exception as exc:  # noqa: BLE001 - normalize upload errors at the service boundary.
+            return error_response(
+                error=ErrorResult(
+                    error_type=FILE_PARSE_ERROR,
+                    error_message=str(exc),
+                    failed_step="upload_project_sources",
+                    recoverable=True,
+                    suggested_fix="Use file_role=dataset or file_role=rule for project source uploads.",
+                )
+            )
+        if normalized_file_role == DATASET_FILE_ROLE and _is_project_text_source_upload(file_paths, original_filenames):
+            try:
+                sources: list[dict[str, Any]] = []
+                for index, file_path in enumerate(file_paths):
+                    original_name = None if original_filenames is None else original_filenames[index]
+                    source = self.project_store.add_source(
+                        project_id,
+                        source_type="note",
+                        title=str(original_name or Path(file_path).name),
+                        content=_read_project_text_source(file_path),
+                        metadata={
+                            "file_role": "project_source",
+                            "source_file_name": str(original_name or Path(file_path).name),
+                        },
+                    )
+                    if source:
+                        sources.append(source)
+                project = self.project_store.get_project(project_id) or {}
+                return to_json_ready(
+                    {
+                        "response_version": RESPONSE_VERSION,
+                        "success": True,
+                        "project_id": project_id,
+                        "project": _project_summary_response(project),
+                        "project_sources": sources,
+                        "file_role": "project_source",
+                        "warnings": [],
+                        "errors": [],
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - normalize upload errors at the service boundary.
+                return error_response(
+                    error=ErrorResult(
+                        error_type=FILE_PARSE_ERROR,
+                        error_message=str(exc),
+                        failed_step="upload_project_sources",
+                        recoverable=True,
+                        suggested_fix="Upload valid md, txt, yaml, or yml project source files.",
+                    )
+                )
+        upload = self.upload_datasets(
+            file_paths,
+            original_filenames=original_filenames,
+            file_role=normalized_file_role,
+            rule_scope=rule_scope,
+            bind_dataset_id=bind_dataset_id,
+        )
+        if not upload.get("success"):
+            return upload
+        sources: list[dict[str, Any]] = []
+        if upload.get("dataset_id"):
+            source = self.project_store.add_source(
+                project_id,
+                source_type="dataset",
+                title=str(upload.get("file_name") or "Uploaded dataset"),
+                dataset_id=str(upload.get("dataset_id") or ""),
+                metadata={"tables": upload.get("tables") or [], "file_role": upload.get("file_role") or DATASET_FILE_ROLE},
+            )
+            if source:
+                sources.append(source)
+        for rule in upload.get("auto_bound_rule_files") or []:
+            source = self.project_store.add_source(
+                project_id,
+                source_type="rule",
+                title=str(rule.get("file_name") or "Rule file"),
+                dataset_id=str(rule.get("dataset_id") or upload.get("dataset_id") or ""),
+                file_id=str(rule.get("file_id") or ""),
+                metadata={"rule_scope": rule.get("rule_scope") or USER_ANALYSIS_RULE_SCOPE},
+            )
+            if source:
+                sources.append(source)
+        for rule in upload.get("files") or []:
+            source = self.project_store.add_source(
+                project_id,
+                source_type="rule",
+                title=str(rule.get("file_name") or "Rule file"),
+                dataset_id=str(rule.get("dataset_id") or ""),
+                file_id=str(rule.get("file_id") or ""),
+                metadata={"rule_scope": rule.get("rule_scope") or rule_scope},
+            )
+            if source:
+                sources.append(source)
+        project = self.project_store.get_project(project_id) or {}
+        upload["project_id"] = project_id
+        upload["project"] = _project_summary_response(project)
+        upload["project_sources"] = sources
+        return to_json_ready(upload)
+
+    def delete_project_source(self, project_id: str, source_id: str) -> dict[str, Any]:
+        """Remove one project source reference."""
+
+        record = self.project_store.delete_source(project_id, source_id)
+        if record is None:
+            return error_response(
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message=f"Project source not found: {source_id}",
+                    failed_step="delete_project_source",
+                    recoverable=True,
+                    suggested_fix="Choose an existing source in the selected project.",
+                )
+            )
+        return _project_response(record)
+
+    def create_project_memory(
+        self,
+        project_id: str,
+        *,
+        content: str,
+        memory_type: str = "pinned",
+        title: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create project-only memory."""
+
+        if self.project_store.get_project(project_id) is None:
+            return _project_not_found_response(project_id, failed_step="create_project_memory")
+        memory = self.project_store.add_memory(
+            project_id,
+            content=content,
+            memory_type=memory_type,
+            title=title,
+            metadata=metadata,
+        )
+        if memory is None:
+            return error_response(
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message="Project memory could not be created.",
+                    failed_step="create_project_memory",
+                    recoverable=True,
+                    suggested_fix="Use non-empty memory content in an existing project.",
+                )
+            )
+        return _project_memory_response(self.project_store.get_project(project_id), memory)
+
+    def update_project_memory(
+        self,
+        project_id: str,
+        memory_id: str,
+        *,
+        content: str | None = None,
+        title: str | None = None,
+        memory_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Update project-only memory."""
+
+        memory = self.project_store.update_memory(
+            project_id,
+            memory_id,
+            content=content,
+            title=title,
+            memory_type=memory_type,
+        )
+        if memory is None:
+            return error_response(
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message=f"Project memory not found: {memory_id}",
+                    failed_step="update_project_memory",
+                    recoverable=True,
+                    suggested_fix="Choose an existing memory in the selected project.",
+                )
+            )
+        return _project_memory_response(self.project_store.get_project(project_id), memory)
+
+    def delete_project_memory(self, project_id: str, memory_id: str) -> dict[str, Any]:
+        """Delete project-only memory."""
+
+        record = self.project_store.delete_memory(project_id, memory_id)
+        if record is None:
+            return error_response(
+                error=ErrorResult(
+                    error_type=LOGIC_FORM_ERROR,
+                    error_message=f"Project memory not found: {memory_id}",
+                    failed_step="delete_project_memory",
+                    recoverable=True,
+                    suggested_fix="Choose an existing memory in the selected project.",
+                )
+            )
+        return _project_response(record)
 
     def _record_conversation_turn(
         self,
@@ -674,6 +1256,7 @@ class DataAgentService:
         conversation_id: str,
         question: str,
         dataset_id: str,
+        project_id: str,
         owner_id: str,
         tenant_id: str,
         owner_context: dict[str, Any] | None,
@@ -687,15 +1270,19 @@ class DataAgentService:
             question=question,
             response=response,
             dataset_id=dataset_id,
+            project_id=project_id,
             owner_id=owner_id,
             tenant_id=tenant_id,
             owner_context=owner_context,
         )
+        if project_id:
+            self.project_store.attach_conversation(project_id, record["conversation_id"])
         response["conversation_id"] = record["conversation_id"]
         response["conversation"] = {
             "conversation_id": record["conversation_id"],
             "title": record.get("title") or "",
             "dataset_id": record.get("dataset_id") or "",
+            "project_id": record.get("project_id") or "",
             "updated_at": record.get("updated_at"),
             "message_count": len(record.get("messages") or []),
         }
@@ -895,7 +1482,11 @@ class DataAgentService:
                     suggested_fix="Upload the dataset again before requesting its profile.",
                 ),
             )
-        return dataset_profile_response(profile)
+        response = dataset_profile_response(profile)
+        bound = self.file_store.get_bound_rule_file_ids(dataset_id, rule_scope=USER_ANALYSIS_RULE_SCOPE)
+        if bound:
+            response["auto_bound_user_rule_file_ids"] = bound
+        return response
 
     def run_agent_with_inline_tables(
         self,
@@ -1029,6 +1620,125 @@ def _validate_dataset_upload(file_path: str | Path, *, original_filename: str | 
         )
 
 
+def _split_dataset_and_auto_rule_files(
+    file_paths: list[str | Path],
+    original_filenames: list[str | None] | None,
+) -> tuple[list[str | Path], list[str | None] | None, list[str | Path], list[str | None]]:
+    """Split mixed Workbench uploads into dataset files and user knowledge files."""
+
+    if _looks_like_complete_dab_context(file_paths, original_filenames):
+        return file_paths, original_filenames, [], []
+    dataset_paths: list[str | Path] = []
+    dataset_names: list[str | None] = []
+    rule_paths: list[str | Path] = []
+    rule_names: list[str | None] = []
+    for index, file_path in enumerate(file_paths):
+        original_name = None if original_filenames is None else original_filenames[index]
+        if _looks_like_auto_user_rule_file(file_path, original_name):
+            rule_paths.append(file_path)
+            rule_names.append(original_name)
+        else:
+            dataset_paths.append(file_path)
+            dataset_names.append(original_name)
+    return dataset_paths, dataset_names if original_filenames is not None else None, rule_paths, rule_names
+
+
+def _looks_like_complete_dab_context(file_paths: list[str | Path], original_filenames: list[str | None] | None) -> bool:
+    required = {"payments.csv", "merchant_category_codes.csv", "acquirer_countries.csv", "fees.json", "merchant_data.json", "manual.md"}
+    names = {
+        Path(str((None if original_filenames is None else original_filenames[index]) or Path(file_path).name)).name.lower()
+        for index, file_path in enumerate(file_paths)
+    }
+    return required.issubset(names)
+
+
+def _raise_if_rule_only_dabstep_partial(file_paths: list[str | Path], original_filenames: list[str | None] | None) -> None:
+    """Keep DABstep rule-only partial uploads on the old clear error path."""
+
+    required = {"payments.csv", "merchant_category_codes.csv", "acquirer_countries.csv", "fees.json", "merchant_data.json", "manual.md"}
+    names = {
+        Path(str((None if original_filenames is None else original_filenames[index]) or Path(file_path).name)).name.lower()
+        for index, file_path in enumerate(file_paths)
+    }
+    if not names or required.issubset(names):
+        return
+    present = names & required
+    if not present:
+        return
+    dataset_like = [
+        name
+        for name in names
+        if Path(name).suffix.lower() in DATASET_FILE_EXTENSIONS and not _looks_like_auto_user_rule_file(name, name)
+    ]
+    if dataset_like:
+        return
+    missing = ", ".join(sorted(required - names))
+    raise ValueError(
+        "DABstep context package is incomplete. "
+        "Upload these files together from the web workbench: "
+        "payments.csv, merchant_category_codes.csv, acquirer_countries.csv, "
+        f"fees.json, merchant_data.json, manual.md. Missing: {missing}."
+    )
+
+
+def _looks_like_auto_user_rule_file(file_path: str | Path, original_filename: str | None) -> bool:
+    name = Path(str(original_filename or Path(file_path).name)).name
+    lowered = name.lower()
+    suffix = Path(name).suffix.lower() or Path(file_path).suffix.lower()
+    if suffix in {".md", ".txt", ".yaml", ".yml"}:
+        return True
+    if suffix == ".json":
+        return any(
+            token in lowered
+            for token in (
+                "rule",
+                "rules",
+                "manual",
+                "guideline",
+                "guide",
+                "schema",
+                "metadata",
+                "dictionary",
+                "definition",
+                "meaning",
+                "fee",
+                "说明",
+                "字段",
+                "口径",
+                "规则",
+                "计算",
+            )
+        )
+    return False
+
+
+def _is_project_text_source_upload(file_paths: list[str | Path], original_filenames: list[str | None] | None) -> bool:
+    """Return true for project shared text files that should not enter DataFrame parsing."""
+
+    if not file_paths:
+        return False
+    if original_filenames is not None and len(original_filenames) != len(file_paths):
+        return False
+    text_source_suffixes = {".md", ".txt", ".yaml", ".yml"}
+    for index, file_path in enumerate(file_paths):
+        original_name = None if original_filenames is None else original_filenames[index]
+        suffix = Path(str(original_name or Path(file_path).name)).suffix.lower() or Path(file_path).suffix.lower()
+        if suffix not in text_source_suffixes:
+            return False
+    return True
+
+
+def _read_project_text_source(file_path: str | Path) -> str:
+    path = Path(file_path)
+    last_error: Exception | None = None
+    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    raise ValueError(f"Project source file is not valid text: {last_error}") from last_error
+
+
 def _rule_file_response(record: StoredRuleFile) -> dict[str, Any]:
     return to_json_ready(
         {
@@ -1045,6 +1755,17 @@ def _rule_file_response(record: StoredRuleFile) -> dict[str, Any]:
             "errors": [],
         }
     )
+
+
+def _public_rule_record(record: StoredRuleFile) -> dict[str, Any]:
+    return {
+        "file_id": record.file_id,
+        "file_name": record.file_name,
+        "file_role": record.file_role,
+        "rule_scope": record.rule_scope,
+        "dataset_id": record.dataset_id,
+        "warnings": list(record.warnings),
+    }
 
 
 def _rule_files_response(records: list[StoredRuleFile]) -> dict[str, Any]:
@@ -1149,9 +1870,104 @@ def _conversation_response(record: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _attach_project_metadata(response: dict[str, Any], project_context: dict[str, Any]) -> None:
+    """Attach trace-safe project metadata to a response payload."""
+
+    if not project_context.get("enabled"):
+        return
+    project = {
+        "project_id": project_context.get("project_id") or "",
+        "name": project_context.get("name") or "",
+        "memory_mode": project_context.get("memory_mode") or "project_only",
+        "source_count": project_context.get("source_count") or 0,
+        "memory_count": project_context.get("memory_count") or 0,
+        "default_dataset_id": project_context.get("default_dataset_id") or "",
+    }
+    response["project_id"] = project["project_id"]
+    response["project"] = project
+    response.setdefault("debug", {})
+    response["debug"]["project_context"] = project
+
+
+def _project_response(record: dict[str, Any] | None) -> dict[str, Any]:
+    """Build a stable project API response."""
+
+    return to_json_ready(
+        {
+            "response_version": RESPONSE_VERSION,
+            "success": bool(record),
+            "project": record or {},
+            "warnings": [],
+            "errors": [],
+        }
+    )
+
+
+def _project_source_response(project: dict[str, Any] | None, source: dict[str, Any]) -> dict[str, Any]:
+    """Build a stable project source response."""
+
+    return to_json_ready(
+        {
+            "response_version": RESPONSE_VERSION,
+            "success": True,
+            "project": _project_summary_response(project or {}),
+            "source": source,
+            "warnings": [],
+            "errors": [],
+        }
+    )
+
+
+def _project_memory_response(project: dict[str, Any] | None, memory: dict[str, Any]) -> dict[str, Any]:
+    """Build a stable project memory response."""
+
+    return to_json_ready(
+        {
+            "response_version": RESPONSE_VERSION,
+            "success": True,
+            "project": _project_summary_response(project or {}),
+            "memory": memory,
+            "warnings": [],
+            "errors": [],
+        }
+    )
+
+
+def _project_summary_response(record: dict[str, Any]) -> dict[str, Any]:
+    """Return trace-safe project summary fields."""
+
+    return {
+        "project_id": record.get("project_id") or "",
+        "name": record.get("name") or "",
+        "description": record.get("description") or "",
+        "memory_mode": record.get("memory_mode") or "project_only",
+        "default_dataset_id": record.get("default_dataset_id") or "",
+        "source_count": len(record.get("sources") or []),
+        "memory_count": len(record.get("memories") or []),
+        "conversation_count": len(record.get("conversation_ids") or []),
+        "updated_at": record.get("updated_at"),
+    }
+
+
+def _project_not_found_response(project_id: str, *, failed_step: str) -> dict[str, Any]:
+    return error_response(
+        error=ErrorResult(
+            error_type=LOGIC_FORM_ERROR,
+            error_message=f"Project not found: {project_id}",
+            failed_step=failed_step,
+            recoverable=True,
+            suggested_fix="Choose an existing project or create a new one.",
+        )
+    )
+
+
 def _chat_answer(question: str, *, has_dataset: bool) -> str:
     lowered = question.lower()
     compact = lowered.replace(" ", "")
+    if ("raw" in compact and any(token in compact for token in ("prompt", "trace", "sql"))) or any(token in question for token in ("标准答案", "trace", "后端审计")):
+        return "不会展示 raw prompt、trace、SQL、标准答案、scorer 或后端审计 JSON。我只会给用户可读的问题理解、数据依据、计算口径和结果边界。"
+    if any(token in question for token in ("外部维表", "真实名称", "直接说成真实名称")):
+        return "不能把 ID 直接说成真实名称。没有外部维表或上传的映射表时，我只能说明这是 ID / 编号字段，并提示需要补充映射后再解释真实名称。"
     if any(token in question for token in ("你好", "您好")) or lowered in {"hello", "hi", "hey"} or lowered.startswith(("hello ", "hi ", "hey ")):
         if has_dataset:
             return "你好，我是 VDS。当前数据已就绪，你可以直接问具体分析问题，也可以让我先做数据概览。"
@@ -1167,3 +1983,78 @@ def _chat_answer(question: str, *, has_dataset: bool) -> str:
     if any(token in lowered for token in ("sales", "revenue", "overall", "summary")) or any(token in question for token in ("销售", "收入", "整体", "概览", "情况")):
         return "可以，我先理解为你想做数据概览。真实结论需要上传相关销售或收入数据；上传后我会优先返回汇总指标、趋势和关键下钻方向，而不是直接展开明细行。"
     return "可以继续聊。当前还没有上传数据，所以我不会编造业务结论；你可以描述分析目标、数据字段或上传文件后让我基于真实数据分析。"
+
+
+def _suppress_raw_detail_answer(
+    payload: dict[str, Any],
+    *,
+    question: str,
+    tables: dict[str, Any],
+    profile: Any,
+    agent_mode: str,
+) -> dict[str, Any]:
+    answer = str(payload.get("answer") or "")
+    if not _looks_like_raw_detail_dump(answer) or _allows_detail_answer(question):
+        return payload
+    try:
+        replacement = build_dataset_overview_response(
+            run_id=str(payload.get("run_id") or "run_guarded"),
+            dataset_id=str(payload.get("dataset_id") or ""),
+            question=question,
+            tables=tables,
+            profile=profile,
+            agent_mode=agent_mode,
+        )
+        replacement.setdefault("debug", {})
+        replacement["debug"]["raw_detail_answer_guard"] = {
+            "applied": True,
+            "reason": "final_answer_looked_like_raw_detail_dump",
+            "original_answer_length": len(answer),
+        }
+        return to_json_ready(replacement)
+    except Exception:  # noqa: BLE001 - last-resort UX guard.
+        guarded = dict(payload)
+        guarded["answer"] = (
+            "本次执行返回了原始明细行，不适合直接作为答案；我已停止展示明细。"
+            "请指定要汇总的指标、维度、时间范围或清洗规则后继续分析。"
+        )
+        guarded["answer_type"] = "clarification"
+        guarded["result"] = {"columns": [], "rows": [], "value": None}
+        guarded.setdefault("debug", {})
+        guarded["debug"]["raw_detail_answer_guard"] = {"applied": True, "reason": "fallback_guard"}
+        return guarded
+
+
+def _looks_like_raw_detail_dump(answer: str) -> bool:
+    text = " ".join(str(answer or "").split())
+    if len(text) < 500:
+        return False
+    comma_count = text.count(",")
+    if comma_count < 30:
+        return False
+    token_count = len(re.findall(r"[A-Za-z0-9\u4e00-\u9fff_.-]+", text))
+    sentence_count = len(re.findall(r"[。！？；;]", text))
+    return token_count >= 60 and sentence_count <= 6
+
+
+def _allows_detail_answer(question: str) -> bool:
+    compact = str(question or "").lower().replace(" ", "")
+    return any(
+        token in compact
+        for token in (
+            "列出明细",
+            "展示明细",
+            "查看明细",
+            "给我明细",
+            "原始明细",
+            "明细行",
+            "样例行",
+            "样本行",
+            "前10行",
+            "前20行",
+            "前十行",
+            "前二十行",
+            "samplerows",
+            "rawrows",
+        )
+    )

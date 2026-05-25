@@ -13,6 +13,7 @@ from data_agent_core.contracts.response_contracts import ChartSpec, DataQualityR
 from data_agent_core.contracts.verification_contracts import VerificationResult
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import CAPABILITY_GAP, OUTPUT_CONTRACT_VALIDATION_FAILED
+from data_agent_core.output.execution_artifacts import build_execution_artifacts
 from data_agent_core.output.output_contract import canonicalize_final_answer
 
 
@@ -119,6 +120,11 @@ def build_response(
         chart=ChartSpec(),
         quality_report=quality_report,
         reasoning_trace_view=reasoning_trace_view or [],
+        execution_artifacts=build_execution_artifacts(
+            plan=plan,
+            execution_result=execution_result,
+            verification_passed=success,
+        ),
         warnings=warnings,
         errors=errors,
         debug=debug_payload,
@@ -245,7 +251,29 @@ def _result_rows(execution_result: ExecutionResult) -> list[dict[str, Any]]:
 def _looks_like_overview_question(question: str) -> bool:
     text = question.lower()
     compact = text.replace(" ", "")
-    overview_tokens = ("整体", "总体", "概览", "总览", "情况", "看一下", "看下", "看看", "分析一下", "overview", "summary", "summarize", "overall", "look at")
+    overview_tokens = (
+        "整体",
+        "总体",
+        "概览",
+        "总览",
+        "情况",
+        "看一下",
+        "看下",
+        "看看",
+        "分析一下",
+        "主要讲什么",
+        "讲什么",
+        "主要内容",
+        "什么意思",
+        "字段含义",
+        "有什么字段",
+        "有哪些字段",
+        "overview",
+        "summary",
+        "summarize",
+        "overall",
+        "look at",
+    )
     subject_tokens = ("数据", "这个表", "文件", "销售", "收入", "订单", "订阅", "业绩", "经营", "sales", "revenue", "amount", "business", "dataset", "table")
     specific_tokens = ("哪个", "最高", "最低", "top", "排名", "多少", "占比", "增长", "对比", "趋势", "按", "筛选", "列出", "质量", "空值", "重复")
     return any(token in text for token in overview_tokens) and any(token in compact or token in text for token in subject_tokens) and not any(token in compact for token in specific_tokens)
@@ -269,12 +297,17 @@ def _preferred_metric_column(rows: list[dict[str, Any]], columns: list[str], que
         "gmv",
         "arr",
     ]
-    numeric_columns = [column for column in columns if _numeric_ratio(rows, column) >= 0.75]
+    numeric_columns = [column for column in columns if _numeric_ratio(rows, column) >= 0.75 and not _looks_like_identifier_column(column)]
     for token in preferred:
         for column in numeric_columns:
             if token.lower() in column.lower() or column.lower() in lowered_question:
                 return column
     return numeric_columns[0] if numeric_columns else None
+
+
+def _looks_like_identifier_column(column: str) -> bool:
+    lowered = column.lower()
+    return any(token in lowered for token in ("id", "code", "invoice", "reference", "ref", "number", "stock", "customer", "编号", "编码", "序号"))
 
 
 def _preferred_dimension_column(columns: list[str]) -> str | None:

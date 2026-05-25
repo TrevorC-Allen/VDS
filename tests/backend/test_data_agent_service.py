@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from backend.services.data_agent_service import DataAgentService
+from backend.services.data_agent_service import DataAgentService, _suppress_raw_detail_answer
 from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.llm.client import MockLLMClient
 from data_agent_core.tracing.live_monitor import live_run_monitor
@@ -302,6 +302,38 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertTrue(with_rule["success"], with_rule.get("errors"))
         self.assertTrue(with_rule["debug"]["user_rule_context"]["enabled"])
         self.assertEqual(rule["file_id"], with_rule["debug"]["user_rule_context"]["file_id"])
+        self.assertEqual(rule["file_id"], with_rule["debug"]["user_rule_context"]["files"][0]["file_id"])
+
+    def test_auto_bound_rule_file_uploaded_with_dataset_applies_to_analysis_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            rule_path = root / "manual.md"
+            csv_path.write_text("city,sales\nShanghai,100\nBeijing,150\nShanghai,200\n", encoding="utf-8")
+            rule_path.write_text("sales 表示成交销售额，回答要说明字段含义。", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(
+                [csv_path, rule_path],
+                original_filenames=["sales.csv", "manual.md"],
+            )
+            profile = service.get_dataset_profile(upload["dataset_id"])
+            response = service.analyze_dataset(
+                dataset_id=upload["dataset_id"],
+                question="Which city has the highest sales?",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertEqual(1, len(upload["auto_bound_user_rule_file_ids"]))
+        self.assertEqual(upload["auto_bound_user_rule_file_ids"], profile["auto_bound_user_rule_file_ids"])
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertTrue(response["debug"]["user_rule_context"]["enabled"])
+        self.assertTrue(response["debug"]["user_rule_context"]["auto_bound"])
+        self.assertEqual(upload["auto_bound_user_rule_file_ids"][0], response["debug"]["user_rule_context"]["files"][0]["file_id"])
 
     def test_benchmark_rule_runs_only_through_benchmark_service(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -468,10 +500,12 @@ class DataAgentServiceTest(unittest.TestCase):
             )
 
         self.assertTrue(response["success"])
-        self.assertLess(len(response["answer"]), 260)
+        self.assertEqual("overview", response["answer_type"])
+        self.assertIn("overview_report", response)
         self.assertIn("订阅收入合计", response["answer"])
         self.assertNotIn("SS001,2026-01-01,上海,大客户", response["answer"])
         self.assertEqual(["指标", "数值"], response["result"]["columns"])
+        self.assertTrue(response["execution_artifacts"])
         self.assertTrue(response["debug"]["user_experience_shaping"]["applied"])
 
     def test_generic_dataset_overview_message_uses_full_table_summary(self) -> None:
@@ -501,12 +535,250 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual("overview", response["answer_type"])
         self.assertIn("3 行、6 列", response["answer"])
         self.assertIn("订阅收入", response["answer"])
+        self.assertIn("overview_report", response)
+        self.assertEqual("overview_report", response["overview_report"]["report_type"])
         self.assertNotEqual("3", response["answer"])
         self.assertEqual(["指标", "数值"], response["result"]["columns"])
+        self.assertTrue(response["insight"]["business_suggestions"])
+        self.assertIn("依据", response["insight"]["business_suggestions"][0])
+        self.assertTrue(response["execution_artifacts"])
+        self.assertIn("python", {item["language"] for item in response["execution_artifacts"]})
         self.assertTrue(response["debug"]["user_experience_shaping"]["applied"])
         self.assertEqual("dataset_overview", response["debug"]["message_intent"])
         self.assertEqual("dataset_overview", response["process_view_v2"]["mode"])
         self.assertTrue(response["process_view_v2"]["steps"])
+
+    def test_multi_table_field_overview_never_dumps_detail_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            orders_path = root / "orders.csv"
+            customers_path = root / "customers.csv"
+            orders_path.write_text(
+                "InvoiceNo,StockCode,Description,Quantity,UnitPrice,CustomerID,Country\n"
+                "536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,6,2.55,17850,United Kingdom\n"
+                "536365,71053,WHITE METAL LANTERN,6,3.39,17850,United Kingdom\n"
+                "536366,22633,HAND WARMER UNION JACK,-1,1.85,,United Kingdom\n",
+                encoding="utf-8",
+            )
+            customers_path.write_text(
+                "CustomerID,Segment,Region\n"
+                "17850,Retail,UK\n"
+                "13047,Wholesale,UK\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(
+                [orders_path, customers_path],
+                original_filenames=["orders.csv", "customers.csv"],
+            )
+            field_response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="这几个表什么意思，有什么字段",
+                execution_mode="dual",
+            )
+            story_response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="这个数据主要讲什么？",
+                execution_mode="dual",
+            )
+
+        for response in (field_response, story_response):
+            self.assertTrue(response["success"])
+            self.assertEqual("overview", response["answer_type"])
+            self.assertEqual("multi_table_dataset_overview", response["debug"]["operation"])
+            self.assertEqual(["表名", "来源", "行数", "列数", "可能含义", "关键字段"], response["result"]["columns"])
+            payload = json.dumps(response, ensure_ascii=False)
+            self.assertIn("orders", response["answer"])
+            self.assertIn("customers", response["answer"])
+            self.assertNotIn("WHITE HANGING HEART T-LIGHT HOLDER,6,2.55", payload)
+            self.assertNotIn("WHITE METAL LANTERN,6,3.39", payload)
+
+    def test_cleaning_guidance_routes_before_detail_lookup_and_keeps_source_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "retail.csv"
+            csv_path.write_text(
+                "InvoiceNo,StockCode,Description,Quantity,UnitPrice,CustomerID,Country\n"
+                "536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,6,2.55,17850,United Kingdom\n"
+                "536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,6,2.55,17850,United Kingdom\n"
+                "536366,22633,HAND WARMER UNION JACK,-1,1.85,,United Kingdom\n"
+                "536367,22632,HAND WARMER RED POLKA DOT,10000,1.85,13047,United Kingdom\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(csv_path, original_filename="retail.csv")
+            policy = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="给出建议清洗规则、影响行数、影响比例，并说明是否需要用户确认。",
+                execution_mode="dual",
+            )
+            boundary = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="你会直接修改原始数据吗？",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(policy["success"])
+        self.assertEqual("cleaning_simulation", policy["answer_type"])
+        self.assertIn("建议清洗规则", policy["answer"])
+        self.assertIn("影响", policy["answer"])
+        self.assertIn("不能覆盖原始文件", policy["answer"])
+        self.assertEqual(["表名", "规则", "影响行数", "影响比例", "建议"], policy["result"]["columns"])
+        self.assertNotIn("WHITE HANGING HEART T-LIGHT HOLDER,6,2.55", json.dumps(policy, ensure_ascii=False))
+        self.assertTrue(policy["debug"]["user_experience_shaping"]["applied"])
+        self.assertTrue(boundary["success"])
+        self.assertEqual("chat", boundary["answer_type"])
+        self.assertIn("不会直接修改原始数据", boundary["answer"])
+        self.assertIn("必须等用户明确确认", boundary["answer"])
+
+    def test_raw_detail_exit_guard_replaces_agent_csv_dump_with_overview(self) -> None:
+        rows = [
+            "536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,6,2.55,17850,United Kingdom",
+            "536365,71053,WHITE METAL LANTERN,6,3.39,17850,United Kingdom",
+            "536367,22745,POPPY'S PLAYHOUSE BEDROOM,6,2.10,13047,United Kingdom",
+            "536367,22748,POPPY'S PLAYHOUSE KITCHEN,6,2.10,13047,United Kingdom",
+            "536367,84969,BOX OF 6 ASSORTED COLOUR TEASPOONS,6,4.25,13047,United Kingdom",
+            "536367,22623,BOX OF VINTAGE JIGSAW BLOCKS,3,4.95,13047,United Kingdom",
+        ]
+        raw_answer = ", ".join(rows * 6)
+        payload = {
+            "response_version": "v1",
+            "success": True,
+            "run_id": "run_raw_dump",
+            "dataset_id": "dataset_raw_dump",
+            "question": "给我一个结论。",
+            "answer_type": "analysis",
+            "execution_mode": "dual",
+            "answer": raw_answer,
+            "result": {"columns": [], "rows": [], "value": None},
+            "debug": {"agent_mode": "multi_agent"},
+        }
+        tables = {
+            "online_retail": pd.DataFrame(
+                [
+                    {
+                        "InvoiceNo": "536365",
+                        "StockCode": "85123A",
+                        "Description": "WHITE HANGING HEART T-LIGHT HOLDER",
+                        "Quantity": 6,
+                        "InvoiceDate": "2026-01-01 08:26:00",
+                        "UnitPrice": 2.55,
+                        "CustomerID": 17850,
+                        "Country": "United Kingdom",
+                    },
+                    {
+                        "InvoiceNo": "536366",
+                        "StockCode": "22633",
+                        "Description": "HAND WARMER UNION JACK",
+                        "Quantity": 6,
+                        "InvoiceDate": "2026-01-01 08:28:00",
+                        "UnitPrice": 1.85,
+                        "CustomerID": 17850,
+                        "Country": "United Kingdom",
+                    },
+                ]
+            )
+        }
+
+        guarded = _suppress_raw_detail_answer(
+            payload,
+            question="给我一个结论。",
+            tables=tables,
+            profile=None,
+            agent_mode="multi_agent",
+        )
+
+        serialized = json.dumps(guarded, ensure_ascii=False)
+        self.assertEqual("overview", guarded["answer_type"])
+        self.assertEqual("dataset_overview", guarded["debug"]["message_intent"])
+        self.assertTrue(guarded["debug"]["raw_detail_answer_guard"]["applied"])
+        self.assertIn("online_retail", guarded["answer"])
+        self.assertIn("订单 / 零售交易明细表", guarded["answer"])
+        self.assertIn("InvoiceDate：时间字段", guarded["answer"])
+        self.assertIn("Country：地理或区域维度", guarded["answer"])
+        self.assertNotIn("WHITE HANGING HEART T-LIGHT HOLDER,6,2.55", serialized)
+
+    def test_broad_dataset_readiness_questions_do_not_return_row_count_only(self) -> None:
+        questions = [
+            "这个数据适合做哪些分析？",
+            "这个数据正常吗？",
+            "这个数据能不能用？",
+            "这个数据能不能做趋势、环比或同比？",
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "retail.csv"
+            csv_path.write_text(
+                "InvoiceNo,StockCode,Description,Quantity,InvoiceDate,UnitPrice,CustomerID,Country\n"
+                "536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,6,2026-01-01 08:26:00,2.55,17850,United Kingdom\n"
+                "536366,22633,HAND WARMER UNION JACK,-1,2026-01-02 09:00:00,1.85,,United Kingdom\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            upload = service.upload_dataset(csv_path, original_filename="retail.csv")
+            responses = [
+                service.respond_to_message(dataset_id=upload["dataset_id"], question=question, execution_mode="dual")
+                for question in questions
+            ]
+
+        for response in responses:
+            self.assertTrue(response["success"], response.get("errors"))
+            self.assertIn(response["answer_type"], {"overview", "cleaning_simulation"})
+            self.assertNotEqual("2", str(response["answer"]).strip())
+            self.assertNotIn("WHITE HANGING HEART T-LIGHT HOLDER,6,2026", json.dumps(response, ensure_ascii=False))
+
+    def test_dataset_overview_generalizes_beyond_payments_tables(self) -> None:
+        cases = [
+            (
+                "subscription.csv",
+                "客户,月份,套餐,订阅收入,是否流失\nA,2026-01,Pro,1000,false\nB,2026-01,Basic,200,true\n",
+                "订阅收入",
+            ),
+            (
+                "inventory.csv",
+                "仓库,产品,库存量,安全库存,是否缺货\n上海,A,30,20,false\n北京,B,5,10,true\n",
+                "库存量",
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            responses = []
+            for file_name, content, metric in cases:
+                path = root / file_name
+                path.write_text(content, encoding="utf-8")
+                upload = service.upload_dataset(path, original_filename=file_name)
+                responses.append(
+                    (
+                        metric,
+                        service.respond_to_message(
+                            dataset_id=upload["dataset_id"],
+                            question="总结一下这个表",
+                            execution_mode="dual",
+                        ),
+                    )
+                )
+
+        for metric, response in responses:
+            self.assertTrue(response["success"], response.get("errors"))
+            self.assertEqual("overview", response["answer_type"])
+            self.assertEqual(metric, response["overview_report"]["metric_column"])
+            self.assertIn(metric, response["answer"])
+            self.assertNotIn("MCC", response["answer"])
 
     def test_dataset_present_message_routes_meta_chat_without_analysis(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -580,6 +852,91 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual("assistant", loaded["conversation"]["messages"][1]["role"])
         self.assertEqual("chat", loaded["conversation"]["messages"][1]["payload"]["answer_type"])
         self.assertEqual("VDS 助手介绍", loaded_after_restart["conversation"]["title"])
+
+    def test_project_workspace_memory_sources_and_conversation_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = Path(temp_dir) / "storage"
+            service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+
+            project = service.create_project(name="销售 Project", instructions="回答要优先说明口径。")
+            project_id = project["project"]["project_id"]
+            memory = service.create_project_memory(project_id, content="销售额字段代表含税成交金额。", title="销售口径")
+            source = service.create_project_source(
+                project_id,
+                source_type="note",
+                title="项目说明",
+                content="只分析本项目上传的数据。",
+            )
+            first = service.respond_to_message(project_id=project_id, question="你好")
+            outside = service.respond_to_message(question="你好")
+            listed_project = service.list_conversations(project_id=project_id)
+            loaded_project = service.get_project(project_id)
+
+        self.assertTrue(project_id.startswith("proj_"))
+        self.assertTrue(memory["memory"]["memory_id"].startswith("mem_"))
+        self.assertTrue(source["source"]["source_id"].startswith("src_"))
+        self.assertEqual(project_id, first["project_id"])
+        self.assertEqual(project_id, first["conversation"]["project_id"])
+        self.assertEqual(project_id, first["debug"]["project_context"]["project_id"])
+        self.assertEqual(1, first["debug"]["project_context"]["memory_count"])
+        self.assertEqual(1, first["debug"]["project_context"]["source_count"])
+        self.assertEqual("", outside.get("project_id", ""))
+        self.assertEqual(1, len(listed_project["conversations"]))
+        self.assertEqual(project_id, listed_project["conversations"][0]["project_id"])
+        self.assertEqual([first["conversation_id"]], loaded_project["project"]["conversation_ids"])
+
+    def test_project_upload_sources_default_dataset_and_project_only_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            csv_path.write_text("city,sales\n上海,100\n北京,80\n", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            project_id = service.create_project(name="项目文件")["project"]["project_id"]
+            upload = service.upload_project_sources(project_id, [csv_path], original_filenames=["sales.csv"])
+            overview = service.respond_to_message(project_id=project_id, question="看一下这个数据")
+            loaded = service.get_project(project_id)
+
+        self.assertTrue(upload["success"])
+        self.assertTrue(upload["dataset_id"].startswith("ds_"))
+        self.assertEqual(project_id, upload["project_id"])
+        self.assertEqual("dataset", upload["project_sources"][0]["source_type"])
+        self.assertEqual(upload["dataset_id"], loaded["project"]["default_dataset_id"])
+        self.assertEqual(upload["dataset_id"], overview["dataset_id"])
+        self.assertEqual(project_id, overview["conversation"]["project_id"])
+        self.assertEqual("project_only", overview["project"]["memory_mode"])
+
+    def test_project_text_source_upload_does_not_create_dataset_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            note_path = root / "instructions.md"
+            note_path.write_text("按含税 GMV 口径回答，引用项目说明。", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            project_id = service.create_project(name="说明文件")["project"]["project_id"]
+            upload = service.upload_project_sources(project_id, [note_path], original_filenames=["instructions.md"])
+            loaded = service.get_project(project_id)
+            reply = service.respond_to_message(project_id=project_id, question="你好")
+
+        self.assertTrue(upload["success"])
+        self.assertEqual(project_id, upload["project_id"])
+        self.assertEqual("project_source", upload["file_role"])
+        self.assertEqual("", upload.get("dataset_id", ""))
+        self.assertEqual("note", upload["project_sources"][0]["source_type"])
+        self.assertEqual("instructions.md", upload["project_sources"][0]["title"])
+        self.assertIn("含税 GMV", loaded["project"]["sources"][0]["content"])
+        self.assertEqual("", loaded["project"]["default_dataset_id"])
+        self.assertEqual("", reply["dataset_id"])
+        self.assertEqual(1, reply["project"]["source_count"])
 
     def test_analyze_unknown_dataset_returns_standard_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

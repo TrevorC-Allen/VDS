@@ -26,9 +26,13 @@
 
 2026-05-25 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已完成首个轻量架构落点。`backend/storage/conversation_store.py` 提供本地 JSON conversation store；DataAgentService 的 `/message` 路径负责追加 user / assistant turn；Workbench 左侧历史 Chat 从后端 conversation endpoints 载入并持久化重命名。该层只保存会话和响应快照，不承载核心分析逻辑。
 
+2026-05-25 更新：Phase 13 Project Workspace 已完成首个架构落点。`backend/storage/project_store.py` 提供本地 JSON Project Store，记录 project metadata、project sources、project-only memories 和 conversation_ids；DataAgentService 负责把 `project_id` 贯穿 `/message`、conversation create/list/record、Project CRUD、source upload 和 memory CRUD。Project source 中的数据/规则文件继续复用 TempFileStore、upload-batch、rule file 和 dataset store；`.md/.txt/.yaml/.yml` 项目说明文件只保存为 project source，不进入 DatasetProfile / DataFrame。Workbench 只渲染 Project 契约和传递 `project_id`，不实现检索、join、聚合、评分或数据清洗。
+
 2026-05-25 更新：Workbench 上传链路已支持完整 DAB context 包。`TempFileStore` 负责识别和保存 `payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md`，并把 dataset 标记为 `dabstep_context`；`DataAgentService` 仍只选择上下文并调用既有 single-agent / multi-agent 分析链路，DAB 规则解析和费用计算继续位于 `data_agent_core`。
 
 2026-05-25 更新：Workbench Agent 监看链路使用 `monitor_run_id` 和 `/api/data-agent/monitor/stream` SSE 输出安全事件摘要；事件发布在 backend service、multi-agent workflow 和 tracing 层完成，只包含阶段状态、角色摘要、工具摘要和最终响应摘要。
+
+2026-05-25 更新：新增 GPT-like parity redline。任何影响文件解析、字段画像、回答结构、Insight、图表/表格、过程流、代码 artifact 或 Workbench 排版样式的修改，都必须在测试阶段对照 GPT / ChatGPT Data Analysis 同类结果或冻结标准 GPT 参考结果；差距很大时打回重写，不能只凭单测或 smoke 通过。
 
 ## 层次边界
 
@@ -39,6 +43,7 @@
 5. multi_agent_workflows 已承载默认 Phase 6 最小顺序多 Agent workflow。
 6. docs 是工程契约和扩展需求管理目录。
 7. Phase 11 Conversation Store 位于 backend 内，负责 `conversation_id`、历史消息、dataset 引用、assistant response snapshot 和 owner_context 预留边界；它只能编排已有 message / upload / analyze 调用，不能承载核心数据分析逻辑。
+8. Phase 13 Project Store 位于 backend 内，负责 project-scoped metadata、source reference、project-only memory 和 conversation 归属；它不能承载核心数据分析逻辑，也不能替代真实鉴权、多租户或多人协作。
 
 ## 依赖规则
 
@@ -53,6 +58,7 @@
 9. prompt 位于 data_agent_core/prompts/data_agent_system_prompt.md。
 10. API key 只从环境变量读取，不进入 Git、trace、文档或 CHANGELOG。
 11. 中文问题理解、中文字段名、中文业务术语和中文输出格式是核心主路径；英文问题、英文字段和英文 Benchmark 必须兼容，但不能替代中文验收。
+12. Project memory 必须保持 project-only；任何 `/message`、conversation、source 或 memory 检索不得跨 `project_id` 读取，也不得把前端 localStorage 冒充共享项目存储。
 
 ## 核心链路
 
@@ -286,6 +292,24 @@ DataAgentService 追加 question、run_id、answer、answer_type、success 和 r
 2. 多窗口同一 conversation 的实时同步仍未实现。
 3. 跨进程重启后可恢复 profile 和消息；普通 CSV / Excel 继续分析仍需要内存表存在或重新上传，DAB context 包因为规则文件已持久化，可由后端重新加载上下文。
 4. 真实登录、鉴权、owner filter 强制校验和多租户隔离仍未实现。
+
+## GPT-like parity redline
+
+该红线约束所有用户可见体验层改动，但不改变核心分层：GPT-like 只作为验收参考，不允许把真实 GPT 输出、标准答案或截图特调写入核心链路。
+
+适用范围：
+
+1. 文件解析、sheet / table / header 识别、字段画像和数据质量说明。
+2. general / overview 主回答、正式分析回答、Insight、下一步建议和 caveat。
+3. 图表/表格选择、代码 artifact、过程流、monitor 摘要和 Workbench 文案。
+4. 前端布局、排版密度、字体层级、展开态、移动端和桌面端可读性。
+
+验收边界：
+
+1. 修改完成后必须并排对比 VDS 实际输出与 GPT / ChatGPT Data Analysis 同类输出或冻结标准 GPT 参考结果。
+2. 对比时必须检查事实理解、结构顺序、信息密度、用户下一步、表格/图表选择、过程流颗粒度和视觉层级。
+3. 如果差距很大，默认判定为体验实现失败，打回重写；通过单元测试、离线 scorer 或浏览器 smoke 不代表通过 GPT-like parity review。
+4. 如果没有实时 GPT 参考，必须明确记录使用的标准 GPT answer workbook、冻结截图或 repo 内参考 artifact，不能把 mock 结果冒充 GPT 结果。
 
 ## TODO
 

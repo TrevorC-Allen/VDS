@@ -126,16 +126,20 @@ def build_dataset_overview_process_view(
     column_count: int,
     metric_column: str | None = None,
     dimension_column: str | None = None,
+    table_count: int | None = None,
+    is_multi_table: bool = False,
 ) -> dict[str, Any]:
     """Build a safe process view for deterministic dataset overview responses."""
 
     evidence = [f"主表：{table_name}", f"规模：{row_count} 行，{column_count} 列"]
+    if table_count:
+        evidence.insert(0, f"表数量：{table_count}")
     if metric_column:
         evidence.append(f"关键数值字段：{metric_column}")
     if dimension_column:
         evidence.append(f"可下钻维度：{dimension_column}")
     return _view(
-        summary="已按数据概览请求生成表画像和关键指标摘要。",
+        summary="已按数据概览请求生成表画像和关键指标摘要。" if not is_multi_table else "已按多表概览请求生成表含义和关键字段摘要。",
         mode="dataset_overview",
         steps=[
             _step(
@@ -145,15 +149,27 @@ def build_dataset_overview_process_view(
                 source="service_route",
             ),
             _step(
-                title="读取主表画像",
-                summary="已从上传数据中选择主表并统计行列规模。",
+                title="读取表画像",
+                summary="已从上传数据中统计表数量、行列规模和字段结构。" if is_multi_table else "已从上传数据中选择主表并统计行列规模。",
                 evidence=evidence,
                 source="deterministic_result",
             ),
             _step(
-                title="生成概览摘要",
-                summary="已整理为短回答和“指标 / 数值”结果表，前端只负责展示。",
-                evidence=["结果来自后端概览生成器。"],
+                title="识别表类型和字段",
+                summary="已推断字段含义、数值指标、分类维度和布尔状态字段。",
+                evidence=["字段含义和分布由后端生成。"],
+                source="deterministic_result",
+            ),
+            _step(
+                title="执行概览代码",
+                summary="已生成安全 Python artifact，用于解释概览统计如何复现。",
+                evidence=["代码卡片只展示安全片段，不开放浏览器执行。"],
+                source="execution_summary",
+            ),
+            _step(
+                title="生成概览报告",
+                summary="已整理为结构化 overview report、字段含义、分布、洞察和可追问方向。",
+                evidence=["前端只渲染后端报告契约。"],
                 source="response_contract",
             ),
         ],
@@ -413,7 +429,7 @@ def _execution_step(mode: str, trace: dict[str, Any], logic_form: dict[str, Any]
         "diagnostic_or_anomaly": ("检查异常信号", "已基于执行结果检查异常、质量或影响因素。"),
         "clarification_or_not_applicable": ("尝试安全执行", "已尝试按当前能力边界执行，发现需要澄清或补齐能力。"),
     }
-    title, summary = labels.get(mode, ("执行指标计算", "已执行受控 Pandas / SQL 计划并标准化结果。"))
+    title, summary = labels.get(mode, ("执行 Python / SQL", "已执行受控 Pandas / SQL 计划并标准化结果。"))
     pandas = _first_dict(trace.get("pandas_result_summary"))
     sql = _first_dict(trace.get("sql_result_summary"))
     evidence = []

@@ -79,6 +79,22 @@
 
 状态：2026-05-25 已完成最小实现和后端聚焦测试；后续可继续增强 YAML 复杂结构、Benchmark report 展示和生产级规则持久化。
 
+### Phase 13 Project Workspace / Shared Files / Project Memory
+
+目标：把 Workbench 从单会话历史升级为 GPT-like Project 工作区，让同一 project 内的 chats、共享文件、项目说明和 project-only memory 共享同一后端上下文边界。
+
+影响模块：backend/storage/project_store.py、backend/services/data_agent_service.py、backend/routers/data_agent.py、backend/storage/conversation_store.py、frontend、docs/API_CONTRACT.md、tests/backend、tests/architecture。
+
+优先级：P1，阶段：Phase 13。
+
+验收标准：Project CRUD、project source upload / delete、project memory CRUD、conversation 挂 project、`/message project_id`、历史按 project 过滤和 project-only 隔离负例必须有测试；无 `project_id` 时现有 `/message`、conversation、upload-batch、rule auto-bind、multi-file/join、monitor 和输出契约不得退步。
+
+风险：当前是本地匿名 JSON Project Store，不代表真实多人协作、鉴权或多租户权限；Project memory 不能变成全局 memory；前端不能实现检索、join、聚合、评分、图表选择或数据清洗。
+
+泛化验证方式：用项目内/项目外对照测试验证 memory/source/conversation 隔离；用 `.md/.txt/.yaml/.yml` 说明文件验证文本 source 不进入 DatasetProfile / DataFrame；用 dataset + user rule 混合上传验证既有 TempFileStore、rule file 和 dataset store 行为不退化。
+
+状态：2026-05-25 已完成首个落点：本地 JSON Project Store、Project API、project source upload、project memory CRUD、project-scoped conversations 和 Workbench Project selector；后续继续补 Project instructions 编辑、saved response source、conversation summary memory、URL project restore、真实登录鉴权和多租户隔离。
+
 ### 双执行路径
 
 目标：支持 Pandas / NumPy 和 SQL / DuckDB 两条执行路径。
@@ -555,9 +571,34 @@ UX 验收标准：过程展示默认只占一行，使用小号浅灰文字展�
 
 是否影响 errors：可能。实现时可复用现有 errors；如新增 conversation not found / owner mismatch 等稳定错误类型，必须先写入 API_CONTRACT 和 tests。
 
+### Phase 12 GPT-like General Answer / Insight / Activity Stream
+
+目标：把 Workbench 从“能展示结果”升级为“像 GPT / ChatGPT Data Analysis 一样自然解释数据、展示安全过程、展示可复现代码和给出有业务价值洞察”的体验，并把 GPT-like parity review 作为红线。
+
+影响模块：data_agent_core/output、data_agent_core/core/file_parser.py、data_agent_core/core/schema_profiler.py、backend/services、frontend、docs/EVALUATION_GATE.md、tests/core、tests/backend、tests/architecture、浏览器 smoke。
+
+优先级：P0，阶段：Phase 12。
+
+状态：First implementation landed。已落地 `overview_report`、enhanced insight、safe `execution_artifacts`、dataset overview 活动流、semantic chart planning guard 和规则文件自动绑定；后续继续扩展文件解析、回答模板、图表语义和 Workbench 排版体验。
+
+验收标准：general / overview 问法必须生成结构化数据报告；Insight 必须带 observation / evidence / recommended action；图表不能把 ID / reference / bin / year / hour 等字段误当指标；Workbench 必须展示主回答、表格/图表、活动流和代码 artifact；每次体验类修改都必须执行 GPT-like parity review，对比 GPT / ChatGPT Data Analysis 同类结果或冻结标准 GPT 参考结果。
+
+风险：如果只按当前截图、当前字段、固定文件名、固定问法或当前样本值调整，就是伪泛化补丁；如果只看单测和 smoke，不对照 GPT 结果，就可能交付“能跑但不像 GPT”的文件解析、回答结构、排版样式和交互体验。
+
+泛化验证方式：至少覆盖一个非 payments 合成表、一个中文真实业务表或同类变体、一个浏览器可见 Workbench smoke，并在汇报中记录参考来源、主要差距、接受差异和被打回重写的点；GPT-like parity 差距很大时必须重写后再测。
+
+是否影响 contracts：是。体验增强必须优先落到后端稳定契约，不能只改前端临时拼接。
+
+是否影响 API_CONTRACT：可能。新增或改变稳定响应字段时必须同步 API_CONTRACT。
+
+是否影响 tracing：是。只能使用 trace-safe `process_view_v2` / `reasoning_trace_view` / execution artifact 摘要，不暴露完整 Chain of Thought。
+
+是否影响 errors：可能。若新增体验验收相关错误类型，必须同步 API_CONTRACT 和测试。
+
 ## TODO
 
 - 新功能进入开发前，先确认是否影响 contracts / API_CONTRACT / tracing / errors。
 - Phase 7.5 - 7.10 必须按编号推进，且每个工程阶段都要通过 DABstep、Microsoft 和 VDS 三数据集 non-regression gate。
 - Phase 8 后续只做 Guardrail，不重开 Phase 8 主体；Phase 9 后续按 Phase 9.1 做确认和回看面板，不把核心计算搬到前端。
 - Phase 11 后续继续补 URL conversation_id 恢复、多窗口同步、跨进程 dataset 表恢复和 owner filter 强制校验；不得把本地匿名会话误写成已实现登录权限。
+- Phase 12 后续所有文件解析、回答、排版、图表、过程流和代码 artifact 改动都必须执行 GPT-like parity review；差距很大直接打回重写。

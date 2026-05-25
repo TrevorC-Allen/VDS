@@ -23,6 +23,28 @@
           新分析
         </button>
 
+        <section class="project-panel" aria-labelledby="project-title">
+          <div class="project-header">
+            <h2 id="project-title">Projects</h2>
+            <span id="project-count">0</span>
+          </div>
+          <div class="project-controls">
+            <select id="project-select" aria-label="选择 Project">
+              <option value="">无 Project</option>
+            </select>
+            <button id="new-project-button" class="icon-button" type="button" title="新 Project" aria-label="新 Project">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            </button>
+            <button id="rename-project-button" class="icon-button" type="button" title="重命名 Project" aria-label="重命名 Project" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 20 8-8-4-4-8 8-2 6 6-2Z"></path><path d="m14 6 4 4"></path></svg>
+            </button>
+            <button id="delete-project-button" class="icon-button danger" type="button" title="删除 Project" aria-label="删除 Project" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 15h10l1-15"></path><path d="M10 11v6M14 11v6"></path></svg>
+            </button>
+          </div>
+          <p id="project-summary" class="project-summary">project-only memory</p>
+        </section>
+
         <section class="history-panel" aria-labelledby="history-title">
           <div class="history-header">
             <h2 id="history-title">历史 Chat</h2>
@@ -123,6 +145,13 @@
                   </ol>
                 </details>
               </section>
+
+              <section class="analysis-block artifact-panel hidden" aria-labelledby="artifact-title">
+                <div class="block-header compact">
+                  <h2 id="artifact-title">代码</h2>
+                </div>
+                <div class="artifact-list"></div>
+              </section>
             </div>
           </article>
         </section>
@@ -148,7 +177,7 @@
             ></div>
             <div class="composer-actions">
               <div class="upload-controls" aria-label="文件上传">
-                <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md" />
+                <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md,.txt,.yaml,.yml" />
                 <label class="icon-button upload-pick-button" for="file-input" title="选择文件" aria-label="选择文件">
                   <svg viewBox="0 0 24 24"><path d="m21.4 11.6-8.5 8.5a5 5 0 0 1-7.1-7.1l9-9a3.2 3.2 0 0 1 4.5 4.5l-9.1 9.1a1.5 1.5 0 0 1-2.1-2.1l8.3-8.3" /></svg>
                 </label>
@@ -156,7 +185,7 @@
                 <div class="file-status-wrap">
                   <div class="file-status" aria-live="polite">
                     <button id="file-summary" class="file-summary-button" type="button" disabled aria-expanded="false" aria-controls="file-panel">选择文件</button>
-                    <span id="file-detail">CSV / Excel / JSON 数据支持多选</span>
+                    <span id="file-detail">数据和说明文件支持多选</span>
                   </div>
                   <section id="file-panel" class="file-panel hidden" aria-label="文件列表">
                     <div class="file-panel-header">
@@ -167,28 +196,6 @@
                   </section>
                 </div>
               </div>
-              <details class="advanced-options">
-                <summary>高级选项</summary>
-                <div class="rule-mode-row">
-                  <label class="toggle-row">
-                    <input id="rule-mode-toggle" type="checkbox" />
-                    <span>启用 Rule Mode</span>
-                  </label>
-                  <div id="rule-upload-panel" class="rule-upload-panel hidden">
-                    <input id="rule-file-input" class="visually-hidden" type="file" accept=".yaml,.yml,.json,.txt,.md" />
-                    <label class="button secondary compact-button" for="rule-file-input">选择分析规则</label>
-                    <button id="rule-upload-button" class="button secondary compact-button" type="button" disabled>上传规则</button>
-                    <span id="rule-file-status" class="inline-status">未上传用户分析规则</span>
-                  </div>
-                </div>
-                <div class="benchmark-panel">
-                  <input id="benchmark-rule-input" class="visually-hidden" type="file" accept=".yaml,.yml,.json" />
-                  <label class="button secondary compact-button" for="benchmark-rule-input">选择 Benchmark 规则</label>
-                  <button id="benchmark-rule-upload-button" class="button secondary compact-button" type="button" disabled>上传 BM 规则</button>
-                  <button id="benchmark-run-button" class="button secondary compact-button" type="button" disabled>Run Benchmark</button>
-                  <span id="benchmark-status" class="inline-status">内部 Benchmark 入口</span>
-                </div>
-              </details>
               <div class="controls-row">
                 <label>
                   执行

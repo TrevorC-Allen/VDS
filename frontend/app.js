@@ -1,10 +1,30 @@
 const MONITOR_RUN_INDEX_KEY = "vds-monitor-runs";
 const ACTIVE_MONITOR_RUN_KEY = "vds-active-monitor-run";
 const MAX_MONITOR_RUN_RECORDS = 80;
+const ACTIVITY_EVENT_TYPES = [
+  "monitor_connected",
+  "message_requested",
+  "analysis_requested",
+  "workflow_started",
+  "agent_started",
+  "agent_completed",
+  "workflow_completed",
+  "response_ready",
+  "analysis_failed",
+  "thought_delta",
+  "tool_considered",
+  "dependency_note",
+  "data_scan_note",
+  "plan_note",
+  "code_artifact_ready",
+  "answer_outline_ready",
+];
 
 const state = {
   datasetId: "",
   conversationId: "",
+  projectId: "",
+  projects: [],
   profile: null,
   selectedTable: "",
   fileRecords: [],
@@ -17,11 +37,14 @@ const state = {
   ruleModeEnabled: false,
   hasPendingRuleUpload: false,
   userRuleFileId: "",
+  autoRuleFileIds: [],
   benchmarkRuleFileId: "",
   hasPendingBenchmarkRuleUpload: false,
   activeResultMessage: null,
   activeMonitorRunId: "",
   activeHistoryRunId: "",
+  activitySource: null,
+  activityEvents: [],
 };
 
 const el = {
@@ -69,8 +92,16 @@ const el = {
   processPanel: document.querySelector(".process-panel"),
   processSummary: document.querySelector("#process-summary"),
   processTimeline: document.querySelector("#process-timeline"),
+  artifactPanel: document.querySelector(".artifact-panel"),
+  artifactList: document.querySelector(".artifact-list"),
   runHistory: document.querySelector("#run-history"),
   historyCount: document.querySelector("#history-count"),
+  projectSelect: document.querySelector("#project-select"),
+  newProjectButton: document.querySelector("#new-project-button"),
+  renameProjectButton: document.querySelector("#rename-project-button"),
+  deleteProjectButton: document.querySelector("#delete-project-button"),
+  projectCount: document.querySelector("#project-count"),
+  projectSummary: document.querySelector("#project-summary"),
 };
 
 el.fileInput.addEventListener("change", updateFileSummary);
@@ -83,6 +114,10 @@ el.benchmarkRuleInput?.addEventListener("change", updateBenchmarkRuleSummary);
 el.benchmarkRuleUploadButton?.addEventListener("click", uploadBenchmarkRule);
 el.benchmarkRunButton?.addEventListener("click", runBenchmark);
 el.newChatButton.addEventListener("click", resetConversation);
+el.newProjectButton?.addEventListener("click", createProjectFromPrompt);
+el.renameProjectButton?.addEventListener("click", renameCurrentProjectFromPrompt);
+el.deleteProjectButton?.addEventListener("click", deleteCurrentProject);
+el.projectSelect?.addEventListener("change", handleProjectChange);
 el.uploadButton.addEventListener("click", uploadFiles);
 el.runButton.addEventListener("click", runAnalysis);
 el.questionInput.addEventListener("input", handleQuestionInput);
@@ -92,7 +127,7 @@ el.questionInput.addEventListener("keydown", handleQuestionKeydown);
 
 updateFileSummary();
 updateQuestionEmptyState();
-loadConversations();
+loadProjects().finally(() => loadConversations());
 
 function updateFileSummary() {
   const files = [...el.fileInput.files];
@@ -100,7 +135,7 @@ function updateFileSummary() {
     state.hasPendingUpload = false;
     state.fileRecords = [];
     el.fileSummary.textContent = "选择文件";
-    el.fileDetail.textContent = "CSV / Excel / JSON 数据支持多选";
+    el.fileDetail.textContent = "数据和说明文件支持多选";
     el.uploadButton.disabled = true;
     renderFilePanel();
     updateRunButton();
@@ -136,7 +171,7 @@ function clearRestoredFileRecords() {
   el.uploadButton.disabled = true;
   renderFilePanel();
   el.fileSummary.textContent = state.datasetId ? "文件信息不可用" : "选择文件";
-  el.fileDetail.textContent = state.datasetId ? "需重新上传后继续分析" : "CSV / Excel / JSON 数据支持多选";
+  el.fileDetail.textContent = state.datasetId ? "需重新上传后继续分析" : "数据和说明文件支持多选";
   updateRunButton();
 }
 
@@ -356,8 +391,12 @@ async function uploadFiles() {
   updateRunButton();
   try {
     const payload = new FormData();
-    const endpoint = files.length === 1 ? "/api/data-agent/upload" : "/api/data-agent/upload-batch";
-    if (files.length === 1) {
+    const endpoint = state.projectId
+      ? `/api/data-agent/projects/${encodeURIComponent(state.projectId)}/sources/upload`
+      : files.length === 1
+        ? "/api/data-agent/upload"
+        : "/api/data-agent/upload-batch";
+    if (!state.projectId && files.length === 1) {
       payload.append("file", files[0]);
     } else {
       files.forEach((file) => payload.append("files", file));
@@ -367,14 +406,27 @@ async function uploadFiles() {
     if (!response.ok || !profile.success) {
       throw new Error(errorText(profile) || `HTTP ${response.status}`);
     }
-    state.profile = profile;
-    state.datasetId = profile.dataset_id;
-    state.selectedTable = profile.tables?.[0]?.table_name || "";
+    const hasDatasetProfile = Boolean(profile.dataset_id);
+    if (hasDatasetProfile) {
+      state.profile = profile;
+      state.datasetId = profile.dataset_id;
+      state.autoRuleFileIds = profile.auto_bound_user_rule_file_ids || [];
+      state.userRuleFileId = state.autoRuleFileIds[0] || state.userRuleFileId || "";
+      state.selectedTable = profile.tables?.[0]?.table_name || "";
+    }
     state.fileRecords = buildReadyFileRecords(files, profile);
+    await loadProjects();
     renderProfile();
     renderFilePanel();
     el.profileMessage.classList.add("hidden");
-    setApiStatus("ready", "数据集已就绪");
+    setApiStatus(
+      "ready",
+      hasDatasetProfile
+        ? state.autoRuleFileIds.length
+          ? "数据和规则已就绪"
+          : "数据集已就绪"
+        : "项目共享文件已添加",
+    );
     state.hasPendingUpload = false;
     el.fileSummary.textContent = `${files.length} 个文件已就绪`;
     el.fileDetail.textContent = "点击查看文件";
@@ -420,10 +472,12 @@ async function runAnalysis() {
   state.isAnalyzing = true;
   el.runButton.disabled = true;
   const monitorRunId = startMonitorRun(question);
+  const liveActivity = Boolean(window.EventSource && monitorRunId);
   markHistoryRunning(question, monitorRunId);
   appendUserMessage(question);
   setQuestionText("");
-  renderProgress(question);
+  renderProgress(question, { liveActivity });
+  if (liveActivity) connectActivityStream(monitorRunId);
   setApiStatus("idle", "处理中");
   try {
     const response = await fetch("/api/data-agent/message", {
@@ -432,10 +486,11 @@ async function runAnalysis() {
       body: JSON.stringify({
         dataset_id: state.datasetId,
         conversation_id: state.conversationId,
+        project_id: state.projectId,
         question,
         execution_mode: el.executionMode.value,
         agent_mode: el.agentMode.value,
-        user_rule_file_id: state.ruleModeEnabled ? state.userRuleFileId : "",
+        user_rule_file_id: state.userRuleFileId || "",
         monitor_run_id: monitorRunId,
       }),
     });
@@ -444,6 +499,7 @@ async function runAnalysis() {
       throw new Error(errorText(result) || `HTTP ${response.status}`);
     }
     stopProgress();
+    closeActivityStream();
     result.question = question;
     renderResult(result);
     finishMonitorRun(result, question);
@@ -451,6 +507,7 @@ async function runAnalysis() {
     setApiStatus(result.success ? "ready" : "error", result.success ? (isChat ? "已回复" : "分析完成") : "需要继续确认");
   } catch (error) {
     stopProgress();
+    closeActivityStream();
     failMonitorRun(question, String(error.message || error));
     markHistoryFailed(question, String(error.message || error));
     setApiStatus("error", "分析失败");
@@ -495,6 +552,124 @@ function setQuestionText(text) {
 
 function updateQuestionEmptyState() {
   el.questionInput.classList.toggle("is-empty", !getQuestionText());
+}
+
+async function loadProjects() {
+  if (!el.projectSelect) return;
+  try {
+    const response = await fetch("/api/data-agent/projects?limit=50");
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    state.projects = payload.projects || [];
+    if (state.projectId && !state.projects.some((project) => project.project_id === state.projectId)) {
+      state.projectId = "";
+    }
+    renderProjects();
+  } catch {
+    state.projects = [];
+    renderProjects();
+  }
+}
+
+function renderProjects() {
+  if (!el.projectSelect) return;
+  const options = [
+    `<option value="">无 Project</option>`,
+    ...state.projects.map((project) => `<option value="${escapeHtml(project.project_id || "")}">${escapeHtml(project.name || "未命名 Project")}</option>`),
+  ];
+  el.projectSelect.innerHTML = options.join("");
+  el.projectSelect.value = state.projectId || "";
+  if (el.renameProjectButton) el.renameProjectButton.disabled = !state.projectId;
+  if (el.deleteProjectButton) el.deleteProjectButton.disabled = !state.projectId;
+  if (el.projectCount) el.projectCount.textContent = String(state.projects.length);
+  const current = currentProject();
+  if (el.projectSummary) {
+    el.projectSummary.textContent = current
+      ? `${current.source_count || 0} files / ${current.memory_count || 0} memories`
+      : "project-only memory";
+  }
+}
+
+function currentProject() {
+  return state.projects.find((project) => project.project_id === state.projectId) || null;
+}
+
+async function createProjectFromPrompt() {
+  const rawName = window.prompt("Project name", "新 Project");
+  const name = String(rawName || "").trim();
+  if (!name) return;
+  try {
+    const response = await fetch("/api/data-agent/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    state.projectId = payload.project?.project_id || "";
+    await loadProjects();
+    resetConversation();
+    await loadConversations();
+    setApiStatus("ready", "Project 已创建");
+  } catch (error) {
+    setApiStatus("error", `Project 创建失败：${String(error.message || error)}`);
+  }
+}
+
+async function renameCurrentProjectFromPrompt() {
+  const current = currentProject();
+  if (!current) return;
+  const rawName = window.prompt("Project name", current.name || "未命名 Project");
+  const name = String(rawName || "").trim();
+  if (!name || name === current.name) return;
+  try {
+    const response = await fetch(`/api/data-agent/projects/${encodeURIComponent(current.project_id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    await loadProjects();
+    setApiStatus("ready", "Project 已重命名");
+  } catch (error) {
+    setApiStatus("error", `Project 重命名失败：${String(error.message || error)}`);
+  }
+}
+
+async function deleteCurrentProject() {
+  const current = currentProject();
+  if (!current) return;
+  if (!window.confirm(`删除 Project「${current.name || "未命名 Project"}」？项目内对话会移出 Project，数据文件不会被删除。`)) return;
+  try {
+    const response = await fetch(`/api/data-agent/projects/${encodeURIComponent(current.project_id)}`, {
+      method: "DELETE",
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    state.projectId = "";
+    resetConversation();
+    await loadProjects();
+    await loadConversations();
+    setApiStatus("ready", "Project 已删除");
+  } catch (error) {
+    setApiStatus("error", `Project 删除失败：${String(error.message || error)}`);
+  }
+}
+
+async function handleProjectChange() {
+  state.projectId = el.projectSelect?.value || "";
+  renderProjects();
+  resetConversation();
+  await loadConversations();
 }
 
 function updateRunButton() {
@@ -625,18 +800,19 @@ function renderResult(result, options = {}) {
   el.resultTitle.textContent = isChat ? "VDS" : "分析结果";
   el.answer.textContent = result.answer || "-";
   el.resultStatus.textContent = isChat ? "已回复" : result.success ? "已完成" : "需要继续确认";
-  renderRows(rows, columns);
+  renderRows(rows, columns, result);
   renderChart(isOverviewShaped ? null : result.chart, rows, columns, result.answer);
-  renderInsight(!isChat && result.success && !isOverviewShaped ? result.insight : null);
+  renderInsight(!isChat && result.success ? result.insight : null);
   renderProcess(result.process_view_v2 || result.reasoning_trace_view || [], result);
+  renderExecutionArtifacts([]);
   if (options.updateHistory !== false) {
     pushHistory(result);
   }
   revealMessage(el.resultMessage, "start");
 }
 
-function renderRows(rows, columns) {
-  if (!rows.length) {
+function renderRows(rows, columns, result = {}) {
+  if (!rows.length || !shouldRenderRows(rows, columns, result)) {
     el.resultTable.className = "result-table hidden";
     el.resultTable.textContent = "";
     return;
@@ -654,6 +830,33 @@ function renderRows(rows, columns) {
       </tbody>
     </table>
   `;
+}
+
+function shouldRenderRows(rows, columns, result = {}) {
+  if (!Array.isArray(rows) || !rows.length) return false;
+  const safeColumns = columns.length ? columns : Object.keys(rows[0] || {});
+  const isOverview = result.answer_type === "overview" || result.execution_mode === "overview";
+  const isCleaning = result.answer_type === "cleaning_simulation" || result.execution_mode === "cleaning_simulation";
+  if (isOverview) {
+    const compactOverviewColumns = [
+      ["指标", "数值"],
+      ["表名", "来源", "行数", "列数", "可能含义", "关键字段"],
+    ];
+    return rows.length <= 30 && compactOverviewColumns.some((allowed) => allowed.length === safeColumns.length && allowed.every((column, index) => column === safeColumns[index]));
+  }
+  if (isCleaning) {
+    return rows.length <= 40 && safeColumns.length <= 5;
+  }
+  const generalQuestion = looksLikeGeneralQuestion(result.question || "");
+  const tooWideForMainAnswer = safeColumns.length > 12;
+  const likelyRawDump = rows.length > 8 && tooWideForMainAnswer;
+  return !(generalQuestion && likelyRawDump);
+}
+
+function looksLikeGeneralQuestion(question) {
+  const compact = String(question || "").replace(/\s+/g, "");
+  const tokens = ["看一下", "看下", "看看", "总结", "概览", "总览", "主要讲什么", "讲什么", "有什么字段", "有哪些字段", "字段含义", "什么意思", "清洗", "影响行数", "影响比例", "修改原始数据"];
+  return tokens.some((token) => compact.includes(token));
 }
 
 function renderChart(chart, fallbackRows = [], fallbackColumns = [], answer = "") {
@@ -795,8 +998,12 @@ function renderPieChart(values, chart, type) {
 
 function renderInsight(insight) {
   const suggestions = (insight?.business_suggestions || insight?.suggestions || []).filter(isUserFacingInsightText);
+  const findings = [...(insight?.anomaly_findings || []), ...(insight?.volatility_findings || [])]
+    .map((item) => item?.message)
+    .filter(isUserFacingInsightText);
+  const caveats = (insight?.caveats || []).filter(isUserFacingInsightText);
   const summary = cleanInsightSummary(insight?.summary || "");
-  const hasInsight = Boolean(summary || suggestions.length);
+  const hasInsight = Boolean(summary || suggestions.length || findings.length || caveats.length);
   el.insightPanel?.classList.toggle("hidden", !hasInsight);
   if (!hasInsight) {
     el.insightSummary.textContent = "";
@@ -805,13 +1012,73 @@ function renderInsight(insight) {
   }
   el.insightSummary.textContent = summary;
   const items = [];
-  suggestions.forEach((text) => items.push({ label: "建议", text }));
+  findings.slice(0, 2).forEach((text) => items.push({ label: "洞察", text }));
+  suggestions.slice(0, 3).forEach((text) => items.push({ label: "建议", text }));
+  caveats.slice(0, 2).forEach((text) => items.push({ label: "边界", text }));
   el.insightList.innerHTML = items.length
-    ? items.map((item) => `<li><strong>${escapeHtml(item.label)}</strong>${escapeHtml(item.text)}</li>`).join("")
+    ? items.map((item) => renderInsightCard(item)).join("")
     : "";
 }
 
-function renderProgress(question) {
+function renderInsightCard(item) {
+  const parsed = parseInsightText(item.text);
+  return `
+    <li class="insight-card ${escapeHtml(item.label)}">
+      <strong>${escapeHtml(item.label)}</strong>
+      <p>${escapeHtml(parsed.observation)}</p>
+      ${parsed.evidence ? `<span>依据：${escapeHtml(parsed.evidence)}</span>` : ""}
+      ${parsed.action ? `<span>建议：${escapeHtml(parsed.action)}</span>` : ""}
+    </li>
+  `;
+}
+
+function parseInsightText(text) {
+  const raw = String(text || "").trim();
+  const observation = raw.match(/观察[:：]([^；;]+)/)?.[1]?.trim() || raw.split(/[；;]/)[0] || raw;
+  const evidence = raw.match(/依据[:：]([^；;]+)/)?.[1]?.trim() || "";
+  const action = raw.match(/建议[:：]([^；;]+)/)?.[1]?.trim() || "";
+  return { observation, evidence, action };
+}
+
+function renderExecutionArtifacts(artifacts) {
+  const safeArtifacts = Array.isArray(artifacts) ? artifacts.filter((item) => item && item.code) : [];
+  el.artifactPanel?.classList.add("hidden");
+  if (!el.artifactList) return;
+  el.artifactList.innerHTML = "";
+}
+
+function renderArtifactCards(artifacts) {
+  const safeArtifacts = Array.isArray(artifacts) ? artifacts.filter((item) => item && item.code) : [];
+  if (!safeArtifacts.length) return "";
+  return `
+    <li class="completed process-artifacts">
+      <div>
+        <strong>复现代码</strong>
+        <p>这里收起展示安全复现片段，不在主答案区域占位。</p>
+        <div class="artifact-list inline">
+          ${safeArtifacts
+    .slice(0, 3)
+    .map(
+      (artifact) => `
+        <article class="artifact-card">
+          <div class="artifact-card-header">
+            <strong>${escapeHtml(artifact.title || artifact.language || "代码")}</strong>
+            <span>${escapeHtml((artifact.language || "").toUpperCase())}</span>
+          </div>
+          <p>${escapeHtml(artifact.purpose || "安全复现片段。")}</p>
+          <pre><code>${escapeHtml(artifact.code || "")}</code></pre>
+          ${artifact.output_summary ? `<small>${escapeHtml(artifact.output_summary)}</small>` : ""}
+        </article>
+      `,
+    )
+    .join("")}
+        </div>
+      </div>
+    </li>
+  `;
+}
+
+function renderProgress(question, options = {}) {
   stopProgress();
   const message = createAssistantResultMessage();
   bindResultMessage(message);
@@ -821,10 +1088,20 @@ function renderProgress(question) {
   el.chartPanel.className = "chart-panel hidden";
   el.chartPanel.textContent = "";
   el.insightPanel?.classList.add("hidden");
+  renderExecutionArtifacts([]);
   el.chatMessages.append(el.resultMessage);
   revealMessage(el.resultMessage);
 
   const steps = buildLiveSteps(question, Boolean(state.datasetId));
+  if (options.liveActivity) {
+    renderProcessItems(
+      [{ title: "接收实时过程", summary: "我先确认问题类型和可用数据，然后等待后端安全事件。", status: "active" }],
+      "我先确认问题类型和可用数据。",
+      [],
+      { collapse: false },
+    );
+    return;
+  }
   const update = () => {
     const currentStep = steps[state.progressStep] || steps[steps.length - 1];
     renderProcessItems(
@@ -833,6 +1110,8 @@ function renderProgress(question) {
         status: index < state.progressStep ? "completed" : index === state.progressStep ? "active" : "pending",
       })),
       currentStep?.summary || "正在整理回答。",
+      [],
+      { collapse: false },
     );
     state.progressStep = Math.min(state.progressStep + 1, steps.length - 1);
   };
@@ -848,7 +1127,124 @@ function stopProgress() {
   }
 }
 
+function connectActivityStream(monitorRunId) {
+  closeActivityStream();
+  state.activityEvents = [];
+  if (!window.EventSource || !monitorRunId) return false;
+  const source = new EventSource(`/api/data-agent/monitor/stream?monitor_run_id=${encodeURIComponent(monitorRunId)}`);
+  state.activitySource = source;
+  ACTIVITY_EVENT_TYPES.forEach((type) => source.addEventListener(type, handleActivityEvent));
+  source.onerror = () => {
+    if (state.isAnalyzing) {
+      setApiStatus("idle", "实时过程重试中");
+    }
+  };
+  return true;
+}
+
+function closeActivityStream() {
+  if (state.activitySource) {
+    state.activitySource.close();
+    state.activitySource = null;
+  }
+}
+
+function handleActivityEvent(event) {
+  let payload;
+  try {
+    payload = JSON.parse(event.data || "{}");
+  } catch {
+    return;
+  }
+  if (!payload || payload.monitor_run_id !== state.activeMonitorRunId) return;
+  const step = activityStepFromMonitorEvent(payload);
+  if (!step) return;
+  const duplicate = state.activityEvents.some((item) => item.eventId === step.eventId);
+  if (!duplicate) {
+    state.activityEvents.push(step);
+    state.activityEvents = state.activityEvents.slice(-12);
+  }
+  const latest = state.activityEvents.at(-1);
+  const timelineSteps = state.activityEvents.map((item, index) => ({
+    title: item.title,
+    summary: item.summary,
+    status: index === state.activityEvents.length - 1 && item.status === "active" ? "active" : item.status === "failed" ? "failed" : "completed",
+  }));
+  renderProcessItems(timelineSteps, latest?.summary || "正在处理。", [], { collapse: false });
+}
+
+function activityStepFromMonitorEvent(event) {
+  const type = String(event.event_type || "");
+  const status = event.status === "failed" ? "failed" : event.status === "active" ? "active" : "completed";
+  const titleByType = {
+    monitor_connected: "连接实时过程",
+    message_requested: "理解问题",
+    analysis_requested: "准备分析",
+    workflow_started: "启动流程",
+    agent_started: "执行步骤",
+    agent_completed: "完成步骤",
+    workflow_completed: "完成流程",
+    response_ready: "生成回答",
+    analysis_failed: "处理失败",
+    thought_delta: "过程摘要",
+    tool_considered: "选择工具",
+    dependency_note: "检查依赖",
+    data_scan_note: "扫描数据",
+    plan_note: "制定计划",
+    code_artifact_ready: "准备代码",
+    answer_outline_ready: "整理回答",
+  };
+  const summaryByType = {
+    monitor_connected: "实时过程通道已连接。",
+    message_requested: "我先判断这是普通对话、数据概览、清洗策略还是正式分析。",
+    analysis_requested: "我正在读取上传数据，并准备选择合适的后端路径。",
+    workflow_started: "后端分析流程已开始，我只展示安全活动摘要。",
+    agent_started: `${monitorRoleName(event.role)} 正在处理。`,
+    agent_completed: `${monitorRoleName(event.role)} 已完成。`,
+    workflow_completed: "后端流程已完成，正在合并最终结果。",
+    response_ready: "最终结果已生成，我会以主回答和过程详情展示。",
+    analysis_failed: "处理遇到问题，我会返回可读错误。",
+    thought_delta: cleanActivityText(event.summary) || "正在整理安全过程摘要。",
+    tool_considered: cleanActivityText(event.summary) || "正在选择可用工具路径。",
+    dependency_note: cleanActivityText(event.summary) || "正在检查依赖和读取方式。",
+    data_scan_note: cleanActivityText(event.summary) || "正在检查文件结构和字段。",
+    plan_note: cleanActivityText(event.summary) || "正在制定分析计划。",
+    code_artifact_ready: cleanActivityText(event.summary) || "复现代码片段已准备好，稍后放在处理过程里。",
+    answer_outline_ready: cleanActivityText(event.summary) || "正在整理最终回答结构。",
+  };
+  if (!titleByType[type]) return null;
+  return {
+    eventId: event.event_id || `${type}_${state.activityEvents.length}`,
+    title: titleByType[type],
+    summary: summaryByType[type] || cleanActivityText(event.summary) || "正在处理。",
+    status,
+  };
+}
+
+function cleanActivityText(text) {
+  const value = String(text || "").trim();
+  if (!value) return "";
+  const lowered = value.toLowerCase();
+  const blocked = ["chain_of_thought", "raw_prompt", "raw reasoning", "reasoning_tokens", "api_key", "task_id", "standard_answer", "hidden_answer", "public_proxy", "scorer"];
+  if (blocked.some((token) => lowered.includes(token))) return "";
+  return shortLabel(value.replace(/\s+/g, " "), 96);
+}
+
+function monitorRoleName(role) {
+  const key = String(role || "").trim();
+  const names = {
+    planner: "计划节点",
+    executor: "执行节点",
+    verifier: "校验节点",
+    correction: "修正节点",
+    response_builder: "回答节点",
+    single_agent: "单 Agent",
+  };
+  return names[key] || key || "后端节点";
+}
+
 function renderProcess(processSource, result = {}) {
+  const artifacts = result.execution_artifacts || [];
   if (processSource && !Array.isArray(processSource) && Array.isArray(processSource.steps)) {
     const steps = processSource.steps.map((step) => ({
       title: step.title || "-",
@@ -858,24 +1254,25 @@ function renderProcess(processSource, result = {}) {
       assumptions: normalizeProcessList(step.assumptions, 3),
       caveats: normalizeProcessList(step.caveats, 3),
     }));
-    renderProcessItems(steps, processSource.summary || "已完成本次分析。");
+    renderProcessItems(steps, processSource.summary || "已完成本次分析。", artifacts, { collapse: true });
     return;
   }
   const steps = Array.isArray(processSource) ? processSource : [];
   if (!steps.length && !result.question && !result.answer) {
-    renderProcessItems([], "提问后显示分析过程。");
+    renderProcessItems([], "提问后显示分析过程。", artifacts, { collapse: true });
     return;
   }
   const friendlySteps = buildFriendlySteps(steps, result);
   if (!friendlySteps.length) {
-    renderProcessItems([], "提问后显示分析过程。");
+    renderProcessItems([], "提问后显示分析过程。", artifacts, { collapse: true });
     return;
   }
-  renderProcessItems(friendlySteps, result.question ? `围绕“${shortLabel(result.question, 28)}”整理出回答。` : "本次回答已生成。");
+  renderProcessItems(friendlySteps, result.question ? `围绕“${shortLabel(result.question, 28)}”整理出回答。` : "本次回答已生成。", artifacts, { collapse: true });
 }
 
-function renderProcessItems(steps, summary) {
+function renderProcessItems(steps, summary, artifacts = [], options = {}) {
   el.processSummary.textContent = summary;
+  if (options.collapse && el.processDetails) el.processDetails.open = false;
   const hasActiveStep = steps.some((step) => step.status === "active");
   const hasFailedStep = steps.some((step) => step.status === "failed");
   el.processPanel?.classList.toggle("is-active", hasActiveStep);
@@ -896,7 +1293,7 @@ function renderProcessItems(steps, summary) {
         </li>
       `,
     )
-    .join("");
+    .join("") + renderArtifactCards(artifacts);
 }
 
 function normalizeProcessList(value, limit) {
@@ -1055,6 +1452,7 @@ function renderUserFacingError(title, message) {
   el.chartPanel.className = "chart-panel hidden";
   el.chartPanel.textContent = "";
   renderInsight(null);
+  renderExecutionArtifacts([]);
   renderProcessItems([{ title, summary: message || "请检查上传文件或稍后重试。", status: "failed" }], "处理没有完成。");
   revealMessage(el.resultMessage);
 }
@@ -1076,6 +1474,7 @@ function pushHistory(result) {
     unread: true,
     updatedAt: conversation.updated_at || new Date().toISOString(),
     messageCount: conversation.message_count || 0,
+    projectId: conversation.project_id || state.projectId || "",
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== conversationId && (!state.activeHistoryRunId || entry.runId !== state.activeHistoryRunId));
   state.activeHistoryRunId = "";
@@ -1098,6 +1497,7 @@ function markHistoryRunning(question, fallbackRunId) {
     unread: true,
     updatedAt: new Date().toISOString(),
     messageCount: existing?.messageCount || 0,
+    projectId: state.projectId || "",
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
   state.runHistory.unshift(item);
@@ -1118,6 +1518,7 @@ function markHistoryFailed(question, message) {
     unread: true,
     updatedAt: new Date().toISOString(),
     messageCount: existing?.messageCount || 0,
+    projectId: state.projectId || "",
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
   state.runHistory.unshift(item);
@@ -1146,6 +1547,12 @@ function renderHistory() {
           <button class="history-rename-button" type="button" title="重命名" aria-label="重命名历史对话">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 20 8-8-4-4-8 8-2 6 6-2Z"></path><path d="m14 6 4 4"></path></svg>
           </button>
+          <button class="history-project-button" type="button" title="放入 Project" aria-label="放入 Project">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path><path d="M12 12v5M9.5 14.5h5"></path></svg>
+          </button>
+          <button class="history-delete-button" type="button" title="删除" aria-label="删除历史对话">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 15h10l1-15"></path><path d="M10 11v6M14 11v6"></path></svg>
+          </button>
         </li>
       `;
       },
@@ -1153,6 +1560,12 @@ function renderHistory() {
     .join("");
   el.runHistory.querySelectorAll(".history-rename-button").forEach((button) => {
     button.addEventListener("click", () => startHistoryRename(button.closest(".history-item")?.dataset.runId || ""));
+  });
+  el.runHistory.querySelectorAll(".history-project-button").forEach((button) => {
+    button.addEventListener("click", () => assignHistoryToProject(button.closest(".history-item")?.dataset.runId || ""));
+  });
+  el.runHistory.querySelectorAll(".history-delete-button").forEach((button) => {
+    button.addEventListener("click", () => deleteHistoryConversation(button.closest(".history-item")?.dataset.runId || ""));
   });
   el.runHistory.querySelectorAll(".history-item").forEach((item) => {
     item.addEventListener("click", (event) => {
@@ -1236,9 +1649,100 @@ async function commitHistoryRename(runId, rawTitle) {
   }
 }
 
+async function assignHistoryToProject(runId) {
+  if (!runId || !runId.startsWith("conv_")) return;
+  const targetProjectId = await chooseProjectForHistory();
+  if (!targetProjectId) return;
+  try {
+    const response = await fetch(`/api/data-agent/conversations/${encodeURIComponent(runId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: targetProjectId }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    const conversation = payload.conversation || {};
+    const item = state.runHistory.find((entry) => entry.runId === runId);
+    if (item) {
+      item.projectId = conversation.project_id || targetProjectId;
+      item.updatedAt = conversation.updated_at || item.updatedAt;
+    }
+    state.projectId = conversation.project_id || targetProjectId;
+    await loadProjects();
+    await loadConversations();
+    setApiStatus("ready", "对话已放入 Project");
+  } catch (error) {
+    setApiStatus("error", `加入 Project 失败：${String(error.message || error)}`);
+  }
+}
+
+async function chooseProjectForHistory() {
+  if (!state.projects.length) {
+    await loadProjects();
+  }
+  if (state.projectId && state.projects.some((project) => project.project_id === state.projectId)) {
+    return state.projectId;
+  }
+  if (!state.projects.length) {
+    setApiStatus("error", "请先新建 Project");
+    return "";
+  }
+  if (state.projects.length === 1) {
+    return state.projects[0].project_id || "";
+  }
+  const projectList = state.projects
+    .map((project, index) => `${index + 1}. ${project.name || "未命名 Project"} (${project.project_id})`)
+    .join("\n");
+  const rawTarget = window.prompt(`输入 Project 名称或 ID：\n${projectList}`, state.projects[0]?.name || "");
+  const target = String(rawTarget || "").trim();
+  if (!target) return "";
+  const matched = state.projects.find(
+    (project) => project.project_id === target || String(project.name || "").trim() === target,
+  );
+  if (!matched) {
+    setApiStatus("error", "没有找到这个 Project");
+    return "";
+  }
+  return matched.project_id || "";
+}
+
+async function deleteHistoryConversation(runId) {
+  if (!runId) return;
+  const item = state.runHistory.find((entry) => entry.runId === runId);
+  const title = item?.title || item?.question || "未命名对话";
+  if (!window.confirm(`删除对话「${title}」？`)) return;
+  if (!runId.startsWith("conv_")) {
+    state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
+    renderHistory();
+    return;
+  }
+  try {
+    const response = await fetch(`/api/data-agent/conversations/${encodeURIComponent(runId)}`, {
+      method: "DELETE",
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
+    if (state.conversationId === runId) {
+      resetConversation();
+    }
+    await loadProjects();
+    await loadConversations();
+    setApiStatus("ready", "对话已删除");
+  } catch (error) {
+    setApiStatus("error", `对话删除失败：${String(error.message || error)}`);
+  }
+}
+
 async function loadConversations() {
   try {
-    const response = await fetch("/api/data-agent/conversations?limit=30");
+    const query = new URLSearchParams({ limit: "30" });
+    if (state.projectId) query.set("project_id", state.projectId);
+    const response = await fetch(`/api/data-agent/conversations?${query.toString()}`);
     const payload = await response.json();
     if (!response.ok || !payload.success) {
       throw new Error(errorText(payload) || `HTTP ${response.status}`);
@@ -1257,6 +1761,7 @@ async function loadConversations() {
         updatedAt: item.updated_at,
         messageCount: item.message_count || 0,
         datasetId: item.dataset_id || "",
+        projectId: item.project_id || "",
       };
     });
     const loadedIds = new Set(loadedHistory.map((item) => item.runId));
@@ -1285,6 +1790,7 @@ async function loadConversation(conversationId) {
 
 async function restoreConversation(conversation) {
   state.conversationId = conversation.conversation_id || "";
+  state.projectId = conversation.project_id || state.projectId || "";
   state.datasetId = conversation.dataset_id || "";
   state.profile = null;
   state.selectedTable = "";
@@ -1292,6 +1798,7 @@ async function restoreConversation(conversation) {
   state.hasPendingUpload = false;
   state.activeHistoryRunId = "";
   state.userRuleFileId = "";
+  state.autoRuleFileIds = [];
   state.hasPendingRuleUpload = false;
   state.benchmarkRuleFileId = "";
   state.hasPendingBenchmarkRuleUpload = false;
@@ -1301,6 +1808,7 @@ async function restoreConversation(conversation) {
   bindResultMessage(el.resultTemplate);
   el.resultMessage.classList.add("hidden");
   const messages = conversation.messages || [];
+  renderProjects();
   el.welcomeMessage?.classList.toggle("hidden", Boolean(messages.length));
   for (const message of messages) {
     if (message.role === "user") {
@@ -1332,6 +1840,8 @@ async function restoreDatasetProfile(datasetId) {
     }
     state.profile = profile;
     state.datasetId = profile.dataset_id || datasetId;
+    state.autoRuleFileIds = profile.auto_bound_user_rule_file_ids || [];
+    state.userRuleFileId = state.autoRuleFileIds[0] || "";
     state.selectedTable = profile.tables?.[0]?.table_name || "";
     renderProfile();
     applyRestoredFileRecords(profile);
@@ -1457,6 +1967,8 @@ function bindResultMessage(message) {
   el.processPanel = message.querySelector(".process-panel");
   el.processSummary = message.querySelector(".process-line p");
   el.processTimeline = message.querySelector(".process-timeline");
+  el.artifactPanel = message.querySelector(".artifact-panel");
+  el.artifactList = message.querySelector(".artifact-list");
 }
 
 function startMonitorRun(question) {

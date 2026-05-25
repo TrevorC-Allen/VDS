@@ -56,6 +56,7 @@ def message_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return service.respond_to_message(
         dataset_id=str(payload.get("dataset_id") or ""),
         conversation_id=str(payload.get("conversation_id") or ""),
+        project_id=str(payload.get("project_id") or ""),
         owner_id=str(payload.get("owner_id") or ""),
         tenant_id=str(payload.get("tenant_id") or ""),
         owner_context=payload.get("owner_context") if isinstance(payload.get("owner_context"), dict) else None,
@@ -87,16 +88,17 @@ def create_conversation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return service.create_conversation(
         title=str(payload.get("title") or ""),
         dataset_id=str(payload.get("dataset_id") or ""),
+        project_id=str(payload.get("project_id") or ""),
         owner_id=str(payload.get("owner_id") or ""),
         tenant_id=str(payload.get("tenant_id") or ""),
         owner_context=payload.get("owner_context") if isinstance(payload.get("owner_context"), dict) else None,
     )
 
 
-def conversations_payload(limit: int = 50) -> dict[str, Any]:
+def conversations_payload(limit: int = 50, project_id: str | None = None) -> dict[str, Any]:
     """Non-FastAPI helper mirroring GET /api/data-agent/conversations."""
 
-    return service.list_conversations(limit=limit)
+    return service.list_conversations(limit=limit, project_id=project_id)
 
 
 def conversation_payload(conversation_id: str) -> dict[str, Any]:
@@ -108,7 +110,30 @@ def conversation_payload(conversation_id: str) -> dict[str, Any]:
 def rename_conversation_payload(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Non-FastAPI helper mirroring PATCH /api/data-agent/conversations/{id}."""
 
-    return service.rename_conversation(conversation_id, title=str(payload.get("title") or ""))
+    return service.update_conversation(
+        conversation_id,
+        title=str(payload.get("title")) if payload.get("title") is not None else None,
+        project_id=str(payload.get("project_id")) if payload.get("project_id") is not None else None,
+    )
+
+
+def create_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Non-FastAPI helper mirroring POST /api/data-agent/projects."""
+
+    return service.create_project(
+        name=str(payload.get("name") or ""),
+        description=str(payload.get("description") or ""),
+        instructions=str(payload.get("instructions") or ""),
+        owner_id=str(payload.get("owner_id") or ""),
+        tenant_id=str(payload.get("tenant_id") or ""),
+        owner_context=payload.get("owner_context") if isinstance(payload.get("owner_context"), dict) else None,
+    )
+
+
+def projects_payload(limit: int = 50) -> dict[str, Any]:
+    """Non-FastAPI helper mirroring GET /api/data-agent/projects."""
+
+    return service.list_projects(limit=limit)
 
 
 def profile_payload(dataset_id: str) -> dict[str, Any]:
@@ -158,6 +183,7 @@ try:
         question: str
         dataset_id: str = ""
         conversation_id: str = ""
+        project_id: str = ""
         owner_id: str = ""
         tenant_id: str = ""
         owner_context: dict[str, Any] | None = None
@@ -178,12 +204,47 @@ try:
     class CreateConversationPayload(BaseModel):
         title: str = ""
         dataset_id: str = ""
+        project_id: str = ""
         owner_id: str = ""
         tenant_id: str = ""
         owner_context: dict[str, Any] | None = None
 
-    class RenameConversationPayload(BaseModel):
-        title: str
+    class UpdateConversationPayload(BaseModel):
+        title: str | None = None
+        project_id: str | None = None
+
+    class CreateProjectPayload(BaseModel):
+        name: str = ""
+        description: str = ""
+        instructions: str = ""
+        owner_id: str = ""
+        tenant_id: str = ""
+        owner_context: dict[str, Any] | None = None
+
+    class UpdateProjectPayload(BaseModel):
+        name: str | None = None
+        description: str | None = None
+        instructions: str | None = None
+        default_dataset_id: str | None = None
+
+    class ProjectSourcePayload(BaseModel):
+        source_type: str = "note"
+        title: str = ""
+        content: str = ""
+        dataset_id: str = ""
+        file_id: str = ""
+        metadata: dict[str, Any] | None = None
+
+    class ProjectMemoryPayload(BaseModel):
+        content: str = ""
+        memory_type: str = "pinned"
+        title: str = ""
+        metadata: dict[str, Any] | None = None
+
+    class UpdateProjectMemoryPayload(BaseModel):
+        content: str | None = None
+        memory_type: str | None = None
+        title: str | None = None
 
     class RunPayload(BaseModel):
         question: str
@@ -271,6 +332,7 @@ try:
             question=payload.question,
             dataset_id=payload.dataset_id,
             conversation_id=payload.conversation_id,
+            project_id=payload.project_id,
             owner_id=payload.owner_id,
             tenant_id=payload.tenant_id,
             owner_context=payload.owner_context,
@@ -297,22 +359,133 @@ try:
         return service.create_conversation(
             title=payload.title,
             dataset_id=payload.dataset_id,
+            project_id=payload.project_id,
             owner_id=payload.owner_id,
             tenant_id=payload.tenant_id,
             owner_context=payload.owner_context,
         )
 
     @router.get("/conversations")
-    def conversations(limit: int = 50) -> dict[str, Any]:
-        return service.list_conversations(limit=limit)
+    def conversations(limit: int = 50, project_id: str | None = None) -> dict[str, Any]:
+        return service.list_conversations(limit=limit, project_id=project_id)
 
     @router.get("/conversations/{conversation_id}")
     def conversation(conversation_id: str) -> dict[str, Any]:
         return service.get_conversation(conversation_id)
 
     @router.patch("/conversations/{conversation_id}")
-    def rename_conversation(conversation_id: str, payload: RenameConversationPayload) -> dict[str, Any]:
-        return service.rename_conversation(conversation_id, payload.title)
+    def update_conversation(conversation_id: str, payload: UpdateConversationPayload) -> dict[str, Any]:
+        return service.update_conversation(
+            conversation_id,
+            title=payload.title,
+            project_id=payload.project_id,
+        )
+
+    @router.delete("/conversations/{conversation_id}")
+    def delete_conversation(conversation_id: str) -> dict[str, Any]:
+        return service.delete_conversation(conversation_id)
+
+    @router.post("/projects")
+    def create_project(payload: CreateProjectPayload) -> dict[str, Any]:
+        return service.create_project(
+            name=payload.name,
+            description=payload.description,
+            instructions=payload.instructions,
+            owner_id=payload.owner_id,
+            tenant_id=payload.tenant_id,
+            owner_context=payload.owner_context,
+        )
+
+    @router.get("/projects")
+    def projects(limit: int = 50) -> dict[str, Any]:
+        return service.list_projects(limit=limit)
+
+    @router.get("/projects/{project_id}")
+    def project(project_id: str) -> dict[str, Any]:
+        return service.get_project(project_id)
+
+    @router.patch("/projects/{project_id}")
+    def update_project(project_id: str, payload: UpdateProjectPayload) -> dict[str, Any]:
+        return service.update_project(
+            project_id,
+            name=payload.name,
+            description=payload.description,
+            instructions=payload.instructions,
+            default_dataset_id=payload.default_dataset_id,
+        )
+
+    @router.delete("/projects/{project_id}")
+    def delete_project(project_id: str) -> dict[str, Any]:
+        return service.delete_project(project_id)
+
+    @router.post("/projects/{project_id}/sources")
+    def create_project_source(project_id: str, payload: ProjectSourcePayload) -> dict[str, Any]:
+        return service.create_project_source(
+            project_id,
+            source_type=payload.source_type,
+            title=payload.title,
+            content=payload.content,
+            dataset_id=payload.dataset_id,
+            file_id=payload.file_id,
+            metadata=payload.metadata,
+        )
+
+    @router.post("/projects/{project_id}/sources/upload")
+    async def upload_project_sources(
+        project_id: str,
+        files: list[UploadFile] = File(...),
+        file_role: str = Form("dataset"),
+        rule_scope: str = Form(""),
+        bind_dataset_id: str = Form(""),
+    ) -> dict[str, Any]:
+        temp_paths: list[Path] = []
+        original_filenames: list[str | None] = []
+        try:
+            for upload_file in files:
+                suffix = Path(upload_file.filename or "").suffix
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                    temp_file.write(await upload_file.read())
+                    temp_paths.append(Path(temp_file.name))
+                    original_filenames.append(upload_file.filename)
+            return service.upload_project_sources(
+                project_id,
+                temp_paths,
+                original_filenames=original_filenames,
+                file_role=file_role,
+                rule_scope=rule_scope,
+                bind_dataset_id=bind_dataset_id,
+            )
+        finally:
+            for temp_path in temp_paths:
+                temp_path.unlink(missing_ok=True)
+
+    @router.delete("/projects/{project_id}/sources/{source_id}")
+    def delete_project_source(project_id: str, source_id: str) -> dict[str, Any]:
+        return service.delete_project_source(project_id, source_id)
+
+    @router.post("/projects/{project_id}/memories")
+    def create_project_memory(project_id: str, payload: ProjectMemoryPayload) -> dict[str, Any]:
+        return service.create_project_memory(
+            project_id,
+            content=payload.content,
+            memory_type=payload.memory_type,
+            title=payload.title,
+            metadata=payload.metadata,
+        )
+
+    @router.patch("/projects/{project_id}/memories/{memory_id}")
+    def update_project_memory(project_id: str, memory_id: str, payload: UpdateProjectMemoryPayload) -> dict[str, Any]:
+        return service.update_project_memory(
+            project_id,
+            memory_id,
+            content=payload.content,
+            title=payload.title,
+            memory_type=payload.memory_type,
+        )
+
+    @router.delete("/projects/{project_id}/memories/{memory_id}")
+    def delete_project_memory(project_id: str, memory_id: str) -> dict[str, Any]:
+        return service.delete_project_memory(project_id, memory_id)
 
     @router.post("/run")
     def run(payload: RunPayload) -> dict[str, Any]:

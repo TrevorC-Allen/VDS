@@ -633,8 +633,11 @@ def _merge_insight(tool_payload: dict[str, Any], llm_stage: LLMStageResult) -> d
 def _merge_chart(tool_payload: dict[str, Any], llm_stage: LLMStageResult) -> dict[str, Any]:
     raw = llm_stage.raw
     payload = dict(tool_payload or {})
+    if not payload.get("chart_type") or payload.get("fallback_reason") in {"detail_rows_prefer_table", "unsafe_metric_column"}:
+        return payload
     chart_type = raw.get("chart_type")
-    if chart_type and chart_type != "none":
+    raw_y = str(raw.get("y") or "")
+    if chart_type and chart_type != "none" and not _unsafe_chart_metric(raw_y):
         payload["chart_type"] = str(chart_type)
         payload["x"] = raw.get("x") or payload.get("x")
         payload["y"] = raw.get("y") or payload.get("y")
@@ -642,6 +645,14 @@ def _merge_chart(tool_payload: dict[str, Any], llm_stage: LLMStageResult) -> dic
         payload["reason"] = str(raw.get("reason") or raw.get("reasoning_summary") or payload.get("reason") or "")
         payload["confidence"] = max(float(payload.get("confidence") or 0.0), llm_stage.confidence)
     return payload
+
+
+def _unsafe_chart_metric(column: str) -> bool:
+    lowered = column.lower()
+    compact = lowered.replace("_", "").replace("-", "").replace(" ", "")
+    if compact in {"id", "ids", "number", "cardnumber"} or compact.endswith("id") or compact.endswith("ids"):
+        return True
+    return any(token in lowered for token in ("reference", "psp", "bin", "编号", "代码", "流水", "卡号", "year", "hour", "minute", "day_of_year"))
 
 
 def _insight_from_payload(payload: Any) -> InsightResult:

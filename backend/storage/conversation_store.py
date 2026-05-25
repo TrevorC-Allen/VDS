@@ -28,6 +28,7 @@ class ConversationStore:
         *,
         title: str = "",
         dataset_id: str = "",
+        project_id: str = "",
         owner_id: str = "",
         tenant_id: str = "",
         owner_context: dict[str, Any] | None = None,
@@ -40,6 +41,7 @@ class ConversationStore:
             "conversation_id": conversation_id,
             "title": _clean_title(title) or "新对话",
             "dataset_id": str(dataset_id or ""),
+            "project_id": _safe_project_id(project_id),
             "owner_id": str(owner_id or ""),
             "tenant_id": str(tenant_id or ""),
             "owner_context": to_json_ready(owner_context or {}),
@@ -57,6 +59,7 @@ class ConversationStore:
         question: str,
         response: dict[str, Any],
         dataset_id: str = "",
+        project_id: str = "",
         owner_id: str = "",
         tenant_id: str = "",
         owner_context: dict[str, Any] | None = None,
@@ -68,6 +71,7 @@ class ConversationStore:
             record = self.create_conversation(
                 title=_derive_title(question),
                 dataset_id=dataset_id or str(response.get("dataset_id") or ""),
+                project_id=project_id,
                 owner_id=owner_id,
                 tenant_id=tenant_id,
                 owner_context=owner_context,
@@ -76,6 +80,8 @@ class ConversationStore:
         now = _now_iso()
         effective_dataset_id = str(response.get("dataset_id") or dataset_id or record.get("dataset_id") or "")
         record["dataset_id"] = effective_dataset_id
+        if project_id:
+            record["project_id"] = _safe_project_id(project_id)
         if owner_id:
             record["owner_id"] = str(owner_id)
         if tenant_id:
@@ -108,10 +114,18 @@ class ConversationStore:
         self._write(record)
         return deepcopy(record)
 
-    def list_conversations(self, *, limit: int = 50, owner_id: str = "", tenant_id: str = "") -> list[dict[str, Any]]:
+    def list_conversations(
+        self,
+        *,
+        limit: int = 50,
+        owner_id: str = "",
+        tenant_id: str = "",
+        project_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Return recent conversation summaries."""
 
         records = []
+        safe_project_id = None if project_id is None else _safe_project_id(project_id)
         for path in self.root.glob("conv_*.json"):
             try:
                 record = self._read(path)
@@ -120,6 +134,8 @@ class ConversationStore:
             if owner_id and str(record.get("owner_id") or "") != owner_id:
                 continue
             if tenant_id and str(record.get("tenant_id") or "") != tenant_id:
+                continue
+            if project_id is not None and str(record.get("project_id") or "") != str(safe_project_id or ""):
                 continue
             records.append(_conversation_summary(record))
         records.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
@@ -152,6 +168,42 @@ class ConversationStore:
         self._write(record)
         return deepcopy(record)
 
+    def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Update editable conversation metadata."""
+
+        record = self.get_conversation(conversation_id)
+        if record is None:
+            return None
+        if title is not None:
+            clean = _clean_title(title)
+            if clean:
+                record["title"] = clean
+                record["user_title"] = True
+        if project_id is not None:
+            record["project_id"] = _safe_project_id(project_id)
+        record["updated_at"] = _now_iso()
+        self._write(record)
+        return deepcopy(record)
+
+    def delete_conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        """Delete one conversation record."""
+
+        safe_id = _safe_conversation_id(conversation_id)
+        if not safe_id:
+            return None
+        path = self.root / f"{safe_id}.json"
+        if not path.exists():
+            return None
+        record = self.get_conversation(safe_id)
+        path.unlink()
+        return record
+
     def _read(self, path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
 
@@ -174,6 +226,7 @@ def _conversation_summary(record: dict[str, Any]) -> dict[str, Any]:
         "conversation_id": record.get("conversation_id"),
         "title": record.get("title") or "新对话",
         "dataset_id": record.get("dataset_id") or "",
+        "project_id": record.get("project_id") or "",
         "created_at": record.get("created_at"),
         "updated_at": record.get("updated_at"),
         "message_count": len(messages),
@@ -207,6 +260,14 @@ def _clean_title(title: str) -> str:
 def _safe_conversation_id(conversation_id: str) -> str:
     value = str(conversation_id or "").strip()
     if not value.startswith("conv_"):
+        return ""
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+    return value if all(char in allowed for char in value) else ""
+
+
+def _safe_project_id(project_id: str) -> str:
+    value = str(project_id or "").strip()
+    if not value.startswith("proj_"):
         return ""
     allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
     return value if all(char in allowed for char in value) else ""

@@ -543,6 +543,24 @@ class TempFileStore:
             "warnings": list(record.warnings),
         }
 
+    def get_bound_rule_file_ids(self, dataset_id: str, *, rule_scope: str) -> list[str]:
+        """Return rule file ids previously bound to a dataset."""
+
+        if not dataset_id:
+            return []
+        scope = _normalize_rule_scope(rule_scope)
+        bindings_path = self.datasets_root / dataset_id / "rule_bindings.json"
+        if not bindings_path.exists():
+            return []
+        try:
+            bindings = json.loads(bindings_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        values = bindings.get(scope)
+        if not isinstance(values, list):
+            return []
+        return [str(value) for value in values if str(value)]
+
     def get_dataset_kind(self, dataset_id: str) -> str:
         """Return the dataset kind used to select the analysis context."""
 

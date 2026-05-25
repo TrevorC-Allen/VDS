@@ -42,6 +42,12 @@
 
 2026-05-25 更新：新增 `process_view_v2` 安全过程叙事契约。`process_view_v2` 与旧 `reasoning_trace_view` 并存，前端优先渲染 v2，缺失时 fallback 到旧字段。v2 只使用安全 stage summary、执行摘要和 response contract，按 chat、dataset_overview、metric_lookup、ranking_topn、comparison_or_trend、multi_table_join、diagnostic_or_anomaly、clarification_or_not_applicable 生成差异化过程，不暴露完整 Chain of Thought、raw reasoning tokens、raw prompt、API key、task_id、标准答案、hidden answer、public proxy 或 scorer 信息。Monitor SSE 最终事件只发送 run 状态和 `process_view_v2` 摘要，不发送完整 response / trace payload。
 
+2026-05-25 更新：Phase 12 首轮 GPT-like general / insight / activity stream 契约已落地。General / overview 问法可返回 `overview_report`、安全 `execution_artifacts`、增强后的 `insight` 和 dataset overview 活动流；普通 Workbench 混合上传可把 `.md/.txt/.yaml/.yml` 说明文件和规则型 `.json` 自动绑定为本 dataset 的 `user_analysis` knowledge。前端只渲染这些后端契约，不实现公式、join、聚合、图表选择、评分或数据清洗。
+
+2026-05-25 更新：Phase 12.1 将“流式过程”和“防原始明细倾倒”合并为硬契约。Workbench 主页面可消费 monitor SSE 白名单事件（如 `data_scan_note`、`plan_note`、`dependency_note`、`code_artifact_ready`、`answer_outline_ready`），默认只显示一行 activity summary，详情中展示结构化步骤和安全代码 artifact。`overview` 和 `cleaning_simulation` 只能返回紧凑结果表；`这个数据主要讲什么`、`这几个表什么意思，有什么字段`、清洗策略和是否修改原始数据等说明型问题不得返回原始明细行拼接文本。正式分析出口还必须具备 raw detail guard：若最终 `answer` 呈现为 CSV / 明细行拼接，后端必须改写成安全 overview 或澄清，并清空主结果明细。
+
+2026-05-25 更新：Phase 13 首个 Project 工作区契约已落地。新增本地 JSON Project Store，Project API 支持 project CRUD、project source upload / delete、project memory CRUD；`POST /api/data-agent/message`、conversation create/list/record 增加可选 `project_id`。Project memory 为 `project_only`，只在同一 project 内注入；共享 dataset/rule 文件仍复用既有 upload / rule / dataset store；前端只渲染后端 Project 契约，不实现检索、join、聚合、评分或数据清洗。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
@@ -61,6 +67,10 @@
 15. GPT-like 过程展示只能使用 `process_view_v2` 或安全摘要字段，默认显示单行浅灰小字摘要，点击后展开结构化步骤；不得在主界面展示 raw CoT、后端审计 JSON、quality_report、warnings、verification 或 join trace。
 16. 无 dataset 对话只能进入 `/message` 或 `/chat` 的辅助回复路径；如果用户要求真实业务结论，必须提示需要上传相关数据，不能根据空上下文编造指标结果。
 17. Workbench 前端不得用 `dataset_id` 存在与否自行把文本判成分析问题；普通聊天、数据概览和正式分析的路由必须由 backend / data_agent_core 决定。
+18. Phase 12 `overview_report`、`execution_artifacts` 和自动规则绑定均为后端契约；前端不得根据字段名自行生成概览、代码、洞察、图表选择或规则应用。
+19. Phase 12.1 前端必须对 general / overview / cleaning_simulation 问法执行主界面渲染熔断：只展示紧凑契约表，不展示宽明细表；代码 artifact 只能出现在过程详情中，不作为主答案区独立面板。
+20. Phase 12.1 后端必须在 `respond_to_message` / `analyze_dataset` 出口前执行 raw detail answer guard；该 guard 不替代正式 planner / executor / verifier，只负责阻断“最终答案本身已经像原始明细倾倒”的用户体验事故。
+20. Phase 13 Project memory 必须保持 project-only；不得跨 project 读取 conversation、memory 或 file，也不得把浏览器 localStorage 冒充共享项目存储。
 
 ## Phase 11 Conversation APIs
 
@@ -107,6 +117,7 @@ owner 语义：
 `POST /api/data-agent/message` 当前 request extension：
 
 - conversation_id，可选；为空时后端自动创建。
+- project_id，可选；为空时保持无 Project 的旧行为。
 - user_rule_file_id，可选；只接受 `rule_scope=user_analysis` 的规则文件，语义同 `/analyze`。
 - owner_id，可选；未来由认证层注入或校验。
 - tenant_id，可选；未来由认证层注入或校验。
@@ -115,7 +126,9 @@ owner 语义：
 `POST /api/data-agent/message` 当前 response extension：
 
 - conversation_id
-- conversation：包含 conversation_id、title、dataset_id、updated_at、message_count。
+- project_id：当请求在 Project 中执行时返回。
+- project：当请求在 Project 中执行时返回 project_id、name、memory_mode、source_count、memory_count、default_dataset_id。
+- conversation：包含 conversation_id、title、dataset_id、project_id、updated_at、message_count。
 
 Quiet Process UX 契约：
 
@@ -124,6 +137,57 @@ Quiet Process UX 契约：
 - 前端可从最新 step 派生 `latest_process_summary`，例如“用户提到了‘城市订单金额’，我会先确认城市字段和金额字段。”。
 - 展开详情只能展示用户可理解步骤，例如理解问题、定位数据、选择分析方式、生成结果、核对回答。
 - API 不得新增或透传 `chain_of_thought`、`cot`、`hidden_reasoning`、`full_reasoning`、raw prompt 或 raw reasoning tokens。
+
+## Phase 13 Project APIs
+
+目标：为 Workbench 提供 GPT-like Project 工作区，使 Project 内 conversations、shared files、instructions 和 project memory 共享同一个后端上下文边界。
+
+当前 endpoints：
+
+- `POST /api/data-agent/projects`
+- `GET /api/data-agent/projects`
+- `GET /api/data-agent/projects/{project_id}`
+- `PATCH /api/data-agent/projects/{project_id}`
+- `DELETE /api/data-agent/projects/{project_id}`
+- `POST /api/data-agent/projects/{project_id}/sources`
+- `POST /api/data-agent/projects/{project_id}/sources/upload`
+- `DELETE /api/data-agent/projects/{project_id}/sources/{source_id}`
+- `POST /api/data-agent/projects/{project_id}/memories`
+- `PATCH /api/data-agent/projects/{project_id}/memories/{memory_id}`
+- `DELETE /api/data-agent/projects/{project_id}/memories/{memory_id}`
+
+Project 稳定字段：
+
+- project_id
+- name
+- description
+- instructions
+- memory_mode：当前固定为 `project_only`
+- default_dataset_id
+- sources
+- memories
+- conversation_ids
+- owner_id / tenant_id / owner_context：仅为未来隔离预留
+- created_at / updated_at
+
+Project source 类型：
+
+- dataset：引用既有 dataset_id，不复制 DataFrame 解析逻辑。
+- rule：引用既有 rule file_id，不进入 DatasetProfile / DataFrame。
+- note：项目文本说明，只作为安全文本上下文。
+- saved_response：后续用于保存 assistant 可见回答摘要，只作为安全文本上下文。
+
+Project memory 类型：
+
+- pinned：用户显式保存或编辑的项目内 memory。
+- conversation_summary：后续从项目内对话生成的安全摘要。
+
+Project 边界：
+
+- `project_id` 为空时，所有旧 conversation / upload / analyze 行为保持兼容。
+- Project 上传文件使用 `sources/upload`，后端先复用 upload-batch / rule store，再把 dataset_id / file_id 作为 Project Source 记录。
+- Project context 注入顺序为 project instructions、显式本轮 guidelines、project memory、project text sources、当前 conversation dataset / rule context。
+- Project memory / source 不允许保存 raw Chain of Thought、raw prompt、raw reasoning tokens、API key、task_id、标准答案、hidden answer、proxy answer 或 scorer 信息。
 
 ## POST /api/data-agent/upload
 
@@ -233,7 +297,8 @@ Phase 11 planned request extension：
 - table_name 必须在一个 dataset 内唯一；CSV 默认使用源文件 stem，Excel 多 sheet 默认使用 `文件stem__sheet`。
 - 旧单文件 `/upload` 仍保持原契约。
 - 如果上传文件集合完整包含 `payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md`，后端将 dataset 标记为 `dabstep_context`，表格 profile 只展示三个 CSV 表；JSON / MD 文件只作为后端规则知识库，不作为前端表格解析。
-- 如果只上传部分 DAB context 文件，必须返回标准错误并提示缺失文件，不能把 JSON / MD 当作普通表格解析。
+- 如果只上传规则侧 DAB context 文件且没有 dataset 文件，必须返回标准错误并提示缺失文件，不能把 JSON / MD 当作普通表格解析。
+- 普通 Workbench 混合上传中，dataset 文件可以和 `.md/.txt/.yaml/.yml` 说明文件或规则型 `.json` 一起提交；后端会把这些文件保存为 `rule_scope=user_analysis` 并绑定到当前 dataset，响应可包含 `auto_bound_user_rule_file_ids` 和 `auto_bound_rule_files`。
 
 Phase 11 planned request extension：
 
@@ -260,10 +325,10 @@ agent_mode 预留：
 
 默认建议：multi_agent。
 
-Rule Mode 扩展：
+用户规则扩展：
 
 - `user_rule_file_id`：可选。必须指向 `file_role=rule, rule_scope=user_analysis` 的规则文件。
-- 后端只把该规则作为本次分析的 guidelines 扩展，不把规则文件加入 dataset tables、profile、field_profiles、DataFrame 分析或普通文件列表。
+- 后端会把显式 `user_rule_file_id` 以及当前 dataset 已自动绑定的 `user_analysis` 规则合并为本次 guidelines 扩展，不把规则文件加入 dataset tables、profile、field_profiles、DataFrame 分析或普通文件列表。
 - 如果传入 benchmark scope 的规则文件，必须返回标准错误，不允许把 Benchmark 规则注入普通 Agent 上下文。
 
 Phase 11 planned request extension：
@@ -289,16 +354,27 @@ Phase 11 planned request extension：
 - quality_report
 - reasoning_trace_view
 - process_view_v2
+- overview_report
+- execution_artifacts
 - warnings
 - errors
 - debug
 
 概览类问题展示规则：
 
-- 当用户问题明显是“看一下这个数据 / 整体情况 / 总体概览 / overall summary”时，后端可以返回 `answer_type=overview` 的数据概览，或由 Response Builder 把多行多列明细结果转换为用户可读的汇总展示。
+- 当用户问题明显是“看一下这个数据 / 整体情况 / 总体概览 / 这个数据主要讲什么 / 这几个表什么意思 / 有什么字段 / overall summary”时，后端可以返回 `answer_type=overview` 的数据概览，或由 Response Builder 把多行多列明细结果转换为用户可读的汇总展示。
 - Workbench `message` 入口的泛概览可直接基于已上传、已解析的内存表生成全表概览；目标是避免把行数、前 20 行明细或后端审计字段当作最终回答。正式指标分析仍必须走 Planner、Executor 和 Verifier。
+- 单表 `overview_report` 当前包含 report_type、table、source_file、row_count、column_count、metric_column、dimension_column、period_column、field_meanings、metric_summary、categorical_distributions、boolean_rates、answerable_questions 和 missing_boundaries。多表 overview 可返回 overview_scope、table_count、total_row_count、total_column_count 和 tables_summary。
+- `execution_artifacts` 当前是安全展示用代码卡片数组，可包含 Python / Pandas 和只读 SQL 参考口径；它们从结构化 plan / verified result 生成，不是 raw executor code，不开放浏览器执行，不包含 raw prompt、完整 Chain of Thought、API key、task_id、hidden answer、standard answer、public proxy 或 scorer。
 - API 可在 `debug.user_experience_shaping` 记录是否发生展示收敛、原始行列数和使用的指标/维度字段；前端不得把该 debug 字段作为计算输入。
 - 展示结果建议使用 `["指标", "数值"]` 这样的短表，避免把原始明细行作为主答案或主结果表。
+- 多表概览展示结果必须使用 `["表名", "来源", "行数", "列数", "可能含义", "关键字段"]` 这样的紧凑表，不得把任意一张源表的前 50 行作为结果表。
+
+清洗策略类问题展示规则：
+
+- 当用户问题涉及“建议清洗规则 / 影响行数 / 影响比例 / 缺失字段删除填充保留 / 是否直接修改原始数据 / 用户确认”时，后端可以返回 `answer_type=cleaning_simulation` 或边界型 `answer_type=chat`。
+- 清洗策略响应必须是模拟和建议，不得修改源文件；必须说明规则、影响行数、影响比例和用户确认边界。
+- 清洗策略响应的 `result.columns` 建议为 `["表名", "规则", "影响行数", "影响比例", "建议"]`；不得返回命中的原始明细行或样例明细拼接文本。
 
 ## POST /api/data-agent/benchmark/run
 
@@ -367,6 +443,11 @@ insight v2 当前可包含：
 - evidence_rows
 - confidence
 
+Phase 12 insight 要求：
+
+- `business_suggestions` 不能只返回泛化模板；每条建议应尽量包含观察、依据、边界或推荐动作。
+- Insight 只能基于 verified result、overview report、质量报告、图表和字段语义摘要，不读取 benchmark 标准答案、proxy/scorer 或 raw trace。
+
 reasoning_trace_view 当前为数组，每个 step 可包含：
 
 - step_id
@@ -390,6 +471,13 @@ process_view_v2 当前为对象：
 - 不包含 raw prompt、raw reasoning tokens、完整 Chain of Thought、API key、task_id、标准答案、hidden answer、public proxy、scorer、完整 verification/debug、完整工具参数或完整 join trace。
 - 多表问题只能展示表选择和 join 摘要，不展示完整 `join_plan` 或 `join_execution_summary`。
 - `single_agent`、`multi_agent`、`/chat`、普通聊天、dataset overview 和正式分析都应返回该字段。
+
+主页面 monitor SSE 消费契约：
+
+- Workbench 可在发送 `/message` 前创建 `monitor_run_id` 并订阅 `/api/data-agent/monitor/stream?monitor_run_id=...`。
+- 允许主界面消费的安全事件类型包括：`monitor_connected`、`message_requested`、`analysis_requested`、`workflow_started`、`agent_started`、`agent_completed`、`workflow_completed`、`response_ready`、`analysis_failed`、`thought_delta`、`tool_considered`、`dependency_note`、`data_scan_note`、`plan_note`、`code_artifact_ready`、`answer_outline_ready`。
+- 主界面只能展示事件的安全 title / summary 派生文案；不得展示完整 payload、raw trace、raw prompt、Chain of Thought、API key、task_id、standard answer、hidden answer、proxy 或 scorer。
+- 最终 `/message` JSON 到达后，主界面必须以 `process_view_v2`、`answer`、`insight`、`chart`、`result` 和 `execution_artifacts` 为权威结果；SSE 只负责实时活动感，不负责核心分析逻辑。
 
 logic_form 当前可包含：
 

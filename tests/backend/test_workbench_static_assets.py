@@ -78,9 +78,13 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn('id="file-summary"', html)
         self.assertIn('id="file-panel"', html)
         self.assertIn('class="file-panel-list"', html)
-        self.assertIn('accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md"', html)
+        self.assertIn('accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md,.txt,.yaml,.yml"', html)
         self.assertIn("上传数据文件，然后直接提问", html)
-        self.assertIn("CSV / Excel / JSON 数据支持多选", html)
+        self.assertIn("数据和说明文件支持多选", html)
+        self.assertNotIn("高级选项", html)
+        self.assertNotIn("启用 Rule Mode", html)
+        self.assertNotIn("选择分析规则", html)
+        self.assertNotIn("选择 Benchmark 规则", html)
         self.assertNotIn('class="upload-card"', html)
         self.assertNotIn('id="dropzone"', html)
         self.assertNotIn("<textarea", html)
@@ -91,7 +95,7 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         html = Path("frontend/index.html").read_text(encoding="utf-8")
         js = Path("frontend/app.js").read_text(encoding="utf-8")
 
-        self.assertIn('accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md"', html)
+        self.assertIn('accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md,.txt,.yaml,.yml"', html)
         self.assertNotIn("DAB 规则包", html)
         self.assertNotIn("DAB 规则包", js)
         self.assertIn('"/api/data-agent/upload-batch"', js)
@@ -102,6 +106,35 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertNotIn("fees.json", js)
         self.assertNotIn("merchant_data.json", js)
         self.assertNotIn("manual.md", js)
+
+    def test_workbench_renders_backend_execution_artifacts(self) -> None:
+        html = Path("frontend/index.html").read_text(encoding="utf-8")
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+        css = Path("frontend/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("artifact-panel", html)
+        self.assertIn("artifact-list", html)
+        self.assertIn("renderExecutionArtifacts", js)
+        self.assertIn("result.execution_artifacts", js)
+        self.assertIn("renderArtifactCards(artifacts)", js)
+        self.assertIn("复现代码", js)
+        self.assertIn("el.artifactPanel?.classList.add(\"hidden\")", js)
+        self.assertIn(".artifact-card", css)
+        self.assertIn(".artifact-list.inline", css)
+        self.assertIn("white-space: pre-wrap", css)
+
+    def test_workbench_suppresses_raw_detail_rows_for_general_questions(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+        css = Path("frontend/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("function shouldRenderRows", js)
+        self.assertIn('result.answer_type === "overview"', js)
+        self.assertIn('result.answer_type === "cleaning_simulation"', js)
+        self.assertIn("looksLikeGeneralQuestion", js)
+        self.assertIn("tooWideForMainAnswer", js)
+        self.assertIn("主要讲什么", js)
+        self.assertIn("影响行数", js)
+        self.assertIn(".insight-card", css)
 
     def test_workbench_hides_backend_audit_panels_from_user_shell(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")
@@ -121,6 +154,11 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("normalizeProcessList(step.evidence", js)
         self.assertIn("renderProcessEvidence(step)", js)
         self.assertIn('aria-label="过程依据"', js)
+        self.assertIn("connectActivityStream", js)
+        self.assertIn("new EventSource", js)
+        self.assertIn("/api/data-agent/monitor/stream?monitor_run_id=", js)
+        self.assertIn("ACTIVITY_EVENT_TYPES", js)
+        self.assertIn("code_artifact_ready", js)
         self.assertIn(".process-evidence", css)
         self.assertNotIn("buildFriendlySteps(processSource", js)
 
@@ -216,7 +254,9 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
 
         self.assertIn("conversationId", js)
         self.assertIn("loadConversations()", js)
-        self.assertIn('"/api/data-agent/conversations?limit=30"', js)
+        self.assertIn("new URLSearchParams", js)
+        self.assertIn('query.set("project_id", state.projectId)', js)
+        self.assertIn("`/api/data-agent/conversations?${query.toString()}`", js)
         self.assertIn("loadConversation", js)
         self.assertIn("restoreConversation", js)
         self.assertIn("applyRestoredFileRecords(profile)", js)
@@ -226,6 +266,23 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn('item.last_answer_type === "chat" ? "chat" : "analysis"', js)
         self.assertIn("conversation_id: state.conversationId", js)
         self.assertIn("updateHistory: false", js)
+
+    def test_workbench_has_project_workspace_controls(self) -> None:
+        html = Path("frontend/index.html").read_text(encoding="utf-8")
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+        css = Path("frontend/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="project-select"', html)
+        self.assertIn('id="new-project-button"', html)
+        self.assertIn("projectId", js)
+        self.assertIn("loadProjects()", js)
+        self.assertIn('fetch("/api/data-agent/projects?limit=50")', js)
+        self.assertIn('project_id: state.projectId', js)
+        self.assertIn("sources/upload", js)
+        self.assertIn("hasDatasetProfile", js)
+        self.assertIn("项目共享文件已添加", js)
+        self.assertIn(".project-panel", css)
+        self.assertIn(".project-controls", css)
 
     def test_workbench_exposes_standalone_agent_monitor_page(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")

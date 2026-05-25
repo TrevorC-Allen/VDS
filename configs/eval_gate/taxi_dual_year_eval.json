@@ -1,0 +1,32 @@
+{
+  "name": "taxi_dual_year_general_eval",
+  "description": "NYC taxi dual-file general, baseline understanding, YoY, anomaly, business, and cleaning-strategy evaluation pack.",
+  "dataset": {
+    "year_2025": "/Users/trevorcui/Desktop/验证数据集/NYC Taxi/yellow_tripdata_2025-01.parquet",
+    "year_2026": "/Users/trevorcui/Desktop/验证数据集/NYC Taxi/yellow_tripdata_2026-01.parquet",
+    "date_column": "tpep_pickup_datetime",
+    "amount_column": "total_amount",
+    "fare_column": "fare_amount",
+    "distance_column": "trip_distance",
+    "pickup_location_column": "PULocationID",
+    "dropoff_location_column": "DOLocationID",
+    "payment_type_column": "payment_type",
+    "airport_fee_column": "Airport_fee",
+    "cbd_fee_column": "cbd_congestion_fee"
+  },
+  "cases_path": "configs/eval_gate/taxi_dual_year_cases.jsonl",
+  "output_root": "outputs/eval_gate",
+  "thresholds": {
+    "route_correct": 1.0,
+    "risk_free": 1.0,
+    "grounded": 0.95,
+    "user_value": 0.9,
+    "followup_ready": 0.9,
+    "numeric_tolerance": 0.01
+  },
+  "scoring_notes": [
+    "Standard answers are generated from source data after the case is defined.",
+    "General and field-meaning answers are GPT-like reference answers grounded in actual schema and profile facts.",
+    "Cleaning cases are simulations only; the runner never mutates source files."
+  ]
+}
