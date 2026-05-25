@@ -68,6 +68,80 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-25 09:46 CST
+
+### 本次目标
+
+隐藏 Workbench 用户界面里的 DAB 规则包显式文案，保留后端静默支持能力。
+
+### 修改文件
+
+- frontend/index.html
+- frontend/app.js
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 将欢迎区文案从“CSV、Excel，或 DAB 规则包”改为通用“上传数据文件”。
+- 将上传区空状态从“CSV / Excel / DAB 规则包支持多选”改为“支持 CSV、Excel 等数据文件多选”。
+- 保留 `.json` / `.md` 文件选择能力和 `/api/data-agent/upload-batch` 后端路由，不在前端展示或解析 DAB 规则包。
+- 静态测试改为反向约束：前端 HTML / JS 不应出现“DAB 规则包”。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets -v
+- node --check frontend/app.js
+- rg -n "DAB 规则包" frontend tests/backend/test_workbench_static_assets.py || true
+- scripts/sync_workbench_runtime.sh && launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+
+### 测试结果
+
+- Workbench static assets tests 通过：Ran 14 tests，OK。
+- `node --check frontend/app.js` 通过。
+- 前端源码中已无用户可见 “DAB 规则包” 文案；仅测试中保留 `assertNotIn` 防回归断言。
+- 已同步并重启 `http://127.0.0.1:8001/workbench` runtime。
+
+### 遗留问题
+
+- 未改变 DAB context package 后端支持能力，只隐藏前端显式文案。
+
+### 是否影响主流程
+
+是。影响 Workbench 上传区和欢迎区用户可见文案，不改变上传/分析流程。
+
+### 是否涉及 Benchmark
+
+否。未修改 Benchmark runner、scorer、答案或核心 DAB 能力，只改 UI 文案和静态测试。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。未修改多 Agent 编排和后端分析链路。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本次只修改用户界面文案和对应测试，README 的工程边界说明仍保留后端 DAB context 支持描述。
+
 2026-05-25 09:29 CST
 
 ### 本次目标

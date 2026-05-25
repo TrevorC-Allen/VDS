@@ -65,7 +65,7 @@ function updateFileSummary() {
   if (!files.length) {
     state.hasPendingUpload = false;
     el.fileSummary.textContent = "选择文件";
-    el.fileDetail.textContent = "CSV / Excel / DAB 规则包支持多选";
+    el.fileDetail.textContent = "支持 CSV、Excel 等数据文件多选";
     el.uploadButton.disabled = true;
     updateRunButton();
     return;

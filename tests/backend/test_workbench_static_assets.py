@@ -66,19 +66,20 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn('class="upload-controls"', html)
         self.assertIn('id="upload-button"', html)
         self.assertIn('accept=".csv,.xlsx,.xls,.json,.md"', html)
-        self.assertIn("DAB 规则包支持多选", html)
+        self.assertIn("上传数据文件，然后直接提问", html)
+        self.assertIn("支持 CSV、Excel 等数据文件多选", html)
         self.assertNotIn('class="upload-card"', html)
         self.assertNotIn('id="dropzone"', html)
         self.assertNotIn('class="work-grid"', html)
         self.assertNotIn('class="inspector"', html)
 
-    def test_workbench_dab_upload_support_stays_backend_routed(self) -> None:
+    def test_workbench_rule_package_support_stays_backend_routed_and_hidden_from_ui(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")
         js = Path("frontend/app.js").read_text(encoding="utf-8")
 
         self.assertIn('accept=".csv,.xlsx,.xls,.json,.md"', html)
-        self.assertIn("DAB 规则包", html)
-        self.assertIn("DAB 规则包支持多选", js)
+        self.assertNotIn("DAB 规则包", html)
+        self.assertNotIn("DAB 规则包", js)
         self.assertIn('"/api/data-agent/upload-batch"', js)
         self.assertNotIn("fees.json", js)
         self.assertNotIn("merchant_data.json", js)
