@@ -113,6 +113,8 @@ owner 语义：
 - 现有只传 `dataset_id` 的 upload / analyze / profile / run 调用继续可用。
 - `conversation_id` 在当前实现中为可选字段；未传入时，`/message` 自动创建新会话并在响应里返回。
 - 老客户端不传 `conversation_id` 时，后端不得破坏当前数据分析链路。
+- `PATCH /api/data-agent/conversations/{conversation_id}` 可更新 `title` 和可选 `project_id`；`project_id` 为空字符串表示把对话移出 Project。
+- `DELETE /api/data-agent/conversations/{conversation_id}` 删除一条对话，并同步从 Project 的 `conversation_ids` 中移除。
 
 `POST /api/data-agent/message` 当前 request extension：
 
@@ -185,6 +187,7 @@ Project memory 类型：
 Project 边界：
 
 - `project_id` 为空时，所有旧 conversation / upload / analyze 行为保持兼容。
+- 删除 Project 只删除 Project metadata、sources 和 memories，并把关联 conversation 移出 Project；不会删除既有 dataset / rule 文件。对话本身通过 conversation DELETE 单独删除。
 - Project 上传文件使用 `sources/upload`，后端先复用 upload-batch / rule store，再把 dataset_id / file_id 作为 Project Source 记录。
 - Project context 注入顺序为 project instructions、显式本轮 guidelines、project memory、project text sources、当前 conversation dataset / rule context。
 - Project memory / source 不允许保存 raw Chain of Thought、raw prompt、raw reasoning tokens、API key、task_id、标准答案、hidden answer、proxy answer 或 scorer 信息。
