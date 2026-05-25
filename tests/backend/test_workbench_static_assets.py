@@ -206,6 +206,12 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("handleHistoryRenameKeydown", js)
         self.assertIn("history-rename-button", js)
         self.assertIn("history-rename-input", js)
+        self.assertIn("history-project-button", js)
+        self.assertIn("history-delete-button", js)
+        self.assertIn("assignHistoryToProject", js)
+        self.assertIn("deleteHistoryConversation", js)
+        self.assertIn('body: JSON.stringify({ project_id: targetProjectId })', js)
+        self.assertIn('method: "DELETE"', js)
         self.assertIn("markHistoryRunning", js)
         self.assertIn("acknowledgeHistoryItem", js)
         self.assertIn("unread: existing?.unread === true", js)
@@ -246,6 +252,8 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertNotIn("step-dot", js)
         self.assertNotIn(".step-dot", css)
         self.assertIn(".history-rename-button", css)
+        self.assertIn(".history-project-button", css)
+        self.assertIn(".history-delete-button", css)
         self.assertIn(".history-rename-input", css)
         self.assertIn(".history-item.editing .history-title", css)
 
@@ -274,8 +282,13 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
 
         self.assertIn('id="project-select"', html)
         self.assertIn('id="new-project-button"', html)
+        self.assertIn('id="rename-project-button"', html)
+        self.assertIn('id="delete-project-button"', html)
         self.assertIn("projectId", js)
         self.assertIn("loadProjects()", js)
+        self.assertIn("renameCurrentProjectFromPrompt", js)
+        self.assertIn("deleteCurrentProject", js)
+        self.assertIn('method: "PATCH"', js)
         self.assertIn('fetch("/api/data-agent/projects?limit=50")', js)
         self.assertIn('project_id: state.projectId', js)
         self.assertIn("sources/upload", js)
@@ -283,6 +296,7 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("项目共享文件已添加", js)
         self.assertIn(".project-panel", css)
         self.assertIn(".project-controls", css)
+        self.assertIn(".project-controls .icon-button.danger", css)
 
     def test_workbench_exposes_standalone_agent_monitor_page(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")

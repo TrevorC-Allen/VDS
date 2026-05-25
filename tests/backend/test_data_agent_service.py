@@ -853,6 +853,55 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual("chat", loaded["conversation"]["messages"][1]["payload"]["answer_type"])
         self.assertEqual("VDS 助手介绍", loaded_after_restart["conversation"]["title"])
 
+    def test_conversation_can_move_into_project_and_be_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = Path(temp_dir) / "storage"
+            service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+
+            first = service.respond_to_message(question="你好")
+            conversation_id = first["conversation_id"]
+            project = service.create_project(name="可归档 Project")
+            project_id = project["project"]["project_id"]
+            moved = service.update_conversation(conversation_id, project_id=project_id)
+            listed_project = service.list_conversations(project_id=project_id)
+            loaded_project = service.get_project(project_id)
+            deleted = service.delete_conversation(conversation_id)
+            listed_after_delete = service.list_conversations(project_id=project_id)
+            project_after_delete = service.get_project(project_id)
+
+        self.assertTrue(moved["success"], moved.get("errors"))
+        self.assertEqual(project_id, moved["conversation"]["project_id"])
+        self.assertEqual(conversation_id, listed_project["conversations"][0]["conversation_id"])
+        self.assertEqual([conversation_id], loaded_project["project"]["conversation_ids"])
+        self.assertTrue(deleted["deleted"])
+        self.assertEqual([], listed_after_delete["conversations"])
+        self.assertEqual([], project_after_delete["project"]["conversation_ids"])
+
+    def test_project_rename_and_delete_detaches_conversations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = Path(temp_dir) / "storage"
+            service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+
+            project_id = service.create_project(name="旧项目")["project"]["project_id"]
+            created = service.create_conversation(title="项目对话", project_id=project_id)
+            conversation_id = created["conversation"]["conversation_id"]
+            renamed = service.update_project(project_id, name="新项目名")
+            deleted = service.delete_project(project_id)
+            conversation = service.get_conversation(conversation_id)
+            project_lookup = service.get_project(project_id)
+
+        self.assertEqual("新项目名", renamed["project"]["name"])
+        self.assertTrue(deleted["deleted"])
+        self.assertEqual(1, deleted["detached_conversation_count"])
+        self.assertEqual("", conversation["conversation"]["project_id"])
+        self.assertFalse(project_lookup["success"])
+
     def test_project_workspace_memory_sources_and_conversation_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             storage_root = Path(temp_dir) / "storage"
