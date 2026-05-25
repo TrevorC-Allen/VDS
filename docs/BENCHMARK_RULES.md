@@ -14,6 +14,8 @@
 
 2026-05-21 更新：Benchmark 优化的禁止范围扩展为“禁止伪泛化补丁”。即使没有显式使用 task_id、题号或标准答案，只要补丁只能覆盖当前数据集、当前字段值、当前候选项、当前问法或当前错误样本，就不能算作能力提升。
 
+2026-05-25 更新：新增上传式 Benchmark 规则最小链路。Benchmark 规则文件必须显式标记为 `file_role=rule, rule_scope=benchmark`，并只能通过独立 `POST /api/data-agent/benchmark/run` 读取。普通 Chat / `/message` 不会读取 benchmark rule；如果把 benchmark rule 当作 `user_rule_file_id` 传入普通分析，后端必须拒绝。
+
 ## 使用原则
 
 1. Benchmark 只能用于评测和错误归因。
@@ -22,6 +24,8 @@
 4. Benchmark 结果必须按错误类型统计。
 5. Benchmark 优化必须修通用模块，并说明能力可迁移到哪些同类数据集、同类字段和同类问法。
 6. Benchmark 不参与线上用户请求。
+7. Benchmark rule、expected output、metrics 和 threshold 只允许进入 Benchmark Runner / report，不允许进入普通 Agent Analyst 上下文。
+8. 用户分析规则只有在 Benchmark 任务显式传入 `user_rule_file_id` 时才作为 Agent 分析约束；不能被当作评分规则。
 
 ## 特调定义
 

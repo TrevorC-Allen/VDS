@@ -24,7 +24,15 @@
 
 2026-05-22 更新：ToolDispatcher 已对 timeout_seconds 增加本地 POSIX timeout 执行边界；架构测试新增 tracked-file secret scan，并把 Benchmark 硬编码扫描扩大到 agent_runtime、backend、ms_agent_framework_adapter 和 multi_agent_workflows 的核心源码范围。
 
-2026-05-23 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已进入 planned architecture。后续应在 Workbench 与 DataAgentService 之间增加 Conversation Store / Conversation Service，用 `conversation_id` 管理会话上下文、历史消息、active dataset 和 runs；当前尚未实现，文档只记录后续架构边界。
+2026-05-25 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已完成首个轻量架构落点。`backend/storage/conversation_store.py` 提供本地 JSON conversation store；DataAgentService 的 `/message` 路径负责追加 user / assistant turn；Workbench 左侧历史 Chat 从后端 conversation endpoints 载入并持久化重命名。该层只保存会话和响应快照，不承载核心分析逻辑。
+
+2026-05-25 更新：Phase 13 Project Workspace 已完成首个架构落点。`backend/storage/project_store.py` 提供本地 JSON Project Store，记录 project metadata、project sources、project-only memories 和 conversation_ids；DataAgentService 负责把 `project_id` 贯穿 `/message`、conversation create/list/record、Project CRUD、source upload 和 memory CRUD。Project source 中的数据/规则文件继续复用 TempFileStore、upload-batch、rule file 和 dataset store；`.md/.txt/.yaml/.yml` 项目说明文件只保存为 project source，不进入 DatasetProfile / DataFrame。Workbench 只渲染 Project 契约和传递 `project_id`，不实现检索、join、聚合、评分或数据清洗。
+
+2026-05-25 更新：Workbench 上传链路已支持完整 DAB context 包。`TempFileStore` 负责识别和保存 `payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md`，并把 dataset 标记为 `dabstep_context`；`DataAgentService` 仍只选择上下文并调用既有 single-agent / multi-agent 分析链路，DAB 规则解析和费用计算继续位于 `data_agent_core`。
+
+2026-05-25 更新：Workbench Agent 监看链路使用 `monitor_run_id` 和 `/api/data-agent/monitor/stream` SSE 输出安全事件摘要；事件发布在 backend service、multi-agent workflow 和 tracing 层完成，只包含阶段状态、角色摘要、工具摘要和最终响应摘要。
+
+2026-05-25 更新：新增 GPT-like parity redline。任何影响文件解析、字段画像、回答结构、Insight、图表/表格、过程流、代码 artifact 或 Workbench 排版样式的修改，都必须在测试阶段对照 GPT / ChatGPT Data Analysis 同类结果或冻结标准 GPT 参考结果；差距很大时打回重写，不能只凭单测或 smoke 通过。
 
 ## 层次边界
 
@@ -34,7 +42,8 @@
 4. ms_agent_framework_adapter 是可选 Microsoft Agent Framework 适配层。
 5. multi_agent_workflows 已承载默认 Phase 6 最小顺序多 Agent workflow。
 6. docs 是工程契约和扩展需求管理目录。
-7. Phase 11 planned Conversation Service 位于 backend 内，负责 `conversation_id`、历史消息、active dataset、runs 和 owner_context 过滤边界；它只能编排已有 upload / analyze 调用，不能承载核心数据分析逻辑。
+7. Phase 11 Conversation Store 位于 backend 内，负责 `conversation_id`、历史消息、dataset 引用、assistant response snapshot 和 owner_context 预留边界；它只能编排已有 message / upload / analyze 调用，不能承载核心数据分析逻辑。
+8. Phase 13 Project Store 位于 backend 内，负责 project-scoped metadata、source reference、project-only memory 和 conversation 归属；它不能承载核心数据分析逻辑，也不能替代真实鉴权、多租户或多人协作。
 
 ## 依赖规则
 
@@ -49,6 +58,7 @@
 9. prompt 位于 data_agent_core/prompts/data_agent_system_prompt.md。
 10. API key 只从环境变量读取，不进入 Git、trace、文档或 CHANGELOG。
 11. 中文问题理解、中文字段名、中文业务术语和中文输出格式是核心主路径；英文问题、英文字段和英文 Benchmark 必须兼容，但不能替代中文验收。
+12. Project memory 必须保持 project-only；任何 `/message`、conversation、source 或 memory 检索不得跨 `project_id` 读取，也不得把前端 localStorage 冒充共享项目存储。
 
 ## 核心链路
 
@@ -194,12 +204,14 @@ VDS 桌面测试数据用于暴露中文 BI 周环比、阈值、异常和多行
 当前 VDS BI 能力边界：
 
 1. `vds_bi_intent` 只根据上传表 schema、中文实体词和指标 `_row` 字段生成 `vds_*` LogicForm。
-2. `vds_bi_executor` 只执行周期比较、排名变化、TopN delta、增长数量占比、阈值计数、同圈层异常和维度环比增长率。
+2. `vds_bi_executor` 只执行周期比较、排名变化、TopN delta、当前周期过滤指标 TopN、增长数量占比、阈值计数、同圈层异常、分组环比、状态影响、各组 Top 实体、三周期 TopN 和维度环比增长率。
 3. 同一套能力必须能迁移到门店、校区、院区、站点和客户，不允许只服务某一个 Excel 文件。
 4. LLM stage payload 必须 JSON-safe，pandas Timestamp 等对象必须转为可序列化摘要，不能因复杂表格值中断 Verifier / Insight。
 5. VDS 标准答案或人工答案只能用于后验评分或人工检查，不进入 prompt、Planner、Executor、Verifier、Correction、测试 fixture 或 trace。
 
-当前验证：桌面 VDS `问题汇总.xlsx` 五域全部 95 题 smoke 为 95/95 成功；该结果是执行覆盖 smoke，不等同于完整人工答案准确率。
+2026-05-25 更新：当前分支恢复 VDS 标准答案所需的完整中文 BI 能力族，并保留 `vds_current_filtered_metric_top` 对当前周期枚举过滤 TopN 的实体/指标锁定能力。`本周 Pro 套餐 CHR 最高 Top10 客户` 会返回客户 TopN 列表，`本周流失和暂停对 ARR 影响最大的 Top10 客户` 会走状态影响能力族，不会再被通用默认排名误解析为区域维度或订阅收入指标。
+
+当前验证：桌面 VDS `问题汇总.xlsx` 五域全部 95 题标准答案 scorer 为 `95/95`，报告在 `outputs/vds_standard_answer_recheck_20260525_core_fix_v2/report.json`。标准答案仍只在离线 runner 评分阶段使用，不进入核心分析链路。
 
 ## 语言优先级
 
@@ -230,6 +242,7 @@ VDS 桌面测试数据用于暴露中文 BI 周环比、阈值、异常和多行
 5. all.jsonl / dev.jsonl 中的问题只提供 question 和 guidelines 给核心分析链路。
 6. answer 字段只允许在 benchmark evaluator 中用于评分，不允许进入 intent parser、executor、verifier 或 response builder。
 7. 运行 trace 记录 structured analysis plan、execution trace 和 verification notes，不记录完整 Chain of Thought。
+8. 网页端测试使用同一组 context 文件上传到 `/workbench`，后端只接收规则上下文，不接收或使用标准答案、task_id、public proxy answer pool。
 
 ## 上传文件最小链路
 
@@ -243,33 +256,60 @@ VDS 桌面测试数据用于暴露中文 BI 周环比、阈值、异常和多行
 6. DataAnalysisMultiAgentWorkflow 通过 agent_runtime 角色和受控工具执行 Pandas / SQL 双路径、Result Normalizer、Verifier、Insight 和 Chart。
 7. trace 写入 storage/runs/{run_id}/trace.json，debug.trace_path 只用于调试，前端不能依赖它作为稳定契约。
 8. UploadedDatasetAgent 保留为 single_agent fallback。
+9. 如果上传的是完整 DAB context 包，TempFileStore 会保存 `dab_context/` 源文件、返回三个 CSV 表的 DatasetProfile，并在 analyze 时提供包含 `payments`、规则 JSON、manual 路径、`tables` 和 `context_dir` 的上下文；前端不实现规则解析或费用计算。
 
-## Planned Phase 11 会话层
+## Phase 11 会话层
 
-Phase 11 计划新增会话层，但当前尚未实现。该层的目标是让 Workbench 支持多窗口隔离、历史 Chat 续聊和未来用户隔离升级。
+Phase 11 已新增轻量会话层。该层的目标是让 Workbench 支持历史 Chat 续聊，并为后续多窗口隔离和未来用户隔离升级保留后端边界。
 
-计划链路：
+当前链路：
 
-用户打开 `/workbench?conversation_id=...`
+用户打开 `/workbench`
 ↓
-Workbench 读取或创建 conversation
+Workbench 读取 `/api/data-agent/conversations`
 ↓
-Conversation Service 恢复 messages、active_dataset_id、runs
+用户选择历史 Chat 时读取 `/api/data-agent/conversations/{conversation_id}`
 ↓
-上传文件时绑定 conversation_id 和 dataset_id
+Workbench 恢复 messages、dataset_id 和 assistant response snapshot
 ↓
-分析时把 question、run_id、answer summary、safe process summary 追加到 conversation
+发送消息时把当前 `conversation_id` 传给 `/api/data-agent/message`
 ↓
-Workbench 左侧历史 Chat 从 Conversation Service 加载
+DataAgentService 追加 question、run_id、answer、answer_type、success 和 response payload 到 JSON conversation
 
 边界：
 
 1. `conversation_id` 是 UI 续聊和多窗口隔离主键，不替代 `dataset_id` 的数据集身份。
 2. dataset / run / conversation 三者分层：dataset 保存上传数据，run 保存一次分析，conversation 保存对话上下文和这些对象的引用。
-3. v1 可使用本地匿名 owner scope，但 schema 必须预留 `owner_type`、`owner_id`、`tenant_id`、`created_by` 或统一 `owner_context`。
+3. v1 可使用本地匿名 owner scope，但 schema 必须预留 `owner_id`、`tenant_id` 和 `owner_context`。
 4. 未来真实用户隔离必须由后端 owner filter 强制执行，不能只靠前端隐藏历史 Chat。
 5. 安静过程展示只消费 trace-safe `reasoning_trace_view` 摘要；默认展示一条小号浅灰的最新过程摘要，点击后展开结构化步骤，不展示完整 Chain of Thought、raw prompt、raw reasoning tokens、quality_report、warnings、verification 或 join trace。
 6. Conversation Service 不能实现 join、排序、聚合、评分、图表选择或核心分析逻辑；这些仍属于 backend 调用 data_agent_core / multi_agent_workflows 后返回的结果。
+7. Agent 监看只消费 `monitor_run_id` 对应的安全事件流，不作为业务计算输入，不展示 raw prompt、完整 Chain of Thought、API key、task_id 或标准答案。
+
+未完成边界：
+
+1. URL `/workbench?conversation_id=...` 自动恢复仍未接入。
+2. 多窗口同一 conversation 的实时同步仍未实现。
+3. 跨进程重启后可恢复 profile 和消息；普通 CSV / Excel 继续分析仍需要内存表存在或重新上传，DAB context 包因为规则文件已持久化，可由后端重新加载上下文。
+4. 真实登录、鉴权、owner filter 强制校验和多租户隔离仍未实现。
+
+## GPT-like parity redline
+
+该红线约束所有用户可见体验层改动，但不改变核心分层：GPT-like 只作为验收参考，不允许把真实 GPT 输出、标准答案或截图特调写入核心链路。
+
+适用范围：
+
+1. 文件解析、sheet / table / header 识别、字段画像和数据质量说明。
+2. general / overview 主回答、正式分析回答、Insight、下一步建议和 caveat。
+3. 图表/表格选择、代码 artifact、过程流、monitor 摘要和 Workbench 文案。
+4. 前端布局、排版密度、字体层级、展开态、移动端和桌面端可读性。
+
+验收边界：
+
+1. 修改完成后必须并排对比 VDS 实际输出与 GPT / ChatGPT Data Analysis 同类输出或冻结标准 GPT 参考结果。
+2. 对比时必须检查事实理解、结构顺序、信息密度、用户下一步、表格/图表选择、过程流颗粒度和视觉层级。
+3. 如果差距很大，默认判定为体验实现失败，打回重写；通过单元测试、离线 scorer 或浏览器 smoke 不代表通过 GPT-like parity review。
+4. 如果没有实时 GPT 参考，必须明确记录使用的标准 GPT answer workbook、冻结截图或 repo 内参考 artifact，不能把 mock 结果冒充 GPT 结果。
 
 ## TODO
 
@@ -281,4 +321,4 @@ Workbench 左侧历史 Chat 从 Conversation Service 加载
 - Phase 7.9：扩展真实 Microsoft Agent Framework demo；MAF adapter 只承载 AgentRole、ToolDefinition、WorkflowState 映射，不能把核心算法写进 adapter 或 workflow。
 - Phase 7.10：继续增强 ACI associated cost、fee what-if candidate table、VDS 趋势/状态/毛利/支付方式等复杂中文 BI 能力，所有修复必须归入能力族并通过合成/非 Benchmark 用例。
 - Phase 8 Guardrail / Phase 9.1：Phase 8 只做多文件 / 多表 / join non-regression 守护；Phase 9.1 只做字段确认、join key 确认、澄清交互和评测回看面板，前端不实现指标公式、join 或数据计算。
-- Phase 11：先实现 Conversation Store / Service、owner_context 过滤边界和旧 dataset_id 调用兼容，再接前端历史 Chat 与 GPT-like 安静过程 UX；不得把本地匿名会话误写成已实现登录权限。
+- Phase 11：后续继续补 URL conversation_id 恢复、多窗口同步、跨进程 dataset 表恢复和 owner filter 强制校验；不得把本地匿名会话误写成已实现登录权限。

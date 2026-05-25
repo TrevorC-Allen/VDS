@@ -68,6 +68,1125 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-25 14:55 CST
+
+### 本次目标
+
+按 Phase 12 方案实现 Workbench 的 GPT-like general 回答、结构化 Insight、安全代码展示、活动流过程展示、语义图表规划防线和数据 + 说明文件自动绑定，同时确保既有模型能力和基准能力不下降。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- README.md
+- docs/API_CONTRACT.md
+- frontend/README.md
+- agent_runtime/data_analysis_roles.py
+- backend/services/data_agent_service.py
+- backend/storage/temp_file_store.py
+- data_agent_core/agent/single_agent.py
+- data_agent_core/contracts/response_contracts.py
+- data_agent_core/core/message_intent.py
+- data_agent_core/output/chart_planner.py
+- data_agent_core/output/dataset_overview.py
+- data_agent_core/output/execution_artifacts.py
+- data_agent_core/output/insight_generator.py
+- data_agent_core/output/process_narrative.py
+- data_agent_core/output/response_builder.py
+- frontend/app.js
+- frontend/index.html
+- frontend/styles.css
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_phase10_result_experience.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `overview_report` 契约和 general / overview 问法识别，使“看一下这个表单 / 总结一下这个表 / 介绍一下这个数据集”等问题返回结构化表画像，而不是单个聚合数。
+- 增强 dataset overview 输出：表整体情况、字段含义、主要分布、数值指标摘要、布尔状态占比、可继续追问方向和缺失边界说明。
+- 新增安全 `execution_artifacts`，前端展示 Python / SQL 代码卡片和执行摘要；代码只作为可复现 artifact，不开放浏览器执行，不展示完整 Chain of Thought、raw prompt 或 backend trace。
+- 增强 Insight 生成逻辑，建议包含 observation、evidence 和 recommended action，避免只输出模板化建议。
+- 扩展 `process_view_v2` 的 overview 活动流，展示识别概览请求、读取主表画像、识别字段、执行概览代码、生成概览报告等安全步骤。
+- 强化 `chart_planner`，明细结果优先表格，避免把 ID / reference / bin / year / hour / minute / day_of_year 当作图表指标。
+- Workbench 主界面去除高级选项 / Rule Mode / Benchmark 控件，文件入口支持 dataset 与 `.md/.txt/.yaml/.yml` 说明文件、规则型 `.json` 一起上传。
+- 后端 batch upload 自动把说明 / 用户规则文件绑定为 `user_analysis` knowledge，并在 message 阶段合并显式规则和自动绑定规则；DABstep context package 与 benchmark rule 路径保持隔离。
+- README、API contract、frontend README 和 MAIN_GOAL 已同步 Phase 12 的契约、边界和真实 smoke 状态。
+
+### 测试方式
+
+- node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime multi_agent_workflows backend tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_phase10_result_experience tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.dabstep_benchmark_runner --dataset-root /Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep --split dev --limit 10 --offset 0 --output-dir outputs/phase12_dabstep_dev10_mock_20260525
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root /Users/trevorcui/Desktop/微软脱敏数据 --output-dir outputs/phase12_microsoft_300_mock_20260525
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.vds_desktop_benchmark_runner --question-workbook /Users/trevorcui/Desktop/Virtual\ Data\ Scientist测试数据/问题/问题汇总.xlsx --answer-workbook /Users/trevorcui/Desktop/Virtual\ Data\ Scientist测试数据/问题/标准GPT答案汇总.xlsx --data-root /Users/trevorcui/Desktop/Virtual\ Data\ Scientist测试数据/数据 --output-dir outputs/phase12_vds_95_mock_20260525
+- 尝试 DABstep all 1-450 mock：输出目录 `outputs/phase12_dabstep_all_450_mock_20260525`。
+- scripts/sync_workbench_runtime.sh
+- launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+- curl `http://127.0.0.1:8001/api/data-agent/upload-batch`，混合上传 `/tmp/vds_phase12_subscription.csv` 和 `/tmp/vds_phase12_manual.md`。
+- Browser 验证 `http://127.0.0.1:8001/workbench` 无高级选项、无 Rule Mode、显示“数据和说明文件支持多选”。
+- Playwright 真实页面 smoke：混合上传 CSV + Markdown，提问“总结一下这个表”，展开“查看处理过程”，截图保存为 `output/playwright/phase12-smoke/workbench-overview-activity-code.png`。
+- git diff --check
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- `compileall` 通过。
+- focused unittest 通过：53 tests OK。
+- full unittest 通过：207 tests OK。
+- DABstep dev10 mock：total=10、scored=10、correct=9、accuracy=0.9、success_count=10，保持既有 `best_fraud_aci_choice` 已知缺口。
+- Microsoft 300 mock：total=300、correct=300、accuracy=1.0、success_count=300。
+- VDS 95 mock：total=95、correct=95、accuracy=1.0、success_count=95。
+- DABstep all 1-450 mock 本轮尝试约 18 分钟后终止，目录中留下 306 条 trace，但没有生成最终 predictions / report；该项不能记为通过，后续需要单独补跑。
+- Batch upload API 返回 `auto_bound_user_rule_file_ids`，确认 Markdown 说明文件被自动绑定为 user analysis rule。
+- Browser shell 验证通过：无“高级选项”、无“Rule Mode”、无旧“CSV / Excel / JSON”文案，存在“数据和说明文件支持多选”。
+- Playwright smoke 通过：真实 `127.0.0.1:8001/workbench` 可见 overview 主回答、Insight 建议、展开后的安全过程流和代码卡片。
+- `git diff --check` 通过。
+
+### 遗留问题
+
+- DABstep all 1-450 mock 本轮未完整跑完，不能宣称 all-450 非回归已通过；当前只记录为已尝试且保留 306 条 trace。
+- Phase 12 仍是首轮体验实现，后续还需要继续提升图表审美、更多业务表类型的 natural overview、以及更强的 Insight 业务驱动归因。
+
+### 是否影响主流程
+
+是。影响 Workbench 普通上传、general 问答、回答渲染、过程展示和代码 artifact 展示；核心分析仍由后端 / data_agent_core 生成，前端只渲染稳定契约。
+
+### 是否涉及 Benchmark
+
+是。涉及 DABstep / Microsoft / VDS 非回归验证和 DABstep context package 隔离，但不把 task_id、标准答案、hidden answer、proxy answer、scorer 或 benchmark metadata 放入普通 Agent 链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。没有新增 Microsoft Agent Framework 依赖，也没有改变 adapter 作为可选承载层的边界。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。`execution_artifacts`、`overview_report`、`process_view_v2` 和规则文件自动绑定都通过后端契约进入 Workbench，保持 ToolDispatcher / Result Normalizer / Verifier / Correction Planner 的边界。
+
+### 是否修改核心数据契约
+
+是。`FinalResponse` 新增 `overview_report` 和 `execution_artifacts`，并扩展 overview / insight / process_view_v2 的安全展示契约。
+
+### 是否修改 API 契约
+
+是。upload-batch profile 新增自动绑定用户规则文件信息，message response 可返回 `overview_report` 和 `execution_artifacts`。
+
+### 是否新增或修改错误类型
+
+否。未新增错误类型；DAB context package incomplete 的错误路径保持原有语义。
+
+### 是否新增或修改运行追踪逻辑
+
+是。overview 场景的 `process_view_v2` 扩展为活动流式安全过程，仍不展示完整 Chain of Thought、raw prompt、raw trace JSON 或 API key。
+
+### 是否已同步 README
+
+是。`README.md`、`docs/API_CONTRACT.md`、`frontend/README.md` 和 `MAIN_GOAL.md` 已同步 Phase 12 首轮实现和边界。
+
+2026-05-25 13:33 CST
+
+### 本次目标
+
+按用户要求把新的 Workbench 体验收敛阶段正式写入 `MAIN_GOAL.md`，便于后续随时查看 Phase 12 的目标、边界、验收标准和禁止事项。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 在 `MAIN_GOAL.md` 顶部当前阶段摘要中新增 Phase 12 状态说明。
+- 在当前阶段目标列表和统一 Phase 状态表中新增 `Phase 12：GPT-like General Answer / Insight / Activity Stream`。
+- 在 Phase 11 之后、Phase 9 之前新增 Phase 12 正文章节，明确 `overview_report`、`enhanced_insight`、`execution_artifacts`、`activity_process_view`、`semantic_chart_planning` 和规则文件自动绑定的目标。
+- 明确 Phase 12 与 Phase 10 / Phase 11 的边界：Phase 10 保持首版结果体验已完成，Phase 11 保持会话 / 历史持久化，Phase 12 负责新的体验质量升级和产品化收敛。
+- 在当前实现状态中写明 Phase 12 目前只是 Planned / Ready to implement，实际代码、API、前端渲染和浏览器 smoke 尚未开始。
+- 在重要红线中补充 Phase 12 禁止展示 CoT / raw prompt / raw trace、禁止前端计算、禁止 payments 特调、禁止绕过 ToolDispatcher / Result Normalizer / Verifier / Correction Planner。
+
+### 测试方式
+
+- rg -n "Phase 12|GPT-like General Answer|overview_report|execution_artifacts|semantic_chart_planning" MAIN_GOAL.md CHANGELOG_AI.md
+
+### 测试结果
+
+- 文档检索通过，`MAIN_GOAL.md` 和 `CHANGELOG_AI.md` 均能检索到 Phase 12 标题、顶部状态、状态表、核心能力和关键红线。
+- `git diff --check` 通过，未发现空白格式问题。
+
+### 遗留问题
+
+- 本轮只更新阶段规划文档，不实现 Phase 12 的后端契约、前端展示、规则文件自动绑定或浏览器 smoke。
+- 后续真正实现 Phase 12 时，仍需同步 `README.md`、`docs/API_CONTRACT.md`、`frontend/README.md` 和对应测试。
+
+### 是否影响主流程
+
+否。本轮为文档规划更新，不改变运行时代码路径。
+
+### 是否涉及 Benchmark
+
+是，仅涉及红线和非回归验收描述；不修改 benchmark scorer、标准答案、accepted-answer pool、public proxy 观察或普通 Agent 链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。Phase 12 明确要求继续经过 ToolDispatcher、Result Normalizer、Verifier 和 Correction Planner，避免前端或展示层绕过多 Agent / 工具链边界。
+
+### 是否修改核心数据契约
+
+否。本轮只规划未来契约名称和验收方向，未修改代码契约。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。本轮只规定未来活动流必须是安全展示契约，不展示完整 Chain of Thought、raw prompt、raw reasoning tokens、API key 或后端完整 trace JSON。
+
+### 是否已同步 README
+
+否。本轮用户明确要求把 Phase 写入 `MAIN_GOAL.md` 便于跟踪，且未实现用户可见能力、API、Benchmark 口径或验证状态变化；后续 Phase 12 代码落地时必须同步 README。
+
+2026-05-25 12:18 CST
+
+### 本次目标
+
+修复真实 Workbench 问题“蒯利保在2025年1月的历史分销金额中，水溶C100占比是多少？”仍看不出过程改进的问题，确保后端返回的 safe `process_view_v2` 证据在前端可见，并修复运行时重启后的多文件数据恢复错位。
+
+### 修改文件
+
+- data_agent_core/output/process_narrative.py
+- data_agent_core/core/chinese_retail_intent.py
+- backend/storage/temp_file_store.py
+- frontend/app.js
+- frontend/styles.css
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_phase10_result_experience.py
+- tests/core/test_chinese_retail_capabilities.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 针对 `retail_distribution_product_share` 生成专用安全过程步骤，展示对象、月份、产品、表选择和分子/分母摘要，避免占比问题继续套用泛化趋势模板。
+- 中文零售意图为历史分销金额占比写入安全的 `source_tables` 和表选择摘要。
+- 多文件上传持久化 `stored_files` / `source_file_map`，并为旧 marker 增加基于表头的恢复兜底，避免服务重启后临时文件名与原始表名错位导致 Not Applicable。
+- Workbench `renderProcess()` 渲染后端 v2 时保留并展示 `evidence`、`assumptions`、`caveats` chips；旧 `reasoning_trace_view` 仍只作为 fallback。
+- 增加回归测试覆盖真实占比口径、前端安全 chips 渲染、多文件恢复映射和泄漏禁词。
+
+### 测试方式
+
+- node --check frontend/app.js
+- node --check frontend/monitor.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime multi_agent_workflows backend tests
+- git diff --check
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service.DataAgentServiceTest.test_upload_datasets_preserves_source_file_metadata tests.backend.test_data_agent_service.DataAgentServiceTest.test_uploaded_dataset_tables_restore_after_service_restart tests.backend.test_data_agent_service.DataAgentServiceTest.test_legacy_multi_source_restore_recovers_table_names_by_header tests.core.test_phase10_result_experience.Phase10ResultExperienceTest.test_process_view_v2_explains_retail_product_share_scope tests.core.test_chinese_retail_capabilities.ChineseRetailCapabilitiesTest.test_retail_distribution_product_share_respects_employee_scope tests.backend.test_workbench_static_assets.WorkbenchStaticAssetsTest.test_workbench_renders_safe_process_evidence_from_backend -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -v
+- scripts/sync_workbench_runtime.sh && launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+- curl 真实 `http://127.0.0.1:8001/api/data-agent/message`，dataset `ds_20260525_033933_27ad32d6`，问题为蒯利保 / 2025年1月 / 水溶C100 占比。
+- Browser 验证 `http://127.0.0.1:8001/workbench` 展开当前历史消息的 `查看处理过程`，并验证 `/monitor?monitor_run_id=manual_kua_share_final_check`。
+
+### 测试结果
+
+- 前端脚本语法检查、compileall 和 git diff --check 通过。
+- 聚焦恢复/过程测试通过：Ran 6 tests，OK。
+- 完整单元测试通过：Ran 202 tests，OK。
+- 真实 API 返回 `success=true`、`answer=3.12%`、`answer_type=percentage`、`process_view_v2.mode=comparison_or_trend`。
+- Workbench 展开过程可见 7 个步骤和 19 个 safe chips，包括 `主任：蒯利保`、`月份：2025年1月`、`产品：水溶C100`、`使用数据表：v_trd_dist_ord_dtl`、分母和分子摘要。截图保存到 `/tmp/vds-kua-process-evidence.png`。
+- Monitor 面板当前 run 显示安全事件和节点摘要，未发现 `chain_of_thought`、`raw_prompt`、`task_id`、`standard answer`、`public proxy`、`scorer` 等泄漏标记。
+
+### 遗留问题
+
+- 未接入 provider-native reasoning items，也不展示 DeepSeek thinking mode。
+- 本轮只修复 safe process view 的可见叙事、占比口径摘要和多文件恢复映射，不改变 scorer 或核心 benchmark 评分逻辑。
+
+### 是否影响主流程
+
+是。影响 Workbench 过程展示、message 响应后的历史恢复体验，以及普通上传数据集在服务重启后的恢复可靠性。
+
+### 是否涉及 Benchmark
+
+是。只涉及 output-contract / trace-redaction 风险门禁和 benchmark 泄漏红线，不修改 benchmark scorer、标准答案、accepted-answer pool 或 public proxy 观察。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。`process_view_v2` 作为 single_agent / multi_agent 共用的安全展示契约，能继续服务后续多 Agent 节点可观测性。
+
+### 是否修改核心数据契约
+
+否。本轮未改变 `process_view_v2` 结构，只补强字段内容和前端展示。
+
+### 是否修改 API 契约
+
+否。沿用已新增的 `process_view_v2` 契约，未新增响应字段。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+是。新增特定占比能力族的 safe narrative 提取和多文件恢复证据映射；不记录完整 Chain of Thought、raw reasoning tokens、raw prompt、API key、task_id、标准答案或 proxy / scorer 信息。
+
+### 是否已同步 README
+
+是。README.md、MAIN_GOAL.md、docs/API_CONTRACT.md 和 frontend/README.md 已在本轮 process view v2 文档中同步说明安全边界。
+
+2026-05-25 10:45 CST
+
+### 本次目标
+
+把固定 `reasoning_trace_view` 升级为后端生成的 safe `process_view_v2` 动态过程叙事，并按红线收窄 Workbench / Monitor 可见传播面。
+
+### 修改文件
+
+- data_agent_core/output/process_narrative.py
+- data_agent_core/output/reasoning_trace_view.py
+- data_agent_core/tracing/live_monitor.py
+- data_agent_core/tracing/run_trace.py
+- data_agent_core/contracts/response_contracts.py
+- data_agent_core/agent/single_agent.py
+- data_agent_core/output/dataset_overview.py
+- data_agent_core/llm/planner.py
+- data_agent_core/output/output_contract.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- backend/services/data_agent_service.py
+- frontend/app.js
+- frontend/monitor.html
+- frontend/monitor.js
+- frontend/styles.css
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_phase10_result_experience.py
+- tests/core/test_output_contract.py
+- tests/benchmark/test_benchmark_metrics.py
+- README.md
+- MAIN_GOAL.md
+- docs/API_CONTRACT.md
+- frontend/README.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `process_view_v2` 稳定响应字段，结构为 `version`、`summary`、`mode`、`steps[]`，step 只保留安全展示字段。
+- `process_narrative.py` 按 chat、dataset overview、metric、TopN、trend/comparison、multi-table join、diagnostic/anomaly、clarification/not applicable 生成差异化用户过程叙事。
+- `single_agent`、`multi_agent`、无数据聊天、有数据普通聊天和 dataset overview 均返回 `process_view_v2`；旧 `reasoning_trace_view` 保留兼容。
+- LLM stage raw 只保留安全摘要扩展字段，并继续过滤 raw reasoning / raw prompt / benchmark 泄漏字段。
+- Monitor SSE 最终事件只发送 run 状态和 `process_view_v2` 摘要；multi-agent 节点事件改为摘要 payload，移除完整 task/result/response/trace 传播。
+- Workbench 优先渲染后端 `process_view_v2`，缺失时才 fallback 到旧 `reasoning_trace_view`。
+- Monitor 页面文案改为安全事件 JSON，显示后端脱敏后的节点摘要。
+- 根据浏览器 smoke 结果补强中文问题信号兜底：趋势/对比/增长、多表结合/映射、明显缺字段/不支持问题会进入不同 `process_view_v2.mode`，不再全部落回普通指标查询。
+- output-contract 和 benchmark metrics 增加 process/reasoning leak 风险断言。
+- README、MAIN_GOAL、API_CONTRACT、frontend README 同步说明：这是 safe process view v2，不是 raw CoT，不改变核心算法或 benchmark scoring。
+
+### 测试方式
+
+- node --check frontend/app.js
+- node --check frontend/monitor.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_phase10_result_experience tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets tests.core.test_output_contract tests.benchmark.test_benchmark_metrics -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime multi_agent_workflows backend tests
+- git diff --check
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_no_benchmark_hardcoding -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -v
+- scripts/sync_workbench_runtime.sh && launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+- Playwright browser smoke on `http://127.0.0.1:8001/workbench` for chat、dataset overview、TopN、trend、多表 join、需澄清问题 and `/workbench-monitor`
+
+### 测试结果
+
+- frontend/app.js 与 frontend/monitor.js 语法检查通过。
+- Focused tests 通过：Ran 56 tests，OK。
+- compileall 通过。
+- git diff --check 通过。
+- benchmark hardcoding architecture tests 通过：Ran 5 tests，OK。
+- Full unittest discover 通过：Ran 198 tests，OK。
+- Browser smoke 通过：六类问题分别返回 `chat`、`dataset_overview`、`ranking_topn`、`comparison_or_trend`、`multi_table_join`、`clarification_or_not_applicable`；过程文案均不同且未出现 forbidden process tokens。
+- Monitor smoke 通过：页面显示安全事件 JSON 和安全过程摘要，未展示 raw CoT、raw prompt、完整 response / trace 或 forbidden tokens。截图保存到 `outputs/process_view_browser_smoke/workbench_process_view_v2.png` 和 `outputs/process_view_browser_smoke/monitor_safe_events.png`。
+
+### 遗留问题
+
+- 尚未引入 provider-native reasoning items，也未展示 DeepSeek thinking mode。
+- Playwright 关闭 Monitor SSE 时记录过一次 `ERR_INCOMPLETE_CHUNKED_ENCODING`，属于长连接关闭信号；未观察到过程泄漏或页面阻断。
+
+### 是否影响主流程
+
+是。影响 analyze/message/chat/overview 响应契约和 Workbench 过程展示，但不改变 Planner、Executor、Verifier、Correction、Result Normalizer 的核心计算逻辑。
+
+### 是否涉及 Benchmark
+
+是。只涉及 benchmark 泄漏红线、output-contract 和 metrics 风险门禁，不修改 scorer、标准答案、accepted-answer pool、public proxy 观察或 benchmark 数据。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。`process_view_v2` 统一了 single_agent 与 multi_agent 的安全展示契约，Monitor SSE 也改为更适合未来多 Agent 节点观测的摘要事件。
+
+### 是否修改核心数据契约
+
+是。`FinalResponse` 和 `RunTrace` 新增 `process_view_v2` 字段；旧字段保持兼容。
+
+### 是否修改 API 契约
+
+是。API 响应新增 `process_view_v2`，Monitor SSE 最终事件 payload 收窄为安全摘要。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+是。新增 safe process narrative v2，增强 reasoning trace 文本/key redaction，并收窄 live monitor payload。
+
+### 是否已同步 README
+
+是。已同步 README.md、MAIN_GOAL.md、docs/API_CONTRACT.md 和 frontend/README.md。
+
+2026-05-25 09:46 CST
+
+### 本次目标
+
+隐藏 Workbench 用户界面里的 DAB 规则包显式文案，保留后端静默支持能力。
+
+### 修改文件
+
+- frontend/index.html
+- frontend/app.js
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 将欢迎区文案从“CSV、Excel，或 DAB 规则包”改为通用“上传数据文件”。
+- 将上传区空状态从“CSV / Excel / DAB 规则包支持多选”改为“支持 CSV、Excel 等数据文件多选”。
+- 保留 `.json` / `.md` 文件选择能力和 `/api/data-agent/upload-batch` 后端路由，不在前端展示或解析 DAB 规则包。
+- 静态测试改为反向约束：前端 HTML / JS 不应出现“DAB 规则包”。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets -v
+- node --check frontend/app.js
+- rg -n "DAB 规则包" frontend tests/backend/test_workbench_static_assets.py || true
+- scripts/sync_workbench_runtime.sh && launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+
+### 测试结果
+
+- Workbench static assets tests 通过：Ran 14 tests，OK。
+- `node --check frontend/app.js` 通过。
+- 前端源码中已无用户可见 “DAB 规则包” 文案；仅测试中保留 `assertNotIn` 防回归断言。
+- 已同步并重启 `http://127.0.0.1:8001/workbench` runtime。
+
+### 遗留问题
+
+- 未改变 DAB context package 后端支持能力，只隐藏前端显式文案。
+
+### 是否影响主流程
+
+是。影响 Workbench 上传区和欢迎区用户可见文案，不改变上传/分析流程。
+
+### 是否涉及 Benchmark
+
+否。未修改 Benchmark runner、scorer、答案或核心 DAB 能力，只改 UI 文案和静态测试。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。未修改多 Agent 编排和后端分析链路。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本次只修改用户界面文案和对应测试，README 的工程边界说明仍保留后端 DAB context 支持描述。
+
+2026-05-25 09:29 CST
+
+### 本次目标
+
+重写 VDS LLM system prompt，使其从 DABstep / payment benchmark 特化说明改为符合当前 VDS multi-agent 框架的通用 dataset-grounded 语义层契约。
+
+### 修改文件
+
+- data_agent_core/prompts/data_agent_system_prompt.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 移除 prompt 中固定 `payments.csv`、`fees.json`、`manual.md`、`merchant_data.json` 等 benchmark 场景假设，改为只基于当前 `context_summary`、`payload`、`stage_name`、`required_output` 和 `supported_operations` 工作。
+- 明确当前默认路径是内部 multi-agent workflow，single_agent 仅作为 fallback；LLM 只负责意图、字段语义、计划草案、校验辅助、修正方向、洞察和图表语义。
+- 强化 prompt engineering 约束：严格 JSON 输出、按 stage 遵循 `required_output`、非 planner 阶段不强塞 planner 字段、禁止编造字段/指标/join/key/公式、中文优先并保持英文兼容。
+- 强化 benchmark 隔离和 trace 安全：task_id、标准答案、hidden answer、accepted-answer pool、public proxy、scorer 输出不得影响 Planner / Executor / Verifier / Correction / Insight / Chart / prompt / trace。
+
+### 测试方式
+
+- `rg -n "payments\\.csv|fees\\.json|manual\\.md|merchant_data|DABstep|standard answer|accepted-answer|task_id" data_agent_core/prompts/data_agent_system_prompt.md || true`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_llm_client tests.multi_agent_workflows.test_phase6_multi_agent_workflow tests.architecture.test_no_benchmark_hardcoding tests.core.test_vds_bi_capabilities -v`
+- `git diff --check -- data_agent_core/prompts/data_agent_system_prompt.md CHANGELOG_AI.md`
+
+### 测试结果
+
+- prompt 固定 DAB 文件名检查通过；只保留 benchmark 隔离安全规则。
+- Focused tests 通过：Ran 22 tests，OK。
+- 本轮修改文件的 `git diff --check` 通过。
+
+### 遗留问题
+
+- 本轮保持单 prompt 文件以降低影响面；后续如继续强化 prompt 工程，可拆分 common / planner / verifier / correction / insight / chart 的 stage-specific prompt 文件。
+- 本轮未跑真实 OpenAI / DeepSeek provider 回归；真实 provider prompt 效果需在有 key 的 representative smoke 中继续验证。
+
+### 是否影响主流程
+
+是。影响真实 provider 模式下的 LLM 语义层行为；不改变后端 API、executor、verifier、response contract 或 Workbench 前端。
+
+### 是否涉及 Benchmark
+
+是。删除 prompt 中 benchmark 特化假设并强化 benchmark 泄漏边界；未修改 benchmark 数据、runner、scorer 或标准答案。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。prompt 明确默认 multi-agent workflow 和 provider-neutral 受控执行边界，不引入新框架依赖。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。README 已记录 VDS 的多 Agent、LLM / deterministic code 分工、benchmark 隔离和 Workbench 边界；本轮只重写实现层 prompt 文案，不改变阶段状态、API、用户可见入口或验证口径。
+
+2026-05-25 01:33 CST
+
+### 本次目标
+
+补齐 VDS 中文 BI 标准答案错误的根因分析、修复计划、红线和泛用性验收说明，避免后续再次混淆 smoke、离线 scorer 和当前分支真实能力。
+
+### 修改文件
+
+- docs/VDS_BI_STANDARD_ANSWER_ROOT_CAUSE.md
+- README.md
+- MAIN_GOAL.md
+- data_agent_core/README.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增根因复盘文档，明确本次错误来自分支能力回退、实体粒度/指标未强绑定、枚举筛选语义不足、TopN 输出被压缩以及 smoke / scorer 口径混淆。
+- 在文档中固化修复计划：恢复 VDS BI 通用能力族、扩展当前期过滤指标 TopN、恢复离线标准答案 scorer、修正候选表展示和补充架构隔离测试。
+- 写明红线：标准答案、题号、固定实体值、固定输出顺序不得进入核心链路；标准答案只能在 response 后评分；新增逻辑必须抽象为能力族并覆盖同类变体。
+- 写明后续泛用性验收命令，包括 VDS 能力族单测、架构隔离测试和桌面 VDS 95 题标准答案 runner。
+- README、MAIN_GOAL 和 data_agent_core README 同步该复盘文档及当前分支 VDS 标准答案 `95/95` 口径。
+
+### 测试方式
+
+- `git diff --check`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_no_benchmark_hardcoding tests.core.test_vds_bi_capabilities tests.core.test_vds_standard_scorer -v`
+
+### 测试结果
+
+- `git diff --check` 通过。
+- Focused redline / VDS BI / VDS scorer tests 通过：Ran 22 tests，OK。
+
+### 遗留问题
+
+- 本轮仅补齐复盘和后续验收文档；真实 provider 大规模回归仍按后续 Phase 7.6 / Phase 10 流程执行。
+
+### 是否影响主流程
+
+否。仅文档和项目状态说明，不改变 parser、executor、API 或 Workbench runtime。
+
+### 是否涉及 Benchmark
+
+是。记录 VDS 标准答案离线 scorer 的使用边界和后续验收命令；未修改 benchmark 数据、标准答案或核心分析链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。文档要求继续保持标准答案隔离，不改变多 Agent 架构。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README、MAIN_GOAL 和 data_agent_core README 已同步。
+
+2026-05-25 01:08 CST
+
+### 本次目标
+
+对照桌面 VDS 95 题标准答案修复当前分支中文 BI 错误，彻底解决同类问题被误路由成默认区域/订阅收入排名的问题。
+
+### 修改文件
+
+- data_agent_core/core/vds_bi_intent.py
+- data_agent_core/executors/vds_bi_executor.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/output/response_builder.py
+- data_agent_core/core/capability_registry.py
+- data_agent_core/benchmark/vds_standard_scorer.py
+- multi_agent_workflows/vds_desktop_benchmark_runner.py
+- tests/core/test_vds_bi_capabilities.py
+- tests/core/test_vds_standard_scorer.py
+- tests/architecture/test_no_benchmark_hardcoding.py
+- README.md
+- MAIN_GOAL.md
+- docs/ARCHITECTURE.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 恢复并合并桌面 VDS 标准答案所需中文 BI 能力族：周期排名变化、TopN 增减、增长数量占比、阈值计数、同圈层异常、分组环比、各区域 Top 实体、状态影响、三周期 TopN 和当前期过滤指标 TopN。
+- 保留并扩展 `vds_current_filtered_metric_top`，支持 `Pro套餐`、`暂停/流失/正常续费` 等枚举过滤时锁定客户/门店/校区/院区/站点实体粒度和显式 `_row` 指标，避免退回到 `区域/订阅收入`。
+- 新增桌面 VDS 标准答案离线 scorer / runner；标准答案只在 response 生成后评分，不进入 Agent workflow、prompt、Planner、Executor、Verifier、Correction 或 trace。
+- Pandas Executor 展示结构化 `candidate_table` 时返回候选表行，避免 Workbench 把整个 payload 字典显示成一行。
+- 当前指标 TopN 的主回答改为完整 Top 列表，避免把 Top10 压缩成第一名摘要导致标准答案和用户预期丢失。
+- 架构硬编码测试显式允许 benchmark runner 在后验评分阶段读取标准答案，并新增 VDS runner 不传 task_id/answer 给 Agent 的测试。
+- README、MAIN_GOAL、ARCHITECTURE、FEATURE_BACKLOG 同步当前分支 VDS 标准答案 `95/95` 口径。
+
+### 测试方式
+
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_vds_bi_capabilities tests.core.test_vds_standard_scorer -v`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.vds_desktop_benchmark_runner --question-workbook "/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/问题/问题汇总.xlsx" --answer-workbook "/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/问题/标准GPT答案汇总.xlsx" --data-root "/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/数据" --output-dir outputs/vds_standard_answer_recheck_20260525_core_fix_v2`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets -v`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_output_contract tests.core.test_semantic_metric_verification tests.core.test_generic_capability_operations tests.backend.test_data_agent_service -v`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime backend multi_agent_workflows tests`
+- `git diff --check`
+
+### 测试结果
+
+- Focused VDS BI / scorer tests：Ran 17 tests，OK。
+- 桌面 VDS 标准答案 scorer：total 95，correct 95，accuracy 1.0，success_count 95。
+- Architecture hardcoding / secret / dependency tests：Ran 9 tests，OK。
+- Focused output / semantic / generic / backend tests：Ran 84 tests，OK。
+- Full unittest：Ran 177 tests，OK。
+- compileall 通过。
+- `git diff --check` 通过。
+
+### 遗留问题
+
+- 本轮验证使用 mock provider；真实 provider 大规模回归仍需后续按既有 Phase 7.6 / Phase 10 真实回归流程执行。
+
+### 是否影响主流程
+
+是。影响 VDS 中文 BI 意图解析、执行器结果、Workbench 结构化表格展示和最终回答格式。
+
+### 是否涉及 Benchmark
+
+是。新增桌面 VDS 标准答案离线 scorer / runner，并复跑 95 题；标准答案只用于 response 后评分，不进入核心分析链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。能力仍在 `data_agent_core` 和既有 runner / tests 中，未引入具体 Agent 框架依赖。
+
+### 是否修改核心数据契约
+
+否。未修改 contracts；仅让 executor 的 `candidate_table` 更合理地进入展示 rows。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README、MAIN_GOAL、docs/ARCHITECTURE.md、docs/FEATURE_BACKLOG.md 已同步当前分支 VDS 标准答案 `95/95` 口径。
+
+2026-05-24 18:38 CST
+
+### 本次目标
+
+为 Workbench 左侧每个历史对话增加可重命名能力，避免历史 Chat 只能显示原始问题文本。
+
+### 修改文件
+
+- frontend/app.js
+- frontend/styles.css
+- frontend/index.html
+- tests/backend/test_workbench_static_assets.py
+- README.md
+- frontend/README.md
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `pushHistory()` 保存独立 `title` 字段，历史列表改由 `renderHistory()` 统一渲染。
+- 每个历史项新增重命名按钮和编辑输入框，支持点击按钮或双击标题进入编辑。
+- Enter 保存新标题，Escape 取消本次编辑，输入框失焦保存；空标题不会覆盖原有标题。
+- 补充历史项重命名的侧边栏布局、按钮、输入框和编辑态样式，避免标题、按钮和输入框互相挤压。
+- 静态资源版本更新为 `?v=20260524-history-rename`，避免浏览器继续使用旧 JS / CSS。
+- README、frontend README、MAIN_GOAL 同步说明：当前支持单页会话内历史重命名，但不代表 Phase 11 后端会话标题持久化已完成。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- `curl -s http://127.0.0.1:8001/workbench | rg -n "20260524-history-rename|frontend/app.js|frontend/styles.css"`
+- Browser plugin 打开 `http://127.0.0.1:8001/workbench?qa=history-rename`，发送“你好”生成历史项，重命名为“自定义历史标题”，再测试 Escape 取消编辑。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- Focused static tests 通过：Ran 10 tests，OK。
+- `git diff --check` 通过。
+- runtime 已同步并重启，`/workbench` 返回 `styles.css?v=20260524-history-rename` 和 `app.js?v=20260524-history-rename`。
+- Browser 验证通过：页面标题为 `Virtual Data Scientist Workbench`，发送“你好”后产生 1 条历史记录；点击重命名按钮后 Enter 保存为“自定义历史标题”；再次编辑后 Escape 保持原标题不变；console error/warn 为 0；截图已保存到 `/tmp/vds-history-rename.png`。
+
+### 遗留问题
+
+- 当前重命名只保存在前端单页状态中；刷新页面或未来进入后端历史会话列表后仍需要 Phase 11 conversation store 支持持久化标题。
+
+### 是否影响主流程
+
+是。影响 Workbench 左侧历史 Chat 展示和交互，不改变数据上传、消息路由、分析执行或后端结果生成逻辑。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。该改动仅在 Workbench 展示层，仍调用既有 `/api/data-agent/message` 和后端分析链路。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 和 frontend README 已同步当前单页历史重命名能力及其非持久化边界。
+
+2026-05-24 18:27 CST
+
+### 本次目标
+
+按用户反馈纠正 Workbench 图表“前端手写 SVG 太丑”的实现路径，恢复为后端 Python 渲染图像优先展示。
+
+### 修改文件
+
+- data_agent_core/contracts/response_contracts.py
+- data_agent_core/output/chart_renderer.py
+- data_agent_core/agent/single_agent.py
+- agent_runtime/data_analysis_roles.py
+- frontend/app.js
+- frontend/index.html
+- frontend/styles.css
+- frontend/README.md
+- tests/core/test_phase10_result_experience.py
+- tests/backend/test_workbench_static_assets.py
+- docs/API_CONTRACT.md
+- README.md
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `ChartSpec` 新增 `image_data_uri`、`image_format`、`render_engine` 字段。
+- 新增 `data_agent_core/output/chart_renderer.py`，在后端把已验证的 chart spec 渲染为 SVG data URI；当前 runtime 未安装 matplotlib / seaborn / plotly / altair，因此先使用无外部依赖的 `python_svg` renderer，后续可在同一 renderer 层替换为 matplotlib / seaborn。
+- `single_agent` 和 `multi_agent` 最终响应阶段调用 `attach_rendered_chart()`，避免把大图像 data URI 放进 LLM chart planning 输入。
+- Workbench 前端优先显示 `chart.image_data_uri` 的 `<img class="chart-image">`；旧手写 SVG 只作为没有后端图片时的 fallback。
+- 静态资源版本更新为 `?v=20260524-python-chart`，避免浏览器继续使用旧 CSS / JS。
+- README、MAIN_GOAL、frontend README 和 API_CONTRACT 同步记录后端渲染图像字段及前端边界。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3` 检查当前 runtime 是否安装 matplotlib / seaborn / plotly / altair。
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_phase10_result_experience tests.backend.test_workbench_static_assets`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime backend tests/core tests/backend`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- `curl http://127.0.0.1:8001/workbench`
+- `curl http://127.0.0.1:8001/api/data-agent/run` 使用内联销售表验证后端 API 返回 `chart.image_data_uri`。
+- Playwright CLI 打开 `http://127.0.0.1:8001/workbench?qa=python-chart`，上传 `/tmp/vds_sales_chart.csv`，提问“按城市汇总销售额排名”，验证页面显示 `.chart-image`。
+
+### 测试结果
+
+- 当前 runtime 未安装 matplotlib / seaborn / plotly / altair；本轮没有假设它们存在，也没有把缺失依赖硬编码进主流程。
+- `node --check frontend/app.js` 通过。
+- Focused tests 通过：Ran 15 tests，OK。
+- compileall 通过。
+- Full unittest 通过：Ran 164 tests，OK。
+- `git diff --check` 通过。
+- runtime 已同步并重启，`/workbench` 返回 `styles.css?v=20260524-python-chart` 和 `app.js?v=20260524-python-chart`。
+- API 验证通过：多行销售排名响应 `chart_type=bar`、`render_engine=python_svg`，`image_data_uri` 以 `data:image/svg+xml;base64,` 开头。
+- Playwright Workbench 验证通过：页面显示 `.chart-image`，没有 fallback `.chart-svg`；图像实际尺寸约 820 x 411；console error/warn 为 0；截图 `.playwright-cli/page-2026-05-24T10-27-04-959Z.png`。
+
+### 遗留问题
+
+- 当前环境没有 matplotlib / seaborn 等第三方 Python 绘图库；如后续要指定 matplotlib/seaborn 作为强依赖，需要新增依赖安装和部署规则。本轮先用后端 `python_svg` renderer 解决前端手写图表丑和职责错位问题。
+- 本轮不处理“本周Pro套餐CHR最高Top10客户”被路由成区域订阅收入的问题；那是分析语义命中问题，需另做核心路由修复。
+
+### 是否影响主流程
+
+是。影响最终 `chart` 响应和 Workbench 图表显示，但不改变 Planner / Executor / Verifier 的分析计算逻辑。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。后端渲染在 ChartSpec 最终响应层完成，multi_agent 与 single_agent 都可复用，不绑定具体 provider 或 Agent framework。
+
+### 是否修改核心数据契约
+
+是。`ChartSpec` 新增可选展示字段 `image_data_uri`、`image_format`、`render_engine`。
+
+### 是否修改 API 契约
+
+是。`docs/API_CONTRACT.md` 已补充 chart v2 的后端图像字段。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 已同步 Workbench 优先展示后端 Python 渲染 SVG 图像、前端只保留 fallback 的边界。
+
+2026-05-24 18:08 CST
+
+### 本次目标
+
+修复 Workbench 图表可视化被压成极小色块的问题，让柱状图 / 折线图 SVG 按图表区域正常展开。
+
+### 修改文件
+
+- frontend/app.js
+- frontend/index.html
+- frontend/styles.css
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `frontend/styles.css` 让 `.chart-svg` 明确覆盖全局图标 `svg { width: 18px; height: 18px; }`：设置 `display: block`、`height: auto`、`max-height: none`、`min-height: 230px`，并让 `.chart-panel` 保持足够高度且不裁剪。
+- `frontend/app.js` 让柱状图按实际显示的条数计算柱宽，避免结果行数多时柱子被压细。
+- `frontend/index.html` 更新静态资源版本为 `?v=20260524-chart-size`，确保当前浏览器拿到新 CSS / JS。
+- 静态测试补充图表 SVG 覆盖全局图标尺寸、柱宽按显示条数计算和资源版本号断言。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- `curl http://127.0.0.1:8001/workbench`
+- `curl http://127.0.0.1:8001/frontend/styles.css?v=20260524-chart-size`
+- Browser 插件尝试在 Workbench 页面直接注入测试图表；因浏览器插件只读策略阻止 DOM 写入，改用 Playwright CLI fallback。
+- Playwright CLI 在同源 `/workbench` 页面加载真实 8001 CSS 并渲染图表 SVG fixture，测量实际尺寸。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- `tests.backend.test_workbench_static_assets` 通过：Ran 8 tests，OK。
+- `git diff --check` 通过。
+- runtime 已同步并重启，`/workbench` 返回 `styles.css?v=20260524-chart-size` 和 `app.js?v=20260524-chart-size`。
+- 版本化 CSS 返回 200 且包含 `.chart-svg { height: auto; max-height: none; min-height: 230px; }`。
+- Playwright CLI 渲染测量通过：在 820px 宽图表区域内，`.chart-svg` 实际宽度 820px、高度 304px，`cssMaxHeight=none`，不再是 18px 高；console error/warn 为 0。
+
+### 遗留问题
+
+无。用户截图中的“图表极小”来自前端 CSS 尺寸继承，已修复；本轮不处理后端把“Pro 套餐 CHR Top10 客户”误答成区域订阅收入的分析路由问题。
+
+### 是否影响主流程
+
+是。影响 Workbench 图表展示尺寸和静态资源版本，不改变后端分析链路。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮只修复 Workbench 前端图表展示尺寸，不改变阶段目标、API 使用方式或 GitHub 首页摘要。
+
+2026-05-24 17:55 CST
+
+### 本次目标
+
+修复 Workbench 在用户浏览器中仍可能保留旧 `app.js` 导致 Enter 继续换行的问题，从源头避免静态资源缓存挡住键盘交互修复。
+
+### 修改文件
+
+- backend/main.py
+- frontend/index.html
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `frontend/index.html` 将 `styles.css` 和 `app.js` 改为带版本号的 `/frontend/*?v=20260524-enter-cache` 资源地址。
+- `backend/main.py` 新增 `NO_CACHE_HEADERS` 和 `NoCacheStaticFiles`，让 `/workbench` 与 `/frontend/*` 返回 `Cache-Control: no-store, max-age=0`、`Pragma: no-cache`、`Expires: 0`。
+- 静态测试补充资源版本号和后端 no-cache 头的断言，防止以后交互修复再次被旧缓存遮挡。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- `curl -D - http://127.0.0.1:8001/workbench`
+- `curl -D - 'http://127.0.0.1:8001/frontend/app.js?v=20260524-enter-cache'`
+- Browser 插件打开 `http://127.0.0.1:8001/workbench?qa=enter-cache-20260524` 后验证 Enter / Shift+Enter。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- `tests.backend.test_workbench_static_assets` 通过：Ran 7 tests，OK。
+- `git diff --check` 通过。
+- runtime 已同步并重启，`/workbench` 返回 200，响应头包含 no-cache，HTML 引用 `styles.css?v=20260524-enter-cache` 和 `app.js?v=20260524-enter-cache`。
+- 版本化 `app.js` 返回 200，响应头包含 no-cache，内容包含 `handleQuestionKeydown()`。
+- Browser 验证通过：输入 `回车发送验证` 后按 Enter，状态 `已回复`，`userMessages=1`，`assistantMessages=1`，输入框清空；新聊天后输入 `第一行`，按 `Shift+Enter` 再输入 `第二行`，未发送，输入框保留 `第一行\n第二行`；随后按 Enter 成功发送；console error/warn 为 0。
+
+### 遗留问题
+
+无。已从后端响应头和资源 URL 两层处理浏览器旧缓存。
+
+### 是否影响主流程
+
+是。影响 Workbench 静态资源加载和消息输入交互，不改变数据分析、概览或聊天路由逻辑。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。仅修改静态资源 URL 和静态文件缓存响应头，不改变 JSON API。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮只修复 Workbench 静态资源缓存与输入键盘交互，不改变阶段目标、API 使用方式或 GitHub 首页摘要。
+
+2026-05-24 17:45 CST
+
+### 本次目标
+
+按用户要求把 Workbench 对话输入框改成 `Enter` 直接发送消息，同时保留 `Shift+Enter` 换行，避免中文输入法组合输入时误发送。
+
+### 修改文件
+
+- frontend/app.js
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `frontend/app.js` 为 `#question-input` 新增 `keydown` 监听。
+- `handleQuestionKeydown()` 在 `Enter` 且非 `Shift+Enter`、非 IME composing 时 `preventDefault()` 并调用现有 `runAnalysis()`。
+- 静态测试补充 Enter 发送、Shift+Enter 换行和 composing 防误触的代码断言。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- `curl http://127.0.0.1:8001/workbench`
+- Browser 插件尝试输入框验证；因插件虚拟剪贴板能力缺失导致 `locator.fill failed for selector #question-input`，改用 Playwright CLI fallback。
+- Playwright CLI 验证 Enter 发送、Shift+Enter 不发送。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- `tests.backend.test_workbench_static_assets` 通过：Ran 6 tests，OK。
+- `git diff --check` 通过。
+- runtime 已同步并重启，`/workbench` 返回 200。
+- Playwright CLI 验证通过：输入 `回车发送测试` 后按 Enter，状态 `已回复`，`userCount=1`，`assistantCount=1`，输入框清空；新聊天后输入 `第一行`，按 `Shift+Enter` 再输入 `第二行`，未发送，输入框保留 `第一行\n第二行`；随后按 Enter 成功发送，状态 `已回复`，console issue 为 0；截图 `/tmp/vds_enter_send_20260524.png`。
+
+### 遗留问题
+
+- 无。
+
+### 是否影响主流程
+
+是。影响 Workbench 消息提交交互，不改变后端分析、概览或聊天路由。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮只改前端输入键盘交互，不改变对外 API、阶段目标或部署说明。
+
 ### 日期
 
 2026-05-21
@@ -323,6 +1442,810 @@ YYYY-MM-DD HH:MM TZ
 ### 是否已同步 README
 
 是。README 已同步 Phase 11 已规划但尚未实现的状态，并避免把 planned API 写成可用能力。
+
+---
+
+## 2026-05-25 09:40 CST - Workbench 网页端 DAB 规则包导入与 runtime 同步修复
+
+### 修改内容
+
+- Workbench 文件选择支持 CSV / Excel / DAB 规则包，DAB 包由后端 `/api/data-agent/upload-batch` 识别，不在前端解析规则或写 benchmark 特调逻辑。
+- `TempFileStore` 增加完整 DABstep context package 识别：`payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md` 必须一起上传；完整包会持久化到 dataset 的 `dab_context/` 并生成普通 dataset profile。
+- DAB context 在 `DataAgentService` 中走后端 rule/context 分析路径，`manual.md`、`fees.json`、`merchant_data.json` 作为后端知识上下文参与执行；进程重启后可从磁盘恢复。
+- 修复 data quality 对 bool 列误走 numeric quantile outlier 检查导致崩溃的问题。
+- 修复 `scripts/sync_workbench_runtime.sh` 的排除规则：从 `--exclude "storage"` 改成 `--exclude "/storage/"`，只保护 runtime 顶层 `storage/`，不再误排除源码目录 `backend/storage/`。
+- 同步 README、MAIN_GOAL、API_CONTRACT、ARCHITECTURE、FEATURE_BACKLOG、frontend README，明确网页端 DAB 规则包导入边界。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets tests.core.test_phase10_result_experience -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime backend multi_agent_workflows tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- node --check frontend/app.js
+- git diff --check
+- scripts/sync_workbench_runtime.sh && launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+- Playwright 网页端 smoke：打开 `http://127.0.0.1:8001/workbench`，选择 6 个 DAB context 文件，发送 `What are the possible values for the field account_type?`
+
+### 测试结果
+
+- Focused backend/workbench/result-experience tests 通过：Ran 36 tests，OK。
+- Architecture / no-hardcoding / no-secrets tests 通过：Ran 9 tests，OK。
+- compileall 通过。
+- Full unittest 通过：Ran 187 tests，OK。
+- `node --check frontend/app.js` 通过。
+- `git diff --check` 通过。
+- Runtime sync 后已确认 `backend/storage/temp_file_store.py` 在仓库和 `~/.vds-workbench-runtime/VDS` 的 sha256 一致。
+- 网页端 smoke 通过：`upload-batch` 返回 200，`message` 返回 200，页面显示 `DABstep context package ... / 数据已就绪`，并回答 `account_type` 可选值为 `D,F,H,O,R,S`；Playwright console warning 检查为 0 errors / 0 warnings。
+
+### 遗留问题
+
+- 网页端 smoke 使用本地 DABstep context 包验证，不代表 official hidden scorer。
+- Browser 插件当前不能直接设置本地 file input，本轮网页端上传使用本机 Playwright CLI 自动化真实页面完成。
+- `.playwright-cli/` 和 `.DS_Store` 是本地未跟踪文件，不纳入 Git。
+
+### 是否影响主流程
+
+是。Workbench 现在可以通过网页上传 DAB 规则包后直接提问；同时修复了 runtime 同步脚本漏同步 `backend/storage/` 的源头问题。
+
+### 是否涉及 Benchmark
+
+是，涉及 DABstep 数据包结构导入能力；未读取标准答案、task_id 或 scorer 结果，no-hardcoding architecture tests 已通过。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 Microsoft Agent Framework adapter，也未引入相关依赖。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。DAB context 被建模为后端 dataset/context 能力，可由 single-agent 和 multi-agent 分析入口复用。
+
+### 是否修改核心数据契约
+
+是。`StoredDataset` 增加 dataset kind / analysis context / context dir，用于区分普通 uploaded tables 与 DAB context package。
+
+### 是否修改 API 契约
+
+是。`/api/data-agent/upload-batch` 支持完整 DAB context package；不完整包返回明确缺失文件错误。
+
+### 是否新增或修改错误类型
+
+否。仍使用标准上传错误响应；错误信息扩展为 DAB package 缺失文件说明。
+
+### 是否新增或修改运行追踪逻辑
+
+是。配合既有 live monitor 路径继续记录分析进度；DAB context debug metadata 会暴露 dataset kind 和 knowledge files。
+
+### 是否已同步 README
+
+是。README 与相关架构/API/Backlog 文档已同步。
+
+---
+
+### 日期时间
+
+2026-05-25 02:05 CST
+
+### 本次目标
+
+继续改进 VDS Workbench 系统体验，补齐 Phase 11 会话持久化首个落点：历史 Chat 不再只依赖前端内存，普通对话、分析结果和历史重命名都能落到后端 `conversation_id` 会话记录中。
+
+### 修改文件
+
+- backend/storage/conversation_store.py
+- backend/services/data_agent_service.py
+- backend/routers/data_agent.py
+- frontend/app.js
+- frontend/index.html
+- frontend/styles.css
+- frontend/README.md
+- scripts/sync_workbench_runtime.sh
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- README.md
+- MAIN_GOAL.md
+- docs/API_CONTRACT.md
+- docs/ARCHITECTURE.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 backend JSON conversation store，负责 `conversation_id`、title、dataset_id、user / assistant messages、assistant response payload、created_at / updated_at 以及 `owner_id / tenant_id / owner_context` 预留字段。
+- `POST /api/data-agent/message` 增加可选 `conversation_id` / owner 预留字段；如果没有 conversation_id，后端自动创建新会话；每轮消息都会追加 user turn 和 assistant response snapshot，并在响应中返回 conversation metadata。
+- 新增 conversation API：`POST /api/data-agent/conversations`、`GET /api/data-agent/conversations`、`GET /api/data-agent/conversations/{conversation_id}`、`PATCH /api/data-agent/conversations/{conversation_id}`。
+- Workbench 页面启动时从后端加载历史 Chat；点击历史项可恢复旧 user / assistant 消息；发送新消息会延续当前 `conversation_id`；历史重命名通过 PATCH 持久化，不再只存在当前页面内存。
+- 修复刷新后普通聊天历史被标成“已完成分析”的标签问题：conversation summary 返回 `last_answer_type`，前端按最后一次 assistant answer_type 区分“已回复”和“已完成分析”。
+- `scripts/sync_workbench_runtime.sh` 排除 runtime `storage` 目录，避免以后同步代码时因 `rsync --delete` 删除 Workbench 会话历史和运行期数据。
+- README、MAIN_GOAL、API_CONTRACT、ARCHITECTURE、FEATURE_BACKLOG 和 frontend README 同步 Phase 11 当前状态：已落地轻量本地匿名会话存储；URL 恢复、多窗口实时同步、跨进程 DataFrame 恢复、真实登录鉴权和多租户隔离仍未完成。
+- 本轮仍保持前端边界：前端只调用 API、展示消息和图表、恢复历史，不实现指标公式、join、排序、聚合、评分或分析逻辑。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets -v
+- node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime backend multi_agent_workflows tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- git diff --check
+- scripts/sync_workbench_runtime.sh
+- launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+- Playwright CLI smoke：打开 `http://127.0.0.1:8001/workbench`，验证历史列表来自后端、点击历史恢复旧消息、Enter 发送继续同一会话、重命名后刷新页面仍保留标题。
+
+### 测试结果
+
+- Backend / Workbench focused tests 通过：Ran 24 tests，OK。
+- `node --check frontend/app.js` 通过。
+- compileall 通过。
+- Architecture hardcoding / secret / dependency tests 通过：Ran 9 tests，OK。
+- Full unittest 通过：Ran 181 tests，OK。
+- `git diff --check` 通过。
+- 8001 runtime 已同步并重启；真实页面 smoke 显示历史 Chat 可加载、旧消息可恢复、Enter 可发送、重命名可持久化。
+- 已验证 runtime `storage` 保留：创建会话 `conv_20260524_180849_2d9e6c56` 后再次执行 sync + restart，`GET /api/data-agent/conversations` 仍返回该会话。
+
+### 遗留问题
+
+- 当前 conversation store 是本地 JSON 文件存储，不是生产数据库。
+- 当前可恢复 messages、profile 和 response snapshot；跨进程重启后继续分析仍需要内存表存在或重新上传，因为 DataFrame 表数据仍由现有 TempFileStore 进程内持有。
+- URL `/workbench?conversation_id=...` 自动恢复、多窗口同会话实时同步、真实登录鉴权、owner filter 强制校验和多租户隔离仍未实现。
+- 本轮第一次同步 runtime 时旧脚本尚未排除 `storage`，会清掉当时 runtime 里的临时 smoke 会话；已立即修正脚本，后续同步不会再删除 runtime storage。
+- `.playwright-cli/` 仍是本地 Playwright 运行产物目录，本轮不纳入 Git。
+
+### 是否影响主流程
+
+是。影响 Workbench `/message` API、历史 Chat、前端会话恢复和后端本地会话存储；不改变核心分析算法。
+
+### 是否涉及 Benchmark
+
+否。本轮不修改 benchmark runner、标准答案、scorer 或核心分析能力；仍保持 benchmark answer / task_id 不进入主链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。conversation store 只保存会话和 response snapshot，不依赖具体 Agent 框架；未来 multi-agent / provider adapter 仍可复用同一 `/message` 会话边界。
+
+### 是否修改核心数据契约
+
+是。新增 backend shell 层 conversation schema 和 `/message` response extension：`conversation_id` 与 `conversation` metadata。未修改 data_agent_core contracts。
+
+### 是否修改 API 契约
+
+是。新增 conversation endpoints，并扩展 `/message` 的可选 request 字段和 response metadata；已同步 `docs/API_CONTRACT.md`。
+
+### 是否新增或修改错误类型
+
+否。conversation not found / rename failed 暂复用 `LOGIC_FORM_ERROR` 标准错误响应。
+
+### 是否新增或修改运行追踪逻辑
+
+否。未新增 RunTrace 字段；conversation store 只保存用户可见消息和 response snapshot，不保存 raw CoT、raw prompt 或 hidden reasoning。
+
+### 是否已同步 README
+
+是。README 已同步 Phase 11 首个轻量会话持久化能力和未完成边界。
+
+---
+
+### 日期时间
+
+2026-05-25 01:39 CST
+
+### 本次目标
+
+继续加固 VDS 中文 BI 标准答案修复后的防回归门禁：把“客户 TopN 问题必须返回客户列表而不是区域聚合”和“TopN 明细不能被压成第一名摘要”固化到测试与阶段验收文档中，避免同类问题重复出现。
+
+### 修改文件
+
+- tests/core/test_output_contract.py
+- tests/core/test_vds_bi_capabilities.py
+- README.md
+- MAIN_GOAL.md
+- docs/PHASE_GATES.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 Response Builder 回归测试，覆盖 VDS TopN 执行结果已经带有逐行 answer 时必须保留完整 TopN 列表，不能退化成“最高的是某客户”的单点摘要。
+- 加强 VDS BI capability 测试，要求 `vds_current_filtered_metric_top` 对“本周 Pro 套餐 CHR 最高 Top10 客户”这类问题保留 `客户名称` 维度、返回候选客户行，并禁止把 `candidate_table` payload 字段或 `区域` fallback 混入展示行。
+- README / MAIN_GOAL / PHASE_GATES / FEATURE_BACKLOG 同步当前分支 VDS 标准答案离线 scorer `95/95` 为后续 Phase 7.5+ 和复杂 BI 能力的非回归门禁。
+- 本轮仍按能力族约束处理：测试锁定实体维度、TopN 输出契约和标准答案 scorer 非回归，不引入 task_id、标准答案、固定客户名或固定题面到 Planner / Executor / Verifier / Response Builder 主链路。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_output_contract tests.core.test_vds_bi_capabilities tests.core.test_vds_standard_scorer -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets -v
+- git diff --check
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+
+### 测试结果
+
+- Focused core / VDS standard scorer tests 通过：Ran 27 tests，OK。
+- Architecture 红线测试通过：Ran 9 tests，OK。
+- `git diff --check` 通过。
+- Full unittest 通过：Ran 178 tests，OK。
+- 当前分支已有 VDS 标准答案离线 scorer 报告 `outputs/vds_standard_answer_recheck_20260525_core_fix_v2/report.json`：total=95，correct=95，accuracy=1.0，success_count=95；本轮把该结果纳入文档门禁和新增测试防线。
+
+### 遗留问题
+
+- `.playwright-cli/` 仍是本地未跟踪目录，本轮不纳入 Git。
+- 真实前端继续测试时，如果出现新的“客户问法退化为区域聚合”或“明细答案被摘要压缩”样例，应优先补同族测试，再判断是否是新的能力族缺口。
+
+### 是否影响主流程
+
+否。本轮只新增测试和文档门禁，不修改 Planner / Executor / Verifier / Response Builder 运行代码。
+
+### 是否涉及 Benchmark
+
+是。涉及 VDS 标准答案离线 scorer 的回归门禁和 benchmark 硬编码红线验证；标准答案仅作为 response 之后的离线 scorer 依据，不进入核心分析链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。新增测试约束的是输出契约和执行结果维度保真，可被当前 multi_agent workflow 和未来 adapter 复用。
+
+### 是否修改核心数据契约
+
+否。未新增或修改稳定数据契约字段。
+
+### 是否修改 API 契约
+
+否。未改后端 API 请求或响应契约。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 已同步当前分支 VDS 标准答案离线 scorer `95/95` 正确率和 Phase 7 当前状态。
+
+---
+
+2026-05-24 18:57 CST
+
+### 本次目标
+
+彻底修复 VDS Workbench 中“本周流失和暂停对 ARR 影响最大的 Top10 客户？”等当前周期指标 TopN 问题被误解析为 `区域 / 订阅收入` 排名的问题，并覆盖相近的客户、门店、校区、院区、站点实体粒度问题。
+
+### 修改文件
+
+- data_agent_core/core/vds_bi_intent.py
+- data_agent_core/executors/vds_bi_executor.py
+- data_agent_core/core/capability_registry.py
+- data_agent_core/output/response_builder.py
+- tests/core/test_vds_bi_capabilities.py
+- tests/core/test_output_contract.py
+- README.md
+- MAIN_GOAL.md
+- docs/ARCHITECTURE.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 VDS BI 能力族 `vds_current_filtered_metric_top`，用于“当前周期 + 实体名称粒度 + 显式 `_row` 指标 + TopN/最高/最低 + 可选枚举过滤”问题。
+- 解析层优先锁定 `客户名称 / 门店名称 / 校区名称 / 院区名称 / 站点名称` 等实体字段，并用问题中的 `ARR / CHR / NRR / DAU` 等显式指标映射到对应 `_row` 字段，避免列顺序导致 fallback 选中 `订阅收入`。
+- 枚举过滤支持多值条件，例如 `订阅状态 in [暂停, 流失]`，并支持 `Pro套餐`、`正常续费客户` 等同族筛选。
+- 收紧单字中文枚举值匹配，避免把“最高”的“高”误识别为 `实施复杂度=高`。
+- 执行层按当前周期过滤后，以实体字段聚合指标并排序；`CHR / NRR / ARPA` 等均值型指标继续按均值聚合，其余指标按求和聚合。
+- Response Builder 对该能力的主回答生成中文摘要，例如“本周订阅状态为暂停/流失的客户中，ARR 最高的是……”，表格仍返回完整 TopN。
+- README、MAIN_GOAL、docs/ARCHITECTURE 同步记录该能力族边界和非特调原则。
+
+### 测试方式
+
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_vds_bi_capabilities`
+- 用真实 SaaS Excel 文件 `/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/数据/QueryGPT_SaaS订阅数据_单表版.xlsx` 直接解析执行以下问题：`本周流失和暂停对ARR影响最大的Top10客户？`、`本周Pro套餐CHR最高的Top10客户？`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_output_contract tests.core.test_vds_bi_capabilities`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_semantic_metric_verification tests.core.test_generic_capability_operations tests.backend.test_data_agent_service`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core/core/vds_bi_intent.py data_agent_core/executors/vds_bi_executor.py data_agent_core/output/response_builder.py tests/core/test_vds_bi_capabilities.py tests/core/test_output_contract.py`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- 重新上传 SaaS Excel 到 `http://127.0.0.1:8001/api/data-agent/upload`，再调用 `POST /api/data-agent/message` 验证 Workbench runtime 实际返回。
+
+### 测试结果
+
+- VDS BI focused tests 通过：Ran 8 tests，OK。
+- 真实 SaaS Excel 直接解析执行：`本周流失和暂停对ARR影响最大的Top10客户？` 路由为 `vds_current_filtered_metric_top`，`metric=ARR_row`，`entity=客户名称`，`value_filters={"订阅状态":["暂停","流失"]}`；结果列为 `客户名称 / ARR_row`。
+- 真实 SaaS Excel 直接解析执行：`本周Pro套餐CHR最高的Top10客户？` 路由为 `vds_current_filtered_metric_top`，`metric=CHR_row`，`entity=客户名称`，只过滤 `套餐名称=Pro`，未误加 `实施复杂度=高`。
+- 输出契约 + VDS BI focused tests 通过：Ran 17 tests，OK。
+- 语义校验、通用能力和后端服务 focused tests 通过：Ran 75 tests，OK。
+- compileall 通过。
+- Full unittest 通过：Ran 167 tests，OK。
+- `git diff --check` 通过。
+- Workbench runtime 已同步并重启，`GET /workbench` 返回 200。
+- Runtime 端到端 API 验证通过：重新上传 SaaS Excel 得到 `dataset_id=ds_20260524_110331_cdd5256f`；`POST /api/data-agent/message` 对 `本周流失和暂停对ARR影响最大的Top10客户？` 返回 `success=True`、`answer_type=table`、`operation=vds_current_filtered_metric_top`、结果列 `["客户名称","ARR_row"]`，主回答为“本周订阅状态为暂停/流失的客户中，ARR 最高的是云启客户31（ARR=1,443,416.88）。下表列出本次可返回的 Top7。”
+
+### 遗留问题
+
+- 当前能力覆盖当前周期过滤指标 TopN；跨周期排名变化、delta、rate、阈值和占比仍分别由已有 VDS BI 能力族处理。
+- `.playwright-cli/` 仍是本地既有未跟踪目录，本轮未纳入 Git。
+
+### 是否影响主流程
+
+是。影响 VDS 中文 BI 问题解析、Pandas 执行和最终回答展示；不改变上传、文件解析、API 契约或前端计算边界。
+
+### 是否涉及 Benchmark
+
+否。未使用 Benchmark 标准答案、题号或固定答案；测试为同族合成表和真实本地 SaaS Excel 端到端 smoke。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 Microsoft Agent Framework adapter，也未引入相关依赖。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。新增能力在 data_agent_core 的 LogicForm / Executor / Capability Registry 中表达，可被当前 multi_agent workflow 和未来 adapter 复用。
+
+### 是否修改核心数据契约
+
+是。新增内部 LogicForm operation `vds_current_filtered_metric_top`，扩展 `parameters.value_filters` 多值过滤表达；未修改公开 API 请求/响应字段。
+
+### 是否修改 API 契约
+
+否。仍复用现有 `/api/data-agent/message`、`/api/data-agent/upload` 和稳定响应字段。
+
+### 是否新增或修改错误类型
+
+否。未新增 error_type。
+
+### 是否新增或修改运行追踪逻辑
+
+否。未新增 trace 字段；只改变 LogicForm operation 和 response debug 中已有 `user_experience_shaping` 的 reason。
+
+### 是否已同步 README
+
+是。README、MAIN_GOAL 和 docs/ARCHITECTURE 已同步该能力族、实体粒度锁定和主回答摘要边界。
+
+---
+
+### 日期时间
+
+2026-05-24 13:50 CST
+
+### 本次目标
+
+按用户复测反馈继续自查 Workbench 普通消息链路：已有 dataset 时 `你好` / `你是什么模型` 必须在主对话区有可见回复；`看一下这个数据` 必须返回有意义的数据概览，不能返回单个 `720` 或 `answer=720` 表；修复必须从路由和展示源头处理，不能继续逐句补丁。
+
+### 修改文件
+
+- data_agent_core/core/message_intent.py
+- data_agent_core/output/dataset_overview.py
+- data_agent_core/output/response_builder.py
+- backend/services/data_agent_service.py
+- backend/routers/data_agent.py
+- frontend/app.js
+- frontend/styles.css
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- README.md
+- frontend/README.md
+- docs/API_CONTRACT.md
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `data_agent_core/core/message_intent.py`：统一判断 Workbench 消息是普通聊天、泛数据概览还是正式分析；有 dataset 时普通问候和模型身份问题不再被强制送入 analyze。
+- 新增 `data_agent_core/output/dataset_overview.py`：针对“看一下这个数据 / 看一下整体销售情况”生成全表概览，返回行列规模、主要字段、优先数值指标、合计/平均/最高/最低、最高维度和下钻方向，避免把行数或前几行明细当答案。
+- `DataAgentService.analyze_dataset()` 对泛概览问题先走 core 概览响应；新增 `respond_to_message()` 和 `chat_with_dataset()`；router 新增 `POST /api/data-agent/message`。
+- Workbench 前端提交统一改为 `/api/data-agent/message`，不再用 `state.datasetId ? analyze : chat` 在浏览器里做语义路由。
+- 前端每一轮 `renderProgress()` 都 clone 一个独立 assistant result message，避免复用 `#result-message` 导致旧回复从主聊天区消失。
+- `response_builder` 的概览识别扩展到“看一下这个数据 / 这个表 / dataset overview”等非销售特定表达。
+- 文档同步说明：`/message` 是当前 Workbench 统一入口；`/chat` 仍保留为无文件辅助对话接口；Phase 11 conversation persistence 仍未实现。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js` 通过。
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets` 通过：Ran 16 tests，OK。
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_output_contract tests.core.test_phase10_result_experience` 通过：Ran 13 tests，OK。
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- Browser 插件打开 `http://127.0.0.1:8001/workbench` 做首屏、title、console 检查。
+- Playwright CLI fallback 做文件上传和多轮消息验证；fallback 原因：Browser 插件当前受控 API 不暴露本地文件选择 / `setInputFiles`。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- 目标后端 / 核心测试通过：Ran 29 tests，OK。
+- 完整 unittest 通过：Ran 159 tests，OK。
+- `git diff --check` 通过。
+- runtime 已同步到 `/Users/trevorcui/.vds-workbench-runtime/VDS` 并重启；`127.0.0.1:8001` 新 PID `17679` 监听，`GET /workbench` 返回 200。
+- Browser 插件首屏检查通过：URL/title 正确，页面非空，无框架 overlay，console warning/error 为 0。
+- 上传 SaaS Excel 后连续发送 `你好`、`你是什么模型`、`看一下这个数据`：`/upload` 200，`/message` 3 次 200；主聊天区 `userCount=3`、`assistantCount=3`；前两条 assistant 为 `VDS / 已回复` 且无表格；第三条为 `分析结果 / 已完成`，表头为 `["指标","数值"]`，答案包含 `订阅收入合计 17,353,545.69`，不是 `answer=720`，无 `SS2025...` 原始明细倾倒，console issue 为 0；截图 `/tmp/vds_workbench_message_fix_20260524.png`。
+- 追加验证 `看一下整体销售情况`：`/upload` 200，`/message` 200；答案包含 `订阅收入合计 17,353,545.69`，表头为 `["指标","数值"]`，`single720=false`，`rawRecord=false`，console issue 为 0。
+- 无文件聊天复测：新聊天后发送 `没有文件时你能做什么？`，`/message` 200，状态 `已回复`，`datasetChip=未上传数据`，`assistantCount=1`，表格隐藏，console issue 为 0；截图 `/tmp/vds_workbench_no_file_message_20260524.png`。
+
+### 是否影响主流程
+
+是。影响 Workbench 消息入口、普通聊天、泛数据概览和多轮展示；核心计算仍在 backend / data_agent_core，前端仍不承载指标、join、排序、聚合或评分。
+
+### 是否涉及 Benchmark
+
+不涉及 benchmark 题目或 scorer；新增的是 Workbench 普通消息路由和泛概览体验能力。
+
+2026-05-24 13:13 CST
+
+### 本次目标
+
+按用户反馈自查并修正 Workbench 两个核心体验问题：`看一下整体销售情况` 不能把原始多字段明细行直接作为主答案返回；没有上传文件时也必须能像 GPT-like 对话一样和 VDS 直接聊天。
+
+### 修改文件
+
+- data_agent_core/output/response_builder.py
+- backend/services/data_agent_service.py
+- backend/routers/data_agent.py
+- frontend/app.js
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- README.md
+- frontend/README.md
+- docs/API_CONTRACT.md
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- Response Builder 新增概览类问题展示收敛：当问题命中“整体 / 总体 / 概览 / overall summary”且执行结果是多行多列明细时，把主答案收敛为短业务概览，把主结果表收敛为 `指标 / 数值` 汇总表，并在 debug 记录 `user_experience_shaping` 证据。
+- 新增 `DataAgentService.chat_without_dataset()` 和 `POST /api/data-agent/chat`：无 dataset 时允许 VDS 直接回应分析思路、字段设计、指标口径和使用方式；涉及真实销售/收入/经营结论时明确需要上传数据，不编造业务结果。
+- Workbench 提交逻辑改为只要求有问题文本即可发送；有待上传文件时先静默上传再 analyze，没有 dataset 时调用 `/api/data-agent/chat`。
+- 无文件 chat 结果隐藏表格、图表和洞察面板，只显示 VDS 回复和轻量过程摘要。
+- 概览收敛结果隐藏原始明细图表和洞察建议，避免出现空白图表区、数据质量建议或后端审计语气。
+- 用户首次发送消息后隐藏欢迎语，减少首屏占用，让结果更接近 GPT-like 对话排版。
+- 静态测试补充 Workbench 必须包含 `/api/data-agent/chat` 且不能再以缺失 dataset 禁用发送按钮。
+- README、frontend README、API_CONTRACT 和 MAIN_GOAL 同步说明：无文件 chat 已实现；完整 conversation persistence 仍是 Phase 11 planned；前端仍不承载指标、join、排序、聚合或评分。
+
+### 测试方式
+
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets tests.core.test_output_contract tests.core.test_phase10_result_experience
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- git diff --check
+- scripts/sync_workbench_runtime.sh
+- launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+- curl 验证 `GET /workbench` 返回 200。
+- Browser 插件验证无文件对话：输入 `没有文件时你能做什么？`，确认发送按钮启用、状态为 `已回复`、表格/洞察隐藏、console warning/error 为 0。
+- Playwright CLI fallback 验证本地文件上传：上传 `/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/数据/QueryGPT_SaaS订阅数据_单表版.xlsx`，输入 `看一下整体销售情况`，等待 `/upload` 和 `/analyze` 均返回 200。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- 目标后端/核心测试通过：Ran 26 tests，OK。
+- 完整 unittest 通过：Ran 156 tests，OK。
+- `git diff --check` 通过。
+- 运行副本已同步并重启，`127.0.0.1:8001` 当前由 LaunchAgent 监听，`/workbench` 返回 200。
+- 无文件 chat smoke：`POST /api/data-agent/chat` 返回 200；发送按钮 `sendEnabled=true`；状态 `已回复`；无 `Dataset not found`；表格、图表、洞察面板均隐藏；console warning/error 为 0；截图 `/tmp/vds_workbench_no_file_chat_20260524_v2.png`。
+- 上传 SaaS Excel 概览 smoke：`POST /api/data-agent/upload` 和 `/api/data-agent/analyze` 均返回 200；答案长度 117；结果表头为 `["指标", "数值"]`，6 行汇总；不包含 `SS2025000001` 或 `SaaS订阅, SS2025000001` 原始明细前缀；不包含 `数据质量` / `高严重度`；图表和洞察面板隐藏；欢迎语隐藏；截图 `/tmp/vds_workbench_overview_fix_20260524_v3.png`。
+
+### 遗留问题
+
+- 当前 `/api/data-agent/chat` 是无 dataset 的轻量对话入口，不是 Phase 11 会话持久化；历史续聊、conversation store、多窗口隔离和 owner_context 过滤仍按 Phase 11 计划处理。
+- 概览收敛是结果展示层能力；更复杂的业务口径解释、趋势/维度自动下钻仍需要继续在 Planner / Executor / Insight 能力族里增强，不能放到前端计算。
+- `.playwright-cli/` 仍是本地 Playwright 运行目录，本轮不纳入 Git。
+
+### 是否影响主流程
+
+是。影响 Workbench 用户可见提问、无文件对话和概览类结果展示；核心执行仍由 data_agent_core / backend 完成。
+
+### 是否涉及 Benchmark
+
+否。没有修改 Benchmark runner、scorer、task_id、标准答案或 proxy 观察逻辑。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 MAF adapter 或相关依赖。
+
+### 是否影响未来多 Agent 迁移
+
+否。无文件 chat 是 backend shell 的辅助入口；上传后 analyze 仍走当前 multi_agent workflow。概览收敛位于 Response Builder，不改变 Planner / Executor / Verifier 的职责边界。
+
+### 是否修改核心数据契约
+
+是。稳定响应字段未删改，但新增已实现的 `/chat` 响应形态；analyze 的 `result` 在概览类问题下可能从明细表收敛为展示汇总表。
+
+### 是否修改 API 契约
+
+是。新增 `POST /api/data-agent/chat` 并同步 docs/API_CONTRACT.md；明确它不等于 Phase 11 conversation APIs。
+
+### 是否新增或修改错误类型
+
+否。继续复用现有 `LOGIC_FORM_ERROR` 做空 question 或非法 agent_mode 的标准错误。
+
+### 是否新增或修改运行追踪逻辑
+
+否。只新增无 dataset chat 的安全 `reasoning_trace_view` 摘要；不新增 raw CoT 或后端审计展示。
+
+### 是否已同步 README
+
+是。README、frontend README、API_CONTRACT 和 MAIN_GOAL 均已同步。
+
+---
+
+### 日期时间
+
+2026-05-24 11:49 CST
+
+### 本次目标
+
+修复真实 `/workbench` 前端可见回归：上传 Excel 失败、发送按钮不可点、上传后主界面乱跳结果、消息顺序不符合 GPT-like 对话，以及本地 `8001` 端口需要能直接打开使用。
+
+### 修改文件
+
+- backend/schemas/data_agent_schema.py
+- tests/backend/test_data_agent_service.py
+- frontend/index.html
+- frontend/app.js
+- frontend/styles.css
+- frontend/README.md
+- README.md
+- scripts/run_workbench_server.sh
+- scripts/sync_workbench_runtime.sh
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 后端 `to_json_ready()` 增加 pandas / numpy scalar、非有限 float、datetime / Timestamp 的 JSON-safe 递归转换，修复 Excel 字段样例里 `Timestamp` 导致上传返回 500 的问题。
+- 新增 Excel datetime profile 回归测试，确保上传响应可以被 `json.dumps()` 序列化。
+- 前端发送按钮逻辑改为：有问题且已有 dataset 或待上传附件时可发送；发送时自动先上传待上传文件，再调用 analyze。
+- 上传选择和上传成功保持静默：只更新底部 composer 附件状态，不展示 profile 卡片、结果面板、warnings、quality 或 verification 术语。
+- 移除主界面上传失败结果面板；上传失败只在底部附件状态和顶部轻量状态中提示。
+- 把过程展示改成 GPT-like 安静样式：默认只显示一行小号浅灰摘要，`查看处理过程` 点击后才展开结构化步骤，不展示 raw Chain of Thought。
+- 修复结果消息 DOM 顺序：每次提问后把 assistant 结果消息移动到当前 user 消息之后，避免出现“先回答、后显示用户问题”。
+- 结果区减少占位噪音：无图表、无表格、无洞察时隐藏对应区域；非成功结果不再展示可能混入数据质量/警告语气的洞察面板。
+- 顶部长文件名状态做单行截断，避免多文件上传后挤乱 topbar。
+- 新增 `scripts/run_workbench_server.sh` 和 `scripts/sync_workbench_runtime.sh`，配合本机 LaunchAgent 让 `http://127.0.0.1:8001/workbench` 可直接打开；由于 macOS TCC 限制，LaunchAgent 使用 `~/.vds-workbench-runtime/VDS` 运行副本。
+- README / frontend README 同步本地 Workbench 启动、运行副本和端口说明。
+
+### 测试方式
+
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets
+- git diff --check
+- curl 验证 `GET /workbench`、`GET /frontend/app.js`、`GET /frontend/styles.css` 均返回 200。
+- 同步运行副本并重启 LaunchAgent：`scripts/sync_workbench_runtime.sh && launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- Browser 插件打开 `http://127.0.0.1:8001/workbench`，检查页面标题、首屏、console errors/warnings 和静默初始状态。
+- Playwright fallback 在真实 `8001/workbench` 选择 5 个本地 Excel 文件，输入 `哪个城市销售额最高？`，点击发送并等待 upload-batch / analyze 响应。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- Backend/static asset unittest 通过：Ran 10 tests，OK。
+- `git diff --check` 通过。
+- curl 结果：`/workbench`、`/frontend/app.js`、`/frontend/styles.css` 均为 200。
+- LaunchAgent 正在运行，`127.0.0.1:8001` 有监听；当前运行副本已同步到 `~/.vds-workbench-runtime/VDS`。
+- Browser 检查：页面标题为 `Virtual Data Scientist Workbench`，console errors/warnings 为 0；初始状态 `resultHidden=true`、`profileHidden=true`、无 `.upload-card` / `#dropzone`。
+- Playwright 5-Excel smoke：选择文件后 `fileSummary=5 个文件已附加`、`resultHidden=true`、`profileHidden=true`；输入问题后发送按钮可点；`POST /api/data-agent/upload-batch` 返回 200，`POST /api/data-agent/analyze` 返回 200；最终 `fileSummary=5 个文件已就绪`、`historyCount=1`、消息顺序为 welcome -> user -> assistant，console/page issues 为空。
+
+### 遗留问题
+
+- 当前 smoke 使用 `VDS_LLM_PROVIDER=mock`；mock 结果质量仍由后端当前分析链路决定，本轮只修复上传、前端交互、排版和本地端口可用性，不改核心分析、join、排序、聚合或评分逻辑。
+- `.playwright-cli/` 仍是本地 Playwright 运行目录，本轮不纳入 Git。
+- 多会话隔离、历史续聊和未来用户隔离仍按 Phase 11 文档规划，尚未实现。
+
+### 是否影响主流程
+
+是。影响 Workbench 用户可见上传和提问流程，但不修改核心分析算法。
+
+### 是否涉及 Benchmark
+
+否。没有修改 Benchmark runner、scorer、task_id、标准答案或 proxy 观察逻辑。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。前端仍只调用 upload / analyze API，不承载 Agent 编排、join、聚合、排序或评分逻辑。
+
+### 是否修改核心数据契约
+
+否。只增强响应序列化安全性，不改变稳定字段形态。
+
+### 是否修改 API 契约
+
+否。未新增或删除 API 字段。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。过程展示只使用已有 safe summary，不展示 raw Chain of Thought。
+
+### 是否已同步 README
+
+是。README 和 frontend README 已同步本地 Workbench 端口、LaunchAgent / runtime copy 和验证说明。
+
+---
+
+### 日期时间
+
+2026-05-24 11:11 CST
+
+### 本次目标
+
+让本机打开 `http://127.0.0.1:8001/workbench` 时可以直接使用，不再依赖手动临时启动进程。
+
+### 修改文件
+
+- scripts/run_workbench_server.sh
+- scripts/sync_workbench_runtime.sh
+- README.md
+- CHANGELOG_AI.md
+- /Users/trevorcui/Library/LaunchAgents/com.trevorcui.vds.workbench.plist
+
+### 修改内容
+
+- 新增 `scripts/run_workbench_server.sh`，固定从 `/Users/trevorcui/Documents/VDS` 启动 `backend.main:app`，默认监听 `127.0.0.1:8001`。
+- 新增 `scripts/sync_workbench_runtime.sh`，用于把当前仓库同步到 `~/.vds-workbench-runtime/VDS` 常驻服务目录。
+- 启动脚本会读取 `.env.local`，没有显式 provider 配置时默认 `VDS_LLM_PROVIDER=mock`；脚本会检查并安装缺失的 `fastapi`、`uvicorn`、`python-multipart` 服务依赖。
+- 新增用户级 macOS LaunchAgent `com.trevorcui.vds.workbench`，`RunAtLoad` + `KeepAlive` 保活 8001 服务。
+- 由于 macOS 后台进程无法直接访问 `Documents/VDS`，LaunchAgent 实际从 `~/.vds-workbench-runtime/VDS` runtime 副本启动；当前已同步本仓库内容到该 runtime。
+- README 记录本机 LaunchAgent、runtime 副本和启动脚本，说明以后打开 `/workbench` 应可直接使用。
+
+### 测试方式
+
+- bash -n scripts/run_workbench_server.sh
+- bash -n scripts/sync_workbench_runtime.sh
+- bash -n /Users/trevorcui/.vds-workbench-runtime/VDS/scripts/run_workbench_server.sh
+- plutil -lint /Users/trevorcui/Library/LaunchAgents/com.trevorcui.vds.workbench.plist
+- launchctl bootstrap / bootout / kickstart 用户级 LaunchAgent
+- launchctl print gui/$(id -u)/com.trevorcui.vds.workbench
+- lsof -iTCP:8001 -sTCP:LISTEN -nP
+- curl -sS -D - --max-time 5 http://127.0.0.1:8001/workbench -o /tmp/vds-workbench.html
+- curl -I --max-time 5 http://127.0.0.1:8001/frontend/app.js
+- KeepAlive smoke：kill 当前 uvicorn pid，等待 launchd 自动重启，再访问 `/workbench`
+- git diff --check
+
+### 测试结果
+
+- repo 启动脚本和 runtime 启动脚本 `bash -n` 通过。
+- runtime 同步脚本 `bash -n` 通过。
+- LaunchAgent plist `plutil -lint` 通过。
+- LaunchAgent 已成功 bootstrap / kickstart，`launchctl print` 显示 `state = running`。
+- 8001 监听正常，当前由 launchd 管理的 uvicorn 进程监听 `127.0.0.1:8001`。
+- `/workbench` 返回 `HTTP/1.1 200 OK`，HTML 正确引用 `/frontend/styles.css` 和 `/frontend/app.js`。
+- `/frontend/app.js` 和 `/frontend/styles.css` 均返回 200。
+- KeepAlive smoke 通过：kill 当前 uvicorn 后，launchd 自动拉起新 pid，`/workbench` 仍返回 200。
+
+### 遗留问题
+
+- 当前 LaunchAgent 是本机用户级配置，不是跨机器部署方案。
+- 如果要使用真实 provider，必须确认 `.env.local` 中 provider 和 key 配置正确；否则脚本默认使用 mock。
+
+### 是否影响主流程
+
+是。影响本机 Workbench 启动方式，但不修改后端 API 行为或核心分析逻辑。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。只是本地服务启动方式。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 已记录本机常驻 8001 的启动脚本和 LaunchAgent。
+
+---
+
+### 日期时间
+
+2026-05-24 11:07 CST
+
+### 本次目标
+
+修复 Workbench 选择文件并输入问题后发送按钮仍不可点击的问题；让 GPT-like composer 支持直接发送，前端自动先上传待选文件，再提交分析请求。
+
+### 修改文件
+
+- frontend/app.js
+- frontend/README.md
+- README.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `updateRunButton()` 改为在“已有 dataset”或“存在待上传文件”时都允许发送，不再强制用户先点击小型上传按钮。
+- `runAnalysis()` 在存在待上传文件时先调用上传 API，上传成功后再追加用户消息并调用 `/api/data-agent/analyze`。
+- 增加 `state.hasPendingUpload`、`state.isUploading`、`state.isAnalyzing`，避免重复点击和重新选文件后误用旧 dataset。
+- 上传成功后禁用并隐藏独立上传按钮，文件状态显示“已上传”；重新选择文件后再次进入待上传状态。
+- README / frontend README 同步说明 composer 会先上传待选文件再分析，前端仍不实现核心计算。
+
+### 测试方式
+
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets
+- git diff --check
+- Playwright smoke：打开 `http://127.0.0.1:8001/workbench`，上传 `/tmp/vds_sales_smoke.csv` 和 `/tmp/vds_city_smoke.csv`，输入“哪个城市销售额最高？”，检查发送按钮 `disabled=false`，点击发送后等待自动 `upload-batch` 和 `analyze` 完成。
+- Playwright console / network 检查。
+
+### 测试结果
+
+- node syntax check 通过。
+- backend static workbench tests 通过：Ran 3 tests，OK。
+- git diff --check 通过。
+- Playwright 发送按钮状态验证通过：选中文件并输入问题后 `disabled=false`。
+- Playwright 自动上传并分析通过：`POST /api/data-agent/upload-batch` 200，`POST /api/data-agent/analyze` 200，状态为“分析完成”，答案为“北京, 250”，历史数量为 1。
+- Browser console 检查：0 errors，0 warnings。
+
+### 遗留问题
+
+- 当前本地 8001 服务仍以 `VDS_LLM_PROVIDER=mock` 运行；真实 provider 链路需要用真实环境变量重启。
+- `.playwright-cli/` 仍是本地未跟踪目录，本轮未纳入 Git。
+
+### 是否影响主流程
+
+是。修复 Workbench 用户提交路径，但只改变前端调用顺序和按钮状态；后端 upload / analyze 核心契约不变。
+
+### 是否涉及 Benchmark
+
+否。未修改 Benchmark 数据、runner、scorer 或核心能力逻辑。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。前端仍只调用后端稳定 API，不接触 multi_agent workflow 内部实现。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。仍使用既有 `/api/data-agent/upload`、`/api/data-agent/upload-batch` 和 `/api/data-agent/analyze`。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 已同步说明选择文件后可直接发送，前端会先上传再分析。
 
 ---
 
@@ -4907,3 +6830,272 @@ YYYY-MM-DD HH:MM TZ
 是。README 已同步 DAB Hard Recovery v2 最新 proxy 口径、非回归门禁和 hidden accuracy 边界。
 
 ---
+---
+### 日期时间
+
+2026-05-25 10:00 CST
+
+### 本次目标
+
+新增 Rule Mode + Benchmark 规则上传最小链路，在不破坏普通数据上传和普通 Chat 的前提下，让后端明确区分 dataset、user_analysis rule 和 benchmark rule。
+
+### 修改文件
+
+- backend/schemas/data_agent_schema.py
+- backend/storage/temp_file_store.py
+- backend/services/data_agent_service.py
+- backend/routers/data_agent.py
+- data_agent_core/core/file_parser.py
+- frontend/index.html
+- frontend/app.js
+- frontend/styles.css
+- frontend/README.md
+- tests/backend/test_data_agent_service.py
+- README.md
+- MAIN_GOAL.md
+- docs/API_CONTRACT.md
+- docs/BENCHMARK_RULES.md
+- docs/DATASET_LIFECYCLE.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `file_role` / `rule_scope` 后端 metadata：旧上传默认 `dataset`；规则上传必须显式 `file_role=rule` 且 `rule_scope=user_analysis` 或 `benchmark`。
+- 规则文件独立存储到 `storage/rules/{file_id}`，不进入 DatasetProfile、字段画像、DataFrame tables、数据概览或普通文件列表。
+- `user_analysis` rule 只有请求显式传入 `user_rule_file_id` 时才合并到本次 `guidelines`，并在 debug 中只暴露安全摘要。
+- 新增独立 `POST /api/data-agent/benchmark/run`：只接受 dataset_id、benchmark_rule_file_id 和可选 user_rule_file_id；benchmark rule 不进入普通 Chat。
+- 上传解析补充 JSON dataset 支持，并保留既有 DAB context 包兼容路径。
+- Workbench 新增高级选项：Rule Mode 默认关闭，开启后显示用户分析规则上传；内部 Benchmark 区域单独上传 benchmark rule 并调用独立 runner。
+- 同步 README、MAIN_GOAL、API_CONTRACT、BENCHMARK_RULES、DATASET_LIFECYCLE、FEATURE_BACKLOG 和 frontend README 的规则上传边界。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets -v
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile backend/services/data_agent_service.py backend/storage/temp_file_store.py backend/routers/data_agent.py backend/schemas/data_agent_schema.py data_agent_core/core/file_parser.py tests/backend/test_data_agent_service.py
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime backend multi_agent_workflows tests
+- git diff --check
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- Browser smoke on `http://127.0.0.1:8011/workbench` from the current checkout, verifying default upload, advanced options, Rule Mode reveal, and Benchmark controls.
+
+### 测试结果
+
+- Backend focused tests 通过：Ran 19 tests，OK。
+- Architecture tests 通过：Ran 9 tests，OK。
+- `node --check frontend/app.js` 通过。
+- `py_compile` 通过。
+- `compileall` 通过。
+- `git diff --check` 通过。
+- Full unittest 通过：Ran 191 tests，OK。
+- Browser smoke 通过；截图保存为 `outputs/rule_mode_workbench_20260525.png`。
+
+### 遗留问题
+
+- YAML 解析当前是无新增依赖的简单子集；复杂 YAML 结构后续可在不破坏 role metadata 的前提下增强。
+- Benchmark report 当前是最小内部报告，后续可增加更完整的 metrics、threshold、judge config 和前端结果展示。
+- 当前工作树已有或并行出现的 `frontend/monitor.js`、`frontend/monitor.html`、`tests/backend/test_workbench_static_assets.py` 和本地 `.DS_Store` / `.playwright-cli/` 改动不属于本次 Rule Mode / Benchmark 规则上传目标，本轮未主动回滚。
+
+### 是否影响主流程
+
+是，但保持兼容。普通上传不传 `file_role` 时仍默认 dataset，普通 Chat 不传 `user_rule_file_id` 时行为保持原样。
+
+### 是否涉及 Benchmark
+
+是。新增 benchmark rule 上传和独立 runner API；benchmark rule、expected output、metrics 和 threshold 不进入普通 Chat、Planner、Executor、Verifier、Correction、prompt 或 trace。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。规则文件用途在 backend metadata 层明确，Agent 仍通过既有 guidelines / workflow 契约接收约束，不引入 framework 强依赖。
+
+### 是否修改核心数据契约
+
+是，扩展 backend upload metadata 和响应字段；未改变 DatasetProfile / TableProfile / ColumnProfile dataclass 结构。
+
+### 是否修改 API 契约
+
+是。`docs/API_CONTRACT.md` 已同步 `file_role`、`rule_scope`、`user_rule_file_id` 和 `/api/data-agent/benchmark/run`。
+
+### 是否新增或修改错误类型
+
+否。继续使用既有标准 error response 和 `LOGIC_FORM_ERROR` / `FILE_PARSE_ERROR`。
+
+### 是否新增或修改运行追踪逻辑
+
+否。Benchmark report 独立写入 `storage/benchmarks/{run_id}/report.json`，普通 run trace 不新增 raw CoT 或敏感字段。
+
+### 是否已同步 README
+
+是。README 已同步 Rule Mode / Benchmark 规则上传状态、边界和 Workbench 行为。
+
+### 日期时间
+
+2026-05-25 15:19 CST
+
+### 本次目标
+
+为 VDS 项目新增 GPT-like parity redline：文件解析、回答结构、Insight、图表/表格、过程流、代码 artifact、Workbench 排版样式和用户可见文案必须无限接近 GPT / ChatGPT Data Analysis 同类结果；修改完成后必须对比并思考“GPT 会不会这样做”，差距很大直接打回重写。
+
+### 修改文件
+
+- README.md
+- MAIN_GOAL.md
+- docs/PHASE_GATES.md
+- docs/EVALUATION_GATE.md
+- docs/FEATURE_BACKLOG.md
+- docs/ARCHITECTURE.md
+- tests/architecture/test_project_redlines.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 在 MAIN_GOAL 架构原则中新增 GPT-like parity redline，并把它写入 Phase 12 验收标准和禁止事项。
+- 在 PHASE_GATES 总红线中要求体验类修改必须对照 GPT / ChatGPT Data Analysis 或冻结标准 GPT 参考结果，差距大时打回重写。
+- 在 EVALUATION_GATE 中新增 GPT-like Parity Review，明确要检查文件识别、回答组织、图表/代码/过程流、Workbench 排版和交互形态。
+- 在 FEATURE_BACKLOG 和 ARCHITECTURE 中同步 Phase 12 体验红线、适用范围、验收边界和记录要求。
+- 在 README 最新状态和 TODO 中增加红线入口，保证 GitHub 首页能看到该规则。
+- 新增架构文档守护测试，防止核心文档遗漏或删除 GPT-like parity redline。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_project_redlines -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets tests.architecture.test_project_redlines -v
+- git diff --check
+
+### 测试结果
+
+- 新增红线文档守护测试通过：Ran 1 test，OK。
+- 架构测试组通过：Ran 10 tests，OK。
+- `git diff --check` 通过。
+
+### 遗留问题
+
+- 本轮只新增项目红线、评测流程和文档守护测试，没有接入自动实时 GPT 调用；后续每次体验类修改仍需要人工或冻结参考 artifact 做 GPT-like parity review。
+- 当前工作区已有大量未提交修改，本轮未回滚、未整理这些并行改动。
+
+### 是否影响主流程
+
+是，影响验收流程。后续影响文件解析、回答、排版、图表、过程流或用户可见文案的修改，不能只以单测 / smoke 通过作为完成标准。
+
+### 是否涉及 Benchmark
+
+间接涉及。Benchmark、标准答案和 scorer 仍只能在 response 生成后用于评估；GPT-like parity redline 不能成为把标准答案、proxy answer 或 hidden answer 写入核心链路的理由。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。红线约束最终用户体验和验收标准，不改变 agent_runtime / multi_agent_workflows / data_agent_core 的分层边界。
+
+### 是否修改核心数据契约
+
+否。本轮只改项目规则、评测文档和架构测试。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README 已同步 GPT-like parity redline 和后续 TODO。
+
+### 日期时间
+
+2026-05-25 16:02 CST
+
+### 本次目标
+
+修复并纳入 Phase 12.1：Workbench 和 generic eval 中说明型问题会把原始明细拼接成答案的问题；同时落实主页面 monitor SSE 活动流、默认一行过程、代码进过程详情、Insight 卡片化和清洗策略安全边界。
+
+### 修改文件
+
+- backend/services/data_agent_service.py
+- data_agent_core/core/message_intent.py
+- data_agent_core/output/dataset_overview.py
+- data_agent_core/output/cleaning_guidance.py
+- data_agent_core/output/process_narrative.py
+- data_agent_core/output/response_builder.py
+- frontend/app.js
+- frontend/styles.css
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_phase10_result_experience.py
+- MAIN_GOAL.md
+- README.md
+- docs/API_CONTRACT.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 修复概览意图：`这几个表什么意思，有什么字段`、`这个数据主要讲什么`、字段含义/有什么字段类问法进入 overview，不再被“几/字段/什么”误判成明细分析。
+- 扩展宽泛 readiness 问法：`适合做哪些分析`、`这个数据正常吗`、`这个数据能不能用`、`能不能做趋势 / 环比 / 同比` 等进入 overview，不再退化成单独行数。
+- 新增多表 overview：返回表名、来源、行列规模、可能含义和关键字段；排除编号/代码/发票号/客户号作为指标，长文本分布不展开原始取值。
+- 单表 overview 增加业务含义和字段角色修正：订单 / 零售交易型数据会说明为交易明细，`InvoiceDate` 识别为时间字段，`Country` 识别为地理维度。
+- 新增清洗策略安全路径：清洗规则、影响行数/比例、缺失删除填充保留、是否修改原始数据等问题进入 cleaning guidance，只做模拟和边界说明，不修改文件，不返回命中明细。
+- 新增后端 raw detail exit guard：正式分析链路若最终 `answer` 像 CSV / 原始明细行拼接，会在返回前改写为安全 overview 或澄清，避免绕过前置 intent route 的同类事故。
+- Workbench 主界面接入 monitor SSE：发送前订阅当前 `monitor_run_id`，消费安全事件白名单，默认只显示一行 activity summary，详情中保留实时步骤；无 EventSource 时保留本地进度 fallback。
+- 前端新增渲染熔断：overview / cleaning_simulation / general 问法只展示紧凑契约表，拒绝在主界面展开宽明细表。
+- 代码 artifact 从主答案独立面板移入“查看处理过程”详情；Insight 改成卡片，拆 observation / evidence / action，并限制数量。
+- API 和 MAIN_GOAL 明确 Phase 12.1 子目标：streaming_activity_view、general_overview_no_raw_dump、cleaning_guidance_no_raw_dump、frontend_render_guard、process_code_placement、insight_cards。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile data_agent_core/core/message_intent.py data_agent_core/output/dataset_overview.py data_agent_core/output/cleaning_guidance.py data_agent_core/output/process_narrative.py backend/services/data_agent_service.py data_agent_core/output/response_builder.py`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets tests.core.test_phase10_result_experience -v`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 scripts/run_generic_dataset_eval.py --files '/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx' --dataset-name uk_retail_phase12_1_final --output-dir outputs/eval_gate/uk_retail_phase12_1_final --generate-vds-answers --print-summary`
+- `jq` / `rg` 检查 `outputs/eval_gate/uk_retail_phase12_1_final/comparison.md|json` 是否仍包含 UK retail 原始明细串或单独行数退化。
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- Browser 验证 `http://127.0.0.1:8001/workbench`：载入历史对话并再次从输入框提交 `这个数据主要讲什么？`。
+
+### 测试结果
+
+- Python compile 通过。
+- `node --check frontend/app.js` 通过。
+- Focused tests 通过：Ran 63 tests，OK。
+- 手工服务层验证：`这几个表什么意思，有什么字段`、`这个数据主要讲什么？`、`给出建议清洗规则、影响行数、影响比例，并说明是否需要用户确认。`、`你会直接修改原始数据吗？` 均不再返回 raw detail dump。
+- Generic UK retail gate：`outputs/eval_gate/uk_retail_phase12_1_final`，candidate score `7 / 35`。该分数仍低，不能当作 generic gate 通过；但本轮 blocker 指标通过：`comparison.md/json` 未命中 `WHITE HANGING HEART`、`536365,`、`HAND WARMER` 等原始明细串，关键宽泛问法未退化成 `541909` 单独行数。
+- `generic_uploaded_002`（`这个数据主要讲什么？`）已回答为订单 / 零售交易明细表，正确识别 `InvoiceDate` 为时间字段、`Country` 为地理维度。
+- 真实 Workbench smoke：`127.0.0.1:8001/workbench` 已同步 runtime 后验证；历史载入和新提交 `这个数据主要讲什么？` 均显示多表 overview 紧凑表，无 raw dump、无主答案区代码面板、过程默认一行且可展开，console error/warn 为空。
+- 截图：`/tmp/vds_phase12_1/workbench_phase12_1_smoke.png`、`/tmp/vds_phase12_1/workbench_phase12_1_live_question.png`。
+
+### 遗留问题
+
+- Generic UK retail candidate score 仍只有 `7 / 35`，说明还有不少标准回复措辞、质量扫描、readiness 细项要继续补；但本轮用户指出的 raw dump / 行数退化 / `这个数据主要讲什么` blocker 已有后端出口、前端熔断、generic eval 和真实浏览器证据。
+- 本轮没有重跑 full unittest discover，也没有重跑 DABstep / Microsoft / VDS 95 全量门禁；此次改动集中在 Phase 12.1 体验链路和 focused non-regression。
+
+### 是否影响主流程
+
+是。说明型问题会在进入完整 multi-agent 之前被后端收敛成 overview 或 cleaning guidance；正式分析出口也会阻断 CSV / 明细行拼接答案，防止错误 planner / executor 输出污染用户体验。
+
+### 是否涉及 Benchmark
+
+间接涉及。修复来自 generic eval `comparison.md` 暴露的失败模式，但未把标准答案、proxy、scorer 或 case_id 写入 Agent 链路；新增 sanitizer 测试继续阻断这些字段进入 monitor payload。
+
+### 是否修改 API 契约
+
+是。记录 `cleaning_simulation` 响应、multi-table overview 紧凑表、raw detail exit guard、主页面 monitor SSE 消费白名单，以及代码 artifact 只在过程详情展示的前端契约。
+
+### 是否新增或修改运行追踪逻辑
+
+是。`data_scan_note`、`code_artifact_ready` 和 `answer_outline_ready` 作为安全 monitor 事件进入主页面 activity stream；最终 JSON 仍是权威结果。
+
+### 是否已同步 README
+
+是。README 已同步 Phase 12.1 的当前状态、Workbench 展示契约、generic eval 证据和真实浏览器 smoke 结果。

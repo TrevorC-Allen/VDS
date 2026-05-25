@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VDS Agent Monitor</title>
+    <link rel="icon" href="/frontend/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/frontend/styles.css?v=20260525-agent-monitor" />
+  </head>
+  <body class="monitor-page">
+    <main class="monitor-dashboard" aria-label="Agent 通信监看">
+      <header class="monitor-page-header">
+        <div>
+          <h1>VDS Agent 节点监看</h1>
+          <p id="monitor-run-label">监听 /api/data-agent/monitor/stream</p>
+        </div>
+        <div class="monitor-page-actions">
+          <a class="button secondary" href="/workbench">返回 Workbench</a>
+          <button id="monitor-clear" class="button" type="button">清空本页</button>
+        </div>
+      </header>
+
+      <section class="monitor-overview" aria-label="监看摘要">
+        <div>
+          <strong id="monitor-event-count">0</strong>
+          <span>当前消息事件</span>
+        </div>
+        <div>
+          <strong id="monitor-agent-count">0</strong>
+          <span>当前消息节点</span>
+        </div>
+        <div>
+          <strong id="monitor-tool-count">0</strong>
+          <span>当前消息工具</span>
+        </div>
+      </section>
+
+      <section class="monitor-grid">
+        <section class="monitor-section monitor-message-section">
+          <div class="monitor-section-header">
+            <h2>对话 / 消息</h2>
+            <span id="monitor-stream-status">连接中</span>
+          </div>
+          <ol id="monitor-message-list" class="monitor-message-list" aria-label="可监看的消息">
+            <li class="monitor-empty">从 Workbench 发送消息后，这里会按对话列出每一条消息。</li>
+          </ol>
+        </section>
+
+        <section class="monitor-section monitor-parsed-section">
+          <div class="monitor-section-header">
+            <h2>节点解释</h2>
+            <span id="monitor-final-status">暂无结果</span>
+          </div>
+          <div id="monitor-parsed" class="monitor-parsed empty-state">运行后会按顺序显示每个节点：收到什么、做了什么、发出什么。</div>
+        </section>
+
+        <section class="monitor-section monitor-debug-section">
+          <details id="monitor-debug-details">
+            <summary>
+              <span>排查明细</span>
+              <em>事件流和安全 JSON 默认收起</em>
+            </summary>
+            <div class="monitor-debug-grid">
+              <section>
+                <div class="monitor-section-header">
+                  <h2>事件明细</h2>
+                  <span>按当前消息过滤</span>
+                </div>
+                <ol id="monitor-event-list" class="monitor-event-list" aria-live="polite">
+                  <li class="monitor-empty">运行开始后显示每个 agent、工具和环节事件。</li>
+                </ol>
+              </section>
+              <section>
+                <div class="monitor-section-header">
+                  <h2>安全事件 JSON</h2>
+                  <span>已后端脱敏并截断</span>
+                </div>
+                <pre id="monitor-json" class="monitor-json">{}</pre>
+              </section>
+            </div>
+          </details>
+        </section>
+      </section>
+    </main>
+    <script src="/frontend/monitor.js?v=20260525-agent-monitor" type="module"></script>
+  </body>
+</html>

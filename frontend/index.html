@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Virtual Data Scientist Workbench</title>
     <link rel="icon" href="/frontend/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/frontend/styles.css" />
+    <link rel="stylesheet" href="/frontend/styles.css?v=20260525-agent-monitor" />
   </head>
   <body>
     <div class="app-shell">
@@ -22,6 +22,28 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           新分析
         </button>
+
+        <section class="project-panel" aria-labelledby="project-title">
+          <div class="project-header">
+            <h2 id="project-title">Projects</h2>
+            <span id="project-count">0</span>
+          </div>
+          <div class="project-controls">
+            <select id="project-select" aria-label="选择 Project">
+              <option value="">无 Project</option>
+            </select>
+            <button id="new-project-button" class="icon-button" type="button" title="新 Project" aria-label="新 Project">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            </button>
+            <button id="rename-project-button" class="icon-button" type="button" title="重命名 Project" aria-label="重命名 Project" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 20 8-8-4-4-8 8-2 6 6-2Z"></path><path d="m14 6 4 4"></path></svg>
+            </button>
+            <button id="delete-project-button" class="icon-button danger" type="button" title="删除 Project" aria-label="删除 Project" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 15h10l1-15"></path><path d="M10 11v6M14 11v6"></path></svg>
+            </button>
+          </div>
+          <p id="project-summary" class="project-summary">project-only memory</p>
+        </section>
 
         <section class="history-panel" aria-labelledby="history-title">
           <div class="history-header">
@@ -41,7 +63,11 @@
             <p id="dataset-status">等待上传数据集</p>
           </div>
           <div class="status-strip" aria-live="polite">
-            <span id="api-status" class="status-dot idle">准备就绪</span>
+            <a class="monitor-link" href="/monitor" target="_blank" rel="noreferrer" title="打开监看页">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M7 15l3-3 3 2 5-7"></path><path d="M17 7h3v3"></path></svg>
+              <span>监看页</span>
+            </a>
+            <span id="api-status" class="status-pill idle">准备就绪</span>
             <span id="dataset-chip" class="dataset-chip">未上传数据</span>
           </div>
         </header>
@@ -51,7 +77,7 @@
             <div class="avatar" aria-hidden="true">V</div>
             <div class="message-content">
               <h2>今天要分析什么数据？</h2>
-              <p class="message-copy">上传 CSV 或 Excel，然后直接提问。我会像对话一样展示理解、选择数据、分析和回答的过程。</p>
+              <p class="message-copy">上传数据文件，然后直接提问。我会像对话一样展示理解、选择数据、分析和回答的过程。</p>
             </div>
           </article>
 
@@ -108,15 +134,23 @@
               </section>
 
               <section class="analysis-block process-panel" aria-labelledby="process-title">
-                <div class="block-header compact process-header">
-                  <div>
-                  <h2 id="process-title">正在做什么</h2>
-                    <p id="process-summary">我会在这里展示当前正在处理的步骤。</p>
-                  </div>
+                <h2 id="process-title" class="visually-hidden">正在做什么</h2>
+                <div class="process-line">
+                  <p id="process-summary">提问后，我会用一行摘要说明当前正在处理什么。</p>
                 </div>
-                <ol id="process-timeline" class="process-timeline" aria-live="polite">
-                  <li class="muted-cell">提问后显示分析过程。</li>
-                </ol>
+                <details id="process-details" class="process-details">
+                  <summary>查看处理过程</summary>
+                  <ol id="process-timeline" class="process-timeline" aria-live="polite">
+                    <li class="muted-cell">提问后显示分析过程。</li>
+                  </ol>
+                </details>
+              </section>
+
+              <section class="analysis-block artifact-panel hidden" aria-labelledby="artifact-title">
+                <div class="block-header compact">
+                  <h2 id="artifact-title">代码</h2>
+                </div>
+                <div class="artifact-list"></div>
               </section>
             </div>
           </article>
@@ -124,17 +158,42 @@
 
         <section class="composer-shell" aria-label="对话输入">
           <div class="composer">
-            <textarea id="question-input" rows="1" placeholder="向 VDS 提问，例如：哪个城市订单金额最高？"></textarea>
+            <div
+              id="question-input"
+              class="composer-input is-empty"
+              role="textbox"
+              aria-multiline="true"
+              aria-label="向 VDS 提问，例如：哪个城市订单金额最高？"
+              data-placeholder="向 VDS 提问，例如：哪个城市订单金额最高？"
+              contenteditable="plaintext-only"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              data-ms-editor="false"
+              data-gramm="false"
+              data-gramm_editor="false"
+              data-enable-grammarly="false"
+            ></div>
             <div class="composer-actions">
               <div class="upload-controls" aria-label="文件上传">
-                <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls" />
+                <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md,.txt,.yaml,.yml" />
                 <label class="icon-button upload-pick-button" for="file-input" title="选择文件" aria-label="选择文件">
                   <svg viewBox="0 0 24 24"><path d="m21.4 11.6-8.5 8.5a5 5 0 0 1-7.1-7.1l9-9a3.2 3.2 0 0 1 4.5 4.5l-9.1 9.1a1.5 1.5 0 0 1-2.1-2.1l8.3-8.3" /></svg>
                 </label>
                 <button id="upload-button" class="button secondary upload-button" type="button" disabled>上传</button>
-                <div class="file-status" aria-live="polite">
-                  <strong id="file-summary">选择文件</strong>
-                  <span id="file-detail">CSV / Excel 支持多选</span>
+                <div class="file-status-wrap">
+                  <div class="file-status" aria-live="polite">
+                    <button id="file-summary" class="file-summary-button" type="button" disabled aria-expanded="false" aria-controls="file-panel">选择文件</button>
+                    <span id="file-detail">数据和说明文件支持多选</span>
+                  </div>
+                  <section id="file-panel" class="file-panel hidden" aria-label="文件列表">
+                    <div class="file-panel-header">
+                      <strong>文件</strong>
+                      <span id="file-panel-count">0</span>
+                    </div>
+                    <ul id="file-panel-list" class="file-panel-list"></ul>
+                  </section>
                 </div>
               </div>
               <div class="controls-row">
@@ -164,6 +223,6 @@
         </section>
       </main>
     </div>
-    <script src="/frontend/app.js" type="module"></script>
+    <script src="/frontend/app.js?v=20260525-agent-monitor" type="module"></script>
   </body>
 </html>

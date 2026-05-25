@@ -43,11 +43,14 @@ class OutputContractTest(unittest.TestCase):
     def test_validator_catches_raw_object_and_debug_leaks(self) -> None:
         raw_object = validate_final_answer("[{'merchant': 'A'}]", {"answer_type": "text"})
         debug_trace = validate_final_answer("debug: trace: tool_call foo", {"answer_type": "text"})
+        process_view = validate_final_answer("process_view_v2: reasoning_trace", {"answer_type": "text"})
 
         self.assertFalse(raw_object.passed)
         self.assertIn("object_or_list_leak", raw_object.issues)
         self.assertFalse(debug_trace.passed)
         self.assertIn("debug_or_trace_leak", debug_trace.issues)
+        self.assertFalse(process_view.passed)
+        self.assertIn("debug_or_trace_leak", process_view.issues)
 
     def test_format_answer_preserves_existing_public_behavior(self) -> None:
         self.assertEqual("50.00%", format_answer(50, {"answer_type": "percentage"}))
@@ -80,6 +83,72 @@ class OutputContractTest(unittest.TestCase):
         self.assertFalse(response.success)
         self.assertFalse(response.debug["output_contract_validation"]["passed"])
         self.assertEqual(OUTPUT_CONTRACT_VALIDATION_FAILED, response.errors[0]["error_type"])
+
+    def test_response_builder_summarizes_vds_current_metric_top(self) -> None:
+        logic = LogicForm(
+            task_type="ranking",
+            operation="vds_current_filtered_metric_top",
+            metric="ARR_row",
+            group_by="客户名称",
+            parameters={
+                "metric": "ARR_row",
+                "entity": "客户名称",
+                "current_period": "本周",
+                "value_filters": {"订阅状态": ["暂停", "流失"]},
+                "sort_order": "desc",
+                "limit": 10,
+            },
+            output_format={"answer_type": "table", "entity_field": "客户名称", "metric": "ARR_row"},
+        )
+        rows = [{"客户名称": "乙客户", "ARR_row": 3000.0}, {"客户名称": "甲客户", "ARR_row": 1000.0}]
+
+        response = build_response(
+            run_id="run_vds_top",
+            user_question=UserQuestion(dataset_id="ds", question="本周流失和暂停对ARR影响最大的Top10客户？"),
+            plan=AnalysisPlan(plan_id="plan", logic_form=logic),
+            execution_result=ExecutionResult(backend="pandas", success=True, value=rows, columns=["客户名称", "ARR_row"], rows=rows),
+            verification=VerificationResult(passed=True),
+        )
+
+        self.assertTrue(response.success)
+        self.assertIn("ARR 最高的是乙客户", response.answer)
+        self.assertIn("订阅状态为暂停/流失", response.answer)
+        self.assertEqual(["客户名称", "ARR_row"], response.result["columns"])
+        self.assertEqual("vds_current_metric_top_answer_summary", response.debug["user_experience_shaping"]["reason"])
+
+    def test_response_builder_keeps_vds_topn_list_when_rows_have_answers(self) -> None:
+        logic = LogicForm(
+            task_type="ranking",
+            operation="vds_current_filtered_metric_top",
+            metric="CHR_row",
+            group_by="客户名称",
+            parameters={
+                "metric": "CHR_row",
+                "entity": "客户名称",
+                "current_period": "本周",
+                "value_filters": {"套餐名称": ["Pro"]},
+                "sort_order": "desc",
+                "limit": 10,
+            },
+            output_format={"answer_type": "table", "entity_field": "客户名称", "metric": "CHR_row"},
+        )
+        rows = [
+            {"客户名称": "甲客户", "CHR_row": 1.0, "answer": "1. 甲客户：本周CHR=100.00%"},
+            {"客户名称": "乙客户", "CHR_row": 0.0, "answer": "2. 乙客户：本周CHR=0.00%"},
+        ]
+
+        response = build_response(
+            run_id="run_vds_topn",
+            user_question=UserQuestion(dataset_id="ds", question="本周Pro套餐CHR最高的Top10客户？"),
+            plan=AnalysisPlan(plan_id="plan", logic_form=logic),
+            execution_result=ExecutionResult(backend="pandas", success=True, value={"candidate_table": rows}, columns=["客户名称", "CHR_row", "answer"], rows=rows),
+            verification=VerificationResult(passed=True),
+        )
+
+        self.assertTrue(response.success)
+        self.assertIn("1. 甲客户", response.answer)
+        self.assertIn("2. 乙客户", response.answer)
+        self.assertNotIn("最高的是甲客户", response.answer)
 
 
 if __name__ == "__main__":

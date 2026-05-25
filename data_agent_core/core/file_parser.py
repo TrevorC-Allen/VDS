@@ -65,6 +65,13 @@ def parse_dataset_file(
         tables = read_excel(source_path)
         if len(tables) > 1:
             warnings.append("Multiple Excel sheets were parsed as separate tables.")
+    elif suffix == ".json":
+        records = read_json_records(source_path)
+        tables = {display_path.stem or source_path.stem or "table": pd.DataFrame(records)}
+    elif suffix == ".parquet":
+        tables = {display_path.stem or source_path.stem or "table": pd.read_parquet(source_path)}
+    elif suffix in {".arrow", ".feather"}:
+        tables = {display_path.stem or source_path.stem or "table": pd.read_feather(source_path)}
     else:
         raise ValueError(f"Unsupported file type: {source_path.suffix}")
 
@@ -163,13 +170,27 @@ def load_dabstep_context(context_dir: str | Path) -> dict[str, Any]:
     """Load the DABstep context without exposing benchmark answers."""
 
     root = Path(context_dir)
+    payments = read_csv(root / "payments.csv")
+    merchant_category_codes = read_csv(root / "merchant_category_codes.csv")
+    acquirer_countries = read_csv(root / "acquirer_countries.csv")
+    tables = {
+        "payments": payments,
+        "merchant_category_codes": merchant_category_codes,
+        "acquirer_countries": acquirer_countries,
+    }
+    for table_name, df in tables.items():
+        source_file = f"{table_name}.csv"
+        metadata = {"source_file": source_file, "sheet": None, "table_name": table_name}
+        df.attrs.update(metadata)
     return {
-        "payments": read_csv(root / "payments.csv"),
-        "merchant_category_codes": read_csv(root / "merchant_category_codes.csv"),
-        "acquirer_countries": read_csv(root / "acquirer_countries.csv"),
+        "payments": payments,
+        "merchant_category_codes": merchant_category_codes,
+        "acquirer_countries": acquirer_countries,
         "fees": read_json_records(root / "fees.json"),
         "merchant_data": read_json_records(root / "merchant_data.json"),
         "context_dir": root,
+        "tables": tables,
+        "primary_table": "payments",
     }
 
 

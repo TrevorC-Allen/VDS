@@ -137,9 +137,10 @@ def _column_issues(table_name: str, column_name: str, series: pd.Series) -> list
             )
         )
 
+    boolean_like = pd.api.types.is_bool_dtype(non_null)
     numeric = pd.to_numeric(non_null, errors="coerce")
     numeric_rate = 0.0 if len(non_null) == 0 else float(numeric.notna().mean())
-    if 0.0 < numeric_rate < 0.95 and _looks_metric_name(column_name):
+    if not boolean_like and 0.0 < numeric_rate < 0.95 and _looks_metric_name(column_name):
         issues.append(
             DataQualityIssue(
                 severity="medium",
@@ -154,7 +155,7 @@ def _column_issues(table_name: str, column_name: str, series: pd.Series) -> list
             )
         )
 
-    if numeric_rate >= 0.95 and numeric.notna().sum() >= 8:
+    if not boolean_like and numeric_rate >= 0.95 and numeric.notna().sum() >= 8:
         issues.extend(_numeric_outlier_issues(table_name, column_name, numeric))
         negative_count = int((numeric < 0).sum())
         if negative_count and _looks_non_negative_metric(column_name):

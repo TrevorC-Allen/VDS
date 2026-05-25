@@ -37,6 +37,9 @@ class ChartSpec:
     confidence: float = 0.0
     selection_reason: str = ""
     fallback_reason: str = ""
+    image_data_uri: str = ""
+    image_format: str = ""
+    render_engine: str = ""
 
 
 @dataclass
@@ -100,6 +103,9 @@ class FinalResponse:
     chart: ChartSpec | None = None
     quality_report: DataQualityReport | dict[str, Any] | None = None
     reasoning_trace_view: list[ReasoningTraceStep] | list[dict[str, Any]] = field(default_factory=list)
+    process_view_v2: dict[str, Any] = field(default_factory=dict)
+    overview_report: dict[str, Any] = field(default_factory=dict)
+    execution_artifacts: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[Any] = field(default_factory=list)
     debug: dict[str, Any] = field(default_factory=dict)

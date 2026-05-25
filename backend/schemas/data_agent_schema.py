@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
+import math
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,14 @@ from data_agent_core.contracts.dataset_contracts import DatasetProfile
 RESPONSE_VERSION = "v1"
 VALID_EXECUTION_MODES = {"auto", "pandas", "sql", "dual"}
 VALID_AGENT_MODES = {"multi_agent", "single_agent"}
+DATASET_FILE_ROLE = "dataset"
+RULE_FILE_ROLE = "rule"
+VALID_FILE_ROLES = {DATASET_FILE_ROLE, RULE_FILE_ROLE}
+USER_ANALYSIS_RULE_SCOPE = "user_analysis"
+BENCHMARK_RULE_SCOPE = "benchmark"
+VALID_RULE_SCOPES = {USER_ANALYSIS_RULE_SCOPE, BENCHMARK_RULE_SCOPE}
+DATASET_FILE_EXTENSIONS = {".csv", ".xlsx", ".xls", ".json", ".parquet", ".arrow", ".feather"}
+RULE_FILE_EXTENSIONS = {".yaml", ".yml", ".json", ".txt", ".md"}
 
 
 @dataclass
@@ -23,6 +32,7 @@ class AnalyzeRequest:
     execution_mode: str = "dual"
     guidelines: str = ""
     agent_mode: str = "multi_agent"
+    user_rule_file_id: str = ""
 
 
 @dataclass
@@ -47,6 +57,7 @@ def dataset_profile_response(profile: DatasetProfile | dict[str, Any]) -> dict[s
         "response_version": RESPONSE_VERSION,
         "success": True,
         "dataset_id": data.get("dataset_id"),
+        "file_role": data.get("file_role", DATASET_FILE_ROLE),
         "file_name": data.get("file_name"),
         "tables": data.get("tables", []),
         "created_at": data.get("created_at"),
@@ -93,9 +104,18 @@ def to_json_ready(value: Any) -> Any:
         return [to_json_ready(item) for item in value]
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     if hasattr(value, "item"):
         try:
-            return value.item()
+            scalar = value.item()
+            if scalar is not value:
+                return to_json_ready(scalar)
+        except (TypeError, ValueError):
+            pass
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
         except (TypeError, ValueError):
             pass
     return value

@@ -61,7 +61,39 @@
 
 风险：表头识别、编码识别、多 sheet 处理。
 
-状态：2026-05-21 已完成 Phase 1 最小 CSV / Excel 解析入口、DatasetProfile 生成、上传表核心测试；后续仍需增强编码识别、表头不确定处理和多 sheet 策略。
+状态：2026-05-21 已完成 Phase 1 最小 CSV / Excel 解析入口、DatasetProfile 生成、上传表核心测试；2026-05-25 已补齐 Workbench 完整 DAB context 包上传，JSON / MD 只在完整规则包中作为后端知识库使用；后续仍需增强编码识别、表头不确定处理和多 sheet 策略。
+
+### Rule Mode And Benchmark Rule Upload
+
+目标：在不破坏普通数据上传体验的前提下，显式区分 dataset、用户分析规则和 Benchmark 规则。
+
+影响模块：backend/storage、backend/services、backend/routers、frontend、docs/API_CONTRACT.md、docs/BENCHMARK_RULES.md、tests/backend。
+
+优先级：P1。
+
+验收标准：旧上传无 `file_role` 时默认 dataset；规则文件必须显式 `file_role=rule` 且带 `rule_scope`；user_analysis rule 只在显式 `user_rule_file_id` 下合并到本次 guidelines；benchmark rule 只能通过独立 Benchmark runner 使用；规则文件不进入 DatasetProfile / DataFrame / 字段画像。
+
+风险：不能把 Benchmark rule 混入普通 Chat；不能把用户分析规则当评分规则；不能为此重写上传系统或前端核心体验。
+
+泛化验证方式：用合成 CSV/JSON dataset、user_analysis markdown/yaml rule、benchmark JSON rule 覆盖 role-aware validation，并保留旧上传、DAB context、conversation 和 backend analyze 回归。
+
+状态：2026-05-25 已完成最小实现和后端聚焦测试；后续可继续增强 YAML 复杂结构、Benchmark report 展示和生产级规则持久化。
+
+### Phase 13 Project Workspace / Shared Files / Project Memory
+
+目标：把 Workbench 从单会话历史升级为 GPT-like Project 工作区，让同一 project 内的 chats、共享文件、项目说明和 project-only memory 共享同一后端上下文边界。
+
+影响模块：backend/storage/project_store.py、backend/services/data_agent_service.py、backend/routers/data_agent.py、backend/storage/conversation_store.py、frontend、docs/API_CONTRACT.md、tests/backend、tests/architecture。
+
+优先级：P1，阶段：Phase 13。
+
+验收标准：Project CRUD、project source upload / delete、project memory CRUD、conversation 挂 project、`/message project_id`、历史按 project 过滤和 project-only 隔离负例必须有测试；无 `project_id` 时现有 `/message`、conversation、upload-batch、rule auto-bind、multi-file/join、monitor 和输出契约不得退步。
+
+风险：当前是本地匿名 JSON Project Store，不代表真实多人协作、鉴权或多租户权限；Project memory 不能变成全局 memory；前端不能实现检索、join、聚合、评分、图表选择或数据清洗。
+
+泛化验证方式：用项目内/项目外对照测试验证 memory/source/conversation 隔离；用 `.md/.txt/.yaml/.yml` 说明文件验证文本 source 不进入 DatasetProfile / DataFrame；用 dataset + user rule 混合上传验证既有 TempFileStore、rule file 和 dataset store 行为不退化。
+
+状态：2026-05-25 已完成首个落点：本地 JSON Project Store、Project API、project source upload、project memory CRUD、project-scoped conversations 和 Workbench Project selector；后续继续补 Project instructions 编辑、saved response source、conversation summary memory、URL project restore、真实登录鉴权和多租户隔离。
 
 ### 双执行路径
 
@@ -237,13 +269,13 @@
 
 优先级：P0，阶段：Phase 7。
 
-验收标准：支持本周/上周/上上周周期比较；支持周环比排名下降/上升、TopN 增加/减少、增长数量和占比、环比阈值计数、城市/区域等维度环比增长率 Top、当前期阈值 Top、同圈层平均值倍数异常；同一能力族必须能迁移到门店、校区、院区、站点、客户等实体。
+验收标准：支持本周/上周/上上周周期比较；支持周环比排名下降/上升、TopN 增加/减少、增长数量和占比、环比阈值计数、城市/区域等维度环比增长率 Top、当前期阈值 Top、当前期过滤指标 TopN、各组 Top 实体、状态影响、三周期 TopN、同圈层平均值倍数异常；同一能力族必须能迁移到门店、校区、院区、站点、客户等实体。
 
 风险：如果把 O01/E01 等题号、固定文件名、固定门店/校区/客户或标准答案写入 parser/executor，会形成伪泛化补丁；如果只按单一销售域实现，会削弱中文泛化能力。
 
-泛化验证方式：使用合成 VDS BI 表覆盖销售和 SaaS/学习变体；用桌面真实 VDS `问题汇总.xlsx` 五域全部 95 题做 smoke，只检查执行成功与能力路由，不使用标准答案优化。
+泛化验证方式：使用合成 VDS BI 表覆盖销售、SaaS、学习等变体；用桌面真实 VDS `问题汇总.xlsx` 五域全部 95 题做 smoke 和离线标准答案 scorer。标准答案只能在 response 生成后评分，不传入 Agent workflow、prompt、Planner、Executor、Verifier、Correction 或 trace。
 
-状态：2026-05-22 已完成第一批 VDS BI 周期比较能力族；合成测试通过；桌面真实 VDS `问题汇总.xlsx` 五域全部 95 题 smoke 为 95/95 成功。后续继续扩展趋势排名、状态影响、毛利率、支付/配送/付费方式排名等更复杂业务问法。
+状态：2026-05-25 已恢复并扩展 VDS 标准答案所需中文 BI 能力族；合成能力测试通过；桌面真实 VDS `问题汇总.xlsx` 五域全部 95 题标准答案 scorer 为 `95/95`，报告为 `outputs/vds_standard_answer_recheck_20260525_core_fix_v2/report.json`。后续继续扩展更多中文真实业务表、字段别名、多表场景和真实 provider 大规模回归。
 
 ### DABstep Hour-Of-Day Group Capability
 
@@ -317,7 +349,7 @@
 
 优先级：P0，阶段：Phase 9。
 
-验收标准：支持单文件 / 多文件上传、文件 / sheet / table profile 预览、问题提交、结果表格、verification、warnings、errors、join plan trace、join execution summary 和 run history；前端不实现指标公式、join、排序聚合、评分或核心数据计算。
+验收标准：支持单文件 / 多文件上传、DAB context 包上传、文件 / sheet / table profile 预览、问题提交、结果表格、verification、warnings、errors、join plan trace、join execution summary 和 run history；前端不实现指标公式、join、排序聚合、评分、规则解析或核心数据计算。
 
 风险：如果前端开始自行计算指标或 join，会破坏 Phase 8 已冻结的后端契约和 Verifier 安全边界；如果前端依赖 debug 进行业务计算，会导致稳定契约漂移。
 
@@ -331,7 +363,7 @@
 
 是否影响 errors：否。首版只展示后端 errors。
 
-状态：2026-05-23 已完成首版。`backend/main.py` 挂载 `/frontend` 和 `/workbench`；前端 smoke 无 console / page error，截图为 `outputs/phase9_workbench_desktop_20260523.png` 和 `outputs/phase9_workbench_mobile_20260523.png`。
+状态：2026-05-23 已完成首版。`backend/main.py` 挂载 `/frontend` 和 `/workbench`；前端 smoke 无 console / page error，截图为 `outputs/phase9_workbench_desktop_20260523.png` 和 `outputs/phase9_workbench_mobile_20260523.png`。2026-05-25 已允许网页端选择 `.json` / `.md`，完整 DAB context 包由后端识别为 `dabstep_context` dataset，前端仍只上传和展示。
 
 ### Phase 7.5 Tool / Safety
 
@@ -451,7 +483,7 @@
 
 优先级：P0，阶段：Phase 7.10。
 
-验收标准：每个新增能力族有合成或非 Benchmark 用例、同类变体、中文字段 / 中文问题用例和旧代表回归；DABstep dev 1-10、DABstep public all 1-450 mock、Microsoft 1-300 和 VDS 95 smoke 不退步。
+验收标准：每个新增能力族有合成或非 Benchmark 用例、同类变体、中文字段 / 中文问题用例和旧代表回归；DABstep dev 1-10、DABstep public all 1-450 mock、Microsoft 1-300、VDS 95 smoke 和当前分支 VDS 标准答案 scorer 不退步。
 
 风险：如果按 task_id、题面、public proxy、accepted answer、hidden answer、固定样本值或当前错误形态修复，就是伪泛化补丁。
 
@@ -519,29 +551,54 @@
 
 优先级：P0，阶段：Phase 11。
 
-状态：Planned / Not implemented yet。本条只记录计划和边界，不代表 conversation endpoints、`conversation_id` 或 owner isolation 已经可用。
+状态：First implementation landed。已新增本地 JSON conversation store、`conversation_id`、conversation list / get / rename endpoints，`/message` 自动追加 user / assistant turn，Workbench 可从后端历史列表载入旧消息并持久化重命名；2026-05-25 已新增 `monitor_run_id` 和 SSE 安全事件流，用于本地 Agent 监看。URL 恢复、多窗口实时同步、普通 CSV / Excel 跨进程 DataFrame 恢复、真实登录鉴权和多租户隔离仍未完成。
 
-验收标准：新增 `conversation_id` 会话层；每个会话独立保存消息、当前 dataset、runs 和最近结果；无 `conversation_id` 的新窗口默认创建独立会话；带同一 `conversation_id` 的窗口恢复同一历史；历史 Chat 从后端会话列表加载；旧 `dataset_id` analyze / upload 调用继续兼容。
+验收标准：新增 `conversation_id` 会话层；每个会话独立保存消息、当前 dataset、runs 和最近结果；无 `conversation_id` 的新消息默认创建独立会话；历史 Chat 从后端会话列表加载；旧 `dataset_id` analyze / upload 调用继续兼容。未完成项继续要求 URL `conversation_id` 恢复、多窗口同会话同步和跨进程 dataset 表恢复。
 
 UX 验收标准：过程展示默认只占一行，使用小号浅灰文字展示最新安全摘要，例如“用户提到了‘城市订单金额’，我会先确认城市字段和金额字段。”；右侧或末尾提供 `查看过程` / `查看 N 步` 点击提示；展开后只显示用户可理解的结构化步骤，不展示后端审计 JSON、quality_report、warnings、verification、join trace 或完整 Chain of Thought。
 
-未来用户隔离预留：conversation schema 必须预留 `owner_type`、`owner_id`、`tenant_id`、`created_by` 或统一 `owner_context`；v1 可使用 local anonymous scope，但所有 list / get / update / upload / analyze 的服务层接口都要保留 backend owner filter 边界，不能只靠前端隐藏历史。
+未来用户隔离预留：conversation schema 当前预留 `owner_id`、`tenant_id` 和 `owner_context`；v1 可使用 local anonymous scope，但所有 list / get / update / upload / analyze 的服务层接口都要保留 backend owner filter 边界，不能只靠前端隐藏历史。
 
 风险：如果只用 browser localStorage 存完整历史，会导致多窗口、重启和未来多用户隔离不可控；如果把 raw CoT 或后端术语直接展示给用户，会破坏安全边界和 GPT-like 体验；如果前端根据历史自行做 join、聚合、排序或评分，会破坏核心算法边界。
 
-测试方式：backend 单测覆盖 create/list/get/update conversation、upload 绑定会话、analyze 追加到正确会话、两个会话互不串线、旧无 `conversation_id` 调用兼容、raw CoT 禁止字段不出现在响应；前端测试覆盖 URL `conversation_id` 恢复、新建聊天生成新会话、历史列表加载和安静过程展开；浏览器 smoke 覆盖两个窗口上传不同 CSV 并提问、回到历史会话继续提问、同一 URL 恢复同一会话。
+测试方式：backend 单测覆盖 create/list/get/update conversation、message 追加到正确会话、旧无 `conversation_id` 调用兼容；前端静态测试覆盖 conversation list、history get、rename PATCH、旧消息恢复和安静过程展开。后续还需浏览器 smoke 覆盖两个窗口上传不同 CSV 并提问、回到历史会话继续提问、URL 恢复同一会话。
 
-是否影响 contracts：是。新增 planned conversation schema 和可选 `conversation_id` / owner 字段。
+是否影响 contracts：是。新增 conversation schema 和可选 `conversation_id` / owner 字段。
 
-是否影响 API_CONTRACT：是。必须先记录 planned endpoints 和兼容策略，再实现。
+是否影响 API_CONTRACT：是。已记录当前 endpoints、response extension 和后续边界。
 
 是否影响 tracing：是。只能复用或派生 trace-safe `reasoning_trace_view` 摘要，不新增 raw CoT、raw prompt 或 raw reasoning token 暴露面。
 
 是否影响 errors：可能。实现时可复用现有 errors；如新增 conversation not found / owner mismatch 等稳定错误类型，必须先写入 API_CONTRACT 和 tests。
+
+### Phase 12 GPT-like General Answer / Insight / Activity Stream
+
+目标：把 Workbench 从“能展示结果”升级为“像 GPT / ChatGPT Data Analysis 一样自然解释数据、展示安全过程、展示可复现代码和给出有业务价值洞察”的体验，并把 GPT-like parity review 作为红线。
+
+影响模块：data_agent_core/output、data_agent_core/core/file_parser.py、data_agent_core/core/schema_profiler.py、backend/services、frontend、docs/EVALUATION_GATE.md、tests/core、tests/backend、tests/architecture、浏览器 smoke。
+
+优先级：P0，阶段：Phase 12。
+
+状态：First implementation landed。已落地 `overview_report`、enhanced insight、safe `execution_artifacts`、dataset overview 活动流、semantic chart planning guard 和规则文件自动绑定；后续继续扩展文件解析、回答模板、图表语义和 Workbench 排版体验。
+
+验收标准：general / overview 问法必须生成结构化数据报告；Insight 必须带 observation / evidence / recommended action；图表不能把 ID / reference / bin / year / hour 等字段误当指标；Workbench 必须展示主回答、表格/图表、活动流和代码 artifact；每次体验类修改都必须执行 GPT-like parity review，对比 GPT / ChatGPT Data Analysis 同类结果或冻结标准 GPT 参考结果。
+
+风险：如果只按当前截图、当前字段、固定文件名、固定问法或当前样本值调整，就是伪泛化补丁；如果只看单测和 smoke，不对照 GPT 结果，就可能交付“能跑但不像 GPT”的文件解析、回答结构、排版样式和交互体验。
+
+泛化验证方式：至少覆盖一个非 payments 合成表、一个中文真实业务表或同类变体、一个浏览器可见 Workbench smoke，并在汇报中记录参考来源、主要差距、接受差异和被打回重写的点；GPT-like parity 差距很大时必须重写后再测。
+
+是否影响 contracts：是。体验增强必须优先落到后端稳定契约，不能只改前端临时拼接。
+
+是否影响 API_CONTRACT：可能。新增或改变稳定响应字段时必须同步 API_CONTRACT。
+
+是否影响 tracing：是。只能使用 trace-safe `process_view_v2` / `reasoning_trace_view` / execution artifact 摘要，不暴露完整 Chain of Thought。
+
+是否影响 errors：可能。若新增体验验收相关错误类型，必须同步 API_CONTRACT 和测试。
 
 ## TODO
 
 - 新功能进入开发前，先确认是否影响 contracts / API_CONTRACT / tracing / errors。
 - Phase 7.5 - 7.10 必须按编号推进，且每个工程阶段都要通过 DABstep、Microsoft 和 VDS 三数据集 non-regression gate。
 - Phase 8 后续只做 Guardrail，不重开 Phase 8 主体；Phase 9 后续按 Phase 9.1 做确认和回看面板，不把核心计算搬到前端。
-- Phase 11 启动前先实现后端会话持久化和 owner_context 边界，再接前端历史 Chat；不得把本地匿名会话误写成已实现登录权限。
+- Phase 11 后续继续补 URL conversation_id 恢复、多窗口同步、跨进程 dataset 表恢复和 owner filter 强制校验；不得把本地匿名会话误写成已实现登录权限。
+- Phase 12 后续所有文件解析、回答、排版、图表、过程流和代码 artifact 改动都必须执行 GPT-like parity review；差距很大直接打回重写。

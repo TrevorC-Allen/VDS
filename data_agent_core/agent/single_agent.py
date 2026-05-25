@@ -19,7 +19,9 @@ from data_agent_core.executors import pandas_executor, sql_executor
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMStageResult, complete_stage_with_llm, plan_with_llm
 from data_agent_core.output.chart_planner import build_chart_spec
+from data_agent_core.output.chart_renderer import attach_rendered_chart
 from data_agent_core.output.insight_generator import generate_insight
+from data_agent_core.output.process_narrative import build_process_view_v2
 from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
 from data_agent_core.output.response_builder import build_response, classify_not_applicable
 from data_agent_core.tracing.run_trace import RunTrace
@@ -235,6 +237,8 @@ class DataAnalysisAgent:
         )
         trace.reasoning_trace_view = build_reasoning_trace_view(trace)
         response.reasoning_trace_view = trace.reasoning_trace_view
+        trace.process_view_v2 = build_process_view_v2(trace, response)
+        response.process_view_v2 = trace.process_view_v2
         return response, trace
 
     def _context_summary(self) -> dict[str, Any]:
@@ -532,23 +536,27 @@ class DataAnalysisAgent:
     def _chart_from_stage(self, rule_chart: ChartSpec, stage: LLMStageResult, trusted: bool) -> ChartSpec:
         if not trusted:
             return rule_chart
+        if not rule_chart.chart_type or rule_chart.fallback_reason in {"detail_rows_prefer_table", "unsafe_metric_column"}:
+            return rule_chart
         raw = stage.raw
         chart_type = raw.get("chart_type")
-        if chart_type and chart_type != "none":
-            return ChartSpec(
-                chart_type=str(chart_type),
-                x=raw.get("x") or rule_chart.x,
-                y=raw.get("y") or rule_chart.y,
-                title=raw.get("title") or rule_chart.title,
-                data=rule_chart.data,
-                reason=str(raw.get("reason") or raw.get("reasoning_summary") or rule_chart.reason),
-                encoding=rule_chart.encoding,
-                series=rule_chart.series,
-                confidence=max(rule_chart.confidence, stage.confidence),
-                selection_reason=rule_chart.selection_reason,
-                fallback_reason=rule_chart.fallback_reason,
+        if chart_type and chart_type != "none" and not _unsafe_chart_metric(str(raw.get("y") or "")):
+            return attach_rendered_chart(
+                ChartSpec(
+                    chart_type=str(chart_type),
+                    x=raw.get("x") or rule_chart.x,
+                    y=raw.get("y") or rule_chart.y,
+                    title=raw.get("title") or rule_chart.title,
+                    data=rule_chart.data,
+                    reason=str(raw.get("reason") or raw.get("reasoning_summary") or rule_chart.reason),
+                    encoding=rule_chart.encoding,
+                    series=rule_chart.series,
+                    confidence=max(rule_chart.confidence, stage.confidence),
+                    selection_reason=rule_chart.selection_reason,
+                    fallback_reason=rule_chart.fallback_reason,
+                )
             )
-        return rule_chart
+        return attach_rendered_chart(rule_chart)
 
     def _quality_report_payload(self) -> dict[str, Any] | None:
         tables = self.context.get("tables") if isinstance(self.context, dict) else None
@@ -769,6 +777,8 @@ class UploadedDatasetAgent(DataAnalysisAgent):
         )
         trace.reasoning_trace_view = build_reasoning_trace_view(trace)
         response.reasoning_trace_view = trace.reasoning_trace_view
+        trace.process_view_v2 = build_process_view_v2(trace, response)
+        response.process_view_v2 = trace.process_view_v2
         return response, trace
 
     def _context_summary(self) -> dict[str, Any]:
@@ -830,6 +840,14 @@ def _sql_trace_summary(sql_result: Any, coverage: dict[str, Any], execution_mode
         "reason": reason,
         **base,
     }
+
+
+def _unsafe_chart_metric(column: str) -> bool:
+    lowered = column.lower()
+    compact = lowered.replace("_", "").replace("-", "").replace(" ", "")
+    if compact in {"id", "ids", "number", "cardnumber"} or compact.endswith("id") or compact.endswith("ids"):
+        return True
+    return any(token in lowered for token in ("reference", "psp", "bin", "编号", "代码", "流水", "卡号", "year", "hour", "minute", "day_of_year"))
 
 
 def _merge_optional_contract_fields(target: Any, source: Any) -> None:
