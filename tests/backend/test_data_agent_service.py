@@ -121,6 +121,163 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual("库存文件.csv", profiles["库存文件"]["source_file"])
         self.assertEqual(["产品", "销售额"], [column["name"] for column in profiles["销售文件"]["columns"]])
 
+    def test_upload_json_dataset_defaults_to_dataset_role(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            json_path = root / "sales.json"
+            json_path.write_text(
+                json.dumps(
+                    [
+                        {"city": "Shanghai", "sales": 100},
+                        {"city": "Beijing", "sales": 150},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(json_path, original_filename="sales.json")
+
+        self.assertTrue(upload["success"])
+        self.assertEqual("dataset", upload["file_role"])
+        self.assertEqual("sales.json", upload["file_name"])
+        self.assertEqual(["city", "sales"], [column["name"] for column in upload["tables"][0]["columns"]])
+
+    def test_rule_upload_requires_scope_and_does_not_create_dataset_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rule_path = root / "analysis_rules.yaml"
+            rule_path.write_text(
+                "language: zh-CN\n"
+                "analysis_rules:\n"
+                "  - 所有金额保留两位小数\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            missing_scope = service.upload_dataset(
+                rule_path,
+                original_filename="analysis_rules.yaml",
+                file_role="rule",
+            )
+            uploaded_rule = service.upload_dataset(
+                rule_path,
+                original_filename="analysis_rules.yaml",
+                file_role="rule",
+                rule_scope="user_analysis",
+            )
+
+        self.assertFalse(missing_scope["success"])
+        self.assertIn("rule_scope", missing_scope["errors"][0]["error_message"])
+        self.assertTrue(uploaded_rule["success"], uploaded_rule.get("errors"))
+        self.assertTrue(uploaded_rule["file_id"].startswith("rule_"))
+        self.assertEqual("rule", uploaded_rule["file_role"])
+        self.assertEqual("user_analysis", uploaded_rule["rule_scope"])
+        self.assertNotIn("tables", uploaded_rule)
+
+    def test_user_analysis_rule_is_explicit_analysis_context_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            rule_path = root / "analysis_rules.md"
+            csv_path.write_text("city,sales\nShanghai,100\nBeijing,150\nShanghai,200\n", encoding="utf-8")
+            rule_path.write_text("回答必须使用中文，并引用字段名。", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(csv_path, original_filename="sales.csv")
+            rule = service.upload_dataset(
+                rule_path,
+                original_filename="analysis_rules.md",
+                file_role="rule",
+                rule_scope="user_analysis",
+            )
+            without_rule = service.analyze_dataset(
+                dataset_id=upload["dataset_id"],
+                question="Which city has the highest sales?",
+                execution_mode="dual",
+            )
+            with_rule = service.analyze_dataset(
+                dataset_id=upload["dataset_id"],
+                question="Which city has the highest sales?",
+                execution_mode="dual",
+                user_rule_file_id=rule["file_id"],
+            )
+
+        self.assertTrue(without_rule["success"])
+        self.assertFalse(without_rule["debug"]["user_rule_context"]["enabled"])
+        self.assertTrue(with_rule["success"], with_rule.get("errors"))
+        self.assertTrue(with_rule["debug"]["user_rule_context"]["enabled"])
+        self.assertEqual(rule["file_id"], with_rule["debug"]["user_rule_context"]["file_id"])
+
+    def test_benchmark_rule_runs_only_through_benchmark_service(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            benchmark_path = root / "benchmark_rules.json"
+            csv_path.write_text(
+                "city,sales\n"
+                "Shanghai,100\n"
+                "Beijing,150\n"
+                "Shanghai,200\n",
+                encoding="utf-8",
+            )
+            benchmark_path.write_text(
+                json.dumps(
+                    {
+                        "benchmark_name": "sales_smoke",
+                        "questions": [
+                            {
+                                "id": "q1",
+                                "question": "Which city has the highest sales?",
+                                "expected_output": "Shanghai",
+                            }
+                        ],
+                        "metrics": ["string_match"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(csv_path, original_filename="sales.csv")
+            benchmark_rule = service.upload_dataset(
+                benchmark_path,
+                original_filename="benchmark_rules.json",
+                file_role="rule",
+                rule_scope="benchmark",
+            )
+            ordinary_analysis = service.analyze_dataset(
+                dataset_id=upload["dataset_id"],
+                question="Which city has the highest sales?",
+                user_rule_file_id=benchmark_rule["file_id"],
+            )
+            report = service.run_benchmark_from_rule(
+                dataset_id=upload["dataset_id"],
+                benchmark_rule_file_id=benchmark_rule["file_id"],
+            )
+
+        self.assertFalse(ordinary_analysis["success"])
+        self.assertIn("expected user_analysis", ordinary_analysis["errors"][0]["error_message"])
+        self.assertTrue(report["success"], report.get("errors"))
+        self.assertEqual("sales_smoke", report["benchmark"])
+        self.assertEqual(1, report["total"])
+        self.assertEqual(1, report["scored"])
+        self.assertEqual(1, report["correct"])
+        self.assertEqual("q1", report["details"][0]["case_id"])
+        self.assertNotIn("expected_output", json.dumps(report["details"], ensure_ascii=False))
+
     def test_upload_dabstep_context_package_enables_web_rule_questions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

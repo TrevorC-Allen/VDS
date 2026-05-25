@@ -63,6 +63,22 @@
 
 状态：2026-05-21 已完成 Phase 1 最小 CSV / Excel 解析入口、DatasetProfile 生成、上传表核心测试；2026-05-25 已补齐 Workbench 完整 DAB context 包上传，JSON / MD 只在完整规则包中作为后端知识库使用；后续仍需增强编码识别、表头不确定处理和多 sheet 策略。
 
+### Rule Mode And Benchmark Rule Upload
+
+目标：在不破坏普通数据上传体验的前提下，显式区分 dataset、用户分析规则和 Benchmark 规则。
+
+影响模块：backend/storage、backend/services、backend/routers、frontend、docs/API_CONTRACT.md、docs/BENCHMARK_RULES.md、tests/backend。
+
+优先级：P1。
+
+验收标准：旧上传无 `file_role` 时默认 dataset；规则文件必须显式 `file_role=rule` 且带 `rule_scope`；user_analysis rule 只在显式 `user_rule_file_id` 下合并到本次 guidelines；benchmark rule 只能通过独立 Benchmark runner 使用；规则文件不进入 DatasetProfile / DataFrame / 字段画像。
+
+风险：不能把 Benchmark rule 混入普通 Chat；不能把用户分析规则当评分规则；不能为此重写上传系统或前端核心体验。
+
+泛化验证方式：用合成 CSV/JSON dataset、user_analysis markdown/yaml rule、benchmark JSON rule 覆盖 role-aware validation，并保留旧上传、DAB context、conversation 和 backend analyze 回归。
+
+状态：2026-05-25 已完成最小实现和后端聚焦测试；后续可继续增强 YAML 复杂结构、Benchmark report 展示和生产级规则持久化。
+
 ### 双执行路径
 
 目标：支持 Pandas / NumPy 和 SQL / DuckDB 两条执行路径。

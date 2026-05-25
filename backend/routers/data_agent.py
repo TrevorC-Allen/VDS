@@ -35,6 +35,7 @@ def analyze_payload(payload: dict[str, Any]) -> dict[str, Any]:
         execution_mode=str(payload.get("execution_mode") or "dual"),
         guidelines=str(payload.get("guidelines") or ""),
         agent_mode=str(payload.get("agent_mode") or "multi_agent"),
+        user_rule_file_id=str(payload.get("user_rule_file_id") or ""),
         monitor_run_id=str(payload.get("monitor_run_id") or ""),
     )
 
@@ -62,7 +63,21 @@ def message_payload(payload: dict[str, Any]) -> dict[str, Any]:
         execution_mode=str(payload.get("execution_mode") or "dual"),
         guidelines=str(payload.get("guidelines") or ""),
         agent_mode=str(payload.get("agent_mode") or "multi_agent"),
+        user_rule_file_id=str(payload.get("user_rule_file_id") or ""),
         monitor_run_id=str(payload.get("monitor_run_id") or ""),
+    )
+
+
+def benchmark_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Non-FastAPI helper mirroring POST /api/data-agent/benchmark/run."""
+
+    return service.run_benchmark_from_rule(
+        dataset_id=str(payload.get("dataset_id") or ""),
+        benchmark_rule_file_id=str(payload.get("benchmark_rule_file_id") or ""),
+        user_rule_file_id=str(payload.get("user_rule_file_id") or ""),
+        execution_mode=str(payload.get("execution_mode") or "auto"),
+        agent_mode=str(payload.get("agent_mode") or "multi_agent"),
+        limit=payload.get("limit") if isinstance(payload.get("limit"), int) else None,
     )
 
 
@@ -119,7 +134,7 @@ def run_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 try:
-    from fastapi import APIRouter, File, UploadFile
+    from fastapi import APIRouter, File, Form, UploadFile
     from pydantic import BaseModel
     from starlette.responses import StreamingResponse
 
@@ -131,6 +146,7 @@ try:
         execution_mode: str = "dual"
         guidelines: str = ""
         agent_mode: str = "multi_agent"
+        user_rule_file_id: str = ""
         monitor_run_id: str = ""
 
     class ChatPayload(BaseModel):
@@ -148,7 +164,16 @@ try:
         execution_mode: str = "dual"
         guidelines: str = ""
         agent_mode: str = "multi_agent"
+        user_rule_file_id: str = ""
         monitor_run_id: str = ""
+
+    class BenchmarkRunPayload(BaseModel):
+        dataset_id: str
+        benchmark_rule_file_id: str
+        user_rule_file_id: str = ""
+        execution_mode: str = "auto"
+        agent_mode: str = "multi_agent"
+        limit: int | None = None
 
     class CreateConversationPayload(BaseModel):
         title: str = ""
@@ -172,18 +197,34 @@ try:
         monitor_run_id: str = ""
 
     @router.post("/upload")
-    async def upload(file: UploadFile = File(...)) -> dict[str, Any]:
+    async def upload(
+        file: UploadFile = File(...),
+        file_role: str = Form("dataset"),
+        rule_scope: str = Form(""),
+        bind_dataset_id: str = Form(""),
+    ) -> dict[str, Any]:
         suffix = Path(file.filename or "").suffix
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
             temp_file.write(await file.read())
             temp_path = Path(temp_file.name)
         try:
-            return service.upload_dataset(temp_path, original_filename=file.filename)
+            return service.upload_dataset(
+                temp_path,
+                original_filename=file.filename,
+                file_role=file_role,
+                rule_scope=rule_scope,
+                bind_dataset_id=bind_dataset_id,
+            )
         finally:
             temp_path.unlink(missing_ok=True)
 
     @router.post("/upload-batch")
-    async def upload_batch(files: list[UploadFile] = File(...)) -> dict[str, Any]:
+    async def upload_batch(
+        files: list[UploadFile] = File(...),
+        file_role: str = Form("dataset"),
+        rule_scope: str = Form(""),
+        bind_dataset_id: str = Form(""),
+    ) -> dict[str, Any]:
         temp_paths: list[Path] = []
         original_filenames: list[str | None] = []
         try:
@@ -193,7 +234,13 @@ try:
                     temp_file.write(await upload_file.read())
                     temp_paths.append(Path(temp_file.name))
                     original_filenames.append(upload_file.filename)
-            return service.upload_datasets(temp_paths, original_filenames=original_filenames)
+            return service.upload_datasets(
+                temp_paths,
+                original_filenames=original_filenames,
+                file_role=file_role,
+                rule_scope=rule_scope,
+                bind_dataset_id=bind_dataset_id,
+            )
         finally:
             for temp_path in temp_paths:
                 temp_path.unlink(missing_ok=True)
@@ -206,6 +253,7 @@ try:
             execution_mode=payload.execution_mode,
             guidelines=payload.guidelines,
             agent_mode=payload.agent_mode,
+            user_rule_file_id=payload.user_rule_file_id,
             monitor_run_id=payload.monitor_run_id,
         )
 
@@ -229,7 +277,19 @@ try:
             execution_mode=payload.execution_mode,
             guidelines=payload.guidelines,
             agent_mode=payload.agent_mode,
+            user_rule_file_id=payload.user_rule_file_id,
             monitor_run_id=payload.monitor_run_id,
+        )
+
+    @router.post("/benchmark/run")
+    def benchmark_run(payload: BenchmarkRunPayload) -> dict[str, Any]:
+        return service.run_benchmark_from_rule(
+            dataset_id=payload.dataset_id,
+            benchmark_rule_file_id=payload.benchmark_rule_file_id,
+            user_rule_file_id=payload.user_rule_file_id,
+            execution_mode=payload.execution_mode,
+            agent_mode=payload.agent_mode,
+            limit=payload.limit,
         )
 
     @router.post("/conversations")

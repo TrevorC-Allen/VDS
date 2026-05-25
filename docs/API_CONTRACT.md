@@ -38,6 +38,8 @@
 
 2026-05-25 更新：分析请求新增可选 `monitor_run_id`，并预留 `GET /api/data-agent/monitor/stream` SSE 安全过程事件流。monitor 只发布已脱敏的阶段摘要、角色状态、工具摘要和最终响应摘要，不作为前端业务计算输入，不返回完整 Chain of Thought、raw prompt、API key 或 hidden benchmark answer。
 
+2026-05-25 更新：新增 Rule Mode / Benchmark 规则上传最小契约。上传接口可接收 `file_role` 和 `rule_scope` metadata；旧请求不传 `file_role` 时默认视为 `dataset`。`file_role=rule` 必须显式提供 `rule_scope=user_analysis` 或 `rule_scope=benchmark`，规则文件不会进入 DatasetProfile、字段画像、DataFrame 解析或普通 Chat 数据上下文。`user_analysis` 规则只有在 `/analyze` 或 `/message` 请求显式传入 `user_rule_file_id` 时才会合并到本次 `guidelines`；`benchmark` 规则只能通过独立 `POST /api/data-agent/benchmark/run` 使用。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
@@ -103,6 +105,7 @@ owner 语义：
 `POST /api/data-agent/message` 当前 request extension：
 
 - conversation_id，可选；为空时后端自动创建。
+- user_rule_file_id，可选；只接受 `rule_scope=user_analysis` 的规则文件，语义同 `/analyze`。
 - owner_id，可选；未来由认证层注入或校验。
 - tenant_id，可选；未来由认证层注入或校验。
 - owner_context，可选；仅保存 JSON-safe 摘要，不参与权限判断。
@@ -121,13 +124,22 @@ Quiet Process UX 契约：
 
 ## POST /api/data-agent/upload
 
-目标：接收 CSV / Excel 文件，返回 dataset_id、文件信息、字段画像、warnings 和 errors。
+目标：接收 dataset 文件，返回 dataset_id、文件信息、字段画像、warnings 和 errors；或在显式 `file_role=rule` 时接收规则文件并返回 rule file metadata。
+
+请求：
+
+- multipart/form-data
+- `file`：上传文件
+- `file_role`：可选，`dataset` 或 `rule`；缺省为 `dataset`
+- `rule_scope`：当 `file_role=rule` 时必填，支持 `user_analysis` / `benchmark`
+- `bind_dataset_id`：可选，仅用于记录规则文件与当前 dataset 的弱绑定；普通分析仍必须显式传 `user_rule_file_id`
 
 稳定字段草案：
 
 - response_version
 - success
 - dataset_id
+- file_role
 - file_name
 - status
 - tables
@@ -170,15 +182,32 @@ Phase 11 planned request extension：
 - owner_id，可选；未来由认证层注入或校验。
 - tenant_id，可选；未来由认证层注入或校验。
 
+规则上传响应字段：
+
+- response_version
+- success
+- file_id
+- file_name
+- file_role：固定为 `rule`
+- rule_scope
+- dataset_id：可为空
+- status
+- rule_summary
+- warnings
+- errors
+
 ## POST /api/data-agent/upload-batch
 
-目标：一次接收多个 CSV / Excel 文件，或接收完整 DAB context 规则包，解析为同一个 dataset，返回可审计的多文件 DatasetProfile。
+目标：一次接收多个 dataset 文件，或接收完整 DAB context 规则包，解析为同一个 dataset，返回可审计的多文件 DatasetProfile；当显式 `file_role=rule` 时，一次接收多个同 scope 规则文件并返回 rule file ids。
 
 请求：
 
 - multipart/form-data
 - 字段名：files
 - 类型：一个或多个 UploadFile
+- `file_role`：可选，`dataset` 或 `rule`；缺省为 `dataset`
+- `rule_scope`：当 `file_role=rule` 时必填，支持 `user_analysis` / `benchmark`
+- `bind_dataset_id`：可选，仅用于记录规则文件与当前 dataset 的弱绑定
 
 稳定响应字段与 `/upload` 一致：
 
@@ -210,7 +239,7 @@ Phase 11 planned request extension：
 
 ## POST /api/data-agent/analyze
 
-目标：接收 dataset_id、用户问题、execution_mode 和可选 agent_mode，返回分析结果、校验信息、解释建议和图表配置。
+目标：接收 dataset_id、用户问题、execution_mode、可选 agent_mode 和可选 user_rule_file_id，返回分析结果、校验信息、解释建议和图表配置。
 
 execution_mode 预留：
 
@@ -227,6 +256,12 @@ agent_mode 预留：
 - single_agent
 
 默认建议：multi_agent。
+
+Rule Mode 扩展：
+
+- `user_rule_file_id`：可选。必须指向 `file_role=rule, rule_scope=user_analysis` 的规则文件。
+- 后端只把该规则作为本次分析的 guidelines 扩展，不把规则文件加入 dataset tables、profile、field_profiles、DataFrame 分析或普通文件列表。
+- 如果传入 benchmark scope 的规则文件，必须返回标准错误，不允许把 Benchmark 规则注入普通 Agent 上下文。
 
 Phase 11 planned request extension：
 
@@ -260,6 +295,43 @@ Phase 11 planned request extension：
 - Workbench `message` 入口的泛概览可直接基于已上传、已解析的内存表生成全表概览；目标是避免把行数、前 20 行明细或后端审计字段当作最终回答。正式指标分析仍必须走 Planner、Executor 和 Verifier。
 - API 可在 `debug.user_experience_shaping` 记录是否发生展示收敛、原始行列数和使用的指标/维度字段；前端不得把该 debug 字段作为计算输入。
 - 展示结果建议使用 `["指标", "数值"]` 这样的短表，避免把原始明细行作为主答案或主结果表。
+
+## POST /api/data-agent/benchmark/run
+
+目标：独立运行上传式 Benchmark 规则，不进入普通 Chat 主流程。
+
+请求字段：
+
+- dataset_id：必须指向已上传 dataset。
+- benchmark_rule_file_id：必须指向 `file_role=rule, rule_scope=benchmark`。
+- user_rule_file_id：可选；必须指向 `file_role=rule, rule_scope=user_analysis`，仅用于测试 Agent 在该用户规则约束下的表现。
+- execution_mode：默认 `auto`。
+- agent_mode：默认 `multi_agent`。
+- limit：可选，限制规则中的问题数量。
+
+响应字段：
+
+- response_version
+- success
+- run_id
+- dataset_id
+- benchmark_rule_file_id
+- user_rule_file_id
+- benchmark
+- total
+- scored
+- correct
+- accuracy
+- details
+- report_path
+- warnings
+- errors
+
+边界：
+
+- Benchmark rule 的 expected output、metrics、threshold 只用于 runner/report，不传入 ordinary Chat，也不作为 Agent prompt / Planner / Executor / Verifier 输入。
+- Runner 只把每个 case 的 question、case guidelines 和显式 user_analysis rule 传入 Agent。
+- `details` 可以记录 case_id、question、agent_answer、correct 和 trace_path，但不能把 hidden answer、标准答案或完整规则原文暴露给普通 Chat。
 
 chart v2 当前可包含：
 

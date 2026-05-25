@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,7 +12,16 @@ import uuid
 
 import pandas as pd
 
-from backend.schemas.data_agent_schema import to_json_ready
+from backend.schemas.data_agent_schema import (
+    BENCHMARK_RULE_SCOPE,
+    DATASET_FILE_EXTENSIONS,
+    DATASET_FILE_ROLE,
+    RULE_FILE_EXTENSIONS,
+    RULE_FILE_ROLE,
+    USER_ANALYSIS_RULE_SCOPE,
+    VALID_RULE_SCOPES,
+    to_json_ready,
+)
 from data_agent_core.contracts.dataset_contracts import DatasetProfile
 from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
 from data_agent_core.core.file_parser import ParsedDataset, load_dabstep_context, parse_dataset_files
@@ -48,14 +57,33 @@ class StoredDataset:
     context_dir: Path | None = None
 
 
+@dataclass
+class StoredRuleFile:
+    """Stored rule file metadata kept separate from parsed datasets."""
+
+    file_id: str
+    file_name: str
+    rule_scope: str
+    raw_text: str
+    parsed_rule: Any
+    storage_path: Path
+    created_at: str
+    dataset_id: str = ""
+    file_role: str = RULE_FILE_ROLE
+    warnings: list[str] = field(default_factory=list)
+    errors: list[Any] = field(default_factory=list)
+
+
 class TempFileStore:
     """Minimal local store for Phase 1 upload/profile/analyze flows."""
 
     def __init__(self, root: str | Path = "storage") -> None:
         self.root = Path(root)
         self.datasets_root = self.root / "datasets"
+        self.rules_root = self.root / "rules"
         self.runs_root = self.root / "runs"
         self._datasets: dict[str, StoredDataset] = {}
+        self._rule_files: dict[str, StoredRuleFile] = {}
 
     def save_parsed_dataset(self, source_path: str | Path, parsed: ParsedDataset) -> StoredDataset:
         """Persist a copied source file and profile, keeping tables in memory."""
@@ -155,6 +183,81 @@ class TempFileStore:
 
         parsed = parse_dataset_files(file_paths, dataset_id=dataset_id, source_names=original_filenames)
         return self.save_parsed_dataset_files(file_paths, parsed, original_filenames=original_filenames)
+
+    def save_rule_file(
+        self,
+        file_path: str | Path,
+        *,
+        rule_scope: str,
+        original_filename: str | None = None,
+        dataset_id: str = "",
+    ) -> StoredRuleFile:
+        """Persist one user or benchmark rule file without parsing it as data."""
+
+        scope = _normalize_rule_scope(rule_scope)
+        source = Path(file_path)
+        display_name = Path(str(original_filename or source.name)).name
+        suffix = Path(display_name).suffix.lower() or source.suffix.lower()
+        if suffix not in RULE_FILE_EXTENSIONS:
+            raise ValueError(
+                f"Unsupported rule file type: {suffix or '(none)'}. "
+                "Rule files must use yaml, yml, json, txt, or md."
+            )
+        if dataset_id and self.get_profile(dataset_id) is None:
+            raise ValueError(f"Cannot bind rule file to missing dataset_id: {dataset_id}")
+
+        raw_text = _read_text_file(source)
+        parsed_rule, warnings = _parse_rule_text(raw_text, suffix=suffix, rule_scope=scope)
+        _validate_rule_payload(parsed_rule, rule_scope=scope)
+
+        file_id = _new_rule_file_id()
+        rule_dir = self.rules_root / file_id
+        source_dir = rule_dir / "source_file"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        stored_source = source_dir / display_name
+        if source.resolve() != stored_source.resolve():
+            shutil.copy2(source, stored_source)
+
+        record = StoredRuleFile(
+            file_id=file_id,
+            file_name=display_name,
+            rule_scope=scope,
+            raw_text=raw_text,
+            parsed_rule=parsed_rule,
+            storage_path=stored_source,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            dataset_id=dataset_id,
+            warnings=warnings,
+        )
+        self._write_rule_record(record, rule_dir / "record.json")
+        self._rule_files[file_id] = record
+        if dataset_id:
+            self._bind_rule_file(dataset_id=dataset_id, rule_file_id=file_id, rule_scope=scope)
+        return record
+
+    def save_rule_files(
+        self,
+        file_paths: list[str | Path],
+        *,
+        rule_scope: str,
+        original_filenames: list[str | None] | None = None,
+        dataset_id: str = "",
+    ) -> list[StoredRuleFile]:
+        """Persist multiple rule files under one explicit scope."""
+
+        if not file_paths:
+            raise ValueError("At least one rule file is required.")
+        if original_filenames is not None and len(original_filenames) != len(file_paths):
+            raise ValueError("original_filenames must have the same length as file_paths.")
+        return [
+            self.save_rule_file(
+                file_path,
+                rule_scope=rule_scope,
+                original_filename=None if original_filenames is None else original_filenames[index],
+                dataset_id=dataset_id,
+            )
+            for index, file_path in enumerate(file_paths)
+        ]
 
     def save_dabstep_context_files(
         self,
@@ -362,6 +465,56 @@ class TempFileStore:
             return record.analysis_context
         return _analysis_context_for_tables(record.tables)
 
+    def get_rule_file(self, file_id: str) -> StoredRuleFile | None:
+        """Return one stored rule file by explicit file id."""
+
+        if not file_id:
+            return None
+        record = self._rule_files.get(file_id)
+        if record is not None:
+            return record
+        record_path = self.rules_root / file_id / "record.json"
+        if not record_path.exists():
+            return None
+        data = json.loads(record_path.read_text(encoding="utf-8"))
+        record = StoredRuleFile(
+            file_id=str(data.get("file_id") or file_id),
+            file_name=str(data.get("file_name") or ""),
+            file_role=str(data.get("file_role") or RULE_FILE_ROLE),
+            rule_scope=str(data.get("rule_scope") or ""),
+            raw_text=str(data.get("raw_text") or ""),
+            parsed_rule=data.get("parsed_rule"),
+            storage_path=Path(str(data.get("storage_path") or "")),
+            created_at=str(data.get("created_at") or ""),
+            dataset_id=str(data.get("dataset_id") or ""),
+            warnings=list(data.get("warnings") or []),
+            errors=list(data.get("errors") or []),
+        )
+        self._rule_files[file_id] = record
+        return record
+
+    def get_rule_context(self, file_id: str, *, expected_scope: str) -> dict[str, Any]:
+        """Return a validated rule context for analysis or benchmark execution."""
+
+        record = self.get_rule_file(file_id)
+        if record is None:
+            raise ValueError(f"Rule file not found: {file_id}")
+        expected_scope = _normalize_rule_scope(expected_scope)
+        if record.rule_scope != expected_scope:
+            raise ValueError(
+                f"Rule file {file_id} has rule_scope={record.rule_scope}; expected {expected_scope}."
+            )
+        return {
+            "enabled": True,
+            "file_id": record.file_id,
+            "file_name": record.file_name,
+            "file_role": record.file_role,
+            "rule_scope": record.rule_scope,
+            "raw_text": record.raw_text,
+            "parsed_rule": record.parsed_rule,
+            "warnings": list(record.warnings),
+        }
+
     def get_dataset_kind(self, dataset_id: str) -> str:
         """Return the dataset kind used to select the analysis context."""
 
@@ -382,6 +535,51 @@ class TempFileStore:
         """Write a trace summary under storage/runs/{run_id}/trace.json."""
 
         return write_trace(trace, self.runs_root)
+
+    def write_benchmark_report(self, run_id: str, report: dict[str, Any]) -> Path:
+        """Persist an internal benchmark report outside ordinary chat traces."""
+
+        report_dir = self.root / "benchmarks" / run_id
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_path = report_dir / "report.json"
+        report_path.write_text(json.dumps(to_json_ready(report), ensure_ascii=False, indent=2), encoding="utf-8")
+        return report_path
+
+    def _write_rule_record(self, record: StoredRuleFile, record_path: Path) -> None:
+        record_path.write_text(
+            json.dumps(
+                {
+                    "file_id": record.file_id,
+                    "file_name": record.file_name,
+                    "file_role": record.file_role,
+                    "rule_scope": record.rule_scope,
+                    "dataset_id": record.dataset_id,
+                    "raw_text": record.raw_text,
+                    "parsed_rule": record.parsed_rule,
+                    "storage_path": str(record.storage_path),
+                    "created_at": record.created_at,
+                    "warnings": record.warnings,
+                    "errors": record.errors,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    def _bind_rule_file(self, *, dataset_id: str, rule_file_id: str, rule_scope: str) -> None:
+        dataset_dir = self.datasets_root / dataset_id
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        bindings_path = dataset_dir / "rule_bindings.json"
+        if bindings_path.exists():
+            bindings = json.loads(bindings_path.read_text(encoding="utf-8"))
+        else:
+            bindings = {USER_ANALYSIS_RULE_SCOPE: [], BENCHMARK_RULE_SCOPE: []}
+        scoped = list(bindings.get(rule_scope) or [])
+        if rule_file_id not in scoped:
+            scoped.append(rule_file_id)
+        bindings[rule_scope] = scoped
+        bindings_path.write_text(json.dumps(bindings, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _load_dabstep_record_from_disk(self, dataset_id: str) -> StoredDataset | None:
         """Restore a DABstep context package from persisted source files."""
@@ -413,6 +611,10 @@ def _new_dataset_id() -> str:
     return "ds_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
 
 
+def _new_rule_file_id() -> str:
+    return "rule_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
+
+
 def _analysis_context_for_tables(tables: dict[str, pd.DataFrame]) -> dict[str, Any]:
     return {"tables": tables, "primary_table": _primary_table_name(tables)}
 
@@ -429,14 +631,133 @@ def _inspect_dabstep_upload(
 ) -> dict[str, Any]:
     names = [_upload_basename(path, None if original_filenames is None else original_filenames[index]) for index, path in enumerate(file_paths)]
     present = set(names) & DABSTEP_CONTEXT_REQUIRED_FILES
-    has_json_or_markdown = any(Path(name).suffix.lower() in {".json", ".md", ".markdown"} for name in names)
     complete = DABSTEP_CONTEXT_REQUIRED_FILES.issubset(set(names))
-    partial = not complete and (bool(present) or has_json_or_markdown)
+    partial = not complete and bool(present)
     return {
         "complete": complete,
         "partial": partial,
         "missing": sorted(DABSTEP_CONTEXT_REQUIRED_FILES - set(names)),
     }
+
+
+def _normalize_rule_scope(rule_scope: str) -> str:
+    scope = (rule_scope or "").strip()
+    if scope not in VALID_RULE_SCOPES:
+        raise ValueError("Rule files require rule_scope=user_analysis or rule_scope=benchmark.")
+    return scope
+
+
+def _read_text_file(path: Path) -> str:
+    last_error: Exception | None = None
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk"):
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise ValueError(f"Rule file is not valid text: {last_error}") from last_error
+    return path.read_text(encoding="utf-8-sig")
+
+
+def _parse_rule_text(raw_text: str, *, suffix: str, rule_scope: str) -> tuple[Any, list[str]]:
+    warnings: list[str] = []
+    if not raw_text.strip():
+        raise ValueError("Rule file is empty.")
+    if suffix == ".json":
+        return json.loads(raw_text), warnings
+    if suffix in {".yaml", ".yml"}:
+        parsed = _parse_simple_yaml(raw_text)
+        if parsed is None:
+            warnings.append("YAML was stored as raw text because it is outside the supported simple YAML subset.")
+            return {"raw_text": raw_text}, warnings
+        return parsed, warnings
+    return {"raw_text": raw_text}, warnings
+
+
+def _validate_rule_payload(parsed_rule: Any, *, rule_scope: str) -> None:
+    if rule_scope == USER_ANALYSIS_RULE_SCOPE:
+        if isinstance(parsed_rule, dict):
+            return
+        raise ValueError("User analysis rule must parse to a JSON/YAML object or raw text object.")
+    if not isinstance(parsed_rule, dict):
+        raise ValueError("Benchmark rule must parse to a JSON/YAML object.")
+    questions = parsed_rule.get("questions") or parsed_rule.get("test_questions") or parsed_rule.get("cases")
+    if not isinstance(questions, list) or not questions:
+        raise ValueError("Benchmark rule must include a non-empty questions list.")
+    for index, item in enumerate(questions, start=1):
+        if isinstance(item, str) and item.strip():
+            continue
+        if isinstance(item, dict) and str(item.get("question") or "").strip():
+            continue
+        raise ValueError(f"Benchmark rule question {index} must be a string or an object with question.")
+
+
+def _parse_simple_yaml(raw_text: str) -> dict[str, Any] | None:
+    """Parse the simple YAML subset used by rule files without adding a dependency."""
+
+    root: dict[str, Any] = {}
+    current_key: str | None = None
+    current_list_item: dict[str, Any] | None = None
+    for raw_line in raw_text.splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        line = raw_line.strip()
+        if indent == 0:
+            current_list_item = None
+            if ":" not in line:
+                return None
+            key, value = line.split(":", 1)
+            current_key = key.strip()
+            value = value.strip()
+            if not current_key:
+                return None
+            root[current_key] = _parse_scalar(value) if value else {}
+            continue
+        if current_key is None:
+            return None
+        container = root.setdefault(current_key, [])
+        if line.startswith("- "):
+            item_text = line[2:].strip()
+            if not isinstance(container, list):
+                container = []
+                root[current_key] = container
+            if ":" in item_text:
+                key, value = item_text.split(":", 1)
+                current_list_item = {key.strip(): _parse_scalar(value.strip())}
+                container.append(current_list_item)
+            else:
+                current_list_item = None
+                container.append(_parse_scalar(item_text))
+            continue
+        if isinstance(container, dict) and ":" in line:
+            key, value = line.split(":", 1)
+            child = container.setdefault(key.strip(), [] if not value.strip() else _parse_scalar(value.strip()))
+            if child is container:
+                return None
+            continue
+        if current_list_item is not None and ":" in line:
+            key, value = line.split(":", 1)
+            current_list_item[key.strip()] = _parse_scalar(value.strip())
+            continue
+        return None
+    return root
+
+
+def _parse_scalar(value: str) -> Any:
+    if value == "":
+        return ""
+    lowered = value.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    if lowered in {"null", "none"}:
+        return None
+    try:
+        if "." in value:
+            return float(value)
+        return int(value)
+    except ValueError:
+        return value.strip("\"'")
 
 
 def _dabstep_file_map(

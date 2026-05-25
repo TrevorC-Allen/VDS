@@ -65,6 +65,13 @@ def parse_dataset_file(
         tables = read_excel(source_path)
         if len(tables) > 1:
             warnings.append("Multiple Excel sheets were parsed as separate tables.")
+    elif suffix == ".json":
+        records = read_json_records(source_path)
+        tables = {display_path.stem or source_path.stem or "table": pd.DataFrame(records)}
+    elif suffix == ".parquet":
+        tables = {display_path.stem or source_path.stem or "table": pd.read_parquet(source_path)}
+    elif suffix in {".arrow", ".feather"}:
+        tables = {display_path.stem or source_path.stem or "table": pd.read_feather(source_path)}
     else:
         raise ValueError(f"Unsupported file type: {source_path.suffix}")
 

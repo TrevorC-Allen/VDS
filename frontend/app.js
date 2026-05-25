@@ -9,8 +9,14 @@ const state = {
   isUploading: false,
   isAnalyzing: false,
   hasPendingUpload: false,
+  ruleModeEnabled: false,
+  hasPendingRuleUpload: false,
+  userRuleFileId: "",
+  benchmarkRuleFileId: "",
+  hasPendingBenchmarkRuleUpload: false,
   activeResultMessage: null,
   activeMonitorRunId: "",
+  activeHistoryRunId: "",
 };
 
 const el = {
@@ -24,6 +30,15 @@ const el = {
   fileSummary: document.querySelector("#file-summary"),
   fileDetail: document.querySelector("#file-detail"),
   uploadButton: document.querySelector("#upload-button"),
+  ruleModeToggle: document.querySelector("#rule-mode-toggle"),
+  ruleUploadPanel: document.querySelector("#rule-upload-panel"),
+  ruleFileInput: document.querySelector("#rule-file-input"),
+  ruleUploadButton: document.querySelector("#rule-upload-button"),
+  ruleFileStatus: document.querySelector("#rule-file-status"),
+  benchmarkRuleInput: document.querySelector("#benchmark-rule-input"),
+  benchmarkRuleUploadButton: document.querySelector("#benchmark-rule-upload-button"),
+  benchmarkRunButton: document.querySelector("#benchmark-run-button"),
+  benchmarkStatus: document.querySelector("#benchmark-status"),
   runButton: document.querySelector("#run-button"),
   questionInput: document.querySelector("#question-input"),
   executionMode: document.querySelector("#execution-mode"),
@@ -51,6 +66,12 @@ const el = {
 };
 
 el.fileInput.addEventListener("change", updateFileSummary);
+el.ruleModeToggle?.addEventListener("change", updateRuleMode);
+el.ruleFileInput?.addEventListener("change", updateRuleFileSummary);
+el.ruleUploadButton?.addEventListener("click", uploadUserRule);
+el.benchmarkRuleInput?.addEventListener("change", updateBenchmarkRuleSummary);
+el.benchmarkRuleUploadButton?.addEventListener("click", uploadBenchmarkRule);
+el.benchmarkRunButton?.addEventListener("click", runBenchmark);
 el.newChatButton.addEventListener("click", resetConversation);
 el.uploadButton.addEventListener("click", uploadFiles);
 el.runButton.addEventListener("click", runAnalysis);
@@ -65,7 +86,7 @@ function updateFileSummary() {
   if (!files.length) {
     state.hasPendingUpload = false;
     el.fileSummary.textContent = "选择文件";
-    el.fileDetail.textContent = "支持 CSV、Excel 等数据文件多选";
+    el.fileDetail.textContent = "CSV / Excel / JSON 数据支持多选";
     el.uploadButton.disabled = true;
     updateRunButton();
     return;
@@ -75,6 +96,106 @@ function updateFileSummary() {
   el.fileDetail.textContent = files.map((file) => file.name).join(" / ");
   el.uploadButton.disabled = false;
   updateRunButton();
+}
+
+function updateRuleMode() {
+  state.ruleModeEnabled = Boolean(el.ruleModeToggle?.checked);
+  el.ruleUploadPanel?.classList.toggle("hidden", !state.ruleModeEnabled);
+  if (!state.ruleModeEnabled) {
+    state.userRuleFileId = "";
+    state.hasPendingRuleUpload = false;
+    if (el.ruleFileInput) el.ruleFileInput.value = "";
+    if (el.ruleFileStatus) el.ruleFileStatus.textContent = "未上传用户分析规则";
+  }
+  updateRunButton();
+  updateBenchmarkButtons();
+}
+
+function updateRuleFileSummary() {
+  const file = el.ruleFileInput?.files?.[0];
+  state.hasPendingRuleUpload = Boolean(file);
+  state.userRuleFileId = state.hasPendingRuleUpload ? "" : state.userRuleFileId;
+  if (el.ruleUploadButton) el.ruleUploadButton.disabled = !state.hasPendingRuleUpload;
+  if (el.ruleFileStatus) {
+    el.ruleFileStatus.textContent = file ? `待上传：${file.name}` : (state.userRuleFileId ? "用户分析规则已上传" : "未上传用户分析规则");
+  }
+  updateRunButton();
+}
+
+async function uploadUserRule() {
+  const file = el.ruleFileInput?.files?.[0];
+  if (!file) return null;
+  setApiStatus("idle", "上传规则中");
+  if (el.ruleUploadButton) el.ruleUploadButton.disabled = true;
+  try {
+    const payload = new FormData();
+    payload.append("file", file);
+    payload.append("file_role", "rule");
+    payload.append("rule_scope", "user_analysis");
+    if (state.datasetId) payload.append("bind_dataset_id", state.datasetId);
+    const response = await fetch("/api/data-agent/upload", { method: "POST", body: payload });
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+      throw new Error(errorText(result) || `HTTP ${response.status}`);
+    }
+    state.userRuleFileId = result.file_id || "";
+    state.hasPendingRuleUpload = false;
+    if (el.ruleFileStatus) el.ruleFileStatus.textContent = `${result.file_name || "分析规则"} 已启用`;
+    setApiStatus("ready", "Rule Mode 已启用");
+    updateBenchmarkButtons();
+    return result;
+  } catch (error) {
+    state.userRuleFileId = "";
+    state.hasPendingRuleUpload = true;
+    if (el.ruleFileStatus) el.ruleFileStatus.textContent = `规则上传失败：${String(error.message || error)}`;
+    setApiStatus("error", "规则上传失败");
+    return null;
+  } finally {
+    if (el.ruleUploadButton) el.ruleUploadButton.disabled = !state.hasPendingRuleUpload;
+    updateRunButton();
+  }
+}
+
+function updateBenchmarkRuleSummary() {
+  const file = el.benchmarkRuleInput?.files?.[0];
+  state.hasPendingBenchmarkRuleUpload = Boolean(file);
+  state.benchmarkRuleFileId = state.hasPendingBenchmarkRuleUpload ? "" : state.benchmarkRuleFileId;
+  if (el.benchmarkRuleUploadButton) el.benchmarkRuleUploadButton.disabled = !state.hasPendingBenchmarkRuleUpload;
+  if (el.benchmarkStatus) {
+    el.benchmarkStatus.textContent = file ? `待上传：${file.name}` : (state.benchmarkRuleFileId ? "Benchmark 规则已上传" : "内部 Benchmark 入口");
+  }
+  updateBenchmarkButtons();
+}
+
+async function uploadBenchmarkRule() {
+  const file = el.benchmarkRuleInput?.files?.[0];
+  if (!file) return null;
+  if (el.benchmarkRuleUploadButton) el.benchmarkRuleUploadButton.disabled = true;
+  if (el.benchmarkStatus) el.benchmarkStatus.textContent = "Benchmark 规则上传中";
+  try {
+    const payload = new FormData();
+    payload.append("file", file);
+    payload.append("file_role", "rule");
+    payload.append("rule_scope", "benchmark");
+    const response = await fetch("/api/data-agent/upload", { method: "POST", body: payload });
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+      throw new Error(errorText(result) || `HTTP ${response.status}`);
+    }
+    state.benchmarkRuleFileId = result.file_id || "";
+    state.hasPendingBenchmarkRuleUpload = false;
+    if (el.benchmarkStatus) el.benchmarkStatus.textContent = `${result.file_name || "Benchmark 规则"} 已上传`;
+    updateBenchmarkButtons();
+    return result;
+  } catch (error) {
+    state.benchmarkRuleFileId = "";
+    state.hasPendingBenchmarkRuleUpload = true;
+    if (el.benchmarkStatus) el.benchmarkStatus.textContent = `BM 规则上传失败：${String(error.message || error)}`;
+    return null;
+  } finally {
+    if (el.benchmarkRuleUploadButton) el.benchmarkRuleUploadButton.disabled = !state.hasPendingBenchmarkRuleUpload;
+    updateBenchmarkButtons();
+  }
 }
 
 async function uploadFiles() {
@@ -139,9 +260,17 @@ async function runAnalysis() {
       return;
     }
   }
+  if (state.ruleModeEnabled && state.hasPendingRuleUpload) {
+    const uploadedRule = await uploadUserRule();
+    if (!uploadedRule) {
+      updateRunButton();
+      return;
+    }
+  }
   state.isAnalyzing = true;
   el.runButton.disabled = true;
   const monitorRunId = startMonitorRun(question);
+  markHistoryRunning(question, monitorRunId);
   appendUserMessage(question);
   el.questionInput.value = "";
   renderProgress(question);
@@ -156,6 +285,7 @@ async function runAnalysis() {
         question,
         execution_mode: el.executionMode.value,
         agent_mode: el.agentMode.value,
+        user_rule_file_id: state.ruleModeEnabled ? state.userRuleFileId : "",
         monitor_run_id: monitorRunId,
       }),
     });
@@ -170,6 +300,7 @@ async function runAnalysis() {
     setApiStatus(result.success ? "ready" : "error", result.success ? (isChat ? "已回复" : "分析完成") : "需要继续确认");
   } catch (error) {
     stopProgress();
+    markHistoryFailed(question, String(error.message || error));
     setApiStatus("error", "分析失败");
     renderUserFacingError("分析失败", String(error.message || error));
   } finally {
@@ -189,6 +320,56 @@ function handleQuestionKeydown(event) {
 function updateRunButton() {
   const hasQuestion = Boolean(el.questionInput.value.trim());
   el.runButton.disabled = !hasQuestion || state.isUploading || state.isAnalyzing;
+  updateBenchmarkButtons();
+}
+
+function updateBenchmarkButtons() {
+  if (el.benchmarkRuleUploadButton) {
+    el.benchmarkRuleUploadButton.disabled = !state.hasPendingBenchmarkRuleUpload;
+  }
+  if (el.benchmarkRunButton) {
+    el.benchmarkRunButton.disabled = !state.datasetId || !state.benchmarkRuleFileId || state.isAnalyzing || state.isUploading;
+  }
+}
+
+async function runBenchmark() {
+  if (!state.datasetId) {
+    if (el.benchmarkStatus) el.benchmarkStatus.textContent = "请先上传数据文件";
+    return;
+  }
+  if (state.hasPendingBenchmarkRuleUpload) {
+    const uploaded = await uploadBenchmarkRule();
+    if (!uploaded) return;
+  }
+  if (!state.benchmarkRuleFileId) {
+    if (el.benchmarkStatus) el.benchmarkStatus.textContent = "请先上传 Benchmark 规则";
+    return;
+  }
+  if (el.benchmarkRunButton) el.benchmarkRunButton.disabled = true;
+  if (el.benchmarkStatus) el.benchmarkStatus.textContent = "Benchmark 运行中";
+  try {
+    const response = await fetch("/api/data-agent/benchmark/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        dataset_id: state.datasetId,
+        benchmark_rule_file_id: state.benchmarkRuleFileId,
+        user_rule_file_id: state.ruleModeEnabled ? state.userRuleFileId : "",
+        execution_mode: el.executionMode.value,
+        agent_mode: el.agentMode.value,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+      throw new Error(errorText(result) || `HTTP ${response.status}`);
+    }
+    const accuracy = result.accuracy == null ? "未评分" : `${Math.round(result.accuracy * 10000) / 100}%`;
+    if (el.benchmarkStatus) el.benchmarkStatus.textContent = `BM 完成：${result.correct}/${result.scored}，${accuracy}`;
+  } catch (error) {
+    if (el.benchmarkStatus) el.benchmarkStatus.textContent = `BM 失败：${String(error.message || error)}`;
+  } finally {
+    updateBenchmarkButtons();
+  }
 }
 
 function renderProfile() {
@@ -267,7 +448,7 @@ function renderResult(result, options = {}) {
   renderRows(rows, columns);
   renderChart(isOverviewShaped ? null : result.chart, rows, columns, result.answer);
   renderInsight(!isChat && result.success && !isOverviewShaped ? result.insight : null);
-  renderProcess(result.reasoning_trace_view || [], result);
+  renderProcess(result.process_view_v2 || result.reasoning_trace_view || [], result);
   if (options.updateHistory !== false) {
     pushHistory(result);
   }
@@ -473,7 +654,17 @@ function stopProgress() {
   }
 }
 
-function renderProcess(steps, result = {}) {
+function renderProcess(processSource, result = {}) {
+  if (processSource && !Array.isArray(processSource) && Array.isArray(processSource.steps)) {
+    const steps = processSource.steps.map((step) => ({
+      title: step.title || "-",
+      summary: step.summary || "",
+      status: step.status || "completed",
+    }));
+    renderProcessItems(steps, processSource.summary || "已完成本次分析。");
+    return;
+  }
+  const steps = Array.isArray(processSource) ? processSource : [];
   if (!steps.length && !result.question && !result.answer) {
     renderProcessItems([], "提问后显示分析过程。");
     return;
@@ -653,7 +844,6 @@ function pushHistory(result) {
   if (conversationId) {
     state.conversationId = conversationId;
   }
-  const existing = state.runHistory.findIndex((entry) => entry.runId === conversationId);
   const item = {
     runId: conversationId,
     success: result.success,
@@ -664,11 +854,50 @@ function pushHistory(result) {
     updatedAt: conversation.updated_at || new Date().toISOString(),
     messageCount: conversation.message_count || 0,
   };
-  if (existing >= 0) {
-    state.runHistory.splice(existing, 1);
-  }
+  state.runHistory = state.runHistory.filter((entry) => entry.runId !== conversationId && (!state.activeHistoryRunId || entry.runId !== state.activeHistoryRunId));
+  state.activeHistoryRunId = "";
   state.runHistory.unshift(item);
   state.runHistory = state.runHistory.slice(0, 8);
+  renderHistory();
+}
+
+function markHistoryRunning(question, fallbackRunId) {
+  const runId = state.conversationId || fallbackRunId || `pending_${Date.now()}`;
+  state.activeHistoryRunId = runId;
+  const existing = state.runHistory.find((entry) => entry.runId === runId);
+  const item = {
+    runId,
+    success: null,
+    answer: "",
+    question,
+    title: existing?.title || question || "新对话",
+    mode: "running",
+    updatedAt: new Date().toISOString(),
+    messageCount: existing?.messageCount || 0,
+  };
+  state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
+  state.runHistory.unshift(item);
+  state.runHistory = state.runHistory.slice(0, 8);
+  renderHistory();
+}
+
+function markHistoryFailed(question, message) {
+  const runId = state.activeHistoryRunId || state.conversationId || `failed_${Date.now()}`;
+  const existing = state.runHistory.find((entry) => entry.runId === runId);
+  const item = {
+    runId,
+    success: false,
+    answer: message,
+    question,
+    title: existing?.title || question || "未完成对话",
+    mode: "failed",
+    updatedAt: new Date().toISOString(),
+    messageCount: existing?.messageCount || 0,
+  };
+  state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
+  state.runHistory.unshift(item);
+  state.runHistory = state.runHistory.slice(0, 8);
+  state.activeHistoryRunId = "";
   renderHistory();
 }
 
@@ -682,11 +911,13 @@ function renderHistory() {
     .map(
       (item) => {
         const title = item.title || item.question || "未命名对话";
+        const stateClass = item.mode === "running" ? "running" : item.success === false ? "failed" : "complete";
+        const stateLabel = item.mode === "running" ? "运行中" : item.success === false ? "需要继续确认" : "完成";
         return `
-        <li class="history-item${item.runId === state.conversationId ? " active" : ""}" data-run-id="${escapeHtml(item.runId || "")}">
+        <li class="history-item ${escapeHtml(stateClass)}${item.runId === state.conversationId ? " active" : ""}" data-run-id="${escapeHtml(item.runId || "")}">
+          <span class="history-state ${escapeHtml(stateClass)}" aria-label="${escapeHtml(stateLabel)}" title="${escapeHtml(stateLabel)}"></span>
           <div class="history-item-text">
-            <strong>${escapeHtml(item.mode === "chat" ? "已回复" : item.success ? "已完成分析" : "需要继续确认")}</strong>
-            <span class="history-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
+            <strong class="history-title" title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
             <input class="history-rename-input hidden" type="text" maxlength="80" value="${escapeHtml(title)}" aria-label="重命名历史对话" />
           </div>
           <button class="history-rename-button" type="button" title="重命名" aria-label="重命名历史对话">
@@ -816,6 +1047,11 @@ async function restoreConversation(conversation) {
   state.datasetId = conversation.dataset_id || "";
   state.profile = null;
   state.selectedTable = "";
+  state.activeHistoryRunId = "";
+  state.userRuleFileId = "";
+  state.hasPendingRuleUpload = false;
+  state.benchmarkRuleFileId = "";
+  state.hasPendingBenchmarkRuleUpload = false;
   [...el.chatMessages.querySelectorAll(".user-message, .assistant-result-message")].forEach((message) => message.remove());
   bindResultMessage(el.resultTemplate);
   el.resultMessage.classList.add("hidden");
@@ -920,8 +1156,20 @@ function resetConversation() {
   state.profile = null;
   state.selectedTable = "";
   state.hasPendingUpload = false;
+  state.ruleModeEnabled = false;
+  state.hasPendingRuleUpload = false;
+  state.userRuleFileId = "";
+  state.benchmarkRuleFileId = "";
+  state.hasPendingBenchmarkRuleUpload = false;
   state.activeResultMessage = null;
+  state.activeHistoryRunId = "";
   el.fileInput.value = "";
+  if (el.ruleModeToggle) el.ruleModeToggle.checked = false;
+  if (el.ruleFileInput) el.ruleFileInput.value = "";
+  if (el.benchmarkRuleInput) el.benchmarkRuleInput.value = "";
+  if (el.ruleFileStatus) el.ruleFileStatus.textContent = "未上传用户分析规则";
+  if (el.benchmarkStatus) el.benchmarkStatus.textContent = "内部 Benchmark 入口";
+  el.ruleUploadPanel?.classList.add("hidden");
   [...el.chatMessages.querySelectorAll(".user-message, .assistant-result-message")].forEach((message) => message.remove());
   bindResultMessage(el.resultTemplate);
   el.welcomeMessage?.classList.remove("hidden");

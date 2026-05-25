@@ -6443,3 +6443,105 @@ YYYY-MM-DD HH:MM TZ
 是。README 已同步 DAB Hard Recovery v2 最新 proxy 口径、非回归门禁和 hidden accuracy 边界。
 
 ---
+---
+### 日期时间
+
+2026-05-25 10:00 CST
+
+### 本次目标
+
+新增 Rule Mode + Benchmark 规则上传最小链路，在不破坏普通数据上传和普通 Chat 的前提下，让后端明确区分 dataset、user_analysis rule 和 benchmark rule。
+
+### 修改文件
+
+- backend/schemas/data_agent_schema.py
+- backend/storage/temp_file_store.py
+- backend/services/data_agent_service.py
+- backend/routers/data_agent.py
+- data_agent_core/core/file_parser.py
+- frontend/index.html
+- frontend/app.js
+- frontend/styles.css
+- frontend/README.md
+- tests/backend/test_data_agent_service.py
+- README.md
+- MAIN_GOAL.md
+- docs/API_CONTRACT.md
+- docs/BENCHMARK_RULES.md
+- docs/DATASET_LIFECYCLE.md
+- docs/FEATURE_BACKLOG.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `file_role` / `rule_scope` 后端 metadata：旧上传默认 `dataset`；规则上传必须显式 `file_role=rule` 且 `rule_scope=user_analysis` 或 `benchmark`。
+- 规则文件独立存储到 `storage/rules/{file_id}`，不进入 DatasetProfile、字段画像、DataFrame tables、数据概览或普通文件列表。
+- `user_analysis` rule 只有请求显式传入 `user_rule_file_id` 时才合并到本次 `guidelines`，并在 debug 中只暴露安全摘要。
+- 新增独立 `POST /api/data-agent/benchmark/run`：只接受 dataset_id、benchmark_rule_file_id 和可选 user_rule_file_id；benchmark rule 不进入普通 Chat。
+- 上传解析补充 JSON dataset 支持，并保留既有 DAB context 包兼容路径。
+- Workbench 新增高级选项：Rule Mode 默认关闭，开启后显示用户分析规则上传；内部 Benchmark 区域单独上传 benchmark rule 并调用独立 runner。
+- 同步 README、MAIN_GOAL、API_CONTRACT、BENCHMARK_RULES、DATASET_LIFECYCLE、FEATURE_BACKLOG 和 frontend README 的规则上传边界。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets -v
+- /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check frontend/app.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile backend/services/data_agent_service.py backend/storage/temp_file_store.py backend/routers/data_agent.py backend/schemas/data_agent_schema.py data_agent_core/core/file_parser.py tests/backend/test_data_agent_service.py
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime backend multi_agent_workflows tests
+- git diff --check
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- Browser smoke on `http://127.0.0.1:8011/workbench` from the current checkout, verifying default upload, advanced options, Rule Mode reveal, and Benchmark controls.
+
+### 测试结果
+
+- Backend focused tests 通过：Ran 19 tests，OK。
+- Architecture tests 通过：Ran 9 tests，OK。
+- `node --check frontend/app.js` 通过。
+- `py_compile` 通过。
+- `compileall` 通过。
+- `git diff --check` 通过。
+- Full unittest 通过：Ran 191 tests，OK。
+- Browser smoke 通过；截图保存为 `outputs/rule_mode_workbench_20260525.png`。
+
+### 遗留问题
+
+- YAML 解析当前是无新增依赖的简单子集；复杂 YAML 结构后续可在不破坏 role metadata 的前提下增强。
+- Benchmark report 当前是最小内部报告，后续可增加更完整的 metrics、threshold、judge config 和前端结果展示。
+- 当前工作树已有或并行出现的 `frontend/monitor.js`、`frontend/monitor.html`、`tests/backend/test_workbench_static_assets.py` 和本地 `.DS_Store` / `.playwright-cli/` 改动不属于本次 Rule Mode / Benchmark 规则上传目标，本轮未主动回滚。
+
+### 是否影响主流程
+
+是，但保持兼容。普通上传不传 `file_role` 时仍默认 dataset，普通 Chat 不传 `user_rule_file_id` 时行为保持原样。
+
+### 是否涉及 Benchmark
+
+是。新增 benchmark rule 上传和独立 runner API；benchmark rule、expected output、metrics 和 threshold 不进入普通 Chat、Planner、Executor、Verifier、Correction、prompt 或 trace。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。规则文件用途在 backend metadata 层明确，Agent 仍通过既有 guidelines / workflow 契约接收约束，不引入 framework 强依赖。
+
+### 是否修改核心数据契约
+
+是，扩展 backend upload metadata 和响应字段；未改变 DatasetProfile / TableProfile / ColumnProfile dataclass 结构。
+
+### 是否修改 API 契约
+
+是。`docs/API_CONTRACT.md` 已同步 `file_role`、`rule_scope`、`user_rule_file_id` 和 `/api/data-agent/benchmark/run`。
+
+### 是否新增或修改错误类型
+
+否。继续使用既有标准 error response 和 `LOGIC_FORM_ERROR` / `FILE_PARSE_ERROR`。
+
+### 是否新增或修改运行追踪逻辑
+
+否。Benchmark report 独立写入 `storage/benchmarks/{run_id}/report.json`，普通 run trace 不新增 raw CoT 或敏感字段。
+
+### 是否已同步 README
+
+是。README 已同步 Rule Mode / Benchmark 规则上传状态、边界和 Workbench 行为。

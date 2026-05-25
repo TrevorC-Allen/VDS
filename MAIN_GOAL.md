@@ -123,6 +123,7 @@
 51. VDS 中文 BI 标准答案错误已形成根因复盘与后续计划文档：`docs/VDS_BI_STANDARD_ANSWER_ROOT_CAUSE.md` 明确当前分支错误来自能力族回退、粒度/指标未强绑定、筛选语义不足、输出层过度压缩和 smoke / scorer 口径混淆；后续修改必须按该文档的红线和泛用性验收执行。
 52. Workbench 已支持网页端 DAB context 包测试：用户可一次上传 `payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md`，后端识别为 `dabstep_context` dataset，并把 CSV 表、JSON 规则和 manual 知识库传入既有 DAB parser / executor / fee engine；前端只负责文件选择、上传、提问和展示，不读取、不解析、不评分 DAB 规则或标准答案。
 53. Workbench 已预留 Agent 监看链路：请求可携带 `monitor_run_id`，后端通过 SSE 输出已脱敏的工作流、角色和工具调用摘要；该链路只服务本地可观测性，不把 raw prompt、完整 Chain of Thought、API key、task_id 或标准答案暴露给前端。
+54. Rule Mode / Benchmark 规则上传最小链路已落地：普通上传旧请求默认 `file_role=dataset`；用户分析规则必须显式 `file_role=rule, rule_scope=user_analysis`，且只有请求传入 `user_rule_file_id` 时才作为本次分析 guidelines；Benchmark 规则必须显式 `file_role=rule, rule_scope=benchmark`，只能通过独立 `/api/data-agent/benchmark/run` 使用，不进入普通 Chat 上下文或 dataset profile。
 
 ## 架构原则
 
