@@ -126,13 +126,18 @@ class TempFileStore:
         source_dir = dataset_dir / "source_file"
         source_dir.mkdir(parents=True, exist_ok=True)
         stored_sources: list[str] = []
+        stored_file_names: list[str] = []
+        stored_file_by_display_name: dict[str, str] = {}
         for index, source_path in enumerate(source_paths):
             source = Path(source_path)
             stored_source = source_dir / source.name
             if source.resolve() != stored_source.resolve():
                 shutil.copy2(source, stored_source)
             original_filename = None if original_filenames is None else original_filenames[index]
-            stored_sources.append(str(original_filename or stored_source))
+            display_name = str(original_filename or stored_source.name)
+            stored_sources.append(display_name)
+            stored_file_names.append(stored_source.name)
+            stored_file_by_display_name[display_name] = stored_source.name
 
         profile_path = dataset_dir / "profile.json"
         profile_path.write_text(
@@ -140,8 +145,27 @@ class TempFileStore:
             encoding="utf-8",
         )
         source_marker = dataset_dir / "multi_source.json"
+        source_file_map = []
+        for table_name, metadata in (parsed.table_metadata or {}).items():
+            source_file = str(metadata.get("source_file") or "")
+            source_file_map.append(
+                {
+                    "table_name": table_name,
+                    "source_file": source_file,
+                    "stored_file": stored_file_by_display_name.get(source_file, ""),
+                }
+            )
         source_marker.write_text(
-            json.dumps({"source_files": stored_sources, "table_names": list(parsed.tables.keys())}, ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    "source_files": stored_sources,
+                    "stored_files": stored_file_names,
+                    "table_names": list(parsed.tables.keys()),
+                    "source_file_map": source_file_map,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
         record = StoredDataset(
@@ -451,6 +475,8 @@ class TempFileStore:
         record = self._datasets.get(dataset_id)
         if record is None:
             record = self._load_dabstep_record_from_disk(dataset_id)
+        if record is None:
+            record = self._load_uploaded_table_record_from_disk(dataset_id)
         return None if record is None else record.tables
 
     def get_analysis_context(self, dataset_id: str) -> dict[str, Any] | None:
@@ -459,6 +485,8 @@ class TempFileStore:
         record = self._datasets.get(dataset_id)
         if record is None:
             record = self._load_dabstep_record_from_disk(dataset_id)
+        if record is None:
+            record = self._load_uploaded_table_record_from_disk(dataset_id)
         if record is None:
             return None
         if record.analysis_context is not None:
@@ -521,6 +549,8 @@ class TempFileStore:
         record = self._datasets.get(dataset_id)
         if record is None:
             record = self._load_dabstep_record_from_disk(dataset_id)
+        if record is None:
+            record = self._load_uploaded_table_record_from_disk(dataset_id)
         return "uploaded_tables" if record is None else record.dataset_kind
 
     def get_context_dir(self, dataset_id: str) -> Path | None:
@@ -529,6 +559,8 @@ class TempFileStore:
         record = self._datasets.get(dataset_id)
         if record is None:
             record = self._load_dabstep_record_from_disk(dataset_id)
+        if record is None:
+            record = self._load_uploaded_table_record_from_disk(dataset_id)
         return None if record is None else record.context_dir
 
     def write_run_trace(self, trace: Any) -> Path:
@@ -605,6 +637,168 @@ class TempFileStore:
         )
         self._datasets[dataset_id] = record
         return record
+
+    def _load_uploaded_table_record_from_disk(self, dataset_id: str) -> StoredDataset | None:
+        """Restore ordinary uploaded CSV/Excel datasets from persisted source files."""
+
+        dataset_dir = self.datasets_root / dataset_id
+        profile = self.get_profile(dataset_id)
+        source_dir = dataset_dir / "source_file"
+        if profile is None or not source_dir.exists():
+            return None
+        source_paths = sorted(path for path in source_dir.iterdir() if path.is_file())
+        if not source_paths:
+            return None
+        source_names: list[str | None] | None = None
+        source_marker = dataset_dir / "multi_source.json"
+        if source_marker.exists():
+            marker = json.loads(source_marker.read_text(encoding="utf-8"))
+            restored_pairs = _restored_source_pairs_from_marker(source_dir, marker)
+            if restored_pairs:
+                source_paths = [pair[0] for pair in restored_pairs]
+                source_names = [pair[1] for pair in restored_pairs]
+            else:
+                marker_names = [str(value) for value in marker.get("source_files") or []]
+                inferred_names = _infer_legacy_source_names(source_paths, profile, marker_names)
+                if inferred_names and len(inferred_names) == len(source_paths):
+                    source_names = inferred_names
+                elif len(marker_names) == len(source_paths):
+                    source_names = marker_names
+        elif isinstance(profile, dict):
+            file_name = str(profile.get("file_name") or "")
+            if file_name and len(source_paths) == 1:
+                source_names = [file_name]
+
+        try:
+            parsed = parse_dataset_files(source_paths, dataset_id=dataset_id, source_names=source_names)
+        except Exception:
+            return None
+        record = StoredDataset(
+            dataset_id=dataset_id,
+            profile=profile,
+            tables=parsed.tables,
+            source_path=source_marker if source_marker.exists() else source_paths[0],
+            analysis_context=_analysis_context_for_tables(parsed.tables),
+        )
+        self._datasets[dataset_id] = record
+        return record
+
+
+def _restored_source_pairs_from_marker(source_dir: Path, marker: dict[str, Any]) -> list[tuple[Path, str]] | None:
+    """Return persisted path/display-name pairs when the marker records them."""
+
+    source_files = [str(value) for value in marker.get("source_files") or []]
+    stored_files = [str(value) for value in marker.get("stored_files") or []]
+    if source_files and stored_files and len(source_files) == len(stored_files):
+        pairs = [(source_dir / stored_file, source_file) for stored_file, source_file in zip(stored_files, source_files)]
+        if all(path.exists() for path, _ in pairs):
+            return pairs
+
+    records = marker.get("source_file_map")
+    if not isinstance(records, list):
+        return None
+    stored_by_source: dict[str, str] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        source_file = str(record.get("source_file") or "")
+        stored_file = str(record.get("stored_file") or "")
+        if source_file and stored_file and source_file not in stored_by_source:
+            stored_by_source[source_file] = stored_file
+    pairs = []
+    seen_stored_files: set[str] = set()
+    for source_file in source_files or list(stored_by_source):
+        stored_file = stored_by_source.get(source_file)
+        if not stored_file or stored_file in seen_stored_files:
+            continue
+        path = source_dir / stored_file
+        if not path.exists():
+            return None
+        pairs.append((path, source_file))
+        seen_stored_files.add(stored_file)
+    return pairs or None
+
+
+def _infer_legacy_source_names(
+    source_paths: list[Path],
+    profile: DatasetProfile | dict[str, Any] | None,
+    marker_names: list[str],
+) -> list[str | None] | None:
+    """Recover old multi-file uploads whose marker lacks stored filename mapping."""
+
+    table_headers = _profile_table_headers(profile, marker_names)
+    if not table_headers:
+        return None
+    used_sources: set[str] = set()
+    inferred: list[str | None] = []
+    for path in source_paths:
+        header = set(_read_header_columns(path))
+        if not header:
+            return None
+        best: dict[str, Any] | None = None
+        best_score = (-1, -999999)
+        for candidate in table_headers:
+            source_file = str(candidate["source_file"])
+            if source_file in used_sources:
+                continue
+            columns = set(candidate["columns"])
+            overlap = len(header & columns)
+            if overlap <= 0:
+                continue
+            score = (overlap, -abs(len(header) - len(columns)))
+            if score > best_score:
+                best = candidate
+                best_score = score
+        if best is None:
+            return None
+        source_file = str(best["source_file"])
+        inferred.append(source_file)
+        used_sources.add(source_file)
+    return inferred if len(inferred) == len(source_paths) else None
+
+
+def _profile_table_headers(profile: DatasetProfile | dict[str, Any] | None, marker_names: list[str]) -> list[dict[str, Any]]:
+    tables = _profile_value(profile, "tables") or []
+    marker_set = set(marker_names)
+    headers: list[dict[str, Any]] = []
+    for table in tables:
+        source_file = str(_profile_value(table, "source_file") or "")
+        if not source_file or (marker_set and source_file not in marker_set):
+            continue
+        columns = []
+        for column in _profile_value(table, "columns") or []:
+            name = str(_profile_value(column, "name") or "")
+            if name:
+                columns.append(name)
+        if columns:
+            headers.append({"source_file": source_file, "columns": columns})
+    return headers
+
+
+def _profile_value(payload: Any, key: str) -> Any:
+    if isinstance(payload, dict):
+        return payload.get(key)
+    return getattr(payload, key, None)
+
+
+def _read_header_columns(path: Path) -> list[str]:
+    suffix = path.suffix.lower()
+    if suffix in {".xlsx", ".xls"}:
+        try:
+            excel = pd.ExcelFile(path)
+            if not excel.sheet_names:
+                return []
+            return [str(column) for column in pd.read_excel(path, sheet_name=excel.sheet_names[0], nrows=0).columns]
+        except Exception:
+            return []
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk"):
+        try:
+            return [str(column) for column in pd.read_csv(path, encoding=encoding, nrows=0).columns]
+        except UnicodeDecodeError:
+            continue
+        except Exception:
+            return []
+    return []
 
 
 def _new_dataset_id() -> str:

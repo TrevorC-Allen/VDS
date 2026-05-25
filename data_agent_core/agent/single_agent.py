@@ -21,6 +21,7 @@ from data_agent_core.llm.planner import LLMStageResult, complete_stage_with_llm,
 from data_agent_core.output.chart_planner import build_chart_spec
 from data_agent_core.output.chart_renderer import attach_rendered_chart
 from data_agent_core.output.insight_generator import generate_insight
+from data_agent_core.output.process_narrative import build_process_view_v2
 from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
 from data_agent_core.output.response_builder import build_response, classify_not_applicable
 from data_agent_core.tracing.run_trace import RunTrace
@@ -236,6 +237,8 @@ class DataAnalysisAgent:
         )
         trace.reasoning_trace_view = build_reasoning_trace_view(trace)
         response.reasoning_trace_view = trace.reasoning_trace_view
+        trace.process_view_v2 = build_process_view_v2(trace, response)
+        response.process_view_v2 = trace.process_view_v2
         return response, trace
 
     def _context_summary(self) -> dict[str, Any]:
@@ -772,6 +775,8 @@ class UploadedDatasetAgent(DataAnalysisAgent):
         )
         trace.reasoning_trace_view = build_reasoning_trace_view(trace)
         response.reasoning_trace_view = trace.reasoning_trace_view
+        trace.process_view_v2 = build_process_view_v2(trace, response)
+        response.process_view_v2 = trace.process_view_v2
         return response, trace
 
     def _context_summary(self) -> dict[str, Any]:

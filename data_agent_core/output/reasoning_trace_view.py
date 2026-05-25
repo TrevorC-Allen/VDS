@@ -13,7 +13,50 @@ from typing import Any
 from data_agent_core.contracts.response_contracts import ReasoningTraceStep
 
 
-BLOCKED_KEYS = {"chain_of_thought", "cot", "hidden_reasoning", "full_reasoning", "api_key", "hidden" + "_answer"}
+BLOCKED_KEYS = {
+    "accepted" + "_answer",
+    "accepted" + "_answers",
+    "api_key",
+    "chain_of_thought",
+    "cot",
+    "full_reasoning",
+    "hidden" + "_answer",
+    "hidden_reasoning",
+    "public" + "_proxy",
+    "raw_prompt",
+    "raw_reasoning",
+    "reasoning_tokens",
+    "scorer",
+    "standard" + "_answer",
+    "task" + "_id",
+}
+BLOCKED_TEXT_MARKERS = (
+    "accepted-answer",
+    "accepted " + "answer",
+    "accepted" + "_answer",
+    "api key",
+    "api_key",
+    "chain of thought",
+    "chain_of_thought",
+    "full reasoning",
+    "full_reasoning",
+    "hidden " + "answer",
+    "hidden" + "_answer",
+    "hidden benchmark",
+    "hidden_reasoning",
+    "public " + "proxy",
+    "public" + "_proxy",
+    "raw prompt",
+    "raw reasoning",
+    "raw_prompt",
+    "raw_reasoning",
+    "reasoning tokens",
+    "reasoning_tokens",
+    "scorer",
+    "standard " + "answer",
+    "standard" + "_answer",
+    "task" + "_id",
+)
 
 
 def build_reasoning_trace_view(trace_like: Any) -> list[ReasoningTraceStep]:
@@ -80,7 +123,7 @@ def _stage_step(step_id: str, name: str, payload: Any) -> ReasoningTraceStep:
     data = _safe(payload)
     summary = ""
     if isinstance(data, dict):
-        summary = str(data.get("reasoning_summary") or data.get("summary") or data.get("stage_name") or "")
+        summary = _clean_text(data.get("reasoning_summary") or data.get("summary") or data.get("stage_name") or "")
     return _step(step_id, name, data, summary or "阶段已记录结构化摘要。", confidence=_confidence(data), outputs={"stage": data})
 
 
@@ -101,11 +144,11 @@ def _step(
         step_id=step_id,
         name=name,
         status=status,
-        summary=summary,
+        summary=_clean_text(summary, 220),
         confidence=confidence,
         inputs_summary=_safe(inputs or {}),
         outputs_summary=_safe(outputs or {}),
-        warnings=[str(item) for item in (warnings or []) if item not in {None, ""}],
+        warnings=[_clean_text(item, 160) for item in (warnings or []) if item not in {None, ""}],
     )
 
 
@@ -157,6 +200,8 @@ def _safe(value: Any) -> Any:
             pass
     if hasattr(value, "isoformat"):
         return value.isoformat()
+    if isinstance(value, str):
+        return _clean_text(value, 500)
     return value
 
 
@@ -169,3 +214,31 @@ def _as_dict(value: Any) -> dict[str, Any]:
         data = value.to_dict()
         return data if isinstance(data, dict) else {}
     return {}
+
+
+def _clean_text(value: Any, limit: int = 160) -> str:
+    if value is None:
+        return ""
+    text = str(value).replace("\n", " ").replace("\r", " ").strip()
+    lower = text.lower()
+    for marker in BLOCKED_TEXT_MARKERS:
+        if marker in lower:
+            text = _replace_case_insensitive(text, marker, "[redacted]")
+            lower = text.lower()
+    text = " ".join(text.split())
+    if len(text) > limit:
+        return text[: max(0, limit - 1)] + "..."
+    return text
+
+
+def _replace_case_insensitive(text: str, needle: str, replacement: str) -> str:
+    start = 0
+    result = ""
+    lowered = text.lower()
+    needle_lower = needle.lower()
+    while True:
+        index = lowered.find(needle_lower, start)
+        if index < 0:
+            return result + text[start:]
+        result += text[start:index] + replacement
+        start = index + len(needle)

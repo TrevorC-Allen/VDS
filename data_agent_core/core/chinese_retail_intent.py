@@ -47,6 +47,34 @@ def parse_chinese_retail_question(
     decimals = _extract_decimal_places(guidelines)
     person = _extract_person(question, tables)
     product = _extract_product(question, tables)
+    start_ym, end_ym = _extract_year_month_range(question)
+
+    if _asks_for_chart(question) and "分销目标" in question and "主任" in question and ("趋势" in question or "月度" in question):
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_manager_target_monthly_trend",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym},
+            source_tables=["ads_trd_dist_ord_target_mgr_1m_df"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if _asks_for_chart(question) and "拜访量最高" in question and "业代" in question and "拜访成功率" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_top_employee_visit_success_rate_trend",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym, "limit": _extract_limit(question, default=5)},
+            source_tables=["v_chl_visit_dtl"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if _asks_for_chart(question) and "品类" in question and "历史分销金额" in question and ("趋势" in question or "结构" in question):
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_category_distribution_monthly_trend",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym, "limit": _extract_limit(question, default=5)},
+            source_tables=["v_trd_dist_ord_dtl"],
+            output_format=output_format | {"answer_type": "text"},
+        )
 
     if "稽查门店SKU分析" in question and "记录数最多" in question and "品类" in question:
         return make_logic_form(
@@ -107,6 +135,8 @@ def parse_chinese_retail_question(
                 "product": product,
                 "role": _person_role(question, person, tables),
             },
+            source_tables=["v_trd_dist_ord_dtl"],
+            table_selection_reason="历史分销金额占比需要使用包含签收时间、分销金额、人员和产品维度的历史分销明细表。",
             output_format=output_format | {"answer_type": "percentage", "decimals": decimals or 2},
         )
 
@@ -426,6 +456,20 @@ def _extract_year_month(question: str, tables: dict[str, pd.DataFrame]) -> tuple
     return None, None
 
 
+def _extract_year_month_range(question: str) -> tuple[int | None, int | None]:
+    match = re.search(r"(20\d{2})\s*年\s*(\d{1,2})\s*月?\s*(?:至|到|-|~|—)\s*(?:(20\d{2})\s*年\s*)?(\d{1,2})\s*月", question)
+    if match:
+        start_year = int(match.group(1))
+        start_month = int(match.group(2))
+        end_year = int(match.group(3) or start_year)
+        end_month = int(match.group(4))
+        return start_year * 100 + start_month, end_year * 100 + end_month
+    match = re.search(r"(20\d{2})-(\d{1,2})\s*(?:至|到|-|~|—)\s*(20\d{2})-(\d{1,2})", question)
+    if match:
+        return int(match.group(1)) * 100 + int(match.group(2)), int(match.group(3)) * 100 + int(match.group(4))
+    return None, None
+
+
 def _extract_date(question: str) -> date | None:
     match = re.search(r"(20\d{2})-(\d{1,2})-(\d{1,2})", question)
     if not match:
@@ -468,6 +512,9 @@ def _extract_limit(question: str, default: int) -> int:
     if "前三" in question:
         return 3
     match = re.search(r"(?:top|前)\s*(\d+)", question, re.I)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"(\d+)\s*(?:名|个|家|条|项|类)", question)
     return int(match.group(1)) if match else default
 
 
@@ -489,6 +536,10 @@ def _asks_for_metric_value(question: str) -> bool:
             "金额和",
         )
     )
+
+
+def _asks_for_chart(question: str) -> bool:
+    return any(token in question for token in ("展示", "生成", "图", "趋势", "可视化", "折线", "柱状", "多折线", "堆叠"))
 
 
 def _distribution_dimension(question: str) -> str:

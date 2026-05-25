@@ -23,6 +23,7 @@ from data_agent_core.core.data_quality import build_data_quality_report, report_
 from data_agent_core.core.file_parser import load_dabstep_context
 from data_agent_core.core.schema_profiler import profile_tables
 from data_agent_core.llm.client import LLMClient
+from data_agent_core.output.process_narrative import build_process_view_v2
 from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
 from data_agent_core.tracing.live_monitor import emit_monitor_event
 from data_agent_core.tracing.run_trace import RunTrace
@@ -182,9 +183,9 @@ class DataAnalysisMultiAgentWorkflow:
                 title=f"{role.value} 开始",
                 summary=f"{role.value} 正在处理输入并准备交给下一环节。",
                 role=role.value,
-                stage=task.task_id,
+                stage=role.value,
                 status="active",
-                payload={"task": task.to_dict(), "state_before": _monitor_state_summary(state)},
+                payload={"task": _monitor_task_summary(task), "state_before": _monitor_state_summary(state)},
             )
             try:
                 result = runner(task)
@@ -195,9 +196,9 @@ class DataAnalysisMultiAgentWorkflow:
                     title=f"{role.value} 失败",
                     summary=str(exc),
                     role=role.value,
-                    stage=task.task_id,
+                    stage=role.value,
                     status="failed",
-                    payload={"task": task.to_dict(), "state_before": _monitor_state_summary(state), "error": str(exc)},
+                    payload={"task": _monitor_task_summary(task), "state_before": _monitor_state_summary(state), "error": str(exc)},
                 )
                 raise
             new_tool_calls = state.tool_call_trace[before_tool_count:]
@@ -207,12 +208,12 @@ class DataAnalysisMultiAgentWorkflow:
                 title=f"{role.value} 完成",
                 summary=_agent_result_summary(result),
                 role=role.value,
-                stage=task.task_id,
+                stage=role.value,
                 status="completed" if result.success else "failed",
                 payload={
-                    "task": task.to_dict(),
-                    "result": result.to_dict(),
-                    "new_tool_calls": new_tool_calls,
+                    "task": _monitor_task_summary(task),
+                    "result": _monitor_result_summary(result),
+                    "new_tool_calls": _compact_tool_calls(new_tool_calls),
                     "state_after": _monitor_state_summary(state),
                 },
             )
@@ -237,9 +238,9 @@ class DataAnalysisMultiAgentWorkflow:
                 title="修正后重跑",
                 summary="Correction Agent 产出了可执行修正，正在重新执行 Pandas / SQL / Verifier。",
                 role=AgentRole.CORRECTION.value,
-                stage=task_by_role[AgentRole.CORRECTION].task_id,
+                stage=AgentRole.CORRECTION.value,
                 status="active",
-                payload={"corrected_logic_form": corrected_logic_form, "state_after_correction": _monitor_state_summary(state)},
+                payload={"corrected_logic_form": _compact_logic_form(corrected_logic_form), "state_after_correction": _monitor_state_summary(state)},
             )
             task_results.append(run_role(AgentRole.PANDAS_EXECUTOR, lambda task: self.runtime.run_pandas_executor(task, state)))
             task_results.append(run_role(AgentRole.SQL_EXECUTOR, lambda task: self.runtime.run_sql_executor(task, state, execution_mode=execution_mode)))
@@ -255,9 +256,9 @@ class DataAnalysisMultiAgentWorkflow:
             title="response_builder 开始",
             summary="Response Builder 正在把已验证结果整理成稳定 API 响应。",
             role=AgentRole.RESPONSE_BUILDER.value,
-            stage=response_task.task_id,
+            stage=AgentRole.RESPONSE_BUILDER.value,
             status="active",
-            payload={"task": response_task.to_dict(), "state_before": _monitor_state_summary(state)},
+            payload={"task": _monitor_task_summary(response_task), "state_before": _monitor_state_summary(state)},
         )
         response = self.runtime.build_final_response(
             run_id=run_id,
@@ -281,17 +282,15 @@ class DataAnalysisMultiAgentWorkflow:
             title="response_builder 完成",
             summary=_agent_result_summary(response_result),
             role=AgentRole.RESPONSE_BUILDER.value,
-            stage=response_task.task_id,
+            stage=AgentRole.RESPONSE_BUILDER.value,
             status="completed" if response_result.success else "failed",
             payload={
-                "task": response_task.to_dict(),
-                "result": response_result.to_dict(),
+                "task": _monitor_task_summary(response_task),
+                "result": _monitor_result_summary(response_result),
                 "final_response": {
                     "run_id": response.run_id,
                     "success": response.success,
-                    "answer": response.answer,
-                    "errors": response.errors,
-                    "warnings": response.warnings,
+                    "answer_type": response.answer_type,
                 },
                 "state_after": _monitor_state_summary(state),
             },
@@ -309,6 +308,8 @@ class DataAnalysisMultiAgentWorkflow:
         )
         trace.reasoning_trace_view = build_reasoning_trace_view(trace)
         response.reasoning_trace_view = trace.reasoning_trace_view
+        trace.process_view_v2 = build_process_view_v2(trace, response)
+        response.process_view_v2 = trace.process_view_v2
         state.final_response = response.to_dict()
         state.trace = trace.to_dict()
         emit_monitor_event(
@@ -323,9 +324,8 @@ class DataAnalysisMultiAgentWorkflow:
                 "dataset_id": self.dataset_id,
                 "success": response.success,
                 "latency_ms": trace.latency_ms,
-                "agent_task_results": [result.to_dict() for result in task_results],
-                "tool_call_summary": trace.tool_call_summary,
-                "reasoning_trace_view": trace.reasoning_trace_view,
+                "answer_type": response.answer_type,
+                "process_view_v2": response.process_view_v2,
             },
         )
         return MultiAgentWorkflowResult(response=response, trace=trace, state=state, task_results=task_results)
@@ -344,7 +344,7 @@ def _monitor_state_summary(state: WorkflowState) -> dict[str, Any]:
         "source_tables": list(logic_form.get("source_tables") or []),
         "operation": logic_form.get("operation"),
         "table_selection_reason": logic_form.get("table_selection_reason"),
-        "join_plan": logic_form.get("join_plan"),
+        "join_summary": _compact_join_plan(logic_form.get("join_plan")),
         "has_analysis_plan": bool(state.analysis_plan),
         "pandas": _compact_execution_state(pandas_result),
         "sql": _compact_execution_state(sql_result),
@@ -358,6 +358,161 @@ def _monitor_state_summary(state: WorkflowState) -> dict[str, Any]:
         "has_insight": bool(state.insight),
         "has_chart": bool(state.chart),
     }
+
+
+def _monitor_task_summary(task: Any) -> dict[str, Any]:
+    input_payload = task.input_payload if isinstance(task.input_payload, dict) else {}
+    context = task.context if isinstance(task.context, dict) else {}
+    constraints = task.constraints if isinstance(task.constraints, dict) else {}
+    return {
+        "role": task.role.value,
+        "input_payload": {
+            "dataset_id": input_payload.get("dataset_id"),
+            "question": input_payload.get("question"),
+        },
+        "context_summary": {
+            "table_count": len(context.get("tables") or []) if isinstance(context.get("tables"), list) else None,
+            "primary_table": context.get("primary_table"),
+        },
+        "constraints": {
+            "output_contract": constraints.get("output_contract"),
+            "llm_first": constraints.get("llm_first"),
+            "no_task_id_optimization": constraints.get("no_task_id_optimization"),
+        },
+    }
+
+
+def _monitor_result_summary(result: AgentResult) -> dict[str, Any]:
+    return {
+        "role": result.role.value,
+        "success": result.success,
+        "output_payload": _compact_output_payload(result.output_payload),
+        "issues": list(result.issues or [])[:5],
+        "confidence": result.confidence,
+    }
+
+
+def _compact_output_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    output: dict[str, Any] = {}
+    logic_form = payload.get("logic_form") if isinstance(payload.get("logic_form"), dict) else None
+    if logic_form:
+        output["logic_form"] = _compact_logic_form(logic_form)
+    analysis_plan = payload.get("analysis_plan") if isinstance(payload.get("analysis_plan"), dict) else None
+    if analysis_plan:
+        steps = analysis_plan.get("steps") if isinstance(analysis_plan.get("steps"), list) else []
+        output["analysis_plan"] = {
+            "step_count": len(steps),
+            "steps": [
+                step.get("name") or step.get("operation") or step.get("description")
+                for step in steps[:4]
+                if isinstance(step, dict)
+            ],
+        }
+    if isinstance(payload.get("tables"), list):
+        output["tables"] = [
+            {
+                "table_name": table.get("table_name") or table.get("name"),
+                "row_count": table.get("row_count"),
+                "column_count": table.get("column_count") or len(table.get("columns") or []),
+            }
+            for table in payload["tables"][:6]
+            if isinstance(table, dict)
+        ]
+    if isinstance(payload.get("quality_report"), dict):
+        output["quality_report"] = {
+            "summary": payload["quality_report"].get("summary"),
+            "quality_score": payload["quality_report"].get("quality_score"),
+        }
+    if payload.get("success") is not None or payload.get("backend"):
+        output.update(_compact_execution_state(payload))
+    if isinstance(payload.get("verification"), dict):
+        verification = payload["verification"]
+        output["verification"] = {
+            "passed": verification.get("passed"),
+            "confidence": verification.get("confidence"),
+            "issues": list(verification.get("issues") or [])[:5],
+            "pandas_sql_consistent": verification.get("pandas_sql_consistent"),
+        }
+    if payload.get("needs_correction") is not None:
+        output["needs_correction"] = payload.get("needs_correction")
+    if isinstance(payload.get("corrected_logic_form"), dict):
+        output["corrected_logic_form"] = _compact_logic_form(payload["corrected_logic_form"])
+    if isinstance(payload.get("insight"), dict):
+        insight = payload["insight"]
+        output["insight"] = {
+            "summary": insight.get("summary"),
+            "caveats": list(insight.get("caveats") or [])[:2],
+            "suggestions": list(insight.get("suggestions") or insight.get("business_suggestions") or [])[:2],
+        }
+    if isinstance(payload.get("chart"), dict):
+        chart = payload["chart"]
+        output["chart"] = {
+            "chart_type": chart.get("chart_type"),
+            "title": chart.get("title"),
+            "x": chart.get("x"),
+            "y": chart.get("y"),
+            "reason": chart.get("reason"),
+        }
+    for key in ("response_version", "run_id", "success", "answer_type"):
+        if key in payload:
+            output[key] = payload.get(key)
+    return output
+
+
+def _compact_logic_form(logic_form: Any) -> dict[str, Any]:
+    if not isinstance(logic_form, dict):
+        return {}
+    return {
+        "operation": logic_form.get("operation"),
+        "task_type": logic_form.get("task_type"),
+        "metric": logic_form.get("metric"),
+        "group_by": logic_form.get("group_by"),
+        "source_tables": list(logic_form.get("source_tables") or [])[:4],
+        "table_selection_reason": logic_form.get("table_selection_reason"),
+        "join_summary": _compact_join_plan(logic_form.get("join_plan")),
+        "parameters": _compact_parameters(logic_form.get("parameters")),
+    }
+
+
+def _compact_parameters(parameters: Any) -> dict[str, Any]:
+    if not isinstance(parameters, dict):
+        return {}
+    allowed = ("metric", "dimension", "aggregation", "limit", "time_field", "current_period", "previous_period")
+    return {key: parameters.get(key) for key in allowed if key in parameters}
+
+
+def _compact_join_plan(join_plan: Any) -> dict[str, Any]:
+    if not isinstance(join_plan, dict):
+        return {}
+    return {
+        "trusted": join_plan.get("trusted"),
+        "left_table": join_plan.get("left_table"),
+        "right_table": join_plan.get("right_table"),
+        "join_type": join_plan.get("join_type"),
+        "reason": join_plan.get("reason"),
+    }
+
+
+def _compact_tool_calls(tool_calls: list[Any]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for call in tool_calls[:8]:
+        if not isinstance(call, dict):
+            continue
+        arguments = call.get("arguments_summary") if isinstance(call.get("arguments_summary"), dict) else {}
+        result = call.get("result_summary") if isinstance(call.get("result_summary"), dict) else {}
+        compact.append(
+            {
+                "requested_by": call.get("requested_by"),
+                "tool_name": call.get("tool_name"),
+                "success": call.get("success"),
+                "latency_ms": call.get("latency_ms"),
+                "argument_keys": list(arguments)[:8],
+                "result_keys": list(result)[:8],
+            }
+        )
+    return compact
 
 
 def _compact_execution_state(payload: dict[str, Any]) -> dict[str, Any]:

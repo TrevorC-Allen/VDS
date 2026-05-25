@@ -40,6 +40,12 @@ class DataAgentServiceTest(unittest.TestCase):
                 question="Which city has the highest sales?",
                 execution_mode="dual",
             )
+            single_agent_analysis = service.analyze_dataset(
+                dataset_id=dataset_id,
+                question="Which city has the highest sales?",
+                execution_mode="dual",
+                agent_mode="single_agent",
+            )
 
             self.assertTrue(upload["success"])
             self.assertEqual(profile["dataset_id"], dataset_id)
@@ -50,6 +56,11 @@ class DataAgentServiceTest(unittest.TestCase):
             self.assertEqual("multi_agent", analysis["debug"]["agent_mode"])
             self.assertIn("planner", analysis["debug"]["multi_agent_roles"])
             self.assertIn("trace_path", analysis["debug"])
+            self.assertTrue(analysis["reasoning_trace_view"])
+            self.assertTrue(analysis["process_view_v2"]["steps"])
+            self.assertEqual("single_agent", single_agent_analysis["debug"]["agent_mode"])
+            self.assertTrue(single_agent_analysis["reasoning_trace_view"])
+            self.assertTrue(single_agent_analysis["process_view_v2"]["steps"])
 
     def test_analyze_publishes_live_monitor_events(self) -> None:
         monitor_run_id = "test_monitor_service"
@@ -95,6 +106,27 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertIn("planner", roles)
         self.assertIn("response_builder", roles)
         self.assertNotIn("chain_of_thought", json.dumps(events, ensure_ascii=False))
+        serialized_events = json.dumps(events, ensure_ascii=False).lower()
+        for forbidden in (
+            "task_id",
+            "standard_answer",
+            "standard answer",
+            "hidden_answer",
+            "public_proxy",
+            "public proxy",
+            "raw_prompt",
+            "raw prompt",
+            "full_reasoning",
+            "api_key",
+            "scorer",
+        ):
+            self.assertNotIn(forbidden, serialized_events)
+        response_ready = next(event for event in events if event["event_type"] == "response_ready")
+        self.assertIn("process_view_v2", response_ready["payload"])
+        self.assertNotIn("response", response_ready["payload"])
+        self.assertNotIn("debug", response_ready["payload"])
+        self.assertNotIn("trace_path", response_ready["payload"])
+        self.assertNotIn("reasoning_trace_view", response_ready["payload"])
         self.assertTrue(any(event["monitor_run_id"] == monitor_run_id for event in global_events))
 
     def test_upload_datasets_preserves_source_file_metadata(self) -> None:
@@ -120,6 +152,59 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual("销售文件.csv", profiles["销售文件"]["source_file"])
         self.assertEqual("库存文件.csv", profiles["库存文件"]["source_file"])
         self.assertEqual(["产品", "销售额"], [column["name"] for column in profiles["销售文件"]["columns"]])
+
+    def test_uploaded_dataset_tables_restore_after_service_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sales_path = root / "tmp_sales_upload.csv"
+            inventory_path = root / "tmp_inventory_upload.csv"
+            sales_path.write_text("产品,销售额\nA,100\nB,300\n", encoding="utf-8")
+            inventory_path.write_text("产品,库存量\nA,10\nC,80\n", encoding="utf-8")
+            store = TempFileStore(root / "storage")
+            service = DataAgentService(file_store=store, llm_client=MockLLMClient())
+
+            upload = service.upload_datasets(
+                [sales_path, inventory_path],
+                original_filenames=["销售文件.csv", "库存文件.csv"],
+            )
+            dataset_id = upload["dataset_id"]
+            restarted_store = TempFileStore(root / "storage")
+            restored_tables = restarted_store.get_tables(dataset_id)
+
+        self.assertTrue(upload["success"])
+        self.assertIsNotNone(restored_tables)
+        self.assertEqual(2, len(restored_tables or {}))
+        self.assertEqual(["产品", "销售额"], list((restored_tables or {})["销售文件"].columns))
+        self.assertEqual(["产品", "库存量"], list((restored_tables or {})["库存文件"].columns))
+
+    def test_legacy_multi_source_restore_recovers_table_names_by_header(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sales_path = root / "z_tmp_sales_upload.csv"
+            inventory_path = root / "a_tmp_inventory_upload.csv"
+            sales_path.write_text("产品,销售额\nA,100\nB,300\n", encoding="utf-8")
+            inventory_path.write_text("产品,库存量\nA,10\nC,80\n", encoding="utf-8")
+            store = TempFileStore(root / "storage")
+            service = DataAgentService(file_store=store, llm_client=MockLLMClient())
+
+            upload = service.upload_datasets(
+                [sales_path, inventory_path],
+                original_filenames=["销售文件.csv", "库存文件.csv"],
+            )
+            dataset_id = upload["dataset_id"]
+            marker_path = root / "storage" / "datasets" / dataset_id / "multi_source.json"
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            marker.pop("stored_files", None)
+            marker.pop("source_file_map", None)
+            marker_path.write_text(json.dumps(marker, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            restarted_store = TempFileStore(root / "storage")
+            restored_tables = restarted_store.get_tables(dataset_id)
+
+        self.assertTrue(upload["success"])
+        self.assertIsNotNone(restored_tables)
+        self.assertEqual(["产品", "销售额"], list((restored_tables or {})["销售文件"].columns))
+        self.assertEqual(["产品", "库存量"], list((restored_tables or {})["库存文件"].columns))
 
     def test_upload_json_dataset_defaults_to_dataset_role(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -420,6 +505,8 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual(["指标", "数值"], response["result"]["columns"])
         self.assertTrue(response["debug"]["user_experience_shaping"]["applied"])
         self.assertEqual("dataset_overview", response["debug"]["message_intent"])
+        self.assertEqual("dataset_overview", response["process_view_v2"]["mode"])
+        self.assertTrue(response["process_view_v2"]["steps"])
 
     def test_dataset_present_message_routes_meta_chat_without_analysis(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -438,6 +525,7 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertTrue(greeting["success"])
         self.assertEqual("chat", greeting["answer_type"])
         self.assertEqual("chat_with_dataset", greeting["debug"]["agent_mode"])
+        self.assertEqual("chat", greeting["process_view_v2"]["mode"])
         self.assertIn("当前数据已就绪", greeting["answer"])
         self.assertEqual([], greeting["result"]["rows"])
         self.assertTrue(model["success"])
@@ -458,6 +546,7 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual("", response["dataset_id"])
         self.assertIn("上传数据后", response["answer"])
         self.assertEqual("chat_without_dataset", response["debug"]["agent_mode"])
+        self.assertEqual("chat", response["process_view_v2"]["mode"])
 
     def test_message_conversation_persists_history_and_rename(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

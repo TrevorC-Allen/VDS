@@ -40,6 +40,8 @@
 
 2026-05-25 更新：新增 Rule Mode / Benchmark 规则上传最小契约。上传接口可接收 `file_role` 和 `rule_scope` metadata；旧请求不传 `file_role` 时默认视为 `dataset`。`file_role=rule` 必须显式提供 `rule_scope=user_analysis` 或 `rule_scope=benchmark`，规则文件不会进入 DatasetProfile、字段画像、DataFrame 解析或普通 Chat 数据上下文。`user_analysis` 规则只有在 `/analyze` 或 `/message` 请求显式传入 `user_rule_file_id` 时才会合并到本次 `guidelines`；`benchmark` 规则只能通过独立 `POST /api/data-agent/benchmark/run` 使用。
 
+2026-05-25 更新：新增 `process_view_v2` 安全过程叙事契约。`process_view_v2` 与旧 `reasoning_trace_view` 并存，前端优先渲染 v2，缺失时 fallback 到旧字段。v2 只使用安全 stage summary、执行摘要和 response contract，按 chat、dataset_overview、metric_lookup、ranking_topn、comparison_or_trend、multi_table_join、diagnostic_or_anomaly、clarification_or_not_applicable 生成差异化过程，不暴露完整 Chain of Thought、raw reasoning tokens、raw prompt、API key、task_id、标准答案、hidden answer、public proxy 或 scorer 信息。Monitor SSE 最终事件只发送 run 状态和 `process_view_v2` 摘要，不发送完整 response / trace payload。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
@@ -52,11 +54,11 @@
 8. 前端不能依赖 debug 中的英文/中文内部阶段摘要；稳定展示只能依赖 answer、result、verification、insight、chart、warnings、errors 等契约字段。
 9. Phase 9 前端可以展示 `logic_form.source_tables`、`logic_form.table_selection_reason`、`logic_form.join_plan` 和 debug / trace 中的 `join_execution_summary`，但不得把 debug 字段作为业务计算输入。
 10. 多文件 / 多表场景中，后端必须显式返回或记录表选择和 join 依据；低置信度路由、无可信 join key 或多对多风险必须以结构化 warning / error / verification 体现。
-11. Phase 10 前端只能渲染后端 `chart`、`insight`、`quality_report`、`reasoning_trace_view` 字段，不得自行推断图表类型、异常规则、清洗动作或分析过程。
+11. Phase 10 前端只能渲染后端 `chart`、`insight`、`quality_report`、`reasoning_trace_view` 和 `process_view_v2` 字段，不得自行推断图表类型、异常规则、清洗动作或分析过程。
 12. `reasoning_trace_view` 是安全过程视图，不是完整 Chain of Thought；任何 `chain_of_thought`、`cot`、`hidden_reasoning`、`full_reasoning` 字段都不得进入稳定响应。
 13. Phase 11 conversation API 必须以后端 `conversation_id` 作为会话连续性主键；前端不得用本地内存 run history 冒充可恢复历史。
 14. Phase 11 owner 字段只用于预留未来隔离边界；v1 本地匿名实现不得宣称已经具备真实登录、鉴权、多租户或企业级权限。
-15. GPT-like 过程展示只能使用安全摘要字段，默认显示单行浅灰小字摘要，点击后展开结构化步骤；不得在主界面展示 raw CoT、后端审计 JSON、quality_report、warnings、verification 或 join trace。
+15. GPT-like 过程展示只能使用 `process_view_v2` 或安全摘要字段，默认显示单行浅灰小字摘要，点击后展开结构化步骤；不得在主界面展示 raw CoT、后端审计 JSON、quality_report、warnings、verification 或 join trace。
 16. 无 dataset 对话只能进入 `/message` 或 `/chat` 的辅助回复路径；如果用户要求真实业务结论，必须提示需要上传相关数据，不能根据空上下文编造指标结果。
 17. Workbench 前端不得用 `dataset_id` 存在与否自行把文本判成分析问题；普通聊天、数据概览和正式分析的路由必须由 backend / data_agent_core 决定。
 
@@ -118,6 +120,7 @@ owner 语义：
 Quiet Process UX 契约：
 
 - `reasoning_trace_view` 继续只返回安全结构化摘要。
+- `process_view_v2` 是主界面优先使用的安全过程叙事字段，结构固定为 `version`、`summary`、`mode`、`steps[]`。
 - 前端可从最新 step 派生 `latest_process_summary`，例如“用户提到了‘城市订单金额’，我会先确认城市字段和金额字段。”。
 - 展开详情只能展示用户可理解步骤，例如理解问题、定位数据、选择分析方式、生成结果、核对回答。
 - API 不得新增或透传 `chain_of_thought`、`cot`、`hidden_reasoning`、`full_reasoning`、raw prompt 或 raw reasoning tokens。
@@ -285,6 +288,7 @@ Phase 11 planned request extension：
 - chart
 - quality_report
 - reasoning_trace_view
+- process_view_v2
 - warnings
 - errors
 - debug
@@ -373,6 +377,19 @@ reasoning_trace_view 当前为数组，每个 step 可包含：
 - inputs_summary
 - outputs_summary
 - warnings
+
+process_view_v2 当前为对象：
+
+- version：当前为 `v2`
+- summary：本次过程的一句话安全摘要
+- mode：`chat`、`dataset_overview`、`metric_lookup`、`ranking_topn`、`comparison_or_trend`、`multi_table_join`、`diagnostic_or_anomaly`、`clarification_or_not_applicable`
+- steps：数组；每个 step 只允许包含 `title`、`summary`、`status`、`evidence`、`assumptions`、`caveats`、`confidence`、`source`
+
+`process_view_v2` 边界：
+
+- 不包含 raw prompt、raw reasoning tokens、完整 Chain of Thought、API key、task_id、标准答案、hidden answer、public proxy、scorer、完整 verification/debug、完整工具参数或完整 join trace。
+- 多表问题只能展示表选择和 join 摘要，不展示完整 `join_plan` 或 `join_execution_summary`。
+- `single_agent`、`multi_agent`、`/chat`、普通聊天、dataset overview 和正式分析都应返回该字段。
 
 logic_form 当前可包含：
 
@@ -581,6 +598,7 @@ inline table 对象也可携带 `source_file` 和 `sheet`，用于 Phase 8 多�
 - chart：null
 - quality_report：null
 - reasoning_trace_view
+- process_view_v2
 - warnings
 - errors
 - debug
@@ -607,7 +625,7 @@ inline table 对象也可携带 `source_file` 和 `sheet`，用于 Phase 8 多�
 
 - 普通聊天：返回 `answer_type=chat`、`execution_mode=chat`、空 result。
 - 数据概览：返回 `answer_type=overview`、`execution_mode=overview`、`result.columns=["指标","数值"]`，`debug.message_intent=dataset_overview`。
-- 正式分析：返回与 `/api/data-agent/analyze` 相同的稳定响应字段。
+- 正式分析：返回与 `/api/data-agent/analyze` 相同的稳定响应字段；三类响应都应带 `process_view_v2`。
 
 边界：
 

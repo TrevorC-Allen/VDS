@@ -41,11 +41,11 @@
             <p id="dataset-status">等待上传数据集</p>
           </div>
           <div class="status-strip" aria-live="polite">
-            <a class="monitor-link" href="/workbench-monitor" target="_blank" rel="noreferrer" title="打开独立监看页">
+            <a class="monitor-link" href="/monitor" target="_blank" rel="noreferrer" title="打开监看页">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M7 15l3-3 3 2 5-7"></path><path d="M17 7h3v3"></path></svg>
               <span>监看页</span>
             </a>
-            <span id="api-status" class="status-dot idle">准备就绪</span>
+            <span id="api-status" class="status-pill idle">准备就绪</span>
             <span id="dataset-chip" class="dataset-chip">未上传数据</span>
           </div>
         </header>
@@ -114,7 +114,6 @@
               <section class="analysis-block process-panel" aria-labelledby="process-title">
                 <h2 id="process-title" class="visually-hidden">正在做什么</h2>
                 <div class="process-line">
-                  <span class="thinking-dot" aria-hidden="true"></span>
                   <p id="process-summary">提问后，我会用一行摘要说明当前正在处理什么。</p>
                 </div>
                 <details id="process-details" class="process-details">
@@ -130,7 +129,23 @@
 
         <section class="composer-shell" aria-label="对话输入">
           <div class="composer">
-            <textarea id="question-input" rows="1" placeholder="向 VDS 提问，例如：哪个城市订单金额最高？"></textarea>
+            <div
+              id="question-input"
+              class="composer-input is-empty"
+              role="textbox"
+              aria-multiline="true"
+              aria-label="向 VDS 提问，例如：哪个城市订单金额最高？"
+              data-placeholder="向 VDS 提问，例如：哪个城市订单金额最高？"
+              contenteditable="plaintext-only"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              data-ms-editor="false"
+              data-gramm="false"
+              data-gramm_editor="false"
+              data-enable-grammarly="false"
+            ></div>
             <div class="composer-actions">
               <div class="upload-controls" aria-label="文件上传">
                 <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md" />
@@ -138,9 +153,18 @@
                   <svg viewBox="0 0 24 24"><path d="m21.4 11.6-8.5 8.5a5 5 0 0 1-7.1-7.1l9-9a3.2 3.2 0 0 1 4.5 4.5l-9.1 9.1a1.5 1.5 0 0 1-2.1-2.1l8.3-8.3" /></svg>
                 </label>
                 <button id="upload-button" class="button secondary upload-button" type="button" disabled>上传</button>
-                <div class="file-status" aria-live="polite">
-                  <strong id="file-summary">选择文件</strong>
-                  <span id="file-detail">CSV / Excel / JSON 数据支持多选</span>
+                <div class="file-status-wrap">
+                  <div class="file-status" aria-live="polite">
+                    <button id="file-summary" class="file-summary-button" type="button" disabled aria-expanded="false" aria-controls="file-panel">选择文件</button>
+                    <span id="file-detail">CSV / Excel / JSON 数据支持多选</span>
+                  </div>
+                  <section id="file-panel" class="file-panel hidden" aria-label="文件列表">
+                    <div class="file-panel-header">
+                      <strong>文件</strong>
+                      <span id="file-panel-count">0</span>
+                    </div>
+                    <ul id="file-panel-list" class="file-panel-list"></ul>
+                  </section>
                 </div>
               </div>
               <details class="advanced-options">

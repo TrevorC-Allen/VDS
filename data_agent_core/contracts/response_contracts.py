@@ -103,6 +103,7 @@ class FinalResponse:
     chart: ChartSpec | None = None
     quality_report: DataQualityReport | dict[str, Any] | None = None
     reasoning_trace_view: list[ReasoningTraceStep] | list[dict[str, Any]] = field(default_factory=list)
+    process_view_v2: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[Any] = field(default_factory=list)
     debug: dict[str, Any] = field(default_factory=dict)

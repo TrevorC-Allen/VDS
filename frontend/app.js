@@ -1,8 +1,13 @@
+const MONITOR_RUN_INDEX_KEY = "vds-monitor-runs";
+const ACTIVE_MONITOR_RUN_KEY = "vds-active-monitor-run";
+const MAX_MONITOR_RUN_RECORDS = 80;
+
 const state = {
   datasetId: "",
   conversationId: "",
   profile: null,
   selectedTable: "",
+  fileRecords: [],
   runHistory: [],
   progressTimer: null,
   progressStep: 0,
@@ -29,6 +34,9 @@ const el = {
   fileInput: document.querySelector("#file-input"),
   fileSummary: document.querySelector("#file-summary"),
   fileDetail: document.querySelector("#file-detail"),
+  filePanel: document.querySelector("#file-panel"),
+  filePanelCount: document.querySelector("#file-panel-count"),
+  filePanelList: document.querySelector("#file-panel-list"),
   uploadButton: document.querySelector("#upload-button"),
   ruleModeToggle: document.querySelector("#rule-mode-toggle"),
   ruleUploadPanel: document.querySelector("#rule-upload-panel"),
@@ -66,6 +74,8 @@ const el = {
 };
 
 el.fileInput.addEventListener("change", updateFileSummary);
+el.fileSummary.addEventListener("click", toggleFilePanel);
+document.addEventListener("click", closeFilePanelFromOutside);
 el.ruleModeToggle?.addEventListener("change", updateRuleMode);
 el.ruleFileInput?.addEventListener("change", updateRuleFileSummary);
 el.ruleUploadButton?.addEventListener("click", uploadUserRule);
@@ -75,27 +85,163 @@ el.benchmarkRunButton?.addEventListener("click", runBenchmark);
 el.newChatButton.addEventListener("click", resetConversation);
 el.uploadButton.addEventListener("click", uploadFiles);
 el.runButton.addEventListener("click", runAnalysis);
-el.questionInput.addEventListener("input", updateRunButton);
+el.questionInput.addEventListener("input", handleQuestionInput);
+el.questionInput.addEventListener("paste", handleQuestionPaste);
+el.questionInput.addEventListener("focus", updateQuestionEmptyState);
 el.questionInput.addEventListener("keydown", handleQuestionKeydown);
 
 updateFileSummary();
+updateQuestionEmptyState();
 loadConversations();
 
 function updateFileSummary() {
   const files = [...el.fileInput.files];
   if (!files.length) {
     state.hasPendingUpload = false;
+    state.fileRecords = [];
     el.fileSummary.textContent = "选择文件";
     el.fileDetail.textContent = "CSV / Excel / JSON 数据支持多选";
     el.uploadButton.disabled = true;
+    renderFilePanel();
     updateRunButton();
     return;
   }
   state.hasPendingUpload = true;
+  state.fileRecords = files.map((file) => fileRecordFromFile(file, "pending"));
   el.fileSummary.textContent = `${files.length} 个文件已附加`;
-  el.fileDetail.textContent = files.map((file) => file.name).join(" / ");
+  el.fileDetail.textContent = "点击查看文件";
   el.uploadButton.disabled = false;
+  renderFilePanel();
   updateRunButton();
+}
+
+function applyRestoredFileRecords(profile) {
+  state.hasPendingUpload = false;
+  state.fileRecords = buildReadyFileRecords([], profile);
+  el.uploadButton.disabled = true;
+  renderFilePanel();
+  if (state.fileRecords.length) {
+    el.fileSummary.textContent = `${state.fileRecords.length} 个文件已就绪`;
+    el.fileDetail.textContent = "点击查看文件";
+  } else {
+    el.fileSummary.textContent = "文件信息不可用";
+    el.fileDetail.textContent = "需重新上传后继续分析";
+  }
+  updateRunButton();
+}
+
+function clearRestoredFileRecords() {
+  state.hasPendingUpload = false;
+  state.fileRecords = [];
+  el.uploadButton.disabled = true;
+  renderFilePanel();
+  el.fileSummary.textContent = state.datasetId ? "文件信息不可用" : "选择文件";
+  el.fileDetail.textContent = state.datasetId ? "需重新上传后继续分析" : "CSV / Excel / JSON 数据支持多选";
+  updateRunButton();
+}
+
+function toggleFilePanel(event) {
+  event.stopPropagation();
+  if (!state.fileRecords.length) return;
+  const shouldOpen = el.filePanel?.classList.contains("hidden");
+  el.filePanel?.classList.toggle("hidden", !shouldOpen);
+  el.fileSummary.setAttribute("aria-expanded", String(shouldOpen));
+}
+
+function closeFilePanelFromOutside(event) {
+  if (event.target.closest(".file-status-wrap")) return;
+  closeFilePanel();
+}
+
+function closeFilePanel() {
+  el.filePanel?.classList.add("hidden");
+  el.fileSummary.setAttribute("aria-expanded", "false");
+}
+
+function renderFilePanel() {
+  const records = state.fileRecords || [];
+  el.fileSummary.disabled = !records.length;
+  if (el.filePanelCount) el.filePanelCount.textContent = String(records.length);
+  if (!records.length) {
+    closeFilePanel();
+    if (el.filePanelList) el.filePanelList.innerHTML = "";
+    return;
+  }
+  if (!el.filePanelList) return;
+  el.filePanelList.innerHTML = records
+    .map(
+      (file) => `
+        <li>
+          <div>
+            <strong title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</strong>
+            <span>${escapeHtml(file.meta || "")}</span>
+          </div>
+          <em class="${escapeHtml(file.status)}">${escapeHtml(file.statusText)}</em>
+        </li>
+      `,
+    )
+    .join("");
+}
+
+function fileRecordFromFile(file, status, profile = null) {
+  const tableCount = countTablesForSource(profile, file.name);
+  return {
+    name: file.name,
+    size: file.size,
+    status,
+    statusText: fileStatusText(status),
+    meta: fileMetaText(file.size, tableCount),
+  };
+}
+
+function buildReadyFileRecords(files, profile) {
+  const fileByName = new Map(files.map((file) => [file.name, file]));
+  const sourceNames = uniqueSourceFileNames(profile);
+  const names = sourceNames.length ? sourceNames : files.map((file) => file.name);
+  return names.map((name) => {
+    const file = fileByName.get(name);
+    const tableCount = countTablesForSource(profile, name);
+    return {
+      name,
+      size: file?.size || 0,
+      status: "ready",
+      statusText: fileStatusText("ready"),
+      meta: fileMetaText(file?.size || 0, tableCount),
+    };
+  });
+}
+
+function uniqueSourceFileNames(profile) {
+  const names = [];
+  (profile?.tables || []).forEach((table) => {
+    const name = String(table.source_file || profile?.file_name || "").trim();
+    if (name && !names.includes(name)) names.push(name);
+  });
+  if (!names.length && profile?.file_name) {
+    String(profile.file_name)
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .forEach((name) => {
+        if (!names.includes(name)) names.push(name);
+      });
+  }
+  return names;
+}
+
+function countTablesForSource(profile, sourceName) {
+  if (!profile || !sourceName) return 0;
+  return (profile.tables || []).filter((table) => String(table.source_file || profile.file_name || "") === sourceName).length;
+}
+
+function fileMetaText(size, tableCount) {
+  return [size ? formatFileSize(size) : "", tableCount ? `${tableCount} 张表` : ""].filter(Boolean).join(" / ") || "文件";
+}
+
+function fileStatusText(status) {
+  if (status === "ready") return "已就绪";
+  if (status === "failed") return "失败";
+  return "待上传";
 }
 
 function updateRuleMode() {
@@ -224,12 +370,14 @@ async function uploadFiles() {
     state.profile = profile;
     state.datasetId = profile.dataset_id;
     state.selectedTable = profile.tables?.[0]?.table_name || "";
+    state.fileRecords = buildReadyFileRecords(files, profile);
     renderProfile();
+    renderFilePanel();
     el.profileMessage.classList.add("hidden");
     setApiStatus("ready", "数据集已就绪");
     state.hasPendingUpload = false;
     el.fileSummary.textContent = `${files.length} 个文件已就绪`;
-    el.fileDetail.textContent = "已准备好，直接提问即可";
+    el.fileDetail.textContent = "点击查看文件";
     return profile;
   } catch (error) {
     setApiStatus("error", "上传失败");
@@ -237,8 +385,10 @@ async function uploadFiles() {
     state.profile = null;
     state.selectedTable = "";
     state.hasPendingUpload = true;
+    state.fileRecords = files.map((file) => fileRecordFromFile(file, "failed"));
     el.fileSummary.textContent = `${files.length} 个文件上传失败`;
-    el.fileDetail.textContent = `上传失败：${String(error.message || error)}`;
+    el.fileDetail.textContent = "点击查看文件";
+    renderFilePanel();
     return null;
   } finally {
     state.isUploading = false;
@@ -248,7 +398,7 @@ async function uploadFiles() {
 }
 
 async function runAnalysis() {
-  const question = el.questionInput.value.trim();
+  const question = getQuestionText();
   if (!question || state.isUploading || state.isAnalyzing) {
     updateRunButton();
     return;
@@ -272,7 +422,7 @@ async function runAnalysis() {
   const monitorRunId = startMonitorRun(question);
   markHistoryRunning(question, monitorRunId);
   appendUserMessage(question);
-  el.questionInput.value = "";
+  setQuestionText("");
   renderProgress(question);
   setApiStatus("idle", "处理中");
   try {
@@ -296,10 +446,12 @@ async function runAnalysis() {
     stopProgress();
     result.question = question;
     renderResult(result);
+    finishMonitorRun(result, question);
     const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset" || result.debug?.agent_mode === "chat_with_dataset";
     setApiStatus(result.success ? "ready" : "error", result.success ? (isChat ? "已回复" : "分析完成") : "需要继续确认");
   } catch (error) {
     stopProgress();
+    failMonitorRun(question, String(error.message || error));
     markHistoryFailed(question, String(error.message || error));
     setApiStatus("error", "分析失败");
     renderUserFacingError("分析失败", String(error.message || error));
@@ -317,8 +469,36 @@ function handleQuestionKeydown(event) {
   runAnalysis();
 }
 
+function handleQuestionInput() {
+  if (!getQuestionText()) {
+    setQuestionText("");
+  }
+  updateQuestionEmptyState();
+  updateRunButton();
+}
+
+function handleQuestionPaste(event) {
+  const text = event.clipboardData?.getData("text/plain");
+  if (text == null) return;
+  event.preventDefault();
+  document.execCommand("insertText", false, text);
+}
+
+function getQuestionText() {
+  return (el.questionInput.textContent || "").replace(/\u00a0/g, " ").trim();
+}
+
+function setQuestionText(text) {
+  el.questionInput.textContent = text || "";
+  updateQuestionEmptyState();
+}
+
+function updateQuestionEmptyState() {
+  el.questionInput.classList.toggle("is-empty", !getQuestionText());
+}
+
 function updateRunButton() {
-  const hasQuestion = Boolean(el.questionInput.value.trim());
+  const hasQuestion = Boolean(getQuestionText());
   el.runButton.disabled = !hasQuestion || state.isUploading || state.isAnalyzing;
   updateBenchmarkButtons();
 }
@@ -481,8 +661,17 @@ function renderChart(chart, fallbackRows = [], fallbackColumns = [], answer = ""
   const type = chart?.chart_type;
   const rows = chart?.data?.length ? chart.data : fallbackRows;
   const x = chart?.x || fallbackColumns[0];
-  const y = chart?.y || fallbackColumns.find((column) => Number.isFinite(Number(rows?.[0]?.[column])));
-  if (!type || type === "kpi" || !rows.length || !x || !y) {
+  if (!type || type === "kpi") {
+    el.chartPanel.className = "chart-panel hidden";
+    return;
+  }
+  if (chart?.image_data_uri) {
+    el.chartPanel.className = "chart-panel";
+    el.chartPanel.innerHTML = renderChartImage(chart);
+    return;
+  }
+  const y = resolveChartY(rows, chart?.y, fallbackColumns);
+  if (!rows.length || !x || !y) {
     el.chartPanel.className = "chart-panel hidden";
     return;
   }
@@ -494,15 +683,20 @@ function renderChart(chart, fallbackRows = [], fallbackColumns = [], answer = ""
     return;
   }
   el.chartPanel.className = "chart-panel";
-  if (chart?.image_data_uri) {
-    el.chartPanel.innerHTML = renderChartImage(chart);
-  } else if (type === "line") {
+  if (type === "line") {
     el.chartPanel.innerHTML = renderLineChart(values, chart);
   } else if (type === "pie" || type === "donut") {
     el.chartPanel.innerHTML = renderPieChart(values, chart, type);
   } else {
     el.chartPanel.innerHTML = renderBarChart(values, chart, type === "horizontal_bar");
   }
+}
+
+function resolveChartY(rows, requestedY, fallbackColumns) {
+  if (requestedY && rows.some((row) => Number.isFinite(Number(row?.[requestedY])))) {
+    return requestedY;
+  }
+  return fallbackColumns.find((column) => rows.some((row) => Number.isFinite(Number(row?.[column]))));
 }
 
 function renderChartImage(chart) {
@@ -660,6 +854,9 @@ function renderProcess(processSource, result = {}) {
       title: step.title || "-",
       summary: step.summary || "",
       status: step.status || "completed",
+      evidence: normalizeProcessList(step.evidence, 4),
+      assumptions: normalizeProcessList(step.assumptions, 3),
+      caveats: normalizeProcessList(step.caveats, 3),
     }));
     renderProcessItems(steps, processSource.summary || "已完成本次分析。");
     return;
@@ -674,7 +871,7 @@ function renderProcess(processSource, result = {}) {
     renderProcessItems([], "提问后显示分析过程。");
     return;
   }
-  renderProcessItems(friendlySteps, result.question ? `已完成：围绕“${shortLabel(result.question, 28)}”整理出回答。` : "已完成本次分析。");
+  renderProcessItems(friendlySteps, result.question ? `围绕“${shortLabel(result.question, 28)}”整理出回答。` : "本次回答已生成。");
 }
 
 function renderProcessItems(steps, summary) {
@@ -691,15 +888,40 @@ function renderProcessItems(steps, summary) {
     .map(
       (step) => `
         <li class="${escapeHtml(step.status || "completed")}">
-          <span class="step-dot ${escapeHtml(step.status || "completed")}"></span>
           <div>
             <strong>${escapeHtml(step.title || "-")}</strong>
             <p>${escapeHtml(step.summary || "")}</p>
+            ${renderProcessEvidence(step)}
           </div>
         </li>
       `,
     )
     .join("");
+}
+
+function normalizeProcessList(value, limit) {
+  const items = Array.isArray(value) ? value : value ? [value] : [];
+  return items
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function renderProcessEvidence(step) {
+  const evidence = normalizeProcessList(step.evidence, 4);
+  const caveats = normalizeProcessList(step.caveats, 3);
+  const assumptions = normalizeProcessList(step.assumptions, 3);
+  const chips = [
+    ...evidence.map((text) => ({ text, type: "evidence" })),
+    ...assumptions.map((text) => ({ text, type: "assumption" })),
+    ...caveats.map((text) => ({ text, type: "caveat" })),
+  ];
+  if (!chips.length) return "";
+  return `
+    <div class="process-evidence" aria-label="过程依据">
+      ${chips.map((chip) => `<span class="${escapeHtml(chip.type)}">${escapeHtml(chip.text)}</span>`).join("")}
+    </div>
+  `;
 }
 
 function buildLiveSteps(question, hasDataset) {
@@ -851,6 +1073,7 @@ function pushHistory(result) {
     question: result.question,
     title: conversation.title || result.question,
     mode: isChat ? "chat" : "analysis",
+    unread: true,
     updatedAt: conversation.updated_at || new Date().toISOString(),
     messageCount: conversation.message_count || 0,
   };
@@ -872,6 +1095,7 @@ function markHistoryRunning(question, fallbackRunId) {
     question,
     title: existing?.title || question || "新对话",
     mode: "running",
+    unread: true,
     updatedAt: new Date().toISOString(),
     messageCount: existing?.messageCount || 0,
   };
@@ -891,6 +1115,7 @@ function markHistoryFailed(question, message) {
     question,
     title: existing?.title || question || "未完成对话",
     mode: "failed",
+    unread: true,
     updatedAt: new Date().toISOString(),
     messageCount: existing?.messageCount || 0,
   };
@@ -912,10 +1137,8 @@ function renderHistory() {
       (item) => {
         const title = item.title || item.question || "未命名对话";
         const stateClass = item.mode === "running" ? "running" : item.success === false ? "failed" : "complete";
-        const stateLabel = item.mode === "running" ? "运行中" : item.success === false ? "需要继续确认" : "完成";
         return `
         <li class="history-item ${escapeHtml(stateClass)}${item.runId === state.conversationId ? " active" : ""}" data-run-id="${escapeHtml(item.runId || "")}">
-          <span class="history-state ${escapeHtml(stateClass)}" aria-label="${escapeHtml(stateLabel)}" title="${escapeHtml(stateLabel)}"></span>
           <div class="history-item-text">
             <strong class="history-title" title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
             <input class="history-rename-input hidden" type="text" maxlength="80" value="${escapeHtml(title)}" aria-label="重命名历史对话" />
@@ -934,6 +1157,7 @@ function renderHistory() {
   el.runHistory.querySelectorAll(".history-item").forEach((item) => {
     item.addEventListener("click", (event) => {
       if (event.target.closest("button, input")) return;
+      acknowledgeHistoryItem(item.dataset.runId || "");
       loadConversation(item.dataset.runId || "");
     });
   });
@@ -947,6 +1171,15 @@ function renderHistory() {
       commitHistoryRename(input.closest(".history-item")?.dataset.runId || "", input.value);
     });
   });
+}
+
+function acknowledgeHistoryItem(runId) {
+  const item = state.runHistory.find((entry) => entry.runId === runId);
+  if (!item || item.mode === "running" || item.unread !== true) {
+    return;
+  }
+  item.unread = false;
+  renderHistory();
 }
 
 function startHistoryRename(runId) {
@@ -1010,17 +1243,25 @@ async function loadConversations() {
     if (!response.ok || !payload.success) {
       throw new Error(errorText(payload) || `HTTP ${response.status}`);
     }
-    state.runHistory = (payload.conversations || []).map((item) => ({
-      runId: item.conversation_id,
-      success: true,
-      answer: item.last_message || "",
-      question: item.last_message || "",
-      title: item.title || "未命名对话",
-      mode: item.last_answer_type === "chat" ? "chat" : "analysis",
-      updatedAt: item.updated_at,
-      messageCount: item.message_count || 0,
-      datasetId: item.dataset_id || "",
-    }));
+    const existingById = new Map(state.runHistory.map((item) => [item.runId, item]));
+    const loadedHistory = (payload.conversations || []).map((item) => {
+      const existing = existingById.get(item.conversation_id);
+      return {
+        runId: item.conversation_id,
+        success: true,
+        answer: item.last_message || "",
+        question: item.last_message || "",
+        title: item.title || "未命名对话",
+        mode: item.last_answer_type === "chat" ? "chat" : "analysis",
+        unread: existing?.unread === true,
+        updatedAt: item.updated_at,
+        messageCount: item.message_count || 0,
+        datasetId: item.dataset_id || "",
+      };
+    });
+    const loadedIds = new Set(loadedHistory.map((item) => item.runId));
+    const localUnreadHistory = state.runHistory.filter((item) => item.unread === true && !loadedIds.has(item.runId));
+    state.runHistory = [...localUnreadHistory, ...loadedHistory].slice(0, 30);
     renderHistory();
   } catch {
     renderHistory();
@@ -1047,11 +1288,15 @@ async function restoreConversation(conversation) {
   state.datasetId = conversation.dataset_id || "";
   state.profile = null;
   state.selectedTable = "";
+  state.fileRecords = [];
+  state.hasPendingUpload = false;
   state.activeHistoryRunId = "";
   state.userRuleFileId = "";
   state.hasPendingRuleUpload = false;
   state.benchmarkRuleFileId = "";
   state.hasPendingBenchmarkRuleUpload = false;
+  el.fileInput.value = "";
+  clearRestoredFileRecords();
   [...el.chatMessages.querySelectorAll(".user-message, .assistant-result-message")].forEach((message) => message.remove());
   bindResultMessage(el.resultTemplate);
   el.resultMessage.classList.add("hidden");
@@ -1089,9 +1334,11 @@ async function restoreDatasetProfile(datasetId) {
     state.datasetId = profile.dataset_id || datasetId;
     state.selectedTable = profile.tables?.[0]?.table_name || "";
     renderProfile();
+    applyRestoredFileRecords(profile);
     setApiStatus("ready", "数据集已就绪");
   } catch {
     state.profile = null;
+    clearRestoredFileRecords();
     renderProfile();
     el.datasetChip.textContent = state.datasetId ? "数据记录已关联" : "未上传数据";
     el.datasetStatus.textContent = state.datasetId ? `${state.datasetId} / 需重新上传后继续分析` : "等待上传数据集";
@@ -1155,6 +1402,7 @@ function resetConversation() {
   state.conversationId = "";
   state.profile = null;
   state.selectedTable = "";
+  state.fileRecords = [];
   state.hasPendingUpload = false;
   state.ruleModeEnabled = false;
   state.hasPendingRuleUpload = false;
@@ -1181,7 +1429,7 @@ function resetConversation() {
   setApiStatus("idle", "准备就绪");
   el.datasetChip.textContent = "未上传数据";
   el.datasetStatus.textContent = "等待上传数据集";
-  el.questionInput.value = "";
+  setQuestionText("");
   updateRunButton();
   scrollToLatest();
 }
@@ -1213,27 +1461,79 @@ function bindResultMessage(message) {
 
 function startMonitorRun(question) {
   state.activeMonitorRunId = `mon_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+  const record = {
+    monitor_run_id: state.activeMonitorRunId,
+    question,
+    dataset_id: state.datasetId,
+    conversation_id: state.conversationId,
+    execution_mode: el.executionMode.value,
+    agent_mode: el.agentMode.value,
+    status: "running",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
   try {
-    window.localStorage.setItem(
-      "vds-active-monitor-run",
-      JSON.stringify({
-        monitor_run_id: state.activeMonitorRunId,
-        question,
-        dataset_id: state.datasetId,
-        conversation_id: state.conversationId,
-        execution_mode: el.executionMode.value,
-        agent_mode: el.agentMode.value,
-        created_at: new Date().toISOString(),
-      }),
-    );
+    window.localStorage.setItem(ACTIVE_MONITOR_RUN_KEY, JSON.stringify(record));
+    upsertMonitorRunRecord(record);
   } catch {
     // Local storage is optional; backend monitor events remain authoritative.
   }
   return state.activeMonitorRunId;
 }
 
+function finishMonitorRun(result, question) {
+  if (!state.activeMonitorRunId) return;
+  upsertMonitorRunRecord({
+    monitor_run_id: state.activeMonitorRunId,
+    question,
+    dataset_id: result.dataset_id || state.datasetId,
+    conversation_id: result.conversation_id || state.conversationId,
+    conversation_title: result.conversation?.title || "",
+    answer: result.answer || "",
+    answer_type: result.answer_type || "",
+    status: result.success === false ? "failed" : "completed",
+    updated_at: new Date().toISOString(),
+  });
+}
+
+function failMonitorRun(question, errorMessage) {
+  if (!state.activeMonitorRunId) return;
+  upsertMonitorRunRecord({
+    monitor_run_id: state.activeMonitorRunId,
+    question,
+    dataset_id: state.datasetId,
+    conversation_id: state.conversationId,
+    status: "failed",
+    error: errorMessage,
+    updated_at: new Date().toISOString(),
+  });
+}
+
+function upsertMonitorRunRecord(record) {
+  try {
+    const existing = JSON.parse(window.localStorage.getItem(MONITOR_RUN_INDEX_KEY) || "[]");
+    const records = Array.isArray(existing) ? existing : [];
+    const index = records.findIndex((item) => item?.monitor_run_id === record.monitor_run_id);
+    const nextRecord = {
+      ...(index >= 0 ? records[index] : {}),
+      ...record,
+      created_at: record.created_at || (index >= 0 ? records[index].created_at : new Date().toISOString()),
+    };
+    if (index >= 0) {
+      records[index] = nextRecord;
+    } else {
+      records.unshift(nextRecord);
+    }
+    records.sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")));
+    window.localStorage.setItem(MONITOR_RUN_INDEX_KEY, JSON.stringify(records.slice(0, MAX_MONITOR_RUN_RECORDS)));
+    window.localStorage.setItem(ACTIVE_MONITOR_RUN_KEY, JSON.stringify(nextRecord));
+  } catch {
+    // Local storage is optional; monitoring still works through SSE.
+  }
+}
+
 function setApiStatus(status, text) {
-  el.apiStatus.className = `status-dot ${status}`;
+  el.apiStatus.className = `status-pill ${status}`;
   el.apiStatus.textContent = text;
 }
 
@@ -1270,6 +1570,14 @@ function formatNumber(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return String(value ?? "-");
   return Math.abs(number) >= 1000 ? number.toLocaleString("zh-CN", { maximumFractionDigits: 1 }) : String(Number(number.toFixed(2)));
+}
+
+function formatFileSize(value) {
+  const size = Number(value);
+  if (!Number.isFinite(size) || size <= 0) return "";
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(size >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+  return `${size} B`;
 }
 
 function shortLabel(value, limit) {

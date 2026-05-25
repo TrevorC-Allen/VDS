@@ -30,9 +30,13 @@ def render_chart_svg(chart: ChartSpec) -> str:
     """Render a compact, readable SVG chart from verified chart data."""
 
     values = _chart_values(chart)
+    chart_type = chart.chart_type or "bar"
+    if chart_type == "line":
+        multi_series = _series_values(chart)
+        if len(multi_series) > 1:
+            return _multi_line_chart(multi_series[:8], chart)
     if len(values) <= 1:
         return ""
-    chart_type = chart.chart_type or "bar"
     if chart_type == "line":
         return _line_chart(values[:24], chart)
     if chart_type in {"pie", "donut"}:
@@ -57,6 +61,33 @@ def _chart_values(chart: ChartSpec) -> list[dict[str, Any]]:
         if label and value is not None and math.isfinite(value):
             values.append({"label": label, "value": value})
     return values
+
+
+def _series_values(chart: ChartSpec) -> list[dict[str, Any]]:
+    rows = [row for row in (chart.data or []) if isinstance(row, dict)]
+    if not rows:
+        return []
+    x_column = chart.x or chart.encoding.get("x") or next(iter(rows[0].keys()), "")
+    y_columns: list[str] = []
+    for series in chart.series or []:
+        column = str(series.get("y") or "")
+        if column and column != x_column and column not in y_columns:
+            y_columns.append(column)
+    if not y_columns:
+        for column in rows[0]:
+            if column != x_column and any(_to_float(row.get(column)) is not None for row in rows):
+                y_columns.append(str(column))
+    series_values: list[dict[str, Any]] = []
+    for column in y_columns:
+        points = []
+        for row in rows:
+            label = str(row.get(str(x_column), "")).strip()
+            value = _to_float(row.get(column))
+            if label and value is not None and math.isfinite(value):
+                points.append({"label": label, "value": value})
+        if len(points) > 1:
+            series_values.append({"name": column, "points": points})
+    return series_values
 
 
 def _bar_chart(values: list[dict[str, Any]], chart: ChartSpec, *, horizontal: bool) -> str:
@@ -128,6 +159,45 @@ def _line_chart(values: list[dict[str, Any]], chart: ChartSpec) -> str:
     step = max(1, math.ceil(len(points) / 6))
     for index, (x, _, item) in enumerate(points):
         if index % step == 0 or index == len(points) - 1:
+            body.append(f'<text x="{x:.1f}" y="{height - 38}" class="axis-label" text-anchor="middle">{escape(_short_label(item["label"], 8))}</text>')
+    return _wrap_svg(width, height, title, "".join(body))
+
+
+def _multi_line_chart(series_values: list[dict[str, Any]], chart: ChartSpec) -> str:
+    width = 920
+    height = 470
+    title = chart.title or "趋势图"
+    left = 72
+    right = 180
+    top = 76
+    bottom = 82
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    all_values = [point["value"] for series in series_values for point in series["points"]]
+    min_value = min(all_values)
+    max_value = max(all_values)
+    span = max(max_value - min_value, 1)
+    body = [_grid_lines(width, height, left, top, plot_width, plot_height)]
+    max_points = max(len(series["points"]) for series in series_values)
+    for series_index, series in enumerate(series_values):
+        color = PALETTE[series_index % len(PALETTE)]
+        points = []
+        for index, item in enumerate(series["points"]):
+            x = left + index / max(max_points - 1, 1) * plot_width
+            y = top + plot_height - (item["value"] - min_value) / span * plot_height
+            points.append((x, y, item))
+        path = " ".join(f"{x:.1f},{y:.1f}" for x, y, _ in points)
+        body.append(f'<polyline points="{path}" fill="none" stroke="{color}" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>')
+        for x, y, _ in points:
+            body.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="#ffffff" stroke="{color}" stroke-width="2.5"/>')
+        legend_y = top + series_index * 28
+        body.append(f'<rect x="{width - right + 26}" y="{legend_y - 12}" width="14" height="14" rx="4" fill="{color}"/>')
+        body.append(f'<text x="{width - right + 48}" y="{legend_y}" class="axis-label">{escape(_short_label(str(series["name"]), 13))}</text>')
+    labels = series_values[0]["points"]
+    step = max(1, math.ceil(len(labels) / 6))
+    for index, item in enumerate(labels):
+        if index % step == 0 or index == len(labels) - 1:
+            x = left + index / max(len(labels) - 1, 1) * plot_width
             body.append(f'<text x="{x:.1f}" y="{height - 38}" class="axis-label" text-anchor="middle">{escape(_short_label(item["label"], 8))}</text>')
     return _wrap_svg(width, height, title, "".join(body))
 

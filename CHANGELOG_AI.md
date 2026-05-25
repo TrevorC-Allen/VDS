@@ -68,6 +68,276 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-25 13:33 CST
+
+### 本次目标
+
+按用户要求把新的 Workbench 体验收敛阶段正式写入 `MAIN_GOAL.md`，便于后续随时查看 Phase 12 的目标、边界、验收标准和禁止事项。
+
+### 修改文件
+
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 在 `MAIN_GOAL.md` 顶部当前阶段摘要中新增 Phase 12 状态说明。
+- 在当前阶段目标列表和统一 Phase 状态表中新增 `Phase 12：GPT-like General Answer / Insight / Activity Stream`。
+- 在 Phase 11 之后、Phase 9 之前新增 Phase 12 正文章节，明确 `overview_report`、`enhanced_insight`、`execution_artifacts`、`activity_process_view`、`semantic_chart_planning` 和规则文件自动绑定的目标。
+- 明确 Phase 12 与 Phase 10 / Phase 11 的边界：Phase 10 保持首版结果体验已完成，Phase 11 保持会话 / 历史持久化，Phase 12 负责新的体验质量升级和产品化收敛。
+- 在当前实现状态中写明 Phase 12 目前只是 Planned / Ready to implement，实际代码、API、前端渲染和浏览器 smoke 尚未开始。
+- 在重要红线中补充 Phase 12 禁止展示 CoT / raw prompt / raw trace、禁止前端计算、禁止 payments 特调、禁止绕过 ToolDispatcher / Result Normalizer / Verifier / Correction Planner。
+
+### 测试方式
+
+- rg -n "Phase 12|GPT-like General Answer|overview_report|execution_artifacts|semantic_chart_planning" MAIN_GOAL.md CHANGELOG_AI.md
+
+### 测试结果
+
+- 文档检索通过，`MAIN_GOAL.md` 和 `CHANGELOG_AI.md` 均能检索到 Phase 12 标题、顶部状态、状态表、核心能力和关键红线。
+- `git diff --check` 通过，未发现空白格式问题。
+
+### 遗留问题
+
+- 本轮只更新阶段规划文档，不实现 Phase 12 的后端契约、前端展示、规则文件自动绑定或浏览器 smoke。
+- 后续真正实现 Phase 12 时，仍需同步 `README.md`、`docs/API_CONTRACT.md`、`frontend/README.md` 和对应测试。
+
+### 是否影响主流程
+
+否。本轮为文档规划更新，不改变运行时代码路径。
+
+### 是否涉及 Benchmark
+
+是，仅涉及红线和非回归验收描述；不修改 benchmark scorer、标准答案、accepted-answer pool、public proxy 观察或普通 Agent 链路。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。Phase 12 明确要求继续经过 ToolDispatcher、Result Normalizer、Verifier 和 Correction Planner，避免前端或展示层绕过多 Agent / 工具链边界。
+
+### 是否修改核心数据契约
+
+否。本轮只规划未来契约名称和验收方向，未修改代码契约。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。本轮只规定未来活动流必须是安全展示契约，不展示完整 Chain of Thought、raw prompt、raw reasoning tokens、API key 或后端完整 trace JSON。
+
+### 是否已同步 README
+
+否。本轮用户明确要求把 Phase 写入 `MAIN_GOAL.md` 便于跟踪，且未实现用户可见能力、API、Benchmark 口径或验证状态变化；后续 Phase 12 代码落地时必须同步 README。
+
+2026-05-25 12:18 CST
+
+### 本次目标
+
+修复真实 Workbench 问题“蒯利保在2025年1月的历史分销金额中，水溶C100占比是多少？”仍看不出过程改进的问题，确保后端返回的 safe `process_view_v2` 证据在前端可见，并修复运行时重启后的多文件数据恢复错位。
+
+### 修改文件
+
+- data_agent_core/output/process_narrative.py
+- data_agent_core/core/chinese_retail_intent.py
+- backend/storage/temp_file_store.py
+- frontend/app.js
+- frontend/styles.css
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_phase10_result_experience.py
+- tests/core/test_chinese_retail_capabilities.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 针对 `retail_distribution_product_share` 生成专用安全过程步骤，展示对象、月份、产品、表选择和分子/分母摘要，避免占比问题继续套用泛化趋势模板。
+- 中文零售意图为历史分销金额占比写入安全的 `source_tables` 和表选择摘要。
+- 多文件上传持久化 `stored_files` / `source_file_map`，并为旧 marker 增加基于表头的恢复兜底，避免服务重启后临时文件名与原始表名错位导致 Not Applicable。
+- Workbench `renderProcess()` 渲染后端 v2 时保留并展示 `evidence`、`assumptions`、`caveats` chips；旧 `reasoning_trace_view` 仍只作为 fallback。
+- 增加回归测试覆盖真实占比口径、前端安全 chips 渲染、多文件恢复映射和泄漏禁词。
+
+### 测试方式
+
+- node --check frontend/app.js
+- node --check frontend/monitor.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime multi_agent_workflows backend tests
+- git diff --check
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service.DataAgentServiceTest.test_upload_datasets_preserves_source_file_metadata tests.backend.test_data_agent_service.DataAgentServiceTest.test_uploaded_dataset_tables_restore_after_service_restart tests.backend.test_data_agent_service.DataAgentServiceTest.test_legacy_multi_source_restore_recovers_table_names_by_header tests.core.test_phase10_result_experience.Phase10ResultExperienceTest.test_process_view_v2_explains_retail_product_share_scope tests.core.test_chinese_retail_capabilities.ChineseRetailCapabilitiesTest.test_retail_distribution_product_share_respects_employee_scope tests.backend.test_workbench_static_assets.WorkbenchStaticAssetsTest.test_workbench_renders_safe_process_evidence_from_backend -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -v
+- scripts/sync_workbench_runtime.sh && launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+- curl 真实 `http://127.0.0.1:8001/api/data-agent/message`，dataset `ds_20260525_033933_27ad32d6`，问题为蒯利保 / 2025年1月 / 水溶C100 占比。
+- Browser 验证 `http://127.0.0.1:8001/workbench` 展开当前历史消息的 `查看处理过程`，并验证 `/monitor?monitor_run_id=manual_kua_share_final_check`。
+
+### 测试结果
+
+- 前端脚本语法检查、compileall 和 git diff --check 通过。
+- 聚焦恢复/过程测试通过：Ran 6 tests，OK。
+- 完整单元测试通过：Ran 202 tests，OK。
+- 真实 API 返回 `success=true`、`answer=3.12%`、`answer_type=percentage`、`process_view_v2.mode=comparison_or_trend`。
+- Workbench 展开过程可见 7 个步骤和 19 个 safe chips，包括 `主任：蒯利保`、`月份：2025年1月`、`产品：水溶C100`、`使用数据表：v_trd_dist_ord_dtl`、分母和分子摘要。截图保存到 `/tmp/vds-kua-process-evidence.png`。
+- Monitor 面板当前 run 显示安全事件和节点摘要，未发现 `chain_of_thought`、`raw_prompt`、`task_id`、`standard answer`、`public proxy`、`scorer` 等泄漏标记。
+
+### 遗留问题
+
+- 未接入 provider-native reasoning items，也不展示 DeepSeek thinking mode。
+- 本轮只修复 safe process view 的可见叙事、占比口径摘要和多文件恢复映射，不改变 scorer 或核心 benchmark 评分逻辑。
+
+### 是否影响主流程
+
+是。影响 Workbench 过程展示、message 响应后的历史恢复体验，以及普通上传数据集在服务重启后的恢复可靠性。
+
+### 是否涉及 Benchmark
+
+是。只涉及 output-contract / trace-redaction 风险门禁和 benchmark 泄漏红线，不修改 benchmark scorer、标准答案、accepted-answer pool 或 public proxy 观察。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。`process_view_v2` 作为 single_agent / multi_agent 共用的安全展示契约，能继续服务后续多 Agent 节点可观测性。
+
+### 是否修改核心数据契约
+
+否。本轮未改变 `process_view_v2` 结构，只补强字段内容和前端展示。
+
+### 是否修改 API 契约
+
+否。沿用已新增的 `process_view_v2` 契约，未新增响应字段。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+是。新增特定占比能力族的 safe narrative 提取和多文件恢复证据映射；不记录完整 Chain of Thought、raw reasoning tokens、raw prompt、API key、task_id、标准答案或 proxy / scorer 信息。
+
+### 是否已同步 README
+
+是。README.md、MAIN_GOAL.md、docs/API_CONTRACT.md 和 frontend/README.md 已在本轮 process view v2 文档中同步说明安全边界。
+
+2026-05-25 10:45 CST
+
+### 本次目标
+
+把固定 `reasoning_trace_view` 升级为后端生成的 safe `process_view_v2` 动态过程叙事，并按红线收窄 Workbench / Monitor 可见传播面。
+
+### 修改文件
+
+- data_agent_core/output/process_narrative.py
+- data_agent_core/output/reasoning_trace_view.py
+- data_agent_core/tracing/live_monitor.py
+- data_agent_core/tracing/run_trace.py
+- data_agent_core/contracts/response_contracts.py
+- data_agent_core/agent/single_agent.py
+- data_agent_core/output/dataset_overview.py
+- data_agent_core/llm/planner.py
+- data_agent_core/output/output_contract.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- backend/services/data_agent_service.py
+- frontend/app.js
+- frontend/monitor.html
+- frontend/monitor.js
+- frontend/styles.css
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_phase10_result_experience.py
+- tests/core/test_output_contract.py
+- tests/benchmark/test_benchmark_metrics.py
+- README.md
+- MAIN_GOAL.md
+- docs/API_CONTRACT.md
+- frontend/README.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `process_view_v2` 稳定响应字段，结构为 `version`、`summary`、`mode`、`steps[]`，step 只保留安全展示字段。
+- `process_narrative.py` 按 chat、dataset overview、metric、TopN、trend/comparison、multi-table join、diagnostic/anomaly、clarification/not applicable 生成差异化用户过程叙事。
+- `single_agent`、`multi_agent`、无数据聊天、有数据普通聊天和 dataset overview 均返回 `process_view_v2`；旧 `reasoning_trace_view` 保留兼容。
+- LLM stage raw 只保留安全摘要扩展字段，并继续过滤 raw reasoning / raw prompt / benchmark 泄漏字段。
+- Monitor SSE 最终事件只发送 run 状态和 `process_view_v2` 摘要；multi-agent 节点事件改为摘要 payload，移除完整 task/result/response/trace 传播。
+- Workbench 优先渲染后端 `process_view_v2`，缺失时才 fallback 到旧 `reasoning_trace_view`。
+- Monitor 页面文案改为安全事件 JSON，显示后端脱敏后的节点摘要。
+- 根据浏览器 smoke 结果补强中文问题信号兜底：趋势/对比/增长、多表结合/映射、明显缺字段/不支持问题会进入不同 `process_view_v2.mode`，不再全部落回普通指标查询。
+- output-contract 和 benchmark metrics 增加 process/reasoning leak 风险断言。
+- README、MAIN_GOAL、API_CONTRACT、frontend README 同步说明：这是 safe process view v2，不是 raw CoT，不改变核心算法或 benchmark scoring。
+
+### 测试方式
+
+- node --check frontend/app.js
+- node --check frontend/monitor.js
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_phase10_result_experience tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets tests.core.test_output_contract tests.benchmark.test_benchmark_metrics -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime multi_agent_workflows backend tests
+- git diff --check
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_no_benchmark_hardcoding -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -v
+- scripts/sync_workbench_runtime.sh && launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+- Playwright browser smoke on `http://127.0.0.1:8001/workbench` for chat、dataset overview、TopN、trend、多表 join、需澄清问题 and `/workbench-monitor`
+
+### 测试结果
+
+- frontend/app.js 与 frontend/monitor.js 语法检查通过。
+- Focused tests 通过：Ran 56 tests，OK。
+- compileall 通过。
+- git diff --check 通过。
+- benchmark hardcoding architecture tests 通过：Ran 5 tests，OK。
+- Full unittest discover 通过：Ran 198 tests，OK。
+- Browser smoke 通过：六类问题分别返回 `chat`、`dataset_overview`、`ranking_topn`、`comparison_or_trend`、`multi_table_join`、`clarification_or_not_applicable`；过程文案均不同且未出现 forbidden process tokens。
+- Monitor smoke 通过：页面显示安全事件 JSON 和安全过程摘要，未展示 raw CoT、raw prompt、完整 response / trace 或 forbidden tokens。截图保存到 `outputs/process_view_browser_smoke/workbench_process_view_v2.png` 和 `outputs/process_view_browser_smoke/monitor_safe_events.png`。
+
+### 遗留问题
+
+- 尚未引入 provider-native reasoning items，也未展示 DeepSeek thinking mode。
+- Playwright 关闭 Monitor SSE 时记录过一次 `ERR_INCOMPLETE_CHUNKED_ENCODING`，属于长连接关闭信号；未观察到过程泄漏或页面阻断。
+
+### 是否影响主流程
+
+是。影响 analyze/message/chat/overview 响应契约和 Workbench 过程展示，但不改变 Planner、Executor、Verifier、Correction、Result Normalizer 的核心计算逻辑。
+
+### 是否涉及 Benchmark
+
+是。只涉及 benchmark 泄漏红线、output-contract 和 metrics 风险门禁，不修改 scorer、标准答案、accepted-answer pool、public proxy 观察或 benchmark 数据。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。`process_view_v2` 统一了 single_agent 与 multi_agent 的安全展示契约，Monitor SSE 也改为更适合未来多 Agent 节点观测的摘要事件。
+
+### 是否修改核心数据契约
+
+是。`FinalResponse` 和 `RunTrace` 新增 `process_view_v2` 字段；旧字段保持兼容。
+
+### 是否修改 API 契约
+
+是。API 响应新增 `process_view_v2`，Monitor SSE 最终事件 payload 收窄为安全摘要。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+是。新增 safe process narrative v2，增强 reasoning trace 文本/key redaction，并收窄 live monitor payload。
+
+### 是否已同步 README
+
+是。已同步 README.md、MAIN_GOAL.md、docs/API_CONTRACT.md 和 frontend/README.md。
+
 2026-05-25 09:46 CST
 
 ### 本次目标

@@ -20,6 +20,8 @@ from typing import Any, Iterator
 
 
 BLOCKED_KEYS = {
+    "accepted_answer",
+    "accepted_answers",
     "api_key",
     "authorization",
     "chain_of_thought",
@@ -28,9 +30,62 @@ BLOCKED_KEYS = {
     "hidden_answer",
     "hidden_reasoning",
     "password",
+    "public_proxy",
+    "raw_prompt",
+    "raw_reasoning",
+    "reasoning_trace_view",
+    "reasoning_tokens",
+    "scorer",
     "secret",
+    "standard_answer",
+    "task_id",
+    "task_ids",
     "token",
 }
+BLOCKED_KEY_MARKERS = (
+    "accepted_answer",
+    "accepted_answers",
+    "api_key",
+    "authorization",
+    "chain_of_thought",
+    "full_reasoning",
+    "hidden_answer",
+    "hidden_reasoning",
+    "public_proxy",
+    "raw_prompt",
+    "raw_reasoning",
+    "reasoning_tokens",
+    "scorer",
+    "standard_answer",
+    "task_id",
+)
+BLOCKED_TEXT_MARKERS = (
+    "accepted-answer",
+    "accepted answer",
+    "accepted_answer",
+    "api key",
+    "api_key",
+    "chain of thought",
+    "chain_of_thought",
+    "full reasoning",
+    "full_reasoning",
+    "hidden answer",
+    "hidden_answer",
+    "hidden benchmark",
+    "hidden_reasoning",
+    "public proxy",
+    "public_proxy",
+    "raw prompt",
+    "raw reasoning",
+    "raw_prompt",
+    "raw_reasoning",
+    "reasoning tokens",
+    "reasoning_tokens",
+    "scorer",
+    "standard answer",
+    "standard_answer",
+    "task_id",
+)
 MAX_DICT_ITEMS = 80
 MAX_LIST_ITEMS = 30
 MAX_TEXT_LENGTH = 1600
@@ -212,10 +267,9 @@ def sanitize_monitor_payload(value: Any) -> Any:
                 result["_truncated_keys"] = max(len(value) - MAX_DICT_ITEMS, 0)
                 break
             key_text = str(key)
-            if key_text.lower() in BLOCKED_KEYS:
-                result[key_text] = "[redacted]"
-            else:
-                result[key_text] = sanitize_monitor_payload(item)
+            if _blocked_key(key_text):
+                continue
+            result[key_text] = sanitize_monitor_payload(item)
         return result
     if isinstance(value, (list, tuple)):
         items = [sanitize_monitor_payload(item) for item in list(value)[:MAX_LIST_ITEMS]]
@@ -233,7 +287,7 @@ def sanitize_monitor_payload(value: Any) -> Any:
         except (TypeError, ValueError):
             pass
     if isinstance(value, str):
-        return _clip_text(value)
+        return _clip_text(_redact_text(value))
     return value
 
 
@@ -242,3 +296,15 @@ def _clip_text(value: Any) -> str:
     if len(text) <= MAX_TEXT_LENGTH:
         return text
     return text[:MAX_TEXT_LENGTH] + f"... [truncated {len(text) - MAX_TEXT_LENGTH} chars]"
+
+
+def _blocked_key(key: str) -> bool:
+    lowered = key.lower()
+    return lowered in BLOCKED_KEYS or any(marker in lowered for marker in BLOCKED_KEY_MARKERS)
+
+
+def _redact_text(text: str) -> str:
+    result = str(text or "")
+    for marker in BLOCKED_TEXT_MARKERS:
+        result = re.sub(re.escape(marker), "[redacted]", result, flags=re.IGNORECASE)
+    return result

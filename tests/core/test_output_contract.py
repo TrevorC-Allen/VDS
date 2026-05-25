@@ -43,11 +43,14 @@ class OutputContractTest(unittest.TestCase):
     def test_validator_catches_raw_object_and_debug_leaks(self) -> None:
         raw_object = validate_final_answer("[{'merchant': 'A'}]", {"answer_type": "text"})
         debug_trace = validate_final_answer("debug: trace: tool_call foo", {"answer_type": "text"})
+        process_view = validate_final_answer("process_view_v2: reasoning_trace", {"answer_type": "text"})
 
         self.assertFalse(raw_object.passed)
         self.assertIn("object_or_list_leak", raw_object.issues)
         self.assertFalse(debug_trace.passed)
         self.assertIn("debug_or_trace_leak", debug_trace.issues)
+        self.assertFalse(process_view.passed)
+        self.assertIn("debug_or_trace_leak", process_view.issues)
 
     def test_format_answer_preserves_existing_public_behavior(self) -> None:
         self.assertEqual("50.00%", format_answer(50, {"answer_type": "percentage"}))

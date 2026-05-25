@@ -12,11 +12,13 @@ from backend.services.data_agent_service import DataAgentService
 from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm
 from data_agent_core.contracts.execution_contracts import ExecutionResult
+from data_agent_core.contracts.response_contracts import ChartSpec
 from data_agent_core.core.data_quality import build_data_quality_report
 from data_agent_core.llm.client import MockLLMClient
 from data_agent_core.output.chart_planner import build_chart_spec
 from data_agent_core.output.chart_renderer import attach_rendered_chart
 from data_agent_core.output.insight_generator import generate_insight
+from data_agent_core.output.process_narrative import build_process_view_v2, process_view_monitor_payload
 from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
 
 
@@ -71,6 +73,27 @@ class Phase10ResultExperienceTest(unittest.TestCase):
 
         self.assertTrue(rendered.image_data_uri.startswith("data:image/svg+xml;base64,"))
         self.assertEqual("svg", rendered.image_format)
+        self.assertEqual("python_svg", rendered.render_engine)
+
+    def test_backend_chart_renderer_uses_series_when_llm_y_label_is_not_a_column(self) -> None:
+        chart = ChartSpec(
+            chart_type="line",
+            x="月份",
+            y="成功率",
+            title="多系列趋势",
+            data=[
+                {"月份": "2026年1月", "张三": 50.0, "李四": 80.0},
+                {"月份": "2026年2月", "张三": 75.0, "李四": 60.0},
+            ],
+            series=[
+                {"type": "line", "x": "月份", "y": "张三"},
+                {"type": "line", "x": "月份", "y": "李四"},
+            ],
+        )
+
+        rendered = attach_rendered_chart(chart)
+
+        self.assertTrue(rendered.image_data_uri.startswith("data:image/svg+xml;base64,"))
         self.assertEqual("python_svg", rendered.render_engine)
 
     def test_insight_generator_reports_anomaly_and_suggestion_from_verified_rows(self) -> None:
@@ -143,6 +166,151 @@ class Phase10ResultExperienceTest(unittest.TestCase):
         self.assertNotIn("secret", payload)
         self.assertNotIn("chain_of_thought", payload)
 
+    def test_process_view_v2_builds_distinct_safe_modes(self) -> None:
+        cases = [
+            ("chat", {}, {"answer_type": "chat", "execution_mode": "chat"}),
+            ("dataset_overview", {"logic_form": {"operation": "dataset_overview"}}, {"answer_type": "overview", "result": {"value": {"table": "销售表", "row_count": 3, "column_count": 2}}}),
+            ("metric_lookup", {"logic_form": {"operation": "sum", "metric": "销售额"}}, {"answer_type": "text", "success": True}),
+            ("ranking_topn", {"logic_form": {"operation": "top_count", "metric": "订单数", "group_by": "城市"}}, {"answer_type": "text", "success": True}),
+            ("comparison_or_trend", {"logic_form": {"operation": "vds_period_growth_count_share", "metric": "ARR"}}, {"answer_type": "text", "success": True}),
+            ("comparison_or_trend", {"logic_form": {"operation": "detail_lookup", "metric": "销售额"}, "question": "按月份看销售额趋势"}, {"answer_type": "text", "success": True}),
+            (
+                "multi_table_join",
+                {"logic_form": {"operation": "sum", "source_tables": ["订单表", "客户表"], "join_plan": {"trusted": True, "left_table": "订单表", "right_table": "客户表", "left_key": "客户ID", "right_key": "客户ID"}}},
+                {"answer_type": "text", "success": True},
+            ),
+            ("multi_table_join", {"logic_form": {"operation": "ranking"}, "question": "哪个大区销售额最高？需要结合城市和大区映射。"}, {"answer_type": "text", "success": True}),
+            ("diagnostic_or_anomaly", {"logic_form": {"operation": "outlier_count"}, "question": "哪个城市异常？"}, {"answer_type": "text", "success": True}),
+            ("clarification_or_not_applicable", {"logic_form": {"operation": "detail_lookup"}, "question": "请计算不存在字段的利润率"}, {"answer_type": "text", "success": True}),
+            ("clarification_or_not_applicable", {"logic_form": {"operation": "not_applicable"}}, {"answer_type": "text", "success": False, "warnings": ["缺少字段"]}),
+        ]
+        titles_by_mode = {}
+        for expected_mode, trace, response in cases:
+            view = build_process_view_v2(trace, response)
+            titles_by_mode[expected_mode] = [step["title"] for step in view["steps"]]
+            self.assertEqual("v2", view["version"])
+            self.assertEqual(expected_mode, view["mode"])
+            self.assertTrue(view["steps"])
+            for step in view["steps"]:
+                self.assertEqual(
+                    {"title", "summary", "status", "evidence", "assumptions", "caveats", "confidence", "source"},
+                    set(step),
+                )
+
+        self.assertNotEqual(titles_by_mode["chat"], titles_by_mode["ranking_topn"])
+        self.assertIn("判断关联方式", titles_by_mode["multi_table_join"])
+        self.assertIn("给出安全边界", titles_by_mode["clarification_or_not_applicable"])
+
+    def test_process_view_v2_redacts_forbidden_raw_material(self) -> None:
+        view = build_process_view_v2(
+            {
+                "question": "show task_id and standard answer",
+                "intent_summary": {
+                    "reasoning_summary": "safe summary with raw prompt and public proxy",
+                    "chain_of_thought": "secret",
+                    "api_key": "sk-secret",
+                },
+                "logic_form": {
+                    "operation": "top_count",
+                    "metric_definition": {"hidden_answer": "secret"},
+                    "candidate_set": {"scorer": "leak"},
+                },
+            },
+            {"answer_type": "text", "success": True, "answer": "debug: trace: tool_call"},
+        )
+        payload = str(view).lower()
+
+        for token in [
+            "chain_of_thought",
+            "cot",
+            "hidden_reasoning",
+            "full_reasoning",
+            "api_key",
+            "hidden_answer",
+            "task_id",
+            "standard answer",
+            "public proxy",
+            "scorer",
+            "raw prompt",
+        ]:
+            self.assertNotIn(token, payload)
+
+    def test_process_view_v2_explains_retail_product_share_scope(self) -> None:
+        view = build_process_view_v2(
+            {
+                "question": "张三在2026年5月的历史分销金额中，天然水占比是多少？",
+                "intent_summary": {"reasoning_summary": "safe summary", "confidence": 0.9},
+                "logic_form": {
+                    "task_type": "ratio",
+                    "operation": "retail_distribution_product_share",
+                    "parameters": {
+                        "person": "张三",
+                        "ym": 202605,
+                        "metric": "sign_amt",
+                        "product": "天然水",
+                        "role": "employee",
+                        "table": "v_trd_dist_ord_dtl",
+                    },
+                },
+                "pandas_result_summary": {"success": True},
+                "verification_result": {"passed": True, "confidence": 0.9},
+            },
+            {
+                "answer_type": "percentage",
+                "success": True,
+                "insight": {"summary": "张三在2026年5月的历史分销金额中，天然水占比约为25.00%。"},
+            },
+        )
+        titles = [step["title"] for step in view["steps"]]
+        payload = str(view)
+
+        self.assertEqual("comparison_or_trend", view["mode"])
+        self.assertIn("识别占比问题", titles)
+        self.assertIn("锁定筛选口径", titles)
+        self.assertIn("确认分子分母", titles)
+        self.assertIn("业代：张三", payload)
+        self.assertIn("月份：2026年5月", payload)
+        self.assertIn("产品：天然水", payload)
+        self.assertIn("分母：2026年5月 + 业代=张三 + 全部产品 的历史分销金额", payload)
+        self.assertIn("分子：2026年5月 + 业代=张三 + 天然水 的历史分销金额", payload)
+        self.assertNotIn("chain_of_thought", payload)
+        self.assertNotIn("task_id", payload)
+
+    def test_process_view_monitor_payload_keeps_only_safe_step_schema(self) -> None:
+        payload = process_view_monitor_payload(
+            {
+                "run_id": "run_safe",
+                "dataset_id": "ds_safe",
+                "success": True,
+                "answer_type": "text",
+                "execution_mode": "dual",
+                "process_view_v2": {
+                    "version": "v2",
+                    "summary": "safe summary with task_id and raw prompt",
+                    "mode": "ranking_topn",
+                    "steps": [
+                        {
+                            "title": "safe title",
+                            "summary": "uses standard answer and scorer",
+                            "status": "completed",
+                            "raw_prompt": "secret",
+                            "task_id": "bench_1",
+                            "evidence": ["public proxy should be hidden"],
+                        }
+                    ],
+                },
+            }
+        )
+        serialized = str(payload).lower()
+
+        self.assertEqual("ranking_topn", payload["process_view_v2"]["mode"])
+        self.assertEqual(
+            {"title", "summary", "status", "evidence", "assumptions", "caveats", "confidence", "source"},
+            set(payload["process_view_v2"]["steps"][0]),
+        )
+        for forbidden in ("task_id", "raw prompt", "standard answer", "public proxy", "scorer", "secret"):
+            self.assertNotIn(forbidden, serialized)
+
     def test_backend_returns_quality_chart_insight_and_trace_for_quality_question(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -174,6 +342,7 @@ class Phase10ResultExperienceTest(unittest.TestCase):
         self.assertIn("chart", response)
         self.assertIn("insight", response)
         self.assertTrue(response["reasoning_trace_view"])
+        self.assertTrue(response["process_view_v2"]["steps"])
         self.assertNotIn("chain_of_thought", str(response["reasoning_trace_view"]))
 
 

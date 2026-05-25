@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 
 from data_agent_core.contracts.response_contracts import InsightResult
+from data_agent_core.output.process_narrative import build_dataset_overview_process_view
 
 
 def build_dataset_overview_response(
@@ -125,6 +126,13 @@ def build_dataset_overview_response(
                 "summary": "已整理为汇总指标表，避免把原始明细行或单个行数当作回答。",
             },
         ],
+        "process_view_v2": build_dataset_overview_process_view(
+            table_name=table_name,
+            row_count=row_count,
+            column_count=len(columns),
+            metric_column=metric_column,
+            dimension_column=dimension_column,
+        ),
         "warnings": [],
         "errors": [],
         "debug": {

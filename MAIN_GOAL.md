@@ -10,7 +10,7 @@
 
 ## 当前阶段目标
 
-当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环，并继续收敛 Workbench GPT-like 用户体验。Phase 11 已启动会话隔离和历史续聊持久化首个落点，当前具备本地 JSON conversation store、`conversation_id`、历史载入和重命名持久化；真实登录、权限和多租户隔离仍未实现。
+当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环，并继续收敛 Workbench GPT-like 用户体验。Phase 11 已启动会话隔离和历史续聊持久化首个落点，当前具备本地 JSON conversation store、`conversation_id`、历史载入和重命名持久化；真实登录、权限和多租户隔离仍未实现。Phase 12 已作为 Phase 11 之后的正式 Workbench 体验收敛阶段启动，目标是把 general 表单概览、结构化 Insight、代码展示和 GPT-like 活动流做成后端稳定契约。
 
 1. 已搭建 data_agent_core 核心算法目录
 2. 已搭建 data_agent_core/contracts 数据契约目录
@@ -39,8 +39,9 @@
 25. 当前新增 Phase 7.3 作为 Phase 7.2 之后的下一阶段子目标：Evaluation-Driven Robustness and Output Contract Hardening；该阶段聚焦最终 Output Contract、validation-driven retry、submission provenance、真实 provider 回归和 DA-agent 可借鉴工程模式。
 26. Phase 8 已作为正式新阶段完成：Core Algorithm Review, Multi-file / Multi-table Generalization Closure。已补齐多文件 dataset 装配、问题到表路由、多表 join plan、Pandas join materialize、Verifier 校验和 trace 闭环；模型能力和泛化能力回归门禁未退步。
 27. Phase 9 已作为 Phase 8 之后的正式前端阶段完成首版：Frontend Productization After Core Algorithm Freeze。已提供静态 workbench，多文件上传、profile 预览、分析提交、用户可读分析过程和历史回看均依赖后端 API 契约；前端不实现指标公式、join 或数据计算。
-28. Phase 10 已作为 Phase 9 之后的正式结果体验阶段完成首版：Visualization, Insight, Data Quality and Safe Process View。后端稳定生成 `chart`、`insight`、`quality_report`、`reasoning_trace_view`；前端只把图表、洞察和安全过程摘要转成用户可读体验，不展示后端质量报告、warnings/errors、verification 细节、join trace，不实现核心计算、异常规则、清洗动作或完整 Chain of Thought。
+28. Phase 10 已作为 Phase 9 之后的正式结果体验阶段完成首版：Visualization, Insight, Data Quality and Safe Process View。后端稳定生成 `chart`、`insight`、`quality_report`、`reasoning_trace_view` 和 `process_view_v2`；前端只把图表、洞察和安全过程摘要转成用户可读体验，可展示后端已脱敏的筛选口径、表选择、分子/分母 evidence chips，不展示后端质量报告、warnings/errors、verification 细节、join trace，不实现核心计算、异常规则、清洗动作或完整 Chain of Thought。
 29. Phase 11 已作为 Phase 10 之后的正式阶段：Conversation Isolation and Session Persistence。首个轻量实现已落地：每轮 `/message` 可写入 `conversation_id` 对应的本地 JSON 会话，历史 Chat 可载入旧消息并持久化重命名；后续继续补 URL 会话恢复、多窗口同步、真实登录和租户隔离。
+30. Phase 12 已作为 Phase 11 之后的正式体验收敛阶段：GPT-like General Answer, Insight and Activity Stream。当前状态为 Planned / Ready to implement；目标是把 general / overview 报告、结构化 Insight、可复现代码 artifact、活动流、语义图表规划和规则文件自动绑定都沉到后端稳定契约，前端仍只负责渲染。
 
 ## 统一 Phase 状态表
 
@@ -63,8 +64,9 @@
 17. Phase 7.10：ACI Associated Cost and Complex BI Expansion，继续补齐 best_fraud_aci_choice / associated cost / fee what-if candidate table 和复杂中文 BI 能力，禁止按题号、题面、固定样本值或 proxy answer 特调。
 18. Phase 8 Guardrail：核心算法回看与多文件/多表泛化闭环已完成 8A-8E；后续只做 non-regression 守护，不重开 Phase 8 主体。
 19. Phase 9.1：Workbench Confirmation and Review Panels，在 Phase 9 首版 workbench 后继续做字段确认、join key 确认、澄清交互和评测回看；前端仍不承载指标公式、join 或数据计算。
-20. Phase 10：Visualization, Insight, Data Quality and Safe Process View，已完成 ChartSpec v2、InsightResult v2、DataQualityReport、safe `reasoning_trace_view` 和 workbench 渲染。自动清洗不属于 Phase 10，后续必须开新 Phase 并要求用户确认。
+20. Phase 10：Visualization, Insight, Data Quality and Safe Process View，已完成 ChartSpec v2、InsightResult v2、DataQualityReport、safe `reasoning_trace_view`、`process_view_v2` 和 workbench 渲染。自动清洗不属于 Phase 10，后续必须开新 Phase 并要求用户确认。
 21. Phase 11：Conversation Isolation and Session Persistence，状态为 First implementation landed。当前新增 `conversation_id` 会话层、本地 JSON conversation store、历史续聊载入和重命名持久化；GPT-like 小号浅灰单行过程摘要 + 点击展开详情已作为 Workbench UX hardening 先行落地。真实登录、鉴权和多租户隔离仍是后续工作。
+22. Phase 12：GPT-like General Answer / Insight / Activity Stream，状态为 Planned / Ready to implement。该阶段不修改 Phase 10 / Phase 11 的已完成语义，专门收敛 overview report、enhanced insight、execution artifacts、activity process view、semantic chart planning 和规则文件自动绑定。
 
 ## 当前实现状态
 
@@ -115,7 +117,7 @@
 43. Phase 8 非退步门禁已通过：DABstep dev 1-10 为 `9/10`，DABstep public all 1-450 mock 执行覆盖为 `450/450`，微软脱敏数据 1-300 mock scorer 为 `300/300`，原本 VDS `问题汇总.xlsx` 95 题 smoke 为 `95/95`；`format_risk`、`submission_risk`、`trace_redaction_risk` 均为 0。
 44. Phase 9 已完成首版前端 workbench：`frontend/` 提供静态页面，`backend/main.py` 挂载 `/frontend` 和 `/workbench`；页面只调用 `/api/data-agent/upload`、`/api/data-agent/upload-batch` 和统一消息入口 `/api/data-agent/message`，展示结果、用户可读过程和历史记录，不实现核心计算。
 45. Phase 8/9 已补跑真实 DeepSeek representative 回归：DABstep dev 1-10 真实 DeepSeek 为 `9/10`；微软脱敏数据 1-20 真实 DeepSeek 为 `20/20`；原本 VDS `问题汇总.xlsx` 五域代表集 15 题真实 DeepSeek 在修复 LLM candidate_set 归一化后为 `15/15`，输出契约失败为 0。
-46. Phase 10 已完成首版：`data_agent_core/output/chart_planner.py` 自动选择 bar / horizontal_bar / line / pie / donut / histogram / KPI；`data_agent_core/output/chart_renderer.py` 可把 ChartSpec 渲染为后端 SVG `image_data_uri`，Workbench 优先展示后端图像，前端仅保留 fallback；`insight_generator.py` 只基于已验证结果生成摘要、异常、波动和建议；`core/data_quality.py` 在上传和分析时扫描缺失、重复、类型、日期、离群和 key 风险；`reasoning_trace_view.py` 只展示结构化阶段摘要，不暴露完整 Chain of Thought。质量报告、warnings/errors、verification 细节和 join trace 保留在后端/API，不在主界面直接展示。
+46. Phase 10 已完成首版：`data_agent_core/output/chart_planner.py` 自动选择 bar / horizontal_bar / line / pie / donut / histogram / KPI；`data_agent_core/output/chart_renderer.py` 可把 ChartSpec 渲染为后端 SVG `image_data_uri`，Workbench 优先展示后端图像，前端仅保留 fallback；`insight_generator.py` 只基于已验证结果生成摘要、异常、波动和建议；`core/data_quality.py` 在上传和分析时扫描缺失、重复、类型、日期、离群和 key 风险；`reasoning_trace_view.py` 只展示结构化阶段摘要，`process_narrative.py` 生成按问题类型变化的 `process_view_v2` 用户过程叙事，并对占比类问题展示安全的筛选口径和分子/分母摘要，不暴露完整 Chain of Thought、raw reasoning tokens、raw prompt、API key、task_id、标准答案或 proxy / scorer 信息。质量报告、warnings/errors、verification 细节和 join trace 保留在后端/API，不在主界面直接展示。
 47. Phase 10 当前验收已通过：Full unittest `147 tests OK`，compileall、`node --check frontend/app.js` 和 `git diff --check` 通过；DABstep dev `9/10`、DABstep public all mock `450/450`、Microsoft 1-300 mock `300/300`、原本 VDS 95 smoke `95/95`；真实 DeepSeek full 回归已完成，汇总为 DABstep public all `success_count=450/450`、Microsoft `correct=300/300`、原本 VDS 95 smoke `success_count=95/95`，输出 `outputs/phase10_full_real_three_dataset_deepseek_20260523_summary_after_fix.json`。DABstep public all answer 为空，不能据此宣称 hidden official accuracy。
 48. DAB Hard Recovery v2 已完成第一轮代码落点：新增 DABstep all-450 post-response proxy observation 工具，可从 Phase 10 after-fix report 和本地 `task_scores` 重新生成 Easy / Hard、operation、capability family 和 format/list-order 风险口径；输出 `outputs/dabstep_all_1_450_proxy_after_phase10_20260524/all_1_to_450_public_proxy_observation_after_fix.json` 显示 total `420/450 = 93.33%`、Easy `71/72 = 98.61%`、Hard `349/378 = 92.33%`。代码层面补齐数字 fee ID list canonicalization、fee ID engine 稳定排序和 Fee / ACI candidate table 语义校验；非回归门禁通过 DAB dev `9/10`、DAB all mock `450/450`、Microsoft `300/300`、VDS 95 smoke `95/95`、Phase 8 multi-file/join focused `5 OK`、full unittest `152 OK`。该 proxy 仍只作为 response 之后风险观察，不代表 official hidden accuracy，也不进入 Planner / Executor / Verifier / Correction / prompt / trace。
 49. Workbench UX hardening 已补齐普通消息路由和多轮展示缺口：前端统一调用 `POST /api/data-agent/message`，由后端判断无文件聊天、有文件普通聊天、泛数据概览或正式分析；“你好 / 你是什么模型”不会再因已有 dataset 被误送入分析链路；“看一下这个数据 / 看一下整体销售情况”由 `data_agent_core/output/dataset_overview.py` 或 Response Builder 收敛为全表汇总概览，防止主答案只返回行数或原始多字段明细行。前端每轮创建独立 assistant 回复，左侧历史记录支持后端会话列表载入和重命名持久化；前端仍只负责调用 API 和展示，不实现指标计算、join、排序或聚合。
@@ -124,6 +126,8 @@
 52. Workbench 已支持网页端 DAB context 包测试：用户可一次上传 `payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md`，后端识别为 `dabstep_context` dataset，并把 CSV 表、JSON 规则和 manual 知识库传入既有 DAB parser / executor / fee engine；前端只负责文件选择、上传、提问和展示，不读取、不解析、不评分 DAB 规则或标准答案。
 53. Workbench 已预留 Agent 监看链路：请求可携带 `monitor_run_id`，后端通过 SSE 输出已脱敏的工作流、角色和工具调用摘要；该链路只服务本地可观测性，不把 raw prompt、完整 Chain of Thought、API key、task_id 或标准答案暴露给前端。
 54. Rule Mode / Benchmark 规则上传最小链路已落地：普通上传旧请求默认 `file_role=dataset`；用户分析规则必须显式 `file_role=rule, rule_scope=user_analysis`，且只有请求传入 `user_rule_file_id` 时才作为本次分析 guidelines；Benchmark 规则必须显式 `file_role=rule, rule_scope=benchmark`，只能通过独立 `/api/data-agent/benchmark/run` 使用，不进入普通 Chat 上下文或 dataset profile。
+55. Workbench 安全过程叙事 v2 已落地：`single_agent`、`multi_agent`、无数据聊天、有数据普通聊天和 dataset overview 都返回 `process_view_v2`；该字段按 chat、overview、metric、TopN、trend、multi-table、diagnostic、clarification/not_applicable 等模式生成不同步骤。占比类问题会安全展示对象、月份、产品、表选择和分子/分母摘要。Monitor SSE 最终事件只携带 run 状态和 `process_view_v2` 摘要，不再向前端监看面板发送完整 response / trace payload。
+56. Phase 12 当前只完成目标写入：计划把 general 表单概览、结构化 Insight、代码 artifact、GPT-like 活动流、语义图表规划和规则文件自动绑定作为下一阶段后端稳定契约实施；实际代码、API、前端渲染和浏览器 smoke 尚未开始，不能把本条理解为能力已落地。
 
 ## 架构原则
 
@@ -817,11 +821,11 @@ Phase 8 当前退出结果：
 
 已交付：
 
-1. 后端生成 `chart`、`insight`、`quality_report` 和 `reasoning_trace_view` 稳定字段。
+1. 后端生成 `chart`、`insight`、`quality_report`、`reasoning_trace_view` 和 `process_view_v2` 稳定字段。
 2. `chart` 自动选择 bar / horizontal_bar / line / pie / donut / histogram / KPI；选择逻辑在 `data_agent_core/output/chart_planner.py`，后端可通过 `data_agent_core/output/chart_renderer.py` 输出 SVG `image_data_uri`，前端优先渲染后端图像并只把 chart spec 作为 fallback。
 3. `insight` 只基于 verified result、质量报告和可解释统计生成摘要、异常、波动和建议，不臆造业务结论。
 4. `quality_report` 扫描缺失、重复、类型、日期、离群、负值和 key 风险；只作为后端/API 审计字段，不在主界面直接展示，不自动修改原始数据。
-5. `reasoning_trace_view` 展示结构化阶段摘要、意图识别、执行和校验结果；前端将其转译为用户可读过程，不暴露完整 Chain of Thought、raw prompt、API key 或隐藏 benchmark 答案。
+5. `reasoning_trace_view` 保持结构化阶段摘要用途；`process_view_v2` 从安全摘要、执行结果和 response contract 中抽取用户过程叙事，覆盖 chat、概览、指标、TopN、趋势、多表、诊断和需澄清场景，不暴露完整 Chain of Thought、raw reasoning tokens、raw prompt、API key、task_id、标准答案或 proxy / scorer 信息。
 6. 上传表质量报告已缓存到 dataset profile，避免 Microsoft / VDS 这类多题回归中每题重复扫描。
 
 验收结果：
@@ -880,7 +884,7 @@ Phase 8 当前退出结果：
 1. 当前会话 URL 使用 `/workbench?conversation_id=...`。
 2. 新建聊天时创建新的 `conversation_id` 并更新 URL。
 3. 多窗口同一 `conversation_id` 的实时同步。
-4. 跨进程重启后的 DataFrame 表数据恢复；当前可恢复 profile 和消息，但继续分析仍依赖内存表或重新上传。
+4. 跨进程重启后的普通上传表数据恢复已可基于持久化源文件重建；后续仍需补 URL 自动会话定位、多窗口实时同步和真实 owner / tenant 隔离。
 5. 真实认证、owner filter 强制校验和多租户隔离。
 
 禁止事项：
@@ -895,8 +899,47 @@ Phase 8 当前退出结果：
 1. 文档能清楚区分 Phase 11 已落地轻量能力与后续未完成能力。
 2. 后续实现时，两个不同窗口的 dataset、消息和分析结果不能串线。
 3. 回到历史会话后，用户能看到旧消息和最近结果，并能继续提问。
-4. `reasoning_trace_view` 只作为安全过程摘要来源；前端默认只显示一条低占用过程摘要，点击后才展开详情。
+4. `process_view_v2` 是主界面默认过程展示来源，`reasoning_trace_view` 只作为兼容 fallback；前端默认只显示一条低占用过程摘要，点击后展开结构化步骤和后端安全 evidence chips。
 5. API、存储和前端状态都为未来 `owner_context` 过滤预留边界。
+
+## Phase 12：GPT-like General Answer / Insight / Activity Stream
+
+当前 Goal：把 Workbench 从“能展示结果”升级为“像 ChatGPT 一样自然解释数据、展示安全过程、展示可复现代码和给出有业务价值洞察”的数据分析体验。状态：Planned / Ready to implement。
+
+阶段边界：
+
+1. Phase 10 保持“首版结果体验已完成”：图表、洞察、质量扫描和安全过程摘要已有首版契约。
+2. Phase 11 保持“会话 / 历史持久化”：重点是 conversation store、历史恢复、URL 会话和未来 owner / tenant 隔离。
+3. Phase 12 是新的体验质量升级和产品化收敛阶段，不把 general 回答、Insight 强化、代码展示、活动流和规则文件自动绑定继续混入 Phase 10 / Phase 11。
+
+核心能力：
+
+1. `overview_report`：General / overview 问法必须生成结构化数据报告，而不是返回单个聚合数。
+2. `enhanced_insight`：Insight 节点必须基于 verified result、质量报告、图表和字段语义生成真正有业务含义的观察、驱动、风险和下一步建议。
+3. `execution_artifacts`：Python / SQL 代码只作为安全可复现 artifact 展示，不开放 raw code execution，不展示完整 Chain of Thought。
+4. `activity_process_view`：处理过程必须形成 GPT-like 活动流，包括读取数据、识别表类型、生成计划、执行 Python / SQL、校验、洞察、图表和最终回答。
+5. `semantic_chart_planning`：图表规划必须基于语义字段类型、聚合粒度和分析目标，不能把 ID / reference / bin / year / hour 误当指标。
+6. 自动规则文件绑定：规则 / 说明文件必须能和 dataset 一起上传并自动绑定为 user analysis knowledge，不再依赖主界面的 Rule Mode。
+7. 前端稳定契约渲染：前端只渲染后端稳定契约，不实现公式、join、排序、聚合、图表选择、评分或数据清洗。
+
+验收标准：
+
+1. `看一下这个表单`、`总结一下这个表`、`介绍一下这个数据集` 和英文 general 问法都命中 overview report。
+2. payments 类数据能输出表整体情况、字段含义、商户 / 卡组织分布、拒绝率、欺诈率、可回答问题和缺失规则边界。
+3. 非 payments 合成销售表、订阅表、库存表也能生成同类 general 报告，证明不是特调。
+4. Insight 不再只输出模板建议，每条洞察必须带 evidence、caveat 或 recommended action。
+5. Workbench 主回答下方能展开活动流，看到安全步骤、代码卡片和执行输出摘要。
+6. 图表不能把 ID / reference / bin / year / hour 误当指标；明细结果表格优先，明确聚合后才画图。
+7. DABstep、Microsoft、VDS 95、中文 BI、多文件 / join、conversation、monitor、output contract、hardcoding scan、secret scan 和 dependency boundary 不退步。
+8. 最终通过真实 `127.0.0.1:8001/workbench` 浏览器 smoke 验证。
+
+禁止事项：
+
+1. 不按当前截图、payments 字段、固定文件名、固定问法或当前样本值写伪泛化补丁。
+2. 不把 task_id、标准答案、hidden answer、proxy answer、scorer 或 benchmark metadata 放进普通 Agent 链路。
+3. 不展示完整 Chain of Thought、raw prompt、raw reasoning tokens、API key 或后端完整 trace JSON。
+4. 不让前端实现任何核心数据分析逻辑。
+5. 不绕过 ToolDispatcher、Result Normalizer、Verifier 或 Correction Planner 直接生成最终结论。
 
 ## Phase 9：前端产品化
 
@@ -1055,3 +1098,8 @@ Phase 9 禁止：
 19. 不允许把中文支持当作可选增强；中文问题理解、字段映射、业务术语、日期/金额/百分比格式和最终回答必须作为主路径能力设计。
 20. 不允许只用英文样例、英文字段或英文 Benchmark 声称能力完成；英文必须持续支持，但中文必须优先验收。
 21. 不允许为中文能力写只适配当前脱敏数据、当前字段值或当前问法的伪泛化补丁；中文能力同样必须抽象为可复用能力族并有合成/非 Benchmark 验证。
+22. Phase 12 必须保持阶段边界：Phase 10 是首版结果体验，Phase 11 是会话 / 历史持久化，Phase 12 才负责 general 回答、Insight、代码 artifact、活动流、图表语义和规则文件自动绑定的体验收敛。
+23. Phase 12 不允许展示完整 Chain of Thought、raw prompt、raw reasoning tokens、API key、后端完整 trace JSON、benchmark hidden answer、standard answer、proxy answer 或 scorer 信息。
+24. Phase 12 不允许让前端实现公式、join、排序、聚合、图表选择、评分、数据清洗或任何核心数据分析逻辑。
+25. Phase 12 不允许按当前截图、payments 字段、固定文件名、固定问法或当前样本值写伪泛化补丁；overview / insight / chart 能力必须用非 payments 合成表证明同类泛化。
+26. Phase 12 不允许绕过 ToolDispatcher、Result Normalizer、Verifier 或 Correction Planner 直接生成最终结论；代码展示只能作为后端安全 artifact，不代表开放任意代码执行。

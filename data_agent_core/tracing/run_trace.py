@@ -46,6 +46,7 @@ class RunTrace:
     chart_plan_summary: Any = None
     quality_report: Any = None
     reasoning_trace_view: list[Any] = field(default_factory=list)
+    process_view_v2: dict[str, Any] = field(default_factory=dict)
     final_response: Any = None
     latency_ms: float | None = None
     errors: list[Any] = field(default_factory=list)

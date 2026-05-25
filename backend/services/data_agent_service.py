@@ -393,6 +393,21 @@ class DataAgentService:
         """Route one workbench message to chat, overview, or full analysis."""
 
         cleaned_question = question.strip()
+        emit_monitor_event(
+            monitor_run_id,
+            "message_requested",
+            title="收到用户消息",
+            summary=f"conversation={conversation_id or 'new'}，dataset={dataset_id or '-'}",
+            stage="message",
+            status="active",
+            payload={
+                "conversation_id": conversation_id,
+                "dataset_id": dataset_id,
+                "question": cleaned_question,
+                "execution_mode": execution_mode,
+                "agent_mode": agent_mode,
+            },
+        )
         if not dataset_id:
             response = self.chat_without_dataset(question=cleaned_question, agent_mode=agent_mode, monitor_run_id=monitor_run_id)
             return self._record_conversation_turn(

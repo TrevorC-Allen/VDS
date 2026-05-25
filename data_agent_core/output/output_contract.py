@@ -416,6 +416,8 @@ def _looks_like_debug_or_trace_leak(text: str) -> bool:
             "agent_mode:",
             "trace:",
             "debug:",
+            "process_view_v2",
+            "process view",
             "tool_call",
             "reasoning_trace",
         )
