@@ -15,9 +15,24 @@ import pandas as pd
 from backend.schemas.data_agent_schema import to_json_ready
 from data_agent_core.contracts.dataset_contracts import DatasetProfile
 from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
-from data_agent_core.core.file_parser import ParsedDataset, parse_dataset_files
+from data_agent_core.core.file_parser import ParsedDataset, load_dabstep_context, parse_dataset_files
 from data_agent_core.core.schema_profiler import profile_tables
 from data_agent_core.tracing.trace_writer import write_trace
+
+
+DABSTEP_CONTEXT_REQUIRED_FILES = frozenset(
+    {
+        "payments.csv",
+        "merchant_category_codes.csv",
+        "acquirer_countries.csv",
+        "fees.json",
+        "merchant_data.json",
+        "manual.md",
+    }
+)
+DABSTEP_CONTEXT_TABLE_FILES = ("payments.csv", "merchant_category_codes.csv", "acquirer_countries.csv")
+DABSTEP_CONTEXT_KNOWLEDGE_FILES = ("fees.json", "merchant_data.json", "manual.md")
+DABSTEP_DATASET_KIND = "dabstep_context"
 
 
 @dataclass
@@ -25,9 +40,12 @@ class StoredDataset:
     """In-process handle for one parsed uploaded dataset."""
 
     dataset_id: str
-    profile: DatasetProfile
+    profile: DatasetProfile | dict[str, Any]
     tables: dict[str, pd.DataFrame]
     source_path: Path
+    analysis_context: dict[str, Any] | None = None
+    dataset_kind: str = "uploaded_tables"
+    context_dir: Path | None = None
 
 
 class TempFileStore:
@@ -61,6 +79,7 @@ class TempFileStore:
             profile=parsed.profile,
             tables=parsed.tables,
             source_path=stored_source,
+            analysis_context=_analysis_context_for_tables(parsed.tables),
         )
         self._datasets[dataset_id] = record
         return record
@@ -102,6 +121,7 @@ class TempFileStore:
             profile=parsed.profile,
             tables=parsed.tables,
             source_path=source_marker,
+            analysis_context=_analysis_context_for_tables(parsed.tables),
         )
         self._datasets[dataset_id] = record
         return record
@@ -115,8 +135,111 @@ class TempFileStore:
     ) -> StoredDataset:
         """Parse and store multiple uploaded files as one dataset."""
 
+        if original_filenames is not None and len(original_filenames) != len(file_paths):
+            raise ValueError("original_filenames must have the same length as file_paths.")
+        dabstep_state = _inspect_dabstep_upload(file_paths, original_filenames)
+        if dabstep_state["complete"]:
+            return self.save_dabstep_context_files(
+                file_paths,
+                dataset_id=dataset_id,
+                original_filenames=original_filenames,
+            )
+        if dabstep_state["partial"]:
+            missing = ", ".join(dabstep_state["missing"])
+            raise ValueError(
+                "DABstep context package is incomplete. "
+                "Upload these files together from the web workbench: "
+                "payments.csv, merchant_category_codes.csv, acquirer_countries.csv, "
+                f"fees.json, merchant_data.json, manual.md. Missing: {missing}."
+            )
+
         parsed = parse_dataset_files(file_paths, dataset_id=dataset_id, source_names=original_filenames)
         return self.save_parsed_dataset_files(file_paths, parsed, original_filenames=original_filenames)
+
+    def save_dabstep_context_files(
+        self,
+        file_paths: list[str | Path],
+        *,
+        dataset_id: str | None = None,
+        original_filenames: list[str | None] | None = None,
+    ) -> StoredDataset:
+        """Persist a DABstep-style context package uploaded through the workbench."""
+
+        file_map, ignored_names = _dabstep_file_map(file_paths, original_filenames)
+        missing = sorted(DABSTEP_CONTEXT_REQUIRED_FILES - set(file_map))
+        if missing:
+            raise ValueError(f"DABstep context package is incomplete. Missing: {', '.join(missing)}.")
+
+        dataset_id = dataset_id or _new_dataset_id()
+        dataset_dir = self.datasets_root / dataset_id
+        context_dir = dataset_dir / "dab_context"
+        context_dir.mkdir(parents=True, exist_ok=True)
+        for filename in sorted(DABSTEP_CONTEXT_REQUIRED_FILES):
+            source = file_map[filename]
+            stored_source = context_dir / filename
+            if source.resolve() != stored_source.resolve():
+                shutil.copy2(source, stored_source)
+
+        context = load_dabstep_context(context_dir)
+        tables = dict(context["tables"])
+        table_metadata = {
+            table_name: {"source_file": f"{table_name}.csv", "sheet": None, "table_name": table_name}
+            for table_name in tables
+        }
+        for table_name, df in tables.items():
+            df.attrs.update(table_metadata[table_name])
+
+        warnings = [
+            "已识别 DABstep 规则上下文包；manual.md、fees.json、merchant_data.json 会作为后端规则知识库参与分析。",
+        ]
+        if ignored_names:
+            warnings.append("已忽略非 DAB context 必需文件：" + ", ".join(ignored_names) + "。")
+        table_profiles = list(profile_tables(tables, table_metadata=table_metadata).values())
+        quality_report = build_data_quality_report(tables, generated_from="dabstep_context_upload")
+        profile = DatasetProfile(
+            dataset_id=dataset_id,
+            file_name="DABstep context package: " + ", ".join(
+                [*DABSTEP_CONTEXT_TABLE_FILES, *DABSTEP_CONTEXT_KNOWLEDGE_FILES]
+            ),
+            status="ready_with_warnings" if warnings else "ready",
+            tables=table_profiles,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            warnings=warnings,
+            errors=[],
+            quality_report=report_to_dict(quality_report),
+        )
+
+        profile_path = dataset_dir / "profile.json"
+        profile_path.write_text(
+            json.dumps(to_json_ready(profile), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        source_marker = dataset_dir / "dab_context.json"
+        source_marker.write_text(
+            json.dumps(
+                {
+                    "dataset_kind": DABSTEP_DATASET_KIND,
+                    "context_files": sorted(DABSTEP_CONTEXT_REQUIRED_FILES),
+                    "table_names": list(tables.keys()),
+                    "ignored_files": ignored_names,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        context["dataset_kind"] = DABSTEP_DATASET_KIND
+        record = StoredDataset(
+            dataset_id=dataset_id,
+            profile=profile,
+            tables=tables,
+            source_path=source_marker,
+            analysis_context=context,
+            dataset_kind=DABSTEP_DATASET_KIND,
+            context_dir=context_dir,
+        )
+        self._datasets[dataset_id] = record
+        return record
 
     def save_inline_tables(
         self,
@@ -185,6 +308,7 @@ class TempFileStore:
             profile=profile,
             tables=tables,
             source_path=source_marker,
+            analysis_context=_analysis_context_for_tables(tables),
         )
         self._datasets[dataset_id] = record
         return record
@@ -222,16 +346,119 @@ class TempFileStore:
         """Return parsed tables for the current process."""
 
         record = self._datasets.get(dataset_id)
+        if record is None:
+            record = self._load_dabstep_record_from_disk(dataset_id)
         return None if record is None else record.tables
+
+    def get_analysis_context(self, dataset_id: str) -> dict[str, Any] | None:
+        """Return the executor context for a stored dataset."""
+
+        record = self._datasets.get(dataset_id)
+        if record is None:
+            record = self._load_dabstep_record_from_disk(dataset_id)
+        if record is None:
+            return None
+        if record.analysis_context is not None:
+            return record.analysis_context
+        return _analysis_context_for_tables(record.tables)
+
+    def get_dataset_kind(self, dataset_id: str) -> str:
+        """Return the dataset kind used to select the analysis context."""
+
+        record = self._datasets.get(dataset_id)
+        if record is None:
+            record = self._load_dabstep_record_from_disk(dataset_id)
+        return "uploaded_tables" if record is None else record.dataset_kind
+
+    def get_context_dir(self, dataset_id: str) -> Path | None:
+        """Return a persisted context directory for rule-package datasets."""
+
+        record = self._datasets.get(dataset_id)
+        if record is None:
+            record = self._load_dabstep_record_from_disk(dataset_id)
+        return None if record is None else record.context_dir
 
     def write_run_trace(self, trace: Any) -> Path:
         """Write a trace summary under storage/runs/{run_id}/trace.json."""
 
         return write_trace(trace, self.runs_root)
 
+    def _load_dabstep_record_from_disk(self, dataset_id: str) -> StoredDataset | None:
+        """Restore a DABstep context package from persisted source files."""
+
+        dataset_dir = self.datasets_root / dataset_id
+        source_marker = dataset_dir / "dab_context.json"
+        context_dir = dataset_dir / "dab_context"
+        if not source_marker.exists() or not context_dir.exists():
+            return None
+        profile = self.get_profile(dataset_id)
+        if profile is None:
+            return None
+        context = load_dabstep_context(context_dir)
+        context["dataset_kind"] = DABSTEP_DATASET_KIND
+        record = StoredDataset(
+            dataset_id=dataset_id,
+            profile=profile,
+            tables=dict(context["tables"]),
+            source_path=source_marker,
+            analysis_context=context,
+            dataset_kind=DABSTEP_DATASET_KIND,
+            context_dir=context_dir,
+        )
+        self._datasets[dataset_id] = record
+        return record
+
 
 def _new_dataset_id() -> str:
     return "ds_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
+
+
+def _analysis_context_for_tables(tables: dict[str, pd.DataFrame]) -> dict[str, Any]:
+    return {"tables": tables, "primary_table": _primary_table_name(tables)}
+
+
+def _primary_table_name(tables: dict[str, pd.DataFrame]) -> str:
+    if not tables:
+        return ""
+    return max(tables.items(), key=lambda item: (len(item[1]), len(item[1].columns)))[0]
+
+
+def _inspect_dabstep_upload(
+    file_paths: list[str | Path],
+    original_filenames: list[str | None] | None,
+) -> dict[str, Any]:
+    names = [_upload_basename(path, None if original_filenames is None else original_filenames[index]) for index, path in enumerate(file_paths)]
+    present = set(names) & DABSTEP_CONTEXT_REQUIRED_FILES
+    has_json_or_markdown = any(Path(name).suffix.lower() in {".json", ".md", ".markdown"} for name in names)
+    complete = DABSTEP_CONTEXT_REQUIRED_FILES.issubset(set(names))
+    partial = not complete and (bool(present) or has_json_or_markdown)
+    return {
+        "complete": complete,
+        "partial": partial,
+        "missing": sorted(DABSTEP_CONTEXT_REQUIRED_FILES - set(names)),
+    }
+
+
+def _dabstep_file_map(
+    file_paths: list[str | Path],
+    original_filenames: list[str | None] | None,
+) -> tuple[dict[str, Path], list[str]]:
+    file_map: dict[str, Path] = {}
+    ignored_names: list[str] = []
+    for index, file_path in enumerate(file_paths):
+        name = _upload_basename(file_path, None if original_filenames is None else original_filenames[index])
+        path = Path(file_path)
+        if name in DABSTEP_CONTEXT_REQUIRED_FILES:
+            if name in file_map:
+                raise ValueError(f"Duplicate DABstep context file: {name}")
+            file_map[name] = path
+        else:
+            ignored_names.append(name)
+    return file_map, ignored_names
+
+
+def _upload_basename(file_path: str | Path, original_filename: str | None) -> str:
+    return Path(str(original_filename or Path(file_path).name)).name.lower()
 
 
 def _inline_tables_from_payload(

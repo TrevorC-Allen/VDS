@@ -10,9 +10,9 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
     def test_workbench_uses_backend_mounted_asset_paths(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/frontend/styles.css?v=20260525-conversation-store"', html)
+        self.assertIn('href="/frontend/styles.css?v=20260525-agent-monitor"', html)
         self.assertIn('href="/frontend/favicon.svg"', html)
-        self.assertIn('src="/frontend/app.js?v=20260525-conversation-store"', html)
+        self.assertIn('src="/frontend/app.js?v=20260525-agent-monitor"', html)
         self.assertNotIn('href="./styles.css"', html)
         self.assertNotIn('src="./app.js"', html)
 
@@ -20,7 +20,7 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         html = Path("frontend/index.html").read_text(encoding="utf-8")
         backend = Path("backend/main.py").read_text(encoding="utf-8")
 
-        self.assertIn("?v=20260525-conversation-store", html)
+        self.assertIn("?v=20260525-agent-monitor", html)
         self.assertIn("NO_CACHE_HEADERS", backend)
         self.assertIn('"Cache-Control": "no-store, max-age=0"', backend)
         self.assertIn('"Pragma": "no-cache"', backend)
@@ -31,7 +31,8 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
     def test_runtime_sync_preserves_workbench_storage(self) -> None:
         script = Path("scripts/sync_workbench_runtime.sh").read_text(encoding="utf-8")
 
-        self.assertIn('--exclude "storage"', script)
+        self.assertIn('--exclude "/storage/"', script)
+        self.assertNotIn('--exclude "storage"', script)
         self.assertIn("--delete", script)
 
     def test_workbench_chart_svg_overrides_global_icon_svg_size(self) -> None:
@@ -60,13 +61,28 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
 
         self.assertIn('aria-label="历史 Chat"', html)
         self.assertIn('id="chat-messages"', html)
+        self.assertIn('href="/workbench-monitor"', html)
         self.assertIn('class="composer-shell"', html)
         self.assertIn('class="upload-controls"', html)
         self.assertIn('id="upload-button"', html)
+        self.assertIn('accept=".csv,.xlsx,.xls,.json,.md"', html)
+        self.assertIn("DAB 规则包支持多选", html)
         self.assertNotIn('class="upload-card"', html)
         self.assertNotIn('id="dropzone"', html)
         self.assertNotIn('class="work-grid"', html)
         self.assertNotIn('class="inspector"', html)
+
+    def test_workbench_dab_upload_support_stays_backend_routed(self) -> None:
+        html = Path("frontend/index.html").read_text(encoding="utf-8")
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn('accept=".csv,.xlsx,.xls,.json,.md"', html)
+        self.assertIn("DAB 规则包", html)
+        self.assertIn("DAB 规则包支持多选", js)
+        self.assertIn('"/api/data-agent/upload-batch"', js)
+        self.assertNotIn("fees.json", js)
+        self.assertNotIn("merchant_data.json", js)
+        self.assertNotIn("manual.md", js)
 
     def test_workbench_hides_backend_audit_panels_from_user_shell(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")
@@ -137,6 +153,29 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn('item.last_answer_type === "chat" ? "chat" : "analysis"', js)
         self.assertIn("conversation_id: state.conversationId", js)
         self.assertIn("updateHistory: false", js)
+
+    def test_workbench_exposes_standalone_agent_monitor_page(self) -> None:
+        html = Path("frontend/index.html").read_text(encoding="utf-8")
+        monitor_html = Path("frontend/monitor.html").read_text(encoding="utf-8")
+        monitor_js = Path("frontend/monitor.js").read_text(encoding="utf-8")
+        css = Path("frontend/styles.css").read_text(encoding="utf-8")
+        backend = Path("backend/main.py").read_text(encoding="utf-8")
+
+        self.assertIn('href="/workbench-monitor"', html)
+        self.assertNotIn('id="monitor-panel"', html)
+        self.assertIn("workbench_monitor", backend)
+        self.assertIn("monitor.html", backend)
+        self.assertIn("Agent 监看", monitor_html)
+        self.assertIn('id="monitor-event-list"', monitor_html)
+        self.assertIn('src="/frontend/monitor.js?v=20260525-agent-monitor"', monitor_html)
+        self.assertIn("monitor_run_id", monitor_js)
+        self.assertIn("new EventSource", monitor_js)
+        self.assertIn("/api/data-agent/monitor/stream", monitor_js)
+        self.assertIn("renderFinalAgentFlow", monitor_js)
+        self.assertIn("renderFinalToolCalls", monitor_js)
+        self.assertIn("formatJsonPreview", monitor_js)
+        self.assertIn(".monitor-dashboard", css)
+        self.assertIn(".monitor-json", css)
 
 
 if __name__ == "__main__":

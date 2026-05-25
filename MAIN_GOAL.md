@@ -121,6 +121,8 @@
 49. Workbench UX hardening 已补齐普通消息路由和多轮展示缺口：前端统一调用 `POST /api/data-agent/message`，由后端判断无文件聊天、有文件普通聊天、泛数据概览或正式分析；“你好 / 你是什么模型”不会再因已有 dataset 被误送入分析链路；“看一下这个数据 / 看一下整体销售情况”由 `data_agent_core/output/dataset_overview.py` 或 Response Builder 收敛为全表汇总概览，防止主答案只返回行数或原始多字段明细行。前端每轮创建独立 assistant 回复，左侧历史记录支持后端会话列表载入和重命名持久化；前端仍只负责调用 API 和展示，不实现指标计算、join、排序或聚合。
 50. VDS 中文 BI 已补齐当前周期过滤指标 TopN 能力族：`vds_current_filtered_metric_top` 会在问题包含实体粒度（客户、门店、校区、院区、站点）、显式 `_row` 指标（如 ARR、CHR、NRR、DAU）、当前周期和可选枚举过滤（如 Pro 套餐、暂停、流失、正常续费）时锁定实体名称和指标字段，并将主回答收敛为中文摘要，避免通用 parser 因列顺序或默认关键词退回为 `区域/订阅收入` 排名或原始逗号列表。
 51. VDS 中文 BI 标准答案错误已形成根因复盘与后续计划文档：`docs/VDS_BI_STANDARD_ANSWER_ROOT_CAUSE.md` 明确当前分支错误来自能力族回退、粒度/指标未强绑定、筛选语义不足、输出层过度压缩和 smoke / scorer 口径混淆；后续修改必须按该文档的红线和泛用性验收执行。
+52. Workbench 已支持网页端 DAB context 包测试：用户可一次上传 `payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md`，后端识别为 `dabstep_context` dataset，并把 CSV 表、JSON 规则和 manual 知识库传入既有 DAB parser / executor / fee engine；前端只负责文件选择、上传、提问和展示，不读取、不解析、不评分 DAB 规则或标准答案。
+53. Workbench 已预留 Agent 监看链路：请求可携带 `monitor_run_id`，后端通过 SSE 输出已脱敏的工作流、角色和工具调用摘要；该链路只服务本地可观测性，不把 raw prompt、完整 Chain of Thought、API key、task_id 或标准答案暴露给前端。
 
 ## 架构原则
 

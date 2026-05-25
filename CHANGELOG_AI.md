@@ -68,6 +68,77 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-25 09:29 CST
+
+### 本次目标
+
+重写 VDS LLM system prompt，使其从 DABstep / payment benchmark 特化说明改为符合当前 VDS multi-agent 框架的通用 dataset-grounded 语义层契约。
+
+### 修改文件
+
+- data_agent_core/prompts/data_agent_system_prompt.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 移除 prompt 中固定 `payments.csv`、`fees.json`、`manual.md`、`merchant_data.json` 等 benchmark 场景假设，改为只基于当前 `context_summary`、`payload`、`stage_name`、`required_output` 和 `supported_operations` 工作。
+- 明确当前默认路径是内部 multi-agent workflow，single_agent 仅作为 fallback；LLM 只负责意图、字段语义、计划草案、校验辅助、修正方向、洞察和图表语义。
+- 强化 prompt engineering 约束：严格 JSON 输出、按 stage 遵循 `required_output`、非 planner 阶段不强塞 planner 字段、禁止编造字段/指标/join/key/公式、中文优先并保持英文兼容。
+- 强化 benchmark 隔离和 trace 安全：task_id、标准答案、hidden answer、accepted-answer pool、public proxy、scorer 输出不得影响 Planner / Executor / Verifier / Correction / Insight / Chart / prompt / trace。
+
+### 测试方式
+
+- `rg -n "payments\\.csv|fees\\.json|manual\\.md|merchant_data|DABstep|standard answer|accepted-answer|task_id" data_agent_core/prompts/data_agent_system_prompt.md || true`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_llm_client tests.multi_agent_workflows.test_phase6_multi_agent_workflow tests.architecture.test_no_benchmark_hardcoding tests.core.test_vds_bi_capabilities -v`
+- `git diff --check -- data_agent_core/prompts/data_agent_system_prompt.md CHANGELOG_AI.md`
+
+### 测试结果
+
+- prompt 固定 DAB 文件名检查通过；只保留 benchmark 隔离安全规则。
+- Focused tests 通过：Ran 22 tests，OK。
+- 本轮修改文件的 `git diff --check` 通过。
+
+### 遗留问题
+
+- 本轮保持单 prompt 文件以降低影响面；后续如继续强化 prompt 工程，可拆分 common / planner / verifier / correction / insight / chart 的 stage-specific prompt 文件。
+- 本轮未跑真实 OpenAI / DeepSeek provider 回归；真实 provider prompt 效果需在有 key 的 representative smoke 中继续验证。
+
+### 是否影响主流程
+
+是。影响真实 provider 模式下的 LLM 语义层行为；不改变后端 API、executor、verifier、response contract 或 Workbench 前端。
+
+### 是否涉及 Benchmark
+
+是。删除 prompt 中 benchmark 特化假设并强化 benchmark 泄漏边界；未修改 benchmark 数据、runner、scorer 或标准答案。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。prompt 明确默认 multi-agent workflow 和 provider-neutral 受控执行边界，不引入新框架依赖。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。README 已记录 VDS 的多 Agent、LLM / deterministic code 分工、benchmark 隔离和 Workbench 边界；本轮只重写实现层 prompt 文案，不改变阶段状态、API、用户可见入口或验证口径。
+
 2026-05-25 01:33 CST
 
 ### 本次目标
@@ -910,6 +981,83 @@ YYYY-MM-DD HH:MM TZ
 ### 是否已同步 README
 
 是。README 已同步 Phase 11 已规划但尚未实现的状态，并避免把 planned API 写成可用能力。
+
+---
+
+## 2026-05-25 09:40 CST - Workbench 网页端 DAB 规则包导入与 runtime 同步修复
+
+### 修改内容
+
+- Workbench 文件选择支持 CSV / Excel / DAB 规则包，DAB 包由后端 `/api/data-agent/upload-batch` 识别，不在前端解析规则或写 benchmark 特调逻辑。
+- `TempFileStore` 增加完整 DABstep context package 识别：`payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md` 必须一起上传；完整包会持久化到 dataset 的 `dab_context/` 并生成普通 dataset profile。
+- DAB context 在 `DataAgentService` 中走后端 rule/context 分析路径，`manual.md`、`fees.json`、`merchant_data.json` 作为后端知识上下文参与执行；进程重启后可从磁盘恢复。
+- 修复 data quality 对 bool 列误走 numeric quantile outlier 检查导致崩溃的问题。
+- 修复 `scripts/sync_workbench_runtime.sh` 的排除规则：从 `--exclude "storage"` 改成 `--exclude "/storage/"`，只保护 runtime 顶层 `storage/`，不再误排除源码目录 `backend/storage/`。
+- 同步 README、MAIN_GOAL、API_CONTRACT、ARCHITECTURE、FEATURE_BACKLOG、frontend README，明确网页端 DAB 规则包导入边界。
+
+### 测试方式
+
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets tests.core.test_phase10_result_experience -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.architecture.test_dependency_boundaries tests.architecture.test_no_benchmark_hardcoding tests.architecture.test_no_secrets -v
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall data_agent_core agent_runtime backend multi_agent_workflows tests
+- VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+- node --check frontend/app.js
+- git diff --check
+- scripts/sync_workbench_runtime.sh && launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench
+- Playwright 网页端 smoke：打开 `http://127.0.0.1:8001/workbench`，选择 6 个 DAB context 文件，发送 `What are the possible values for the field account_type?`
+
+### 测试结果
+
+- Focused backend/workbench/result-experience tests 通过：Ran 36 tests，OK。
+- Architecture / no-hardcoding / no-secrets tests 通过：Ran 9 tests，OK。
+- compileall 通过。
+- Full unittest 通过：Ran 187 tests，OK。
+- `node --check frontend/app.js` 通过。
+- `git diff --check` 通过。
+- Runtime sync 后已确认 `backend/storage/temp_file_store.py` 在仓库和 `~/.vds-workbench-runtime/VDS` 的 sha256 一致。
+- 网页端 smoke 通过：`upload-batch` 返回 200，`message` 返回 200，页面显示 `DABstep context package ... / 数据已就绪`，并回答 `account_type` 可选值为 `D,F,H,O,R,S`；Playwright console warning 检查为 0 errors / 0 warnings。
+
+### 遗留问题
+
+- 网页端 smoke 使用本地 DABstep context 包验证，不代表 official hidden scorer。
+- Browser 插件当前不能直接设置本地 file input，本轮网页端上传使用本机 Playwright CLI 自动化真实页面完成。
+- `.playwright-cli/` 和 `.DS_Store` 是本地未跟踪文件，不纳入 Git。
+
+### 是否影响主流程
+
+是。Workbench 现在可以通过网页上传 DAB 规则包后直接提问；同时修复了 runtime 同步脚本漏同步 `backend/storage/` 的源头问题。
+
+### 是否涉及 Benchmark
+
+是，涉及 DABstep 数据包结构导入能力；未读取标准答案、task_id 或 scorer 结果，no-hardcoding architecture tests 已通过。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。未修改 Microsoft Agent Framework adapter，也未引入相关依赖。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。DAB context 被建模为后端 dataset/context 能力，可由 single-agent 和 multi-agent 分析入口复用。
+
+### 是否修改核心数据契约
+
+是。`StoredDataset` 增加 dataset kind / analysis context / context dir，用于区分普通 uploaded tables 与 DAB context package。
+
+### 是否修改 API 契约
+
+是。`/api/data-agent/upload-batch` 支持完整 DAB context package；不完整包返回明确缺失文件错误。
+
+### 是否新增或修改错误类型
+
+否。仍使用标准上传错误响应；错误信息扩展为 DAB package 缺失文件说明。
+
+### 是否新增或修改运行追踪逻辑
+
+是。配合既有 live monitor 路径继续记录分析进度；DAB context debug metadata 会暴露 dataset kind 和 knowledge files。
+
+### 是否已同步 README
+
+是。README 与相关架构/API/Backlog 文档已同步。
 
 ---
 

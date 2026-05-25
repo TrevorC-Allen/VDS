@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Virtual Data Scientist Workbench</title>
     <link rel="icon" href="/frontend/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/frontend/styles.css?v=20260525-conversation-store" />
+    <link rel="stylesheet" href="/frontend/styles.css?v=20260525-agent-monitor" />
   </head>
   <body>
     <div class="app-shell">
@@ -41,6 +41,10 @@
             <p id="dataset-status">等待上传数据集</p>
           </div>
           <div class="status-strip" aria-live="polite">
+            <a class="monitor-link" href="/workbench-monitor" target="_blank" rel="noreferrer" title="打开独立监看页">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M7 15l3-3 3 2 5-7"></path><path d="M17 7h3v3"></path></svg>
+              <span>监看页</span>
+            </a>
             <span id="api-status" class="status-dot idle">准备就绪</span>
             <span id="dataset-chip" class="dataset-chip">未上传数据</span>
           </div>
@@ -51,7 +55,7 @@
             <div class="avatar" aria-hidden="true">V</div>
             <div class="message-content">
               <h2>今天要分析什么数据？</h2>
-              <p class="message-copy">上传 CSV 或 Excel，然后直接提问。我会像对话一样展示理解、选择数据、分析和回答的过程。</p>
+              <p class="message-copy">上传 CSV、Excel，或 DAB 规则包，然后直接提问。我会像对话一样展示理解、选择数据、分析和回答的过程。</p>
             </div>
           </article>
 
@@ -129,14 +133,14 @@
             <textarea id="question-input" rows="1" placeholder="向 VDS 提问，例如：哪个城市订单金额最高？"></textarea>
             <div class="composer-actions">
               <div class="upload-controls" aria-label="文件上传">
-                <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls" />
+                <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls,.json,.md" />
                 <label class="icon-button upload-pick-button" for="file-input" title="选择文件" aria-label="选择文件">
                   <svg viewBox="0 0 24 24"><path d="m21.4 11.6-8.5 8.5a5 5 0 0 1-7.1-7.1l9-9a3.2 3.2 0 0 1 4.5 4.5l-9.1 9.1a1.5 1.5 0 0 1-2.1-2.1l8.3-8.3" /></svg>
                 </label>
                 <button id="upload-button" class="button secondary upload-button" type="button" disabled>上传</button>
                 <div class="file-status" aria-live="polite">
                   <strong id="file-summary">选择文件</strong>
-                  <span id="file-detail">CSV / Excel 支持多选</span>
+                  <span id="file-detail">CSV / Excel / DAB 规则包支持多选</span>
                 </div>
               </div>
               <div class="controls-row">
@@ -166,6 +170,6 @@
         </section>
       </main>
     </div>
-    <script src="/frontend/app.js?v=20260525-conversation-store" type="module"></script>
+    <script src="/frontend/app.js?v=20260525-agent-monitor" type="module"></script>
   </body>
 </html>

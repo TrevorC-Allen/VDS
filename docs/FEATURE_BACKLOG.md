@@ -61,7 +61,7 @@
 
 风险：表头识别、编码识别、多 sheet 处理。
 
-状态：2026-05-21 已完成 Phase 1 最小 CSV / Excel 解析入口、DatasetProfile 生成、上传表核心测试；后续仍需增强编码识别、表头不确定处理和多 sheet 策略。
+状态：2026-05-21 已完成 Phase 1 最小 CSV / Excel 解析入口、DatasetProfile 生成、上传表核心测试；2026-05-25 已补齐 Workbench 完整 DAB context 包上传，JSON / MD 只在完整规则包中作为后端知识库使用；后续仍需增强编码识别、表头不确定处理和多 sheet 策略。
 
 ### 双执行路径
 
@@ -317,7 +317,7 @@
 
 优先级：P0，阶段：Phase 9。
 
-验收标准：支持单文件 / 多文件上传、文件 / sheet / table profile 预览、问题提交、结果表格、verification、warnings、errors、join plan trace、join execution summary 和 run history；前端不实现指标公式、join、排序聚合、评分或核心数据计算。
+验收标准：支持单文件 / 多文件上传、DAB context 包上传、文件 / sheet / table profile 预览、问题提交、结果表格、verification、warnings、errors、join plan trace、join execution summary 和 run history；前端不实现指标公式、join、排序聚合、评分、规则解析或核心数据计算。
 
 风险：如果前端开始自行计算指标或 join，会破坏 Phase 8 已冻结的后端契约和 Verifier 安全边界；如果前端依赖 debug 进行业务计算，会导致稳定契约漂移。
 
@@ -331,7 +331,7 @@
 
 是否影响 errors：否。首版只展示后端 errors。
 
-状态：2026-05-23 已完成首版。`backend/main.py` 挂载 `/frontend` 和 `/workbench`；前端 smoke 无 console / page error，截图为 `outputs/phase9_workbench_desktop_20260523.png` 和 `outputs/phase9_workbench_mobile_20260523.png`。
+状态：2026-05-23 已完成首版。`backend/main.py` 挂载 `/frontend` 和 `/workbench`；前端 smoke 无 console / page error，截图为 `outputs/phase9_workbench_desktop_20260523.png` 和 `outputs/phase9_workbench_mobile_20260523.png`。2026-05-25 已允许网页端选择 `.json` / `.md`，完整 DAB context 包由后端识别为 `dabstep_context` dataset，前端仍只上传和展示。
 
 ### Phase 7.5 Tool / Safety
 
@@ -519,7 +519,7 @@
 
 优先级：P0，阶段：Phase 11。
 
-状态：First implementation landed。已新增本地 JSON conversation store、`conversation_id`、conversation list / get / rename endpoints，`/message` 自动追加 user / assistant turn，Workbench 可从后端历史列表载入旧消息并持久化重命名。URL 恢复、多窗口实时同步、跨进程 DataFrame 恢复、真实登录鉴权和多租户隔离仍未完成。
+状态：First implementation landed。已新增本地 JSON conversation store、`conversation_id`、conversation list / get / rename endpoints，`/message` 自动追加 user / assistant turn，Workbench 可从后端历史列表载入旧消息并持久化重命名；2026-05-25 已新增 `monitor_run_id` 和 SSE 安全事件流，用于本地 Agent 监看。URL 恢复、多窗口实时同步、普通 CSV / Excel 跨进程 DataFrame 恢复、真实登录鉴权和多租户隔离仍未完成。
 
 验收标准：新增 `conversation_id` 会话层；每个会话独立保存消息、当前 dataset、runs 和最近结果；无 `conversation_id` 的新消息默认创建独立会话；历史 Chat 从后端会话列表加载；旧 `dataset_id` analyze / upload 调用继续兼容。未完成项继续要求 URL `conversation_id` 恢复、多窗口同会话同步和跨进程 dataset 表恢复。
 

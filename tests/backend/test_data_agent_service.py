@@ -12,6 +12,7 @@ import pandas as pd
 from backend.services.data_agent_service import DataAgentService
 from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.llm.client import MockLLMClient
+from data_agent_core.tracing.live_monitor import live_run_monitor
 
 
 class DataAgentServiceTest(unittest.TestCase):
@@ -50,6 +51,52 @@ class DataAgentServiceTest(unittest.TestCase):
             self.assertIn("planner", analysis["debug"]["multi_agent_roles"])
             self.assertIn("trace_path", analysis["debug"])
 
+    def test_analyze_publishes_live_monitor_events(self) -> None:
+        monitor_run_id = "test_monitor_service"
+        live_run_monitor.clear(monitor_run_id)
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                csv_path = root / "sales.csv"
+                csv_path.write_text(
+                    "city,sales\n"
+                    "Shanghai,100\n"
+                    "Beijing,150\n"
+                    "Shanghai,200\n",
+                    encoding="utf-8",
+                )
+                service = DataAgentService(
+                    file_store=TempFileStore(root / "storage"),
+                    llm_client=MockLLMClient(),
+                )
+
+                upload = service.upload_dataset(csv_path)
+                analysis = service.analyze_dataset(
+                    dataset_id=upload["dataset_id"],
+                    question="Which city has the highest sales?",
+                    execution_mode="dual",
+                    monitor_run_id=monitor_run_id,
+                )
+
+            events = live_run_monitor.history(monitor_run_id)
+            global_events = live_run_monitor.history("workbench_live")
+        finally:
+            live_run_monitor.clear(monitor_run_id)
+            live_run_monitor.clear("workbench_live")
+
+        self.assertTrue(analysis["success"])
+        event_types = [event["event_type"] for event in events]
+        roles = {event["role"] for event in events if event.get("role")}
+        self.assertIn("analysis_requested", event_types)
+        self.assertIn("workflow_started", event_types)
+        self.assertIn("agent_started", event_types)
+        self.assertIn("agent_completed", event_types)
+        self.assertIn("response_ready", event_types)
+        self.assertIn("planner", roles)
+        self.assertIn("response_builder", roles)
+        self.assertNotIn("chain_of_thought", json.dumps(events, ensure_ascii=False))
+        self.assertTrue(any(event["monitor_run_id"] == monitor_run_id for event in global_events))
+
     def test_upload_datasets_preserves_source_file_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -73,6 +120,64 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual("销售文件.csv", profiles["销售文件"]["source_file"])
         self.assertEqual("库存文件.csv", profiles["库存文件"]["source_file"])
         self.assertEqual(["产品", "销售额"], [column["name"] for column in profiles["销售文件"]["columns"]])
+
+    def test_upload_dabstep_context_package_enables_web_rule_questions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            storage_root = root / "storage"
+            file_paths = _write_dabstep_context_package(root)
+            service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(file_paths, original_filenames=[path.name for path in file_paths])
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="What are the possible values for the field account_type?",
+                execution_mode="pandas",
+            )
+            reloaded_service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+            reloaded_response = reloaded_service.analyze_dataset(
+                dataset_id=upload["dataset_id"],
+                question="What are the possible values for the field account_type?",
+                execution_mode="pandas",
+            )
+
+        self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertIn("DABstep context package", upload["file_name"])
+        self.assertIn("规则上下文包", " ".join(upload["warnings"]))
+        profiles = {table["table_name"]: table for table in upload["tables"]}
+        self.assertIn("payments", profiles)
+        self.assertIn("merchant_category_codes", profiles)
+        self.assertIn("acquirer_countries", profiles)
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("dabstep_context", response["debug"]["dataset_kind"])
+        self.assertIn("manual.md", response["debug"]["knowledge_files"])
+        self.assertIn("A", response["answer"])
+        self.assertIn("O", response["answer"])
+        self.assertTrue(reloaded_response["success"], reloaded_response.get("errors"))
+        self.assertEqual("dabstep_context", reloaded_response["debug"]["dataset_kind"])
+        self.assertIn("O", reloaded_response["answer"])
+
+    def test_incomplete_dabstep_context_upload_returns_clear_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fees_path = root / "fees.json"
+            fees_path.write_text("[]", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets([fees_path], original_filenames=["fees.json"])
+
+        self.assertFalse(upload["success"])
+        self.assertIn("DABstep context package is incomplete", upload["errors"][0]["error_message"])
+        self.assertIn("payments.csv", upload["errors"][0]["error_message"])
 
     def test_upload_excel_datetime_profile_is_json_ready(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -330,6 +435,48 @@ class DataAgentServiceTest(unittest.TestCase):
                 self.assertTrue(response["run_id"].startswith("run_"))
                 self.assertEqual("external-error", response["request_id"])
                 self.assertEqual(case["error_type"], response["errors"][0]["error_type"])
+
+def _write_dabstep_context_package(root: Path) -> list[Path]:
+    fee_rule = {
+        "ID": 1,
+        "card_scheme": "GlobalCard",
+        "account_type": [],
+        "capture_delay": None,
+        "monthly_fraud_level": None,
+        "monthly_volume": None,
+        "merchant_category_code": [],
+        "is_credit": True,
+        "aci": ["A"],
+        "fixed_amount": 0.10,
+        "rate": 0,
+        "intracountry": None,
+    }
+    files = {
+        "payments.csv": (
+            "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,"
+            "has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+            "SyntheticMerchant,2023,1,0,0,10.0,true,false,false,A,GlobalCard,NL,NL\n"
+        ),
+        "merchant_category_codes.csv": "mcc,description\n5411,Grocery Stores\n",
+        "acquirer_countries.csv": "country_code,country\nNL,Netherlands\n",
+        "fees.json": json.dumps([fee_rule]),
+        "merchant_data.json": json.dumps(
+            [{"merchant": "SyntheticMerchant", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5411}]
+        ),
+        "manual.md": (
+            "## Account Types\n\n"
+            "| Account Type | Description |\n"
+            "|--------------|-------------|\n"
+            "| A | Alpha |\n"
+            "| O | Other |\n"
+        ),
+    }
+    paths: list[Path] = []
+    for filename, content in files.items():
+        path = root / filename
+        path.write_text(content, encoding="utf-8")
+        paths.append(path)
+    return paths
 
 
 if __name__ == "__main__":

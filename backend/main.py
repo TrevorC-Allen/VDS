@@ -36,5 +36,9 @@ try:
         @app.get("/workbench", include_in_schema=False)
         def workbench() -> FileResponse:
             return FileResponse(frontend_dir / "index.html", headers=NO_CACHE_HEADERS)
+
+        @app.get("/workbench-monitor", include_in_schema=False)
+        def workbench_monitor() -> FileResponse:
+            return FileResponse(frontend_dir / "monitor.html", headers=NO_CACHE_HEADERS)
 except ImportError:
     app = None

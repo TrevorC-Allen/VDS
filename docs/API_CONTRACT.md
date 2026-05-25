@@ -34,6 +34,10 @@
 
 2026-05-25 更新：Phase 11 首个会话持久化落点已实现。新增本地 JSON conversation store，`POST /api/data-agent/message` 可选接收并返回 `conversation_id`，历史列表、历史详情、新建会话和重命名接口已可用。`owner_id`、`tenant_id`、`owner_context` 仅为未来隔离预留；当前不代表真实登录、鉴权或多租户权限。
 
+2026-05-25 更新：Workbench 网页端 DAB context 包上传已实现。`POST /api/data-agent/upload-batch` 在收到完整 `payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md` 时返回普通 DatasetProfile，同时在后端存储 `dabstep_context` 分析上下文；后续 `/message` 或 `/analyze` 复用既有 DAB parser / executor / fee engine。JSON / MD 只允许作为完整 DAB context 包的一部分进入上传链路，`all.jsonl`、`dev.jsonl`、标准答案或 task_id 仍不得进入 Agent workflow。
+
+2026-05-25 更新：分析请求新增可选 `monitor_run_id`，并预留 `GET /api/data-agent/monitor/stream` SSE 安全过程事件流。monitor 只发布已脱敏的阶段摘要、角色状态、工具摘要和最终响应摘要，不作为前端业务计算输入，不返回完整 Chain of Thought、raw prompt、API key 或 hidden benchmark answer。
+
 ## 全局响应规则
 
 1. 所有 API 返回必须包含 response_version。
@@ -168,7 +172,7 @@ Phase 11 planned request extension：
 
 ## POST /api/data-agent/upload-batch
 
-目标：一次接收多个 CSV / Excel 文件，解析为同一个 dataset，返回可审计的多文件 DatasetProfile。
+目标：一次接收多个 CSV / Excel 文件，或接收完整 DAB context 规则包，解析为同一个 dataset，返回可审计的多文件 DatasetProfile。
 
 请求：
 
@@ -196,6 +200,8 @@ Phase 11 planned request extension：
 - Excel sheet 必须保留 `sheet`。
 - table_name 必须在一个 dataset 内唯一；CSV 默认使用源文件 stem，Excel 多 sheet 默认使用 `文件stem__sheet`。
 - 旧单文件 `/upload` 仍保持原契约。
+- 如果上传文件集合完整包含 `payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md`，后端将 dataset 标记为 `dabstep_context`，表格 profile 只展示三个 CSV 表；JSON / MD 文件只作为后端规则知识库，不作为前端表格解析。
+- 如果只上传部分 DAB context 文件，必须返回标准错误并提示缺失文件，不能把 JSON / MD 当作普通表格解析。
 
 Phase 11 planned request extension：
 

@@ -26,6 +26,10 @@
 
 2026-05-25 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已完成首个轻量架构落点。`backend/storage/conversation_store.py` 提供本地 JSON conversation store；DataAgentService 的 `/message` 路径负责追加 user / assistant turn；Workbench 左侧历史 Chat 从后端 conversation endpoints 载入并持久化重命名。该层只保存会话和响应快照，不承载核心分析逻辑。
 
+2026-05-25 更新：Workbench 上传链路已支持完整 DAB context 包。`TempFileStore` 负责识别和保存 `payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md`，并把 dataset 标记为 `dabstep_context`；`DataAgentService` 仍只选择上下文并调用既有 single-agent / multi-agent 分析链路，DAB 规则解析和费用计算继续位于 `data_agent_core`。
+
+2026-05-25 更新：Workbench Agent 监看链路使用 `monitor_run_id` 和 `/api/data-agent/monitor/stream` SSE 输出安全事件摘要；事件发布在 backend service、multi-agent workflow 和 tracing 层完成，只包含阶段状态、角色摘要、工具摘要和最终响应摘要。
+
 ## 层次边界
 
 1. data_agent_core 是核心算法层。
@@ -232,6 +236,7 @@ VDS 桌面测试数据用于暴露中文 BI 周环比、阈值、异常和多行
 5. all.jsonl / dev.jsonl 中的问题只提供 question 和 guidelines 给核心分析链路。
 6. answer 字段只允许在 benchmark evaluator 中用于评分，不允许进入 intent parser、executor、verifier 或 response builder。
 7. 运行 trace 记录 structured analysis plan、execution trace 和 verification notes，不记录完整 Chain of Thought。
+8. 网页端测试使用同一组 context 文件上传到 `/workbench`，后端只接收规则上下文，不接收或使用标准答案、task_id、public proxy answer pool。
 
 ## 上传文件最小链路
 
@@ -245,6 +250,7 @@ VDS 桌面测试数据用于暴露中文 BI 周环比、阈值、异常和多行
 6. DataAnalysisMultiAgentWorkflow 通过 agent_runtime 角色和受控工具执行 Pandas / SQL 双路径、Result Normalizer、Verifier、Insight 和 Chart。
 7. trace 写入 storage/runs/{run_id}/trace.json，debug.trace_path 只用于调试，前端不能依赖它作为稳定契约。
 8. UploadedDatasetAgent 保留为 single_agent fallback。
+9. 如果上传的是完整 DAB context 包，TempFileStore 会保存 `dab_context/` 源文件、返回三个 CSV 表的 DatasetProfile，并在 analyze 时提供包含 `payments`、规则 JSON、manual 路径、`tables` 和 `context_dir` 的上下文；前端不实现规则解析或费用计算。
 
 ## Phase 11 会话层
 
@@ -272,12 +278,13 @@ DataAgentService 追加 question、run_id、answer、answer_type、success 和 r
 4. 未来真实用户隔离必须由后端 owner filter 强制执行，不能只靠前端隐藏历史 Chat。
 5. 安静过程展示只消费 trace-safe `reasoning_trace_view` 摘要；默认展示一条小号浅灰的最新过程摘要，点击后展开结构化步骤，不展示完整 Chain of Thought、raw prompt、raw reasoning tokens、quality_report、warnings、verification 或 join trace。
 6. Conversation Service 不能实现 join、排序、聚合、评分、图表选择或核心分析逻辑；这些仍属于 backend 调用 data_agent_core / multi_agent_workflows 后返回的结果。
+7. Agent 监看只消费 `monitor_run_id` 对应的安全事件流，不作为业务计算输入，不展示 raw prompt、完整 Chain of Thought、API key、task_id 或标准答案。
 
 未完成边界：
 
 1. URL `/workbench?conversation_id=...` 自动恢复仍未接入。
 2. 多窗口同一 conversation 的实时同步仍未实现。
-3. 跨进程重启后可恢复 profile 和消息，但继续分析仍需要内存表存在或重新上传。
+3. 跨进程重启后可恢复 profile 和消息；普通 CSV / Excel 继续分析仍需要内存表存在或重新上传，DAB context 包因为规则文件已持久化，可由后端重新加载上下文。
 4. 真实登录、鉴权、owner filter 强制校验和多租户隔离仍未实现。
 
 ## TODO

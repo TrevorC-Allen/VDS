@@ -16,13 +16,14 @@ from backend.schemas.data_agent_schema import (
 )
 from backend.storage.conversation_store import ConversationStore
 from backend.storage.temp_file_store import TempFileStore
-from data_agent_core.agent.single_agent import UploadedDatasetAgent
+from data_agent_core.agent.single_agent import DataAnalysisAgent, UploadedDatasetAgent
 from data_agent_core.core.message_intent import classify_workbench_message, is_dataset_overview_question
 from data_agent_core.core.file_parser import parse_dataset_file
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import FILE_PARSE_ERROR, LOGIC_FORM_ERROR
 from data_agent_core.llm.client import LLMClient
 from data_agent_core.output.dataset_overview import build_dataset_overview_response
+from data_agent_core.tracing.live_monitor import emit_monitor_event
 from multi_agent_workflows.end_to_end_data_analysis_workflow import DataAnalysisMultiAgentWorkflow
 
 
@@ -75,7 +76,11 @@ class DataAgentService:
                     error_message=str(exc),
                     failed_step="upload_datasets",
                     recoverable=True,
-                    suggested_fix="Upload one or more supported CSV or Excel files with readable header rows.",
+                    suggested_fix=(
+                        "Upload one or more supported CSV or Excel files, or upload a complete DABstep context package "
+                        "with payments.csv, merchant_category_codes.csv, acquirer_countries.csv, fees.json, "
+                        "merchant_data.json, and manual.md."
+                    ),
                 )
             )
 
@@ -87,11 +92,35 @@ class DataAgentService:
         execution_mode: str = "dual",
         guidelines: str = "",
         agent_mode: str = "multi_agent",
+        monitor_run_id: str = "",
     ) -> dict[str, Any]:
         """Run the configured Data Agent workflow for an uploaded dataset."""
 
         run_id = "run_" + uuid.uuid4().hex[:16]
+        emit_monitor_event(
+            monitor_run_id,
+            "analysis_requested",
+            title="收到分析请求",
+            summary=f"dataset={dataset_id or '-'}，agent_mode={agent_mode}，execution_mode={execution_mode}",
+            stage="service",
+            status="active",
+            payload={
+                "dataset_id": dataset_id,
+                "question": question,
+                "execution_mode": execution_mode,
+                "agent_mode": agent_mode,
+            },
+        )
         if execution_mode not in VALID_EXECUTION_MODES:
+            emit_monitor_event(
+                monitor_run_id,
+                "analysis_failed",
+                title="执行模式不支持",
+                summary=f"Unsupported execution_mode: {execution_mode}",
+                stage="service",
+                status="failed",
+                payload={"dataset_id": dataset_id, "run_id": run_id, "execution_mode": execution_mode},
+            )
             return error_response(
                 dataset_id=dataset_id,
                 run_id=run_id,
@@ -104,6 +133,15 @@ class DataAgentService:
                 ),
             )
         if agent_mode not in VALID_AGENT_MODES:
+            emit_monitor_event(
+                monitor_run_id,
+                "analysis_failed",
+                title="Agent 模式不支持",
+                summary=f"Unsupported agent_mode: {agent_mode}",
+                stage="service",
+                status="failed",
+                payload={"dataset_id": dataset_id, "run_id": run_id, "agent_mode": agent_mode},
+            )
             return error_response(
                 dataset_id=dataset_id,
                 run_id=run_id,
@@ -118,6 +156,15 @@ class DataAgentService:
 
         tables = self.file_store.get_tables(dataset_id)
         if tables is None:
+            emit_monitor_event(
+                monitor_run_id,
+                "analysis_failed",
+                title="数据集不存在",
+                summary=f"Dataset not found in temporary store: {dataset_id}",
+                stage="service",
+                status="failed",
+                payload={"dataset_id": dataset_id, "run_id": run_id},
+            )
             return error_response(
                 dataset_id=dataset_id,
                 run_id=run_id,
@@ -132,8 +179,10 @@ class DataAgentService:
 
         try:
             profile = self.file_store.get_profile(dataset_id)
+            dataset_kind = self.file_store.get_dataset_kind(dataset_id)
+            analysis_context = self.file_store.get_analysis_context(dataset_id)
             if is_dataset_overview_question(question):
-                return to_json_ready(
+                response = to_json_ready(
                     build_dataset_overview_response(
                         run_id=run_id,
                         dataset_id=dataset_id,
@@ -143,9 +192,63 @@ class DataAgentService:
                         agent_mode=agent_mode,
                     )
                 )
+                emit_monitor_event(
+                    monitor_run_id,
+                    "workflow_completed",
+                    title="数据概览完成",
+                    summary="本次问题命中数据概览路径，未进入完整 multi-agent 执行链。",
+                    stage="dataset_overview",
+                    status="completed",
+                    payload=response,
+                )
+                return response
             if agent_mode == "single_agent":
-                agent = UploadedDatasetAgent(tables=tables, dataset_id=dataset_id, llm_client=self.llm_client)
+                emit_monitor_event(
+                    monitor_run_id,
+                    "agent_started",
+                    title="single_agent 开始",
+                    summary="Single Agent 正在执行完整分析链。",
+                    role="single_agent",
+                    stage="single_agent",
+                    status="active",
+                    payload={
+                        "dataset_id": dataset_id,
+                        "dataset_kind": dataset_kind,
+                        "question": question,
+                        "execution_mode": execution_mode,
+                    },
+                )
+                if dataset_kind == "dabstep_context":
+                    context_dir = self.file_store.get_context_dir(dataset_id)
+                    if context_dir is None:
+                        raise ValueError("DABstep context files are not available for single_agent analysis.")
+                    agent = DataAnalysisAgent(context_dir=context_dir, dataset_id=dataset_id, llm_client=self.llm_client)
+                else:
+                    agent = UploadedDatasetAgent(tables=tables, dataset_id=dataset_id, llm_client=self.llm_client)
                 response, trace = agent.analyze(question=question, guidelines=guidelines, execution_mode=execution_mode)
+                emit_monitor_event(
+                    monitor_run_id,
+                    "agent_completed",
+                    title="single_agent 完成",
+                    summary="Single Agent 已返回响应和 trace。",
+                    role="single_agent",
+                    stage="single_agent",
+                    status="completed" if response.success else "failed",
+                    payload={"run_id": response.run_id, "success": response.success, "trace": trace.to_dict()},
+                )
+            elif dataset_kind == "dabstep_context" and analysis_context is not None:
+                agent = DataAnalysisMultiAgentWorkflow(
+                    dataset_id=dataset_id,
+                    context=analysis_context,
+                    dataset_profile=profile,
+                    llm_client=self.llm_client,
+                )
+                response, trace = agent.analyze(
+                    question=question,
+                    guidelines=guidelines,
+                    execution_mode=execution_mode,
+                    monitor_run_id=monitor_run_id,
+                )
             else:
                 agent = DataAnalysisMultiAgentWorkflow.from_uploaded_tables(
                     tables,
@@ -153,14 +256,50 @@ class DataAgentService:
                     dataset_profile=profile,
                     llm_client=self.llm_client,
                 )
-                response, trace = agent.analyze(question=question, guidelines=guidelines, execution_mode=execution_mode)
+                response, trace = agent.analyze(
+                    question=question,
+                    guidelines=guidelines,
+                    execution_mode=execution_mode,
+                    monitor_run_id=monitor_run_id,
+                )
             trace_path = self.file_store.write_run_trace(trace)
             payload = response.to_dict()
             payload.setdefault("debug", {})
             payload["debug"]["trace_path"] = str(trace_path)
             payload["debug"]["agent_mode"] = agent_mode
+            payload["debug"]["dataset_kind"] = dataset_kind
+            if monitor_run_id:
+                payload["debug"]["monitor_run_id"] = monitor_run_id
+            if dataset_kind == "dabstep_context":
+                payload["debug"]["knowledge_files"] = ["manual.md", "fees.json", "merchant_data.json"]
+            emit_monitor_event(
+                monitor_run_id,
+                "response_ready",
+                title="响应已生成",
+                summary=f"响应已生成并写入 trace：{trace_path}",
+                stage="service",
+                status="completed" if response.success else "failed",
+                payload={
+                    "response": payload,
+                    "run_id": payload.get("run_id"),
+                    "dataset_id": payload.get("dataset_id"),
+                    "success": payload.get("success"),
+                    "trace_path": str(trace_path),
+                    "debug": payload.get("debug"),
+                    "reasoning_trace_view": payload.get("reasoning_trace_view"),
+                },
+            )
             return to_json_ready(payload)
         except Exception as exc:  # noqa: BLE001 - service must normalize API errors.
+            emit_monitor_event(
+                monitor_run_id,
+                "analysis_failed",
+                title="分析异常",
+                summary=str(exc),
+                stage="service",
+                status="failed",
+                payload={"dataset_id": dataset_id, "run_id": run_id, "error": str(exc)},
+            )
             return error_response(
                 dataset_id=dataset_id,
                 run_id=run_id,
@@ -185,12 +324,13 @@ class DataAgentService:
         execution_mode: str = "dual",
         guidelines: str = "",
         agent_mode: str = "multi_agent",
+        monitor_run_id: str = "",
     ) -> dict[str, Any]:
         """Route one workbench message to chat, overview, or full analysis."""
 
         cleaned_question = question.strip()
         if not dataset_id:
-            response = self.chat_without_dataset(question=cleaned_question, agent_mode=agent_mode)
+            response = self.chat_without_dataset(question=cleaned_question, agent_mode=agent_mode, monitor_run_id=monitor_run_id)
             return self._record_conversation_turn(
                 response,
                 conversation_id=conversation_id,
@@ -202,7 +342,12 @@ class DataAgentService:
             )
         intent = classify_workbench_message(cleaned_question, has_dataset=True)
         if intent == "chat":
-            response = self.chat_with_dataset(dataset_id=dataset_id, question=cleaned_question, agent_mode=agent_mode)
+            response = self.chat_with_dataset(
+                dataset_id=dataset_id,
+                question=cleaned_question,
+                agent_mode=agent_mode,
+                monitor_run_id=monitor_run_id,
+            )
         else:
             response = self.analyze_dataset(
                 dataset_id=dataset_id,
@@ -210,6 +355,7 @@ class DataAgentService:
                 execution_mode=execution_mode,
                 guidelines=guidelines,
                 agent_mode=agent_mode,
+                monitor_run_id=monitor_run_id,
             )
         return self._record_conversation_turn(
             response,
@@ -329,6 +475,7 @@ class DataAgentService:
         *,
         question: str,
         agent_mode: str = "multi_agent",
+        monitor_run_id: str = "",
     ) -> dict[str, Any]:
         """Return a VDS assistant reply when no dataset has been uploaded yet."""
 
@@ -358,7 +505,7 @@ class DataAgentService:
             )
 
         answer = _chat_answer(cleaned_question, has_dataset=False)
-        return to_json_ready(
+        response = to_json_ready(
             {
                 "response_version": RESPONSE_VERSION,
                 "success": True,
@@ -393,6 +540,16 @@ class DataAgentService:
                 "debug": {"agent_mode": "chat_without_dataset", "requires_dataset": False},
             }
         )
+        emit_monitor_event(
+            monitor_run_id,
+            "workflow_completed",
+            title="直接回复完成",
+            summary="当前没有数据集，本次没有进入数据分析 agent 链路。",
+            stage="chat",
+            status="completed",
+            payload=response,
+        )
+        return response
 
     def chat_with_dataset(
         self,
@@ -400,6 +557,7 @@ class DataAgentService:
         dataset_id: str,
         question: str,
         agent_mode: str = "multi_agent",
+        monitor_run_id: str = "",
     ) -> dict[str, Any]:
         """Return an ordinary assistant reply while keeping dataset context available."""
 
@@ -443,7 +601,7 @@ class DataAgentService:
             )
 
         answer = _chat_answer(cleaned_question, has_dataset=True)
-        return to_json_ready(
+        response = to_json_ready(
             {
                 "response_version": RESPONSE_VERSION,
                 "success": True,
@@ -478,6 +636,16 @@ class DataAgentService:
                 "debug": {"agent_mode": "chat_with_dataset", "requires_dataset": False, "message_intent": "chat"},
             }
         )
+        emit_monitor_event(
+            monitor_run_id,
+            "workflow_completed",
+            title="直接回复完成",
+            summary="本次是普通对话，保留数据集上下文但未进入完整分析链路。",
+            stage="chat",
+            status="completed",
+            payload=response,
+        )
+        return response
 
     def get_dataset_profile(self, dataset_id: str) -> dict[str, Any]:
         """Return a stored dataset profile by dataset_id."""
@@ -507,6 +675,7 @@ class DataAgentService:
         dataset_id: str | None = None,
         request_id: str | None = None,
         source_name: str = "api_inline_tables",
+        monitor_run_id: str = "",
     ) -> dict[str, Any]:
         """Create an inline dataset and run the existing Data Agent workflow."""
 
@@ -590,6 +759,7 @@ class DataAgentService:
             execution_mode=execution_mode,
             guidelines=guidelines,
             agent_mode=agent_mode,
+            monitor_run_id=monitor_run_id,
         )
         return _attach_external_metadata(
             response,

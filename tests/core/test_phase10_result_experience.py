@@ -115,6 +115,19 @@ class Phase10ResultExperienceTest(unittest.TestCase):
         self.assertIn("invalid_dates", issue_types)
         self.assertLess(report.quality_score, 100)
 
+    def test_data_quality_report_skips_boolean_outlier_quantiles(self) -> None:
+        df = pd.DataFrame(
+            {
+                "is_credit": [True, False, True, True, False, True, False, True],
+                "has_fraudulent_dispute": [False, False, True, False, False, True, False, False],
+            }
+        )
+
+        report = build_data_quality_report({"payments": df})
+
+        self.assertGreaterEqual(report.quality_score, 0)
+        self.assertNotIn("numeric_outliers", {issue.issue_type for issue in report.issues})
+
     def test_reasoning_trace_view_redacts_chain_of_thought_keys(self) -> None:
         steps = build_reasoning_trace_view(
             {

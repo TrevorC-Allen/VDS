@@ -10,6 +10,7 @@ const state = {
   isAnalyzing: false,
   hasPendingUpload: false,
   activeResultMessage: null,
+  activeMonitorRunId: "",
 };
 
 const el = {
@@ -64,7 +65,7 @@ function updateFileSummary() {
   if (!files.length) {
     state.hasPendingUpload = false;
     el.fileSummary.textContent = "选择文件";
-    el.fileDetail.textContent = "CSV / Excel 支持多选";
+    el.fileDetail.textContent = "CSV / Excel / DAB 规则包支持多选";
     el.uploadButton.disabled = true;
     updateRunButton();
     return;
@@ -140,6 +141,7 @@ async function runAnalysis() {
   }
   state.isAnalyzing = true;
   el.runButton.disabled = true;
+  const monitorRunId = startMonitorRun(question);
   appendUserMessage(question);
   el.questionInput.value = "";
   renderProgress(question);
@@ -154,6 +156,7 @@ async function runAnalysis() {
         question,
         execution_mode: el.executionMode.value,
         agent_mode: el.agentMode.value,
+        monitor_run_id: monitorRunId,
       }),
     });
     const result = await response.json();
@@ -958,6 +961,27 @@ function bindResultMessage(message) {
   el.processPanel = message.querySelector(".process-panel");
   el.processSummary = message.querySelector(".process-line p");
   el.processTimeline = message.querySelector(".process-timeline");
+}
+
+function startMonitorRun(question) {
+  state.activeMonitorRunId = `mon_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+  try {
+    window.localStorage.setItem(
+      "vds-active-monitor-run",
+      JSON.stringify({
+        monitor_run_id: state.activeMonitorRunId,
+        question,
+        dataset_id: state.datasetId,
+        conversation_id: state.conversationId,
+        execution_mode: el.executionMode.value,
+        agent_mode: el.agentMode.value,
+        created_at: new Date().toISOString(),
+      }),
+    );
+  } catch {
+    // Local storage is optional; backend monitor events remain authoritative.
+  }
+  return state.activeMonitorRunId;
 }
 
 function setApiStatus(status, text) {

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VDS Agent Monitor</title>
+    <link rel="icon" href="/frontend/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/frontend/styles.css?v=20260525-agent-monitor" />
+  </head>
+  <body class="monitor-page">
+    <main class="monitor-dashboard" aria-label="Agent 通信监看">
+      <header class="monitor-page-header">
+        <div>
+          <h1>VDS Agent 监看</h1>
+          <p id="monitor-run-label">监听 /api/data-agent/monitor/stream</p>
+        </div>
+        <div class="monitor-page-actions">
+          <a class="button secondary" href="/workbench">返回 Workbench</a>
+          <button id="monitor-clear" class="button" type="button">清空本页</button>
+        </div>
+      </header>
+
+      <section class="monitor-overview" aria-label="监看摘要">
+        <div>
+          <strong id="monitor-event-count">0</strong>
+          <span>事件</span>
+        </div>
+        <div>
+          <strong id="monitor-agent-count">0</strong>
+          <span>Agent</span>
+        </div>
+        <div>
+          <strong id="monitor-tool-count">0</strong>
+          <span>工具</span>
+        </div>
+      </section>
+
+      <section class="monitor-grid">
+        <section class="monitor-section monitor-live-section">
+          <div class="monitor-section-header">
+            <h2>实时通信</h2>
+            <span id="monitor-stream-status">连接中</span>
+          </div>
+          <ol id="monitor-event-list" class="monitor-event-list" aria-live="polite">
+            <li class="monitor-empty">运行开始后显示每个 agent、工具和环节事件。</li>
+          </ol>
+        </section>
+
+        <section class="monitor-section monitor-parsed-section">
+          <div class="monitor-section-header">
+            <h2>解析视图</h2>
+            <span id="monitor-final-status">暂无结果</span>
+          </div>
+          <div id="monitor-parsed" class="monitor-parsed empty-state">这里会把长 JSON 拆成 agent 流、工具调用和阶段摘要。</div>
+        </section>
+
+        <section class="monitor-section monitor-json-section">
+          <div class="monitor-section-header">
+            <h2>原始 JSON</h2>
+            <span>长文本自动截断</span>
+          </div>
+          <pre id="monitor-json" class="monitor-json">{}</pre>
+        </section>
+      </section>
+    </main>
+    <script src="/frontend/monitor.js?v=20260525-agent-monitor" type="module"></script>
+  </body>
+</html>

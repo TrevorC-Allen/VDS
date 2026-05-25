@@ -24,6 +24,7 @@ from data_agent_core.core.file_parser import load_dabstep_context
 from data_agent_core.core.schema_profiler import profile_tables
 from data_agent_core.llm.client import LLMClient
 from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
+from data_agent_core.tracing.live_monitor import emit_monitor_event
 from data_agent_core.tracing.run_trace import RunTrace
 
 
@@ -128,13 +129,27 @@ class DataAnalysisMultiAgentWorkflow:
             )
         return cls(dataset_id=dataset_id, context=context, dataset_profile=dataset_profile, llm_client=llm_client)
 
-    def analyze(self, question: str, guidelines: str = "", execution_mode: str = "auto") -> tuple[FinalResponse, RunTrace]:
+    def analyze(
+        self,
+        question: str,
+        guidelines: str = "",
+        execution_mode: str = "auto",
+        *,
+        monitor_run_id: str = "",
+    ) -> tuple[FinalResponse, RunTrace]:
         """Run the canonical Phase 6 role sequence and return stable outputs."""
 
-        result = self.run(question=question, guidelines=guidelines, execution_mode=execution_mode)
+        result = self.run(question=question, guidelines=guidelines, execution_mode=execution_mode, monitor_run_id=monitor_run_id)
         return result.response, result.trace
 
-    def run(self, question: str, guidelines: str = "", execution_mode: str = "auto") -> MultiAgentWorkflowResult:
+    def run(
+        self,
+        question: str,
+        guidelines: str = "",
+        execution_mode: str = "auto",
+        *,
+        monitor_run_id: str = "",
+    ) -> MultiAgentWorkflowResult:
         """Run all internal AgentRole steps."""
 
         start = time.perf_counter()
@@ -143,27 +158,107 @@ class DataAnalysisMultiAgentWorkflow:
         task_results: list[AgentResult] = []
         task_by_role = {task.role: task for task in build_end_to_end_tasks(self.dataset_id, question)}
 
-        planner_result = self.runtime.run_planner(task_by_role[AgentRole.PLANNER], state, guidelines=guidelines)
+        emit_monitor_event(
+            monitor_run_id,
+            "workflow_started",
+            title="工作流开始",
+            summary=f"已进入 multi-agent 分析链路：{question[:80]}",
+            stage="workflow",
+            status="active",
+            payload={
+                "dataset_id": self.dataset_id,
+                "question": question,
+                "execution_mode": execution_mode,
+                "role_order": [role.value for role in END_TO_END_ROLE_ORDER],
+            },
+        )
+
+        def run_role(role: AgentRole, runner: Any) -> AgentResult:
+            task = task_by_role[role]
+            before_tool_count = len(state.tool_call_trace)
+            emit_monitor_event(
+                monitor_run_id,
+                "agent_started",
+                title=f"{role.value} 开始",
+                summary=f"{role.value} 正在处理输入并准备交给下一环节。",
+                role=role.value,
+                stage=task.task_id,
+                status="active",
+                payload={"task": task.to_dict(), "state_before": _monitor_state_summary(state)},
+            )
+            try:
+                result = runner(task)
+            except Exception as exc:
+                emit_monitor_event(
+                    monitor_run_id,
+                    "agent_failed",
+                    title=f"{role.value} 失败",
+                    summary=str(exc),
+                    role=role.value,
+                    stage=task.task_id,
+                    status="failed",
+                    payload={"task": task.to_dict(), "state_before": _monitor_state_summary(state), "error": str(exc)},
+                )
+                raise
+            new_tool_calls = state.tool_call_trace[before_tool_count:]
+            emit_monitor_event(
+                monitor_run_id,
+                "agent_completed",
+                title=f"{role.value} 完成",
+                summary=_agent_result_summary(result),
+                role=role.value,
+                stage=task.task_id,
+                status="completed" if result.success else "failed",
+                payload={
+                    "task": task.to_dict(),
+                    "result": result.to_dict(),
+                    "new_tool_calls": new_tool_calls,
+                    "state_after": _monitor_state_summary(state),
+                },
+            )
+            return result
+
+        planner_result = run_role(AgentRole.PLANNER, lambda task: self.runtime.run_planner(task, state, guidelines=guidelines))
         task_results.append(planner_result)
-        task_results.append(self.runtime.run_data_engineer(task_by_role[AgentRole.DATA_ENGINEER], state))
-        task_results.append(self.runtime.run_pandas_executor(task_by_role[AgentRole.PANDAS_EXECUTOR], state))
-        task_results.append(self.runtime.run_sql_executor(task_by_role[AgentRole.SQL_EXECUTOR], state, execution_mode=execution_mode))
-        verifier_result = self.runtime.run_verifier(task_by_role[AgentRole.VERIFIER], state, guidelines=guidelines)
+        task_results.append(run_role(AgentRole.DATA_ENGINEER, lambda task: self.runtime.run_data_engineer(task, state)))
+        task_results.append(run_role(AgentRole.PANDAS_EXECUTOR, lambda task: self.runtime.run_pandas_executor(task, state)))
+        task_results.append(run_role(AgentRole.SQL_EXECUTOR, lambda task: self.runtime.run_sql_executor(task, state, execution_mode=execution_mode)))
+        verifier_result = run_role(AgentRole.VERIFIER, lambda task: self.runtime.run_verifier(task, state, guidelines=guidelines))
         task_results.append(verifier_result)
-        correction_result = self.runtime.run_correction(task_by_role[AgentRole.CORRECTION], state, guidelines=guidelines)
+        correction_result = run_role(AgentRole.CORRECTION, lambda task: self.runtime.run_correction(task, state, guidelines=guidelines))
         task_results.append(correction_result)
         corrected_logic_form = correction_result.output_payload.get("corrected_logic_form") if isinstance(correction_result.output_payload, dict) else None
         if corrected_logic_form:
             self.runtime.apply_corrected_logic_form(state, corrected_logic_form)
             state.correction_attempts[-1]["rerun_triggered"] = True
-            task_results.append(self.runtime.run_pandas_executor(task_by_role[AgentRole.PANDAS_EXECUTOR], state))
-            task_results.append(self.runtime.run_sql_executor(task_by_role[AgentRole.SQL_EXECUTOR], state, execution_mode=execution_mode))
-            verifier_result = self.runtime.run_verifier(task_by_role[AgentRole.VERIFIER], state, guidelines=guidelines)
+            emit_monitor_event(
+                monitor_run_id,
+                "correction_rerun_started",
+                title="修正后重跑",
+                summary="Correction Agent 产出了可执行修正，正在重新执行 Pandas / SQL / Verifier。",
+                role=AgentRole.CORRECTION.value,
+                stage=task_by_role[AgentRole.CORRECTION].task_id,
+                status="active",
+                payload={"corrected_logic_form": corrected_logic_form, "state_after_correction": _monitor_state_summary(state)},
+            )
+            task_results.append(run_role(AgentRole.PANDAS_EXECUTOR, lambda task: self.runtime.run_pandas_executor(task, state)))
+            task_results.append(run_role(AgentRole.SQL_EXECUTOR, lambda task: self.runtime.run_sql_executor(task, state, execution_mode=execution_mode)))
+            verifier_result = run_role(AgentRole.VERIFIER, lambda task: self.runtime.run_verifier(task, state, guidelines=guidelines))
             task_results.append(verifier_result)
-        task_results.append(self.runtime.run_insight(task_by_role[AgentRole.INSIGHT], state, guidelines=guidelines))
-        task_results.append(self.runtime.run_visualization(task_by_role[AgentRole.VISUALIZATION], state, guidelines=guidelines))
+        task_results.append(run_role(AgentRole.INSIGHT, lambda task: self.runtime.run_insight(task, state, guidelines=guidelines)))
+        task_results.append(run_role(AgentRole.VISUALIZATION, lambda task: self.runtime.run_visualization(task, state, guidelines=guidelines)))
 
         response_task = task_by_role[AgentRole.RESPONSE_BUILDER]
+        emit_monitor_event(
+            monitor_run_id,
+            "agent_started",
+            title="response_builder 开始",
+            summary="Response Builder 正在把已验证结果整理成稳定 API 响应。",
+            role=AgentRole.RESPONSE_BUILDER.value,
+            stage=response_task.task_id,
+            status="active",
+            payload={"task": response_task.to_dict(), "state_before": _monitor_state_summary(state)},
+        )
         response = self.runtime.build_final_response(
             run_id=run_id,
             state=state,
@@ -180,6 +275,27 @@ class DataAnalysisMultiAgentWorkflow:
             confidence=1.0 if response.success else 0.0,
         )
         task_results.append(response_result)
+        emit_monitor_event(
+            monitor_run_id,
+            "agent_completed",
+            title="response_builder 完成",
+            summary=_agent_result_summary(response_result),
+            role=AgentRole.RESPONSE_BUILDER.value,
+            stage=response_task.task_id,
+            status="completed" if response_result.success else "failed",
+            payload={
+                "task": response_task.to_dict(),
+                "result": response_result.to_dict(),
+                "final_response": {
+                    "run_id": response.run_id,
+                    "success": response.success,
+                    "answer": response.answer,
+                    "errors": response.errors,
+                    "warnings": response.warnings,
+                },
+                "state_after": _monitor_state_summary(state),
+            },
+        )
         trace = _build_trace(
             run_id=run_id,
             dataset_id=self.dataset_id,
@@ -195,7 +311,75 @@ class DataAnalysisMultiAgentWorkflow:
         response.reasoning_trace_view = trace.reasoning_trace_view
         state.final_response = response.to_dict()
         state.trace = trace.to_dict()
+        emit_monitor_event(
+            monitor_run_id,
+            "workflow_completed",
+            title="工作流完成",
+            summary=f"multi-agent 分析完成，run_id={run_id}",
+            stage="workflow",
+            status="completed" if response.success else "failed",
+            payload={
+                "run_id": run_id,
+                "dataset_id": self.dataset_id,
+                "success": response.success,
+                "latency_ms": trace.latency_ms,
+                "agent_task_results": [result.to_dict() for result in task_results],
+                "tool_call_summary": trace.tool_call_summary,
+                "reasoning_trace_view": trace.reasoning_trace_view,
+            },
+        )
         return MultiAgentWorkflowResult(response=response, trace=trace, state=state, task_results=task_results)
+
+
+def _monitor_state_summary(state: WorkflowState) -> dict[str, Any]:
+    """Return a compact handoff summary for live monitor events."""
+
+    logic_form = state.logic_form if isinstance(state.logic_form, dict) else {}
+    pandas_result = state.pandas_result if isinstance(state.pandas_result, dict) else {}
+    sql_result = state.sql_result if isinstance(state.sql_result, dict) else {}
+    verification = state.verification if isinstance(state.verification, dict) else {}
+    return {
+        "question": state.question,
+        "dataset_id": state.dataset_id,
+        "source_tables": list(logic_form.get("source_tables") or []),
+        "operation": logic_form.get("operation"),
+        "table_selection_reason": logic_form.get("table_selection_reason"),
+        "join_plan": logic_form.get("join_plan"),
+        "has_analysis_plan": bool(state.analysis_plan),
+        "pandas": _compact_execution_state(pandas_result),
+        "sql": _compact_execution_state(sql_result),
+        "verification": {
+            "passed": verification.get("passed"),
+            "confidence": verification.get("confidence"),
+            "issues": list(verification.get("issues") or [])[:8],
+        },
+        "correction_attempt_count": len(state.correction_attempts),
+        "tool_call_count": len(state.tool_call_trace),
+        "has_insight": bool(state.insight),
+        "has_chart": bool(state.chart),
+    }
+
+
+def _compact_execution_state(payload: dict[str, Any]) -> dict[str, Any]:
+    if not payload:
+        return {}
+    return {
+        "success": payload.get("success"),
+        "backend": payload.get("backend"),
+        "skipped": payload.get("skipped"),
+        "reason": payload.get("reason"),
+        "columns": list(payload.get("columns") or [])[:12],
+        "row_count": len(payload.get("rows") or []) if isinstance(payload.get("rows"), list) else None,
+        "value": payload.get("value"),
+        "errors": list(payload.get("errors") or [])[:5],
+    }
+
+
+def _agent_result_summary(result: AgentResult) -> str:
+    if result.success:
+        return f"{result.role.value} 已完成，confidence={result.confidence:.2f}。"
+    issues = "; ".join(str(issue) for issue in result.issues[:3])
+    return f"{result.role.value} 未通过：{issues or '无详细错误'}"
 
 
 def _build_trace(

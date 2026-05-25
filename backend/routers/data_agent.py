@@ -6,11 +6,15 @@ file parsing, analysis, verification, and response building to the service/core.
 
 from __future__ import annotations
 
+import asyncio
+import queue
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from backend.services.data_agent_service import DataAgentService
+from data_agent_core.tracing.live_monitor import GLOBAL_MONITOR_RUN_ID, format_sse, live_run_monitor, normalize_monitor_run_id
 
 
 service = DataAgentService()
@@ -31,6 +35,7 @@ def analyze_payload(payload: dict[str, Any]) -> dict[str, Any]:
         execution_mode=str(payload.get("execution_mode") or "dual"),
         guidelines=str(payload.get("guidelines") or ""),
         agent_mode=str(payload.get("agent_mode") or "multi_agent"),
+        monitor_run_id=str(payload.get("monitor_run_id") or ""),
     )
 
 
@@ -40,6 +45,7 @@ def chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return service.chat_without_dataset(
         question=str(payload.get("question") or ""),
         agent_mode=str(payload.get("agent_mode") or "multi_agent"),
+        monitor_run_id=str(payload.get("monitor_run_id") or ""),
     )
 
 
@@ -56,6 +62,7 @@ def message_payload(payload: dict[str, Any]) -> dict[str, Any]:
         execution_mode=str(payload.get("execution_mode") or "dual"),
         guidelines=str(payload.get("guidelines") or ""),
         agent_mode=str(payload.get("agent_mode") or "multi_agent"),
+        monitor_run_id=str(payload.get("monitor_run_id") or ""),
     )
 
 
@@ -107,12 +114,14 @@ def run_payload(payload: dict[str, Any]) -> dict[str, Any]:
         dataset_id=payload.get("dataset_id"),
         request_id=payload.get("request_id"),
         source_name=str(payload.get("source_name") or "api_inline_tables"),
+        monitor_run_id=str(payload.get("monitor_run_id") or ""),
     )
 
 
 try:
     from fastapi import APIRouter, File, UploadFile
     from pydantic import BaseModel
+    from starlette.responses import StreamingResponse
 
     router = APIRouter(prefix="/api/data-agent", tags=["data-agent"])
 
@@ -122,10 +131,12 @@ try:
         execution_mode: str = "dual"
         guidelines: str = ""
         agent_mode: str = "multi_agent"
+        monitor_run_id: str = ""
 
     class ChatPayload(BaseModel):
         question: str
         agent_mode: str = "multi_agent"
+        monitor_run_id: str = ""
 
     class MessagePayload(BaseModel):
         question: str
@@ -137,6 +148,7 @@ try:
         execution_mode: str = "dual"
         guidelines: str = ""
         agent_mode: str = "multi_agent"
+        monitor_run_id: str = ""
 
     class CreateConversationPayload(BaseModel):
         title: str = ""
@@ -157,6 +169,7 @@ try:
         dataset_id: str | None = None
         request_id: str | None = None
         source_name: str = "api_inline_tables"
+        monitor_run_id: str = ""
 
     @router.post("/upload")
     async def upload(file: UploadFile = File(...)) -> dict[str, Any]:
@@ -193,6 +206,7 @@ try:
             execution_mode=payload.execution_mode,
             guidelines=payload.guidelines,
             agent_mode=payload.agent_mode,
+            monitor_run_id=payload.monitor_run_id,
         )
 
     @router.post("/chat")
@@ -200,6 +214,7 @@ try:
         return service.chat_without_dataset(
             question=payload.question,
             agent_mode=payload.agent_mode,
+            monitor_run_id=payload.monitor_run_id,
         )
 
     @router.post("/message")
@@ -214,6 +229,7 @@ try:
             execution_mode=payload.execution_mode,
             guidelines=payload.guidelines,
             agent_mode=payload.agent_mode,
+            monitor_run_id=payload.monitor_run_id,
         )
 
     @router.post("/conversations")
@@ -249,11 +265,50 @@ try:
             dataset_id=payload.dataset_id,
             request_id=payload.request_id,
             source_name=payload.source_name,
+            monitor_run_id=payload.monitor_run_id,
         )
 
     @router.get("/datasets/{dataset_id}/profile")
     def profile(dataset_id: str) -> dict[str, Any]:
         return service.get_dataset_profile(dataset_id)
+
+    @router.get("/monitor/stream")
+    async def monitor_stream(monitor_run_id: str = GLOBAL_MONITOR_RUN_ID) -> StreamingResponse:
+        run_id = normalize_monitor_run_id(monitor_run_id) or GLOBAL_MONITOR_RUN_ID
+
+        async def event_stream():
+            with live_run_monitor.subscribe(run_id) as events:
+                connected = {
+                    "event_id": "evt_connected",
+                    "monitor_run_id": run_id,
+                    "event_type": "monitor_connected",
+                    "title": "监看已连接",
+                    "summary": "实时事件通道已打开。",
+                    "role": "",
+                    "stage": "monitor",
+                    "status": "active",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "elapsed_ms": 0,
+                    "payload": {"monitor_run_id": run_id},
+                }
+                yield format_sse(connected)
+                while True:
+                    try:
+                        event = await asyncio.to_thread(events.get, True, 15)
+                    except queue.Empty:
+                        yield ": keepalive\n\n"
+                    else:
+                        yield format_sse(event)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-store",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
 except ImportError:
     router = None
