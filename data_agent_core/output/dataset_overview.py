@@ -71,7 +71,7 @@ def build_dataset_overview_response(
         "missing_boundaries": missing_boundaries,
     }
     result_rows = _overview_result_rows(overview_report)
-    answer = _overview_answer(overview_report)
+    answer = _overview_shape_answer(overview_report) if _wants_shape_summary(question) else _overview_answer(overview_report)
     insight = _overview_insight(overview_report)
     execution_artifacts = build_overview_execution_artifacts(
         table_name=table_name,
@@ -179,6 +179,8 @@ def _primary_table(tables: dict[str, pd.DataFrame]) -> tuple[str, pd.DataFrame]:
 def _wants_multi_table_overview(question: str, tables: dict[str, pd.DataFrame]) -> bool:
     if len(tables) <= 1:
         return False
+    if _wants_shape_summary(question):
+        return True
     compact = str(question or "").lower().replace(" ", "")
     multi_signals = (
         "这几个表",
@@ -192,6 +194,10 @@ def _wants_multi_table_overview(question: str, tables: dict[str, pd.DataFrame]) 
         "各个表",
         "几个文件",
         "这些文件",
+        "每个文件",
+        "各个文件",
+        "每张表",
+        "各张表",
         "这个数据主要讲什么",
         "数据主要讲什么",
         "这个数据讲什么",
@@ -203,6 +209,22 @@ def _wants_multi_table_overview(question: str, tables: dict[str, pd.DataFrame]) 
     )
     single_signals = ("这个表", "这张表", "当前表", "这个文件")
     return any(signal in compact for signal in multi_signals) and not any(signal in compact for signal in single_signals)
+
+
+def _wants_shape_summary(question: str) -> bool:
+    compact = str(question or "").lower().replace(" ", "")
+    shape_signals = (
+        "多少行、多少列",
+        "多少行，多少列",
+        "多少行多少列",
+        "行数、列数",
+        "行数，列数",
+        "行数列数",
+        "行列规模",
+        "表规模",
+        "文件规模",
+    )
+    return any(signal in compact for signal in shape_signals)
 
 
 def _build_multi_table_overview_response(
@@ -245,7 +267,7 @@ def _build_multi_table_overview_response(
         ],
     }
     result_rows = _multi_table_result_rows(overview_report)
-    answer = _multi_table_answer(overview_report)
+    answer = _multi_table_shape_answer(overview_report) if _wants_shape_summary(question) else _multi_table_answer(overview_report)
     insight = _multi_table_insight(overview_report)
     execution_artifacts = _multi_table_execution_artifacts(overview_report)
 
@@ -409,6 +431,8 @@ def _key_fields(
 
 def _likely_table_meaning(table_name: str, columns: list[str], field_meanings: list[dict[str, str]]) -> str:
     haystack = " ".join([table_name, *columns]).lower()
+    if any(token in haystack for token in ("taxi", "trip", "fare", "pickup", "dropoff", "行程", "车费")):
+        return "出租车或出行行程明细，适合看行程量、金额、里程、时间和区域差异。"
     if any(token in haystack for token in ("order", "ord", "订单", "交易", "invoice")):
         return "订单或交易明细，适合看金额、数量、客户/商品和时间趋势。"
     if any(token in haystack for token in ("customer", "cust", "客户", "终端")):
@@ -426,27 +450,84 @@ def _likely_table_meaning(table_name: str, columns: list[str], field_meanings: l
     return "结构化数据表，适合先确认主键、时间字段、维度字段和可汇总指标。"
 
 
+def _multi_table_shape_answer(report: dict[str, Any]) -> str:
+    tables = report.get("tables_summary") or []
+    shown = tables[:8]
+    lines = [
+        f"这组数据共有 {report['table_count']} 张表/文件，总计 {report['total_row_count']:,} 行、{report['total_column_count']} 个字段。",
+        "每张表的行列规模如下：",
+    ]
+    for item in shown:
+        source = _join_non_empty([item.get("source_file"), item.get("sheet")], " / ")
+        label = str(item.get("table") or source or "未命名表")
+        suffix = f"（来源：{source}）" if source and source != label else ""
+        lines.append(f"- {label}：{int(item.get('row_count') or 0):,} 行、{int(item.get('column_count') or 0)} 列{suffix}")
+    if len(tables) > len(shown):
+        lines.append(f"还有 {len(tables) - len(shown)} 张表没有在主回答里展开，完整清单在结果表里。")
+    lines.append("我没有展示原始明细行；如果下一步要看字段含义、缺失或文件差异，可以直接继续问。")
+    return "\n".join(lines)
+
+
 def _multi_table_answer(report: dict[str, Any]) -> str:
     tables = report.get("tables_summary") or []
+    top_tables = tables[:5]
+    themes = _short_join([str(item.get("likely_meaning") or "").split("，")[0] for item in top_tables], limit=4)
+    table_examples = _short_join([f"{item['table']}（{item['row_count']:,} 行）" for item in top_tables], limit=5)
+    relationship = _multi_table_relationship_text(tables)
+    suggestions = _multi_table_suggestion_text(tables)
     lines = [
-        f"这组数据包含 {report['table_count']} 张表，共 {report['total_row_count']:,} 行、{report['total_column_count']} 个字段。我不会展开原始明细，先按表含义和字段结构概览：",
-        "",
+        f"已读取这组数据：它不是一张单表，而是 {report['table_count']} 张表组成的数据集，共 {report['total_row_count']:,} 行、{report['total_column_count']} 个字段。",
+        f"初步看，数据主题大致覆盖 {themes or '业务事实表、维表和过程表'}；这是基于字段名、表名和类型的推测，正式口径还要看业务说明。",
+        f"主要区别在表的粒度和用途：例如 {table_examples or '各表'}。{relationship}",
+        f"建议分析方向：{suggestions}",
+        "质量问题也需要单独看，尤其是缺失、重复和异常值；完整表清单和关键字段我放在结果表里，不在主回答里展开明细。",
     ]
-    for index, item in enumerate(tables[:12], start=1):
-        key_fields = "、".join(item.get("key_fields") or [])
-        lines.append(
-            f"{index}. {item['table']}：{item['row_count']:,} 行、{item['column_count']} 列，{item['likely_meaning']}"
-            f" 关键字段：{key_fields or '待结合说明文件确认'}。"
-        )
-    if len(tables) > 12:
-        lines.append(f"另外还有 {len(tables) - 12} 张表，建议后续按业务主题或具体问题逐步展开。")
-    lines.extend(
-        [
-            "",
-            "建议下一步先确认主分析目标：是看目标完成、订单金额、活动执行、拜访覆盖，还是客户/SKU 维度下钻。多表 join 需要先确认主键和时间粒度。",
-        ]
-    )
     return "\n".join(lines)
+
+
+def _multi_table_relationship_text(tables: list[dict[str, Any]]) -> str:
+    if len(tables) >= 2:
+        column_counts = {int(item.get("column_count") or 0) for item in tables}
+        key_sets = {tuple(item.get("key_fields") or []) for item in tables}
+        if len(column_counts) == 1 and len(key_sets) <= 2:
+            return "这些表结构很接近，更像同一口径数据按时间、来源或批次拆开的文件，优先做对比而不是直接 join。"
+    haystack = _tables_haystack(tables)
+    if any(token in haystack for token in ("target", "visit", "route", "actv", "dsp", "目标", "拜访", "活动", "陈列")):
+        return "这些表更像事实明细、目标计划、客户/SKU 维表和执行过程表的组合。"
+    if any(token in haystack for token in ("order", "payment", "customer", "product", "seller", "订单", "支付", "客户", "商品")):
+        return "这些表更像订单、支付、客户、商品或卖家等主题表，需要先确定订单或客户主键再关联。"
+    return "需要先确认哪张是事实表、哪些是维表或补充说明，再决定对比或 join。"
+
+
+def _multi_table_suggestion_text(tables: list[dict[str, Any]]) -> str:
+    haystack = _tables_haystack(tables)
+    if any(token in haystack for token in ("taxi", "trip", "fare", "pickup", "dropoff", "行程", "车费")):
+        return "先看行程量、fare/total amount、trip distance 和 pickup 时间趋势；如果是两期文件，再做同口径同比或差异对比。"
+    if any(token in haystack for token in ("target", "visit", "route", "actv", "dsp", "目标", "拜访", "活动", "陈列")):
+        return "先选目标完成、订单金额、活动执行或拜访覆盖中的一个主问题；跨表 join 前确认主键、月份/日期粒度和一对多关系。"
+    if any(token in haystack for token in ("order", "payment", "customer", "product", "seller", "订单", "支付", "客户", "商品")):
+        return "先看订单量、支付金额、客户区域、商品品类和卖家表现；跨表分析前确认 order/customer/product/seller 的关联键。"
+    return "先选一张事实表和一个核心指标，再决定是做分组对比、时间趋势、质量检查还是多表关联。"
+
+
+def _tables_haystack(tables: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for item in tables:
+        parts.append(str(item.get("table") or ""))
+        parts.append(str(item.get("likely_meaning") or ""))
+        parts.extend(str(field) for field in (item.get("key_fields") or []))
+    return " ".join(parts).lower()
+
+
+def _short_join(values: list[str], *, limit: int = 4) -> str:
+    cleaned: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+        if len(cleaned) >= limit:
+            break
+    return "、".join(cleaned)
 
 
 def _multi_table_result_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -511,56 +592,58 @@ def _multi_table_execution_artifacts(report: dict[str, Any]) -> list[dict[str, A
 
 
 def _overview_answer(report: dict[str, Any]) -> str:
-    lines = [
-        f"这个表更像是一张{_table_type_label(report)}：{report.get('likely_meaning') or '需要结合字段和业务说明继续确认。'}",
-        "它不是只需要返回一个数字的表单，我会先说明结构、字段角色和后续分析方向。",
-        "",
-        "1. 表整体情况",
-        f"- 数据表：{_join_non_empty([report.get('table'), report.get('source_file'), report.get('sheet')], ' / ')}",
-        f"- 行列规模：{report['row_count']:,} 行、{report['column_count']} 列",
-        f"- 行数：{report['row_count']:,} 条记录",
-        f"- 列数：{report['column_count']} 个字段",
-    ]
     metric = report.get("metric_column")
     metric_summary = report.get("metric_summary") or {}
-    if metric and metric_summary:
-        lines.extend(
-            [
-                f"- 关键金额/数值字段：{metric}",
-                f"- {metric}合计：{metric_summary.get('total', '-')}",
-                f"- 平均 / 中位数：{metric_summary.get('average', '-')} / {metric_summary.get('median', '-')}",
-                f"- 最小 / 最大：{metric_summary.get('min', '-')} / {metric_summary.get('max', '-')}",
-            ]
-        )
-    if report.get("period_column"):
-        lines.append(f"- 时间字段：{report['period_column']}")
-
-    lines.extend(["", "2. 主要字段含义"])
-    for item in (report.get("field_meanings") or [])[:10]:
-        lines.append(f"- {item['field']}：{item['meaning']}")
-
+    dimension = report.get("dimension_column")
+    period = report.get("period_column")
+    field_names = [str(item.get("field")) for item in (report.get("field_meanings") or [])[:8]]
+    key_fields = _short_join([item for item in [period, dimension, metric, *field_names] if item], limit=8)
+    suggestions = report.get("answerable_questions") or []
+    trend_text = f"时间字段是 {period}，可以继续做趋势、环比或同比；同比是否成立还要看是否覆盖可比年份。" if period else "暂未识别稳定时间字段，趋势、环比或同比需要先补充或指定日期字段。"
+    metric_total = metric_summary.get("total")
+    if metric and metric_total:
+        metric_text = f"可作为核心指标优先尝试的是 {metric}（{metric}合计：{metric_total}）"
+    elif metric:
+        metric_text = f"可作为核心指标优先尝试的是 {metric}"
+    else:
+        metric_text = "暂未识别特别稳定的核心数值指标"
+    dimension_text = f"可作为分组维度的是 {dimension}" if dimension else "分组维度需要结合业务字段再确认"
     distributions = report.get("categorical_distributions") or []
+    lines = [
+        f"已读取这个数据（{report.get('table') or '当前表'}）：{report['row_count']:,} 行、{report['column_count']} 列。",
+        f"这个表更像是{_table_type_label(report)}，主要讲的是{report.get('likely_meaning') or '一组结构化业务记录'}",
+        f"字段含义是根据字段名、类型和基础分布做的推测；关键字段包括 {key_fields or '待结合业务说明确认'}。",
+        f"分析上，{metric_text}，{dimension_text}。{trend_text}",
+    ]
     if distributions:
-        lines.extend(["", "3. 主要分布"])
-        for dist in distributions[:3]:
-            top_values = _distribution_summary_text(dist)
-            lines.append(f"- {dist['field']}：{top_values}")
+        lines.append(f"从基础分布看，{distributions[0]['field']} 是一个值得优先下钻的维度。")
+    if suggestions:
+        suggestion_text = "；".join(_trim_sentence_punctuation(str(item)) for item in suggestions[:3] if str(item).strip())
+        lines.append(f"建议分析方向：{suggestion_text}。")
+    lines.append("质量问题不能只回答“正常/不正常”：还需要看缺失、重复、负值、极端值和业务口径；完整字段画像和分布明细在结果表里。")
+    return "\n".join(lines)
 
-    rates = report.get("boolean_rates") or []
-    if rates:
-        lines.extend(["", "4. 风险 / 状态字段"])
-        for rate in rates[:4]:
-            lines.append(f"- {rate['field']}：true {rate['true_count']:,} 条，占 {rate['true_rate']}")
 
-    lines.extend(["", "5. 这个表适合继续问"])
-    for question in (report.get("answerable_questions") or [])[:5]:
-        lines.append(f"- {question}")
+def _trim_sentence_punctuation(value: str) -> str:
+    return str(value or "").strip().rstrip("。；;.")
 
-    boundaries = report.get("missing_boundaries") or []
-    if boundaries:
-        lines.extend(["", "6. 当前边界"])
-        for boundary in boundaries[:4]:
-            lines.append(f"- {boundary}")
+
+def _overview_shape_answer(report: dict[str, Any]) -> str:
+    source = _join_non_empty([report.get("source_file"), report.get("sheet")], " / ")
+    label = str(report.get("table") or source or "当前表")
+    lines = [
+        f"{label} 是 {report['row_count']:,} 行、{report['column_count']} 列。",
+    ]
+    if source and source != label:
+        lines.append(f"来源文件是 {source}。")
+    metric = report.get("metric_column")
+    dimension = report.get("dimension_column")
+    period = report.get("period_column")
+    quick_bits = [value for value in (period, dimension, metric) if value]
+    if quick_bits:
+        lines.append("可优先关注的字段包括 " + "、".join(str(item) for item in quick_bits[:4]) + "。")
+    lines.append("我没有展开原始明细行；字段含义、缺失和分布明细放在结果表里，主回答只保留行列结论。")
+    lines.append("下一步可以继续问字段含义、缺失情况或适合做哪些分析。")
     return "\n".join(lines)
 
 
@@ -731,6 +814,8 @@ def _missing_boundaries(columns: list[str]) -> list[str]:
 
 def _table_type_label(report: dict[str, Any]) -> str:
     fields = " ".join(item["field"].lower() for item in report.get("field_meanings") or [])
+    if any(token in fields for token in ("taxi", "trip", "fare", "pickup", "dropoff")):
+        return "出租车 / 出行行程明细表"
     if "invoice" in fields and any(token in fields for token in ("stock", "quantity", "unitprice", "customer")):
         return "订单 / 零售交易明细表"
     if "merchant" in fields and ("amount" in fields or "eur_amount" in fields):

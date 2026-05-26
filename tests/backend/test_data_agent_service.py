@@ -594,8 +594,44 @@ class DataAgentServiceTest(unittest.TestCase):
             payload = json.dumps(response, ensure_ascii=False)
             self.assertIn("orders", response["answer"])
             self.assertIn("customers", response["answer"])
+            self.assertIn("建议分析方向", response["answer"])
+            self.assertLess(len(response["answer"]), 1200)
+            self.assertNotIn("1. 多表含义", response["answer"])
             self.assertNotIn("WHITE HANGING HEART T-LIGHT HOLDER,6,2.55", payload)
             self.assertNotIn("WHITE METAL LANTERN,6,3.39", payload)
+
+    def test_multi_file_shape_question_returns_gpt_like_counts_not_value_dump(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            jan_path = root / "jan.csv"
+            feb_path = root / "feb.csv"
+            jan_path.write_text("月份,客户,金额\n2026-01,A,100\n2026-01,B,200\n", encoding="utf-8")
+            feb_path.write_text("月份,客户,金额,区域\n2026-02,A,150,华东\n", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(
+                [jan_path, feb_path],
+                original_filenames=["jan.csv", "feb.csv"],
+            )
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="每个文件分别有多少行、多少列？",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("overview", response["answer_type"])
+        self.assertEqual("multi_table_dataset_overview", response["debug"]["operation"])
+        self.assertIn("jan", response["answer"])
+        self.assertIn("2 行、3 列", response["answer"])
+        self.assertIn("feb", response["answer"])
+        self.assertIn("1 行、4 列", response["answer"])
+        self.assertIn("没有展示原始明细行", response["answer"])
+        self.assertNotIn("2026-01-01 00:00:00, 89", response["answer"])
+        self.assertLess(len(response["answer"]), 800)
 
     def test_cleaning_guidance_routes_before_detail_lookup_and_keeps_source_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -620,6 +656,11 @@ class DataAgentServiceTest(unittest.TestCase):
                 question="给出建议清洗规则、影响行数、影响比例，并说明是否需要用户确认。",
                 execution_mode="dual",
             )
+            anomaly_policy = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="给我异常规则、数量、占比和样例说明。",
+                execution_mode="dual",
+            )
             boundary = service.respond_to_message(
                 dataset_id=upload["dataset_id"],
                 question="你会直接修改原始数据吗？",
@@ -631,9 +672,14 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertIn("建议清洗规则", policy["answer"])
         self.assertIn("影响", policy["answer"])
         self.assertIn("不能覆盖原始文件", policy["answer"])
+        self.assertLess(len(policy["answer"]), 1000)
         self.assertEqual(["表名", "规则", "影响行数", "影响比例", "建议"], policy["result"]["columns"])
         self.assertNotIn("WHITE HANGING HEART T-LIGHT HOLDER,6,2.55", json.dumps(policy, ensure_ascii=False))
         self.assertTrue(policy["debug"]["user_experience_shaping"]["applied"])
+        self.assertTrue(anomaly_policy["success"])
+        self.assertEqual("cleaning_simulation", anomaly_policy["answer_type"])
+        self.assertIn("建议清洗规则", anomaly_policy["answer"])
+        self.assertNotEqual("0", str(anomaly_policy["answer"]).strip())
         self.assertTrue(boundary["success"])
         self.assertEqual("chat", boundary["answer_type"])
         self.assertIn("不会直接修改原始数据", boundary["answer"])
@@ -702,9 +748,48 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertTrue(guarded["debug"]["raw_detail_answer_guard"]["applied"])
         self.assertIn("online_retail", guarded["answer"])
         self.assertIn("订单 / 零售交易明细表", guarded["answer"])
-        self.assertIn("InvoiceDate：时间字段", guarded["answer"])
-        self.assertIn("Country：地理或区域维度", guarded["answer"])
+        self.assertIn("InvoiceDate", guarded["answer"])
+        self.assertIn("完整字段画像", guarded["answer"])
+        self.assertLess(len(guarded["answer"]), 1200)
         self.assertNotIn("WHITE HANGING HEART T-LIGHT HOLDER,6,2.55", serialized)
+
+    def test_raw_detail_exit_guard_replaces_compact_date_value_sequence(self) -> None:
+        raw_answer = (
+            "2025-01-01 00:00:00, 89, 2025-02-01 00:00:00, 95, "
+            "2025-03-01 00:00:00, 101, 2025-04-01 00:00:00, 88"
+        )
+        payload = {
+            "response_version": "v1",
+            "success": True,
+            "run_id": "run_compact_dump",
+            "dataset_id": "dataset_compact_dump",
+            "question": "每个文件分别有多少行、多少列？",
+            "answer_type": "analysis",
+            "execution_mode": "dual",
+            "answer": raw_answer,
+            "result": {"columns": [], "rows": [], "value": None},
+            "debug": {"agent_mode": "multi_agent"},
+        }
+        tables = {
+            "monthly_sales": pd.DataFrame(
+                [
+                    {"月份": "2025-01", "客户": "A", "金额": 89},
+                    {"月份": "2025-02", "客户": "B", "金额": 95},
+                ]
+            )
+        }
+
+        guarded = _suppress_raw_detail_answer(
+            payload,
+            question="每个文件分别有多少行、多少列？",
+            tables=tables,
+            profile=None,
+            agent_mode="multi_agent",
+        )
+
+        self.assertEqual("overview", guarded["answer_type"])
+        self.assertIn("2 行、3 列", guarded["answer"])
+        self.assertNotIn("2025-01-01 00:00:00, 89", guarded["answer"])
 
     def test_broad_dataset_readiness_questions_do_not_return_row_count_only(self) -> None:
         questions = [
@@ -712,6 +797,7 @@ class DataAgentServiceTest(unittest.TestCase):
             "这个数据正常吗？",
             "这个数据能不能用？",
             "这个数据能不能做趋势、环比或同比？",
+            "帮我看看哪里有问题。",
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -736,6 +822,8 @@ class DataAgentServiceTest(unittest.TestCase):
             self.assertTrue(response["success"], response.get("errors"))
             self.assertIn(response["answer_type"], {"overview", "cleaning_simulation"})
             self.assertNotEqual("2", str(response["answer"]).strip())
+            self.assertLess(len(str(response["answer"])), 1200)
+            self.assertNotIn("1. 表整体情况", str(response["answer"]))
             self.assertNotIn("WHITE HANGING HEART T-LIGHT HOLDER,6,2026", json.dumps(response, ensure_ascii=False))
 
     def test_dataset_overview_generalizes_beyond_payments_tables(self) -> None:
@@ -852,6 +940,34 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual("assistant", loaded["conversation"]["messages"][1]["role"])
         self.assertEqual("chat", loaded["conversation"]["messages"][1]["payload"]["answer_type"])
         self.assertEqual("VDS 助手介绍", loaded_after_restart["conversation"]["title"])
+
+    def test_conversation_pin_persists_and_sorts_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = Path(temp_dir) / "storage"
+            service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+
+            first = service.respond_to_message(question="第一条")
+            second = service.respond_to_message(question="第二条")
+            pinned = service.update_conversation(first["conversation_id"], pinned=True)
+            listed = service.list_conversations()
+            reloaded_service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+            loaded_after_restart = reloaded_service.get_conversation(first["conversation_id"])
+            unpinned = reloaded_service.update_conversation(first["conversation_id"], pinned=False)
+
+        self.assertTrue(pinned["conversation"]["pinned"])
+        self.assertTrue(pinned["conversation"]["pinned_at"])
+        self.assertEqual(first["conversation_id"], listed["conversations"][0]["conversation_id"])
+        self.assertTrue(listed["conversations"][0]["pinned"])
+        self.assertEqual(second["conversation_id"], listed["conversations"][1]["conversation_id"])
+        self.assertTrue(loaded_after_restart["conversation"]["pinned"])
+        self.assertFalse(unpinned["conversation"]["pinned"])
+        self.assertEqual("", unpinned["conversation"]["pinned_at"])
 
     def test_conversation_can_move_into_project_and_be_deleted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

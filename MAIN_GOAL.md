@@ -10,7 +10,7 @@
 
 ## 当前阶段目标
 
-当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环。Phase 11 已启动会话隔离和历史续聊持久化首个落点，当前具备本地 JSON conversation store、`conversation_id`、历史载入和重命名持久化；真实登录、权限和多租户隔离仍未实现。Phase 12 已作为 Phase 11 之后的正式 Workbench 体验收敛阶段落地首轮实现，把 general 表单概览、结构化 Insight、代码展示和 GPT-like 活动流做成后端稳定契约。Phase 13 已完成首个 GPT-like Project 工作区落点，把 chats、共享文件、项目说明和项目内 memory 纳入同一 project-only 上下文边界。
+当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环。Phase 11 已启动会话隔离和历史续聊持久化首个落点，当前具备本地 JSON conversation store、`conversation_id`、历史载入和重命名持久化；真实登录、权限和多租户隔离仍未实现。Phase 12 已作为 Phase 11 之后的正式 Workbench 体验收敛阶段落地首轮实现，把 general 表单概览、结构化 Insight、代码展示和 GPT-like 活动流做成后端稳定契约。Phase 13 已完成首个 GPT-like Project 工作区落点，把 chats、共享文件、项目说明和项目内 memory 纳入同一 project-only 上下文边界；Project 入口必须高度对齐 ChatGPT Project：进入 Project 后左侧全局导航、项目列表和最近历史仍可见，右侧主区域呈现项目主页和项目内上下文。
 
 1. 已搭建 data_agent_core 核心算法目录
 2. 已搭建 data_agent_core/contracts 数据契约目录
@@ -42,7 +42,7 @@
 28. Phase 10 已作为 Phase 9 之后的正式结果体验阶段完成首版：Visualization, Insight, Data Quality and Safe Process View。后端稳定生成 `chart`、`insight`、`quality_report`、`reasoning_trace_view` 和 `process_view_v2`；前端只把图表、洞察和安全过程摘要转成用户可读体验，可展示后端已脱敏的筛选口径、表选择、分子/分母 evidence chips，不展示后端质量报告、warnings/errors、verification 细节、join trace，不实现核心计算、异常规则、清洗动作或完整 Chain of Thought。
 29. Phase 11 已作为 Phase 10 之后的正式阶段：Conversation Isolation and Session Persistence。首个轻量实现已落地：每轮 `/message` 可写入 `conversation_id` 对应的本地 JSON 会话，历史 Chat 可载入旧消息并持久化重命名；后续继续补 URL 会话恢复、多窗口同步、真实登录和租户隔离。
 30. Phase 12 已作为 Phase 11 之后的正式体验收敛阶段：GPT-like General Answer, Insight and Activity Stream。首轮已实现 `overview_report`、增强 Insight、安全 `execution_artifacts`、dataset overview 活动流、语义图表规划防线和规则文件自动绑定；真实 `127.0.0.1:8001/workbench` smoke 已确认 general、Insight、过程流和代码卡片可见，前端仍只负责渲染。
-31. Phase 13 已完成首个落点：Project Workspace / Shared Files / Project Memory。已新增 Project Store、Project Sources、Project Memory、project-scoped conversations 和 Workbench Project UI，把 GPT-like Project 的共享文件、项目说明、项目内记忆和项目 Chat 放进同一后端上下文边界。
+31. Phase 13 已完成首个落点：Project Workspace / Shared Files / Project Memory。已新增 Project Store、Project Sources、Project Memory、project-scoped conversations 和 GPT-like Workbench Project UI，把共享文件、项目说明、项目内记忆和项目 Chat 放进同一后端上下文边界；Project 不是左侧历史过滤器，左侧最近历史必须保持全局可见，项目内聊天 / 来源列表由主区域项目主页单独展示。
 
 ## 统一 Phase 状态表
 
@@ -68,7 +68,7 @@
 20. Phase 10：Visualization, Insight, Data Quality and Safe Process View，已完成 ChartSpec v2、InsightResult v2、DataQualityReport、safe `reasoning_trace_view`、`process_view_v2` 和 workbench 渲染。自动清洗不属于 Phase 10，后续必须开新 Phase 并要求用户确认。
 21. Phase 11：Conversation Isolation and Session Persistence，状态为 First implementation landed。当前新增 `conversation_id` 会话层、本地 JSON conversation store、历史续聊载入和重命名持久化；GPT-like 小号浅灰单行过程摘要 + 点击展开详情已作为 Workbench UX hardening 先行落地。真实登录、鉴权和多租户隔离仍是后续工作。
 22. Phase 12：GPT-like General Answer / Insight / Activity Stream，状态为 First implementation landed。该阶段不修改 Phase 10 / Phase 11 的已完成语义，专门收敛 overview report、enhanced insight、execution artifacts、activity process view、semantic chart planning 和规则文件自动绑定。
-23. Phase 13：Project Workspace / Shared Files / Project Memory，状态为 First implementation landed。该阶段新增 project-only memory 和共享文件上下文层；共享文件复用既有 upload / rule / dataset store，前端只渲染后端 Project 契约，不实现检索、join、聚合、评分或数据清洗。
+23. Phase 13：Project Workspace / Shared Files / Project Memory，状态为 First implementation landed。该阶段新增 project-only memory 和共享文件上下文层；共享文件复用既有 upload / rule / dataset store，前端只渲染后端 Project 契约，不实现检索、join、聚合、评分或数据清洗。Workbench Project UX 必须保持 GPT-like：左侧全局最近历史不因进入 Project 消失，右侧主区域展示 Project 标题、项目内新聊天入口、聊天 / 来源 tabs 和 project-scoped 列表。
 
 ## 当前实现状态
 
@@ -130,7 +130,7 @@
 54. 规则上传链路已升级：普通上传旧请求默认 `file_role=dataset`；用户分析规则仍可通过 API 显式 `file_role=rule, rule_scope=user_analysis` 上传，也可和 dataset 一起上传后自动绑定为本 dataset 的 user analysis knowledge；显式 `user_rule_file_id` 和自动绑定规则都会合并到本次 guidelines。Benchmark 规则必须显式 `file_role=rule, rule_scope=benchmark`，只能通过独立 `/api/data-agent/benchmark/run` 使用，不进入普通 Chat 上下文或 dataset profile。
 55. Workbench 安全过程叙事 v2 已落地：`single_agent`、`multi_agent`、无数据聊天、有数据普通聊天和 dataset overview 都返回 `process_view_v2`；该字段按 chat、overview、metric、TopN、trend、multi-table、diagnostic、clarification/not_applicable 等模式生成不同步骤。占比类问题会安全展示对象、月份、产品、表选择和分子/分母摘要。Monitor SSE 最终事件只携带 run 状态和 `process_view_v2` 摘要，不再向前端监看面板发送完整 response / trace payload。
 56. Phase 12 首轮代码已落地：general / overview 问法命中 `overview_report`，主回答按表整体情况、字段含义、主要分布、风险/状态字段、可继续提问和边界组织；Insight 建议带 observation / evidence / recommended action；响应新增安全 `execution_artifacts` 代码卡片；`process_view_v2` 的 dataset overview 活动流包含读取表画像、识别表类型和执行概览代码；图表规划避免把 ID / reference / bin / year / hour / minute / day_of_year 当作指标；Workbench 主界面去除高级选项并支持数据文件与说明/规则文件一起上传后自动绑定。
-57. Phase 13 首轮代码已落地：新增 `backend/storage/project_store.py` 本地 JSON Project Store；DataAgentService 和 router 暴露 Project CRUD、project source upload、project memory CRUD，并让 `/message`、conversation create/list/record 支持可选 `project_id`；Workbench 新增 Project 选择与创建控件，当前 Project 下上传文件会写入 project sources，发送消息会带 project_id，历史列表可按 project 过滤。当前仍是本地匿名 Project，不代表真实登录、多人协作或多租户权限已完成。
+57. Phase 13 首轮代码已落地：新增 `backend/storage/project_store.py` 本地 JSON Project Store；DataAgentService 和 router 暴露 Project CRUD、project source upload、project memory CRUD，并让 `/message`、conversation create/list/record 支持可选 `project_id`；Workbench 新增 GPT-like Project sidebar 列表和主区域 Project home，当前 Project 下上传文件会写入 project sources，发送消息会带 project_id。左侧最近历史是全局历史，不得按 project 过滤；项目内 conversations / sources / memories 只能在右侧 Project home 中按当前 `project_id` 展示。当前仍是本地匿名 Project，不代表真实登录、多人协作或多租户权限已完成。
 
 ## 架构原则
 
@@ -957,7 +957,7 @@ Phase 12.1 修复已并入本阶段：
 7. DABstep、Microsoft、VDS 95、中文 BI、多文件 / join、conversation、monitor、output contract、hardcoding scan、secret scan 和 dependency boundary 不退步。状态：full unittest `207 OK`；DABstep dev10 mock `9/10`；Microsoft 300 mock `300/300`；VDS 95 mock `95/95`；DABstep all-450 mock 曾跑到 306 条 trace 但未生成最终 report，已记录为未完成尝试，不能宣称 all-450 通过。
 8. 最终通过真实 `127.0.0.1:8001/workbench` 浏览器 smoke 验证。状态：已通过；混合上传 CSV + Markdown 说明文件命中自动规则绑定，general 问法生成 overview、Insight、活动流和代码卡片。
 9. 每次 Phase 12 体验类修改都必须执行 GPT-like parity review：把 VDS 实际解析/回答/排版与 GPT / ChatGPT Data Analysis 同类输出或标准 GPT 参考结果并排检查，记录主要差距和保留原因；如果文件理解、答案组织、表格/图表选择、过程流或视觉排版不像 GPT 的数据分析体验，直接打回重写。
-10. Phase 12.1 的新增硬门槛：`comparison.md` 或真实 Workbench 中不得再出现把多个原始明细值拼接成主答案的情况；`这个数据主要讲什么` 必须回答数据集/表的业务含义和关键字段；清洗策略题必须说明模拟规则、影响范围和用户确认边界。状态：`outputs/eval_gate/uk_retail_phase12_1_final` 中 `comparison.md/json` 未命中 `WHITE HANGING HEART` / `536365,` 原始明细串，关键宽泛问法未退化为单独行数；真实 `127.0.0.1:8001/workbench` smoke 已确认无 raw dump、无主答案区代码面板、过程默认一行且可展开。
+10. Phase 12.1 的新增硬门槛：`comparison.md` 或真实 Workbench 中不得再出现把多个原始明细值拼接成主答案的情况；`这个数据主要讲什么` 必须回答数据集/表的业务含义和关键字段；`每个文件分别有多少行、多少列` 必须回答行列规模而不是日期/数值串；清洗策略题必须说明模拟规则、影响范围和用户确认边界。状态：`outputs/eval_gate/phase12_1_finalcheck3_20260526_092141_*` 三组 quick gate 均达到 GPT-like `35/35`，真实 `127.0.0.1:8001/workbench` smoke 已确认无 raw dump、无主答案区代码面板、Insight 拆成洞察/边界卡片，过程默认一行且展开后才显示完整过程和复现代码。
 
 禁止事项：
 
@@ -969,7 +969,7 @@ Phase 12.1 修复已并入本阶段：
 
 ## Phase 13：Project Workspace / Shared Files / Project Memory
 
-当前 Goal：把 Workbench 从单会话历史升级为 GPT-like Project 工作区。Project 必须聚合 project-scoped conversations、shared files、project instructions 和 project memory，让同一项目内的多个 Chat 可以共享上下文；状态：First implementation landed。首轮已实现本地 JSON Project Store、Project API、`project_id` 消息/会话贯穿和 Workbench Project 选择器。
+当前 Goal：把 Workbench 从单会话历史升级为 GPT-like Project 工作区。Project 必须聚合 project-scoped conversations、shared files、project instructions 和 project memory，让同一项目内的多个 Chat 可以共享上下文；状态：First implementation landed。首轮已实现本地 JSON Project Store、Project API、`project_id` 消息/会话贯穿、conversation 置顶 metadata 和 GPT-like Workbench Project sidebar + Project home。Project 不是历史过滤器：进入 Project 后左侧全局导航、项目列表和最近历史必须继续可见，右侧主区域才切换成 Project 主页。
 
 产品边界：
 
@@ -990,17 +990,18 @@ Phase 12.1 修复已并入本阶段：
 
 Workbench 计划：
 
-1. 左侧增加 Project 列表和当前 Project header。
-2. Project 内展示项目文件、项目记忆和项目说明；所有内容来自后端 Project API。
-3. 新建 Chat 继承当前 `project_id`，历史列表按项目过滤；项目外历史保持原有无项目视图。
-4. Assistant 回复支持保存为 project source 或 pinned memory，但保存动作必须通过后端 API 落盘，不能只写浏览器 localStorage。
-5. 前端只负责渲染 Project 契约和发起 API 调用，不实现检索、join、聚合、排序、评分、图表选择、数据清洗或 memory 选择逻辑。
+1. 左侧必须保持 GPT-like 全局 sidebar：全局新 Chat、Project 列表和最近历史同时可见；选中 Project 只高亮项目，不得隐藏或收窄最近历史。
+2. 右侧主区域必须呈现 GPT-like Project home：Project 标题、`<Project> 中的新聊天` 入口、`聊天 / 来源` tabs、项目内 conversation list、项目文件 / 记忆 / 说明列表。
+3. 浏览 Project home 不能自动把当前对话归入 Project；只有用户点击项目内新聊天、续聊项目内会话，或在历史菜单显式选择“移至项目”时，才允许继承 / 写入当前 `project_id`。项目外全局新 Chat 必须清空 `project_id`，且现有全局历史列表仍显示所有最近对话。
+4. Project 内展示项目文件、项目记忆和项目说明；所有内容来自后端 Project API，conversation list 使用 project-scoped backend query，不复用左侧全局 history 当过滤结果；conversation 置顶必须来自后端 `pinned / pinned_at`，左侧历史和 Project home 都按置顶优先排序。
+5. Assistant 回复支持保存为 project source 或 pinned memory，但保存动作必须通过后端 API 落盘，不能只写浏览器 localStorage。
+6. 前端只负责渲染 Project 契约和发起 API 调用，不实现检索、join、聚合、排序、评分、图表选择、数据清洗或 memory 选择逻辑。
 
 验收标准：
 
 1. Backend 单测覆盖 Project CRUD、source upload / list / delete、memory CRUD、conversation 挂 project、project-only 隔离负例。
 2. 回归门禁覆盖现有 `/message`、conversation、upload-batch、rule auto-bind、multi-file / join、monitor、output contract、hardcoding scan、secret scan 和 dependency boundary 不退步。
-3. Frontend 静态测试覆盖 Project 列表、当前 Project header、项目文件 / 记忆面板、历史按 project 过滤、保存回复到 project source / memory。
+3. Frontend 静态测试覆盖 GPT-like Project sidebar、主区域 Project home、Project 内新 Chat、聊天 / 来源 tabs、项目文件 / 记忆面板、conversation 置顶菜单，以及左侧全局历史不按 project 过滤的负例。
 4. 真实 `/workbench` 浏览器 smoke 覆盖新建 Project、上传共享文件、两个 Chat 复用项目上下文、项目外 Chat 不能引用该项目 memory。
 5. README.md、docs/API_CONTRACT.md、docs/FEATURE_BACKLOG.md、docs/ARCHITECTURE.md 和测试在正式实现时同步；本次只写入 MAIN_GOAL.md 路线图。
 
@@ -1011,6 +1012,9 @@ Workbench 计划：
 3. 不能让前端实现检索、join、聚合、排序、评分、图表选择或数据清洗。
 4. 不能宣称 v1 已经具备真实登录、权限、多人协作、企业共享或多租户隔离。
 5. 不能把 raw Chain of Thought、raw prompt、raw reasoning tokens、API key、task_id、标准答案、hidden answer、proxy answer 或 scorer 信息写入 project memory / source。
+6. 不能把 Project 做成 sidebar history filter；进入 Project 后左侧全局最近历史、项目列表和全局入口不得消失，也不能把“浏览 Project 主页”偷换成“当前对话已经进入 Project”。
+7. 不能把置顶做成前端本地排序或 localStorage 假状态；置顶、取消置顶、排序依据和 Project home 标记必须来自后端 conversation contract。
+8. 不能用“功能可用”替代 GPT-like parity；Project 相关排版、入口命名、tabs、列表层级和可见内容必须对照 ChatGPT Project 截图或冻结参考，不相似时必须打回重写。
 
 ## Phase 9：前端产品化
 
@@ -1178,3 +1182,5 @@ Phase 9 禁止：
 28. Phase 13 不允许把项目 memory 做成全局 memory，也不允许跨 project 读取 conversation、memory 或 file。
 29. Phase 13 不允许把前端 localStorage、单页内存或未落盘状态冒充共享 Project 存储。
 30. Phase 13 不允许让前端实现检索、join、聚合、排序、评分、图表选择或数据清洗；这些能力必须继续由后端和 data_agent_core 受控链路负责。
+31. Phase 13 不允许把 Project 当成左侧历史过滤器；进入 Project 后必须保持左侧全局导航、Project 列表和最近历史可见，项目内聊天 / 来源列表只能在主区域 Project home 中呈现。
+32. Phase 13 不允许用与 ChatGPT Project 明显不相似的排版、入口命名或回答结构冒充 GPT-like；Project UX 和项目内回答必须对照 ChatGPT 截图、冻结参考或标准 GPT answer，差距大时打回重写。

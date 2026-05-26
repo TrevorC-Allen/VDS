@@ -213,19 +213,30 @@ def _rule(name: str, count: int, total: int, suggestion: str) -> dict[str, Any]:
 
 
 def _cleaning_policy_answer(profiles: list[dict[str, Any]], impacted_rows: int, impacted_rate: str) -> str:
-    parts = ["建议清洗规则："]
-    for profile in profiles[:8]:
-        rules = profile.get("rules") or []
-        if not rules:
-            parts.append(f"{profile['table']}：暂未发现需要立即清洗的重复、缺失、负值或极端值信号。")
-            continue
+    top_rules = _top_cleaning_rules(profiles, limit=5)
+    if top_rules:
         rule_text = "；".join(
-            f"{rule['rule']}：{rule['affected_rows']:,} 行（{rule['affected_rate']}），{rule['suggestion']}"
-            for rule in rules[:6]
+            f"{item['table']} 的 {item['rule']} 约 {item['affected_rows']:,} 行（{item['affected_rate']}）"
+            for item in top_rules
         )
-        parts.append(f"{profile['table']}：{rule_text}。")
-    parts.append(f"粗略影响 {impacted_rows:,} 行（{impacted_rate}）。所有清洗必须先确认，不能覆盖原始文件。")
+    else:
+        rule_text = "暂未发现需要立即处理的重复、缺失、负值或极端值信号"
+    parts = [
+        f"建议清洗规则先按影响范围排优先级：{rule_text}。",
+        f"粗略估算，至少一条规则会影响 {impacted_rows:,} 行（{impacted_rate}）。这只是模拟口径，不代表应该直接删除这些行。",
+        "建议先确认每条规则的业务含义，再做清洗前后指标对比；不能覆盖原始文件，删除、填充或 winsorize 都需要用户确认。",
+        "完整规则、影响行数和影响比例我放在结果表里，主回答不展开所有表的明细。",
+    ]
     return "\n".join(parts)
+
+
+def _top_cleaning_rules(profiles: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for profile in profiles:
+        for rule in profile.get("rules") or []:
+            flattened.append({"table": profile["table"], **rule})
+    flattened.sort(key=lambda item: int(item.get("affected_rows") or 0), reverse=True)
+    return flattened[:limit]
 
 
 def _missing_strategy_answer(profiles: list[dict[str, Any]]) -> str:

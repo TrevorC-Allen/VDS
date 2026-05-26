@@ -87,13 +87,13 @@
 
 优先级：P1，阶段：Phase 13。
 
-验收标准：Project CRUD、project source upload / delete、project memory CRUD、conversation 挂 project、`/message project_id`、历史按 project 过滤和 project-only 隔离负例必须有测试；无 `project_id` 时现有 `/message`、conversation、upload-batch、rule auto-bind、multi-file/join、monitor 和输出契约不得退步。
+验收标准：Project CRUD、project source upload / delete、project memory CRUD、conversation 挂 project、conversation 后端置顶、`/message project_id`、Project home 内按 project 展示 chats / sources / memories、左侧全局历史不按 project 过滤和 project-only 隔离负例必须有测试；无 `project_id` 时现有 `/message`、conversation、upload-batch、rule auto-bind、multi-file/join、monitor 和输出契约不得退步。
 
-风险：当前是本地匿名 JSON Project Store，不代表真实多人协作、鉴权或多租户权限；Project memory 不能变成全局 memory；前端不能实现检索、join、聚合、评分、图表选择或数据清洗。
+风险：当前是本地匿名 JSON Project Store，不代表真实多人协作、鉴权或多租户权限；Project memory 不能变成全局 memory；conversation 置顶不能变成前端 localStorage 假状态；前端不能实现检索、join、聚合、评分、图表选择或数据清洗；Project UX 不能退化成 sidebar history filter，必须保持 ChatGPT Project-like sidebar + main project home。
 
 泛化验证方式：用项目内/项目外对照测试验证 memory/source/conversation 隔离；用 `.md/.txt/.yaml/.yml` 说明文件验证文本 source 不进入 DatasetProfile / DataFrame；用 dataset + user rule 混合上传验证既有 TempFileStore、rule file 和 dataset store 行为不退化。
 
-状态：2026-05-25 已完成首个落点：本地 JSON Project Store、Project API、project source upload、project memory CRUD、project-scoped conversations 和 Workbench Project selector；后续继续补 Project instructions 编辑、saved response source、conversation summary memory、URL project restore、真实登录鉴权和多租户隔离。
+状态：2026-05-25 已完成首个落点：本地 JSON Project Store、Project API、project source upload、project memory CRUD、project-scoped conversations 和 GPT-like Workbench Project sidebar + Project home；后续继续补 Project instructions 编辑、saved response source、conversation summary memory、URL project restore、真实登录鉴权和多租户隔离。
 
 ### 双执行路径
 

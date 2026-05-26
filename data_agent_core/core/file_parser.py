@@ -1,4 +1,4 @@
-"""File parser for CSV, Excel, and DABstep context files."""
+"""File parser for CSV, Excel, Parquet, and DABstep context files."""
 
 from __future__ import annotations
 
@@ -31,18 +31,35 @@ def read_csv(path: str | Path) -> pd.DataFrame:
     last_error: Exception | None = None
     for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk"):
         try:
-            return pd.read_csv(path, encoding=encoding)
+            return pd.read_csv(path, encoding=encoding, low_memory=False)
         except UnicodeDecodeError as exc:
             last_error = exc
     if last_error is not None:
         raise last_error
-    return pd.read_csv(path, encoding="utf-8-sig")
+    return pd.read_csv(path, encoding="utf-8-sig", low_memory=False)
 
 
 def read_excel(path: str | Path) -> dict[str, pd.DataFrame]:
     """Read every sheet from an Excel workbook."""
 
     return pd.read_excel(path, sheet_name=None)
+
+
+def read_parquet(path: str | Path) -> pd.DataFrame:
+    """Read Parquet with a DuckDB fallback for runtimes without pyarrow."""
+
+    try:
+        return pd.read_parquet(path)
+    except (ImportError, ValueError) as exc:
+        message = str(exc).lower()
+        if "pyarrow" not in message and "fastparquet" not in message and "parquet" not in message:
+            raise
+        try:
+            import duckdb
+        except ImportError as duckdb_exc:  # pragma: no cover - environment dependent.
+            raise exc from duckdb_exc
+        with duckdb.connect(database=":memory:") as con:
+            return con.execute("SELECT * FROM read_parquet(?)", [str(Path(path))]).fetchdf()
 
 
 def parse_dataset_file(
@@ -69,7 +86,7 @@ def parse_dataset_file(
         records = read_json_records(source_path)
         tables = {display_path.stem or source_path.stem or "table": pd.DataFrame(records)}
     elif suffix == ".parquet":
-        tables = {display_path.stem or source_path.stem or "table": pd.read_parquet(source_path)}
+        tables = {display_path.stem or source_path.stem or "table": read_parquet(source_path)}
     elif suffix in {".arrow", ".feather"}:
         tables = {display_path.stem or source_path.stem or "table": pd.read_feather(source_path)}
     else:

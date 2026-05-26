@@ -44,9 +44,9 @@
 
 2026-05-25 更新：Phase 12 首轮 GPT-like general / insight / activity stream 契约已落地。General / overview 问法可返回 `overview_report`、安全 `execution_artifacts`、增强后的 `insight` 和 dataset overview 活动流；普通 Workbench 混合上传可把 `.md/.txt/.yaml/.yml` 说明文件和规则型 `.json` 自动绑定为本 dataset 的 `user_analysis` knowledge。前端只渲染这些后端契约，不实现公式、join、聚合、图表选择、评分或数据清洗。
 
-2026-05-25 更新：Phase 12.1 将“流式过程”和“防原始明细倾倒”合并为硬契约。Workbench 主页面可消费 monitor SSE 白名单事件（如 `data_scan_note`、`plan_note`、`dependency_note`、`code_artifact_ready`、`answer_outline_ready`），默认只显示一行 activity summary，详情中展示结构化步骤和安全代码 artifact。`overview` 和 `cleaning_simulation` 只能返回紧凑结果表；`这个数据主要讲什么`、`这几个表什么意思，有什么字段`、清洗策略和是否修改原始数据等说明型问题不得返回原始明细行拼接文本。正式分析出口还必须具备 raw detail guard：若最终 `answer` 呈现为 CSV / 明细行拼接，后端必须改写成安全 overview 或澄清，并清空主结果明细。
+2026-05-25 更新：Phase 12.1 将“流式过程”和“防原始明细倾倒”合并为硬契约。Workbench 主页面可消费 monitor SSE 白名单事件（如 `data_scan_note`、`plan_note`、`dependency_note`、`code_artifact_ready`、`answer_outline_ready`），默认只显示一行 activity summary，详情中展示结构化步骤和安全代码 artifact。`overview` 和 `cleaning_simulation` 只能返回紧凑结果表；`这个数据主要讲什么`、`这几个表什么意思，有什么字段`、`每个文件分别有多少行、多少列`、清洗策略和是否修改原始数据等说明型问题不得返回原始明细行拼接文本。正式分析出口还必须具备 raw detail guard：若最终 `answer` 呈现为 CSV / 明细行拼接或短日期/数值串，后端必须改写成安全 overview 或澄清，并清空主结果明细。
 
-2026-05-25 更新：Phase 13 首个 Project 工作区契约已落地。新增本地 JSON Project Store，Project API 支持 project CRUD、project source upload / delete、project memory CRUD；`POST /api/data-agent/message`、conversation create/list/record 增加可选 `project_id`。Project memory 为 `project_only`，只在同一 project 内注入；共享 dataset/rule 文件仍复用既有 upload / rule / dataset store；前端只渲染后端 Project 契约，不实现检索、join、聚合、评分或数据清洗。
+2026-05-25 更新：Phase 13 首个 Project 工作区契约已落地。新增本地 JSON Project Store，Project API 支持 project CRUD、project source upload / delete、project memory CRUD；`POST /api/data-agent/message`、conversation create/list/record 增加可选 `project_id`。Project memory 为 `project_only`，只在同一 project 内注入；共享 dataset/rule 文件仍复用既有 upload / rule / dataset store；前端只渲染后端 Project 契约，不实现检索、join、聚合、评分或数据清洗。Workbench 左侧全局历史不得带 `project_id` 过滤；Project home 内的聊天列表才使用 project-scoped conversation query。
 
 ## 全局响应规则
 
@@ -71,6 +71,7 @@
 19. Phase 12.1 前端必须对 general / overview / cleaning_simulation 问法执行主界面渲染熔断：只展示紧凑契约表，不展示宽明细表；代码 artifact 只能出现在过程详情中，不作为主答案区独立面板。
 20. Phase 12.1 后端必须在 `respond_to_message` / `analyze_dataset` 出口前执行 raw detail answer guard；该 guard 不替代正式 planner / executor / verifier，只负责阻断“最终答案本身已经像原始明细倾倒”的用户体验事故。
 20. Phase 13 Project memory 必须保持 project-only；不得跨 project 读取 conversation、memory 或 file，也不得把浏览器 localStorage 冒充共享项目存储。
+21. Phase 13 Workbench Project UI 必须保持 ChatGPT-like：左侧全局导航、Project 列表和最近历史始终可见；进入 Project 只切换主区域 Project home，不得把全局 history API 或 sidebar 当成 project-only filter。
 
 ## Phase 11 Conversation APIs
 
@@ -88,6 +89,9 @@
 - conversation_id
 - title
 - dataset_id
+- project_id
+- pinned
+- pinned_at
 - messages
 - created_at
 - updated_at
@@ -113,7 +117,7 @@ owner 语义：
 - 现有只传 `dataset_id` 的 upload / analyze / profile / run 调用继续可用。
 - `conversation_id` 在当前实现中为可选字段；未传入时，`/message` 自动创建新会话并在响应里返回。
 - 老客户端不传 `conversation_id` 时，后端不得破坏当前数据分析链路。
-- `PATCH /api/data-agent/conversations/{conversation_id}` 可更新 `title` 和可选 `project_id`；`project_id` 为空字符串表示把对话移出 Project。
+- `PATCH /api/data-agent/conversations/{conversation_id}` 可更新 `title`、可选 `project_id` 和可选 `pinned`；`project_id` 为空字符串表示把对话移出 Project，`pinned=true/false` 表示置顶或取消置顶。
 - `DELETE /api/data-agent/conversations/{conversation_id}` 删除一条对话，并同步从 Project 的 `conversation_ids` 中移除。
 
 `POST /api/data-agent/message` 当前 request extension：
@@ -130,7 +134,7 @@ owner 语义：
 - conversation_id
 - project_id：当请求在 Project 中执行时返回。
 - project：当请求在 Project 中执行时返回 project_id、name、memory_mode、source_count、memory_count、default_dataset_id。
-- conversation：包含 conversation_id、title、dataset_id、project_id、updated_at、message_count。
+- conversation：包含 conversation_id、title、dataset_id、project_id、pinned、pinned_at、updated_at、message_count。
 
 Quiet Process UX 契约：
 
@@ -187,6 +191,9 @@ Project memory 类型：
 Project 边界：
 
 - `project_id` 为空时，所有旧 conversation / upload / analyze 行为保持兼容。
+- `GET /api/data-agent/conversations` 无 `project_id` 时返回全局最近会话，用于 Workbench 左侧最近历史；Workbench 左侧不得因为当前 Project 自动追加 `project_id`。
+- `GET /api/data-agent/conversations?project_id=...` 只用于主区域 Project home 的 `聊天` tab，不得替代左侧全局最近历史。
+- Conversation 置顶属于后端 conversation metadata；列表返回 `pinned / pinned_at` 并按置顶优先排序。Workbench 只能通过 PATCH 切换置顶，不得用前端 localStorage 冒充持久化置顶。
 - 删除 Project 只删除 Project metadata、sources 和 memories，并把关联 conversation 移出 Project；不会删除既有 dataset / rule 文件。对话本身通过 conversation DELETE 单独删除。
 - Project 上传文件使用 `sources/upload`，后端先复用 upload-batch / rule store，再把 dataset_id / file_id 作为 Project Source 记录。
 - Project context 注入顺序为 project instructions、显式本轮 guidelines、project memory、project text sources、当前 conversation dataset / rule context。

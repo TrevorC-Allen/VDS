@@ -25,6 +25,10 @@ const state = {
   conversationId: "",
   projectId: "",
   projects: [],
+  projectDetails: null,
+  projectConversations: [],
+  projectViewTab: "chats",
+  projectDraftActive: false,
   profile: null,
   selectedTable: "",
   fileRecords: [],
@@ -96,28 +100,41 @@ const el = {
   artifactList: document.querySelector(".artifact-list"),
   runHistory: document.querySelector("#run-history"),
   historyCount: document.querySelector("#history-count"),
-  projectSelect: document.querySelector("#project-select"),
+  projectList: document.querySelector("#project-list"),
   newProjectButton: document.querySelector("#new-project-button"),
-  renameProjectButton: document.querySelector("#rename-project-button"),
-  deleteProjectButton: document.querySelector("#delete-project-button"),
   projectCount: document.querySelector("#project-count"),
   projectSummary: document.querySelector("#project-summary"),
+  projectHome: document.querySelector("#project-home"),
+  projectHomeTitle: document.querySelector("#project-home-title"),
+  projectNewChatButton: document.querySelector("#project-new-chat-button"),
+  projectNewChatLabel: document.querySelector("#project-new-chat-label"),
+  projectTabChats: document.querySelector("#project-tab-chats"),
+  projectTabSources: document.querySelector("#project-tab-sources"),
+  projectChatsPanel: document.querySelector("#project-chats-panel"),
+  projectSourcesPanel: document.querySelector("#project-sources-panel"),
+  projectConversationList: document.querySelector("#project-conversation-list"),
+  projectSourceList: document.querySelector("#project-source-list"),
+  projectMemoryList: document.querySelector("#project-memory-list"),
+  contextMenu: document.querySelector("#context-menu"),
 };
 
 el.fileInput.addEventListener("change", updateFileSummary);
 el.fileSummary.addEventListener("click", toggleFilePanel);
 document.addEventListener("click", closeFilePanelFromOutside);
+document.addEventListener("click", closeContextMenuFromOutside);
+window.addEventListener("resize", closeContextMenu);
+window.addEventListener("scroll", closeContextMenu, true);
 el.ruleModeToggle?.addEventListener("change", updateRuleMode);
 el.ruleFileInput?.addEventListener("change", updateRuleFileSummary);
 el.ruleUploadButton?.addEventListener("click", uploadUserRule);
 el.benchmarkRuleInput?.addEventListener("change", updateBenchmarkRuleSummary);
 el.benchmarkRuleUploadButton?.addEventListener("click", uploadBenchmarkRule);
 el.benchmarkRunButton?.addEventListener("click", runBenchmark);
-el.newChatButton.addEventListener("click", resetConversation);
+el.newChatButton.addEventListener("click", startGlobalConversation);
 el.newProjectButton?.addEventListener("click", createProjectFromPrompt);
-el.renameProjectButton?.addEventListener("click", renameCurrentProjectFromPrompt);
-el.deleteProjectButton?.addEventListener("click", deleteCurrentProject);
-el.projectSelect?.addEventListener("change", handleProjectChange);
+el.projectNewChatButton?.addEventListener("click", startProjectConversation);
+el.projectTabChats?.addEventListener("click", () => setProjectTab("chats"));
+el.projectTabSources?.addEventListener("click", () => setProjectTab("sources"));
 el.uploadButton.addEventListener("click", uploadFiles);
 el.runButton.addEventListener("click", runAnalysis);
 el.questionInput.addEventListener("input", handleQuestionInput);
@@ -416,6 +433,9 @@ async function uploadFiles() {
     }
     state.fileRecords = buildReadyFileRecords(files, profile);
     await loadProjects();
+    if (state.projectId) {
+      await loadProjectWorkspace(state.projectId);
+    }
     renderProfile();
     renderFilePanel();
     el.profileMessage.classList.add("hidden");
@@ -480,13 +500,14 @@ async function runAnalysis() {
   if (liveActivity) connectActivityStream(monitorRunId);
   setApiStatus("idle", "处理中");
   try {
+    const messageProjectId = currentMessageProjectId();
     const response = await fetch("/api/data-agent/message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         dataset_id: state.datasetId,
         conversation_id: state.conversationId,
-        project_id: state.projectId,
+        project_id: messageProjectId,
         question,
         execution_mode: el.executionMode.value,
         agent_mode: el.agentMode.value,
@@ -505,6 +526,10 @@ async function runAnalysis() {
     finishMonitorRun(result, question);
     const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset" || result.debug?.agent_mode === "chat_with_dataset";
     setApiStatus(result.success ? "ready" : "error", result.success ? (isChat ? "已回复" : "分析完成") : "需要继续确认");
+    if (state.projectId) {
+      await loadProjects();
+    }
+    await loadConversations();
   } catch (error) {
     stopProgress();
     closeActivityStream();
@@ -555,7 +580,7 @@ function updateQuestionEmptyState() {
 }
 
 async function loadProjects() {
-  if (!el.projectSelect) return;
+  if (!el.projectList) return;
   try {
     const response = await fetch("/api/data-agent/projects?limit=50");
     const payload = await response.json();
@@ -565,6 +590,9 @@ async function loadProjects() {
     state.projects = payload.projects || [];
     if (state.projectId && !state.projects.some((project) => project.project_id === state.projectId)) {
       state.projectId = "";
+      state.projectDetails = null;
+      state.projectConversations = [];
+      state.projectDraftActive = false;
     }
     renderProjects();
   } catch {
@@ -574,26 +602,295 @@ async function loadProjects() {
 }
 
 function renderProjects() {
-  if (!el.projectSelect) return;
-  const options = [
-    `<option value="">无 Project</option>`,
-    ...state.projects.map((project) => `<option value="${escapeHtml(project.project_id || "")}">${escapeHtml(project.name || "未命名 Project")}</option>`),
-  ];
-  el.projectSelect.innerHTML = options.join("");
-  el.projectSelect.value = state.projectId || "";
-  if (el.renameProjectButton) el.renameProjectButton.disabled = !state.projectId;
-  if (el.deleteProjectButton) el.deleteProjectButton.disabled = !state.projectId;
+  if (!el.projectList) return;
   if (el.projectCount) el.projectCount.textContent = String(state.projects.length);
   const current = currentProject();
   if (el.projectSummary) {
     el.projectSummary.textContent = current
-      ? `${current.source_count || 0} files / ${current.memory_count || 0} memories`
+      ? `${projectSourceCount(current)} files / ${projectMemoryCount(current)} memories`
       : "project-only memory";
   }
+  if (!state.projects.length) {
+    el.projectList.innerHTML = `<li class="project-empty">暂无 Project</li>`;
+    return;
+  }
+  el.projectList.innerHTML = state.projects
+    .map((project) => {
+      const projectId = project.project_id || "";
+      const name = project.name || "未命名 Project";
+      const active = projectId && projectId === state.projectId ? " active" : "";
+      return `
+        <li class="project-item${active}" data-project-id="${escapeHtml(projectId)}">
+          <button class="project-open-button" type="button" title="${escapeHtml(name)}" aria-label="打开 Project ${escapeHtml(name)}">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path></svg>
+            <span>${escapeHtml(name)}</span>
+          </button>
+          <button class="project-menu-button" type="button" title="Project 选项" aria-label="Project 选项">
+            ${ellipsisIcon()}
+          </button>
+        </li>
+      `;
+    })
+    .join("");
+  el.projectList.querySelectorAll(".project-open-button").forEach((button) => {
+    button.addEventListener("click", () => openProject(button.closest(".project-item")?.dataset.projectId || ""));
+  });
+  el.projectList.querySelectorAll(".project-menu-button").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openProjectMenu(button, button.closest(".project-item")?.dataset.projectId || "");
+    });
+  });
+}
+
+function ellipsisIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"></path></svg>`;
+}
+
+function editIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 20 8-8-4-4-8 8-2 6 6-2Z"></path><path d="m14 6 4 4"></path></svg>`;
+}
+
+function folderMoveIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path><path d="M12 12v5M9.5 14.5h5"></path></svg>`;
+}
+
+function folderIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path></svg>`;
+}
+
+function chevronRightIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>`;
+}
+
+function pinIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5"></path><path d="m5 17 14 0"></path><path d="M7 17l2-7-2-5h10l-2 5 2 7"></path></svg>`;
+}
+
+function trashIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 15h10l1-15"></path><path d="M10 11v6M14 11v6"></path></svg>`;
+}
+
+function openProjectMenu(anchor, projectId) {
+  if (!projectId) return;
+  showContextMenu(anchor, [
+    {
+      label: "重命名",
+      className: "project-rename-button",
+      icon: editIcon(),
+      action: () => renameProjectFromId(projectId),
+    },
+    {
+      label: "删除",
+      className: "project-delete-button danger",
+      icon: trashIcon(),
+      action: () => deleteProjectFromId(projectId),
+    },
+  ]);
+}
+
+async function openHistoryMenu(anchor, runId) {
+  if (!runId) return;
+  if (!state.projects.length) {
+    await loadProjects();
+  }
+  const item = state.runHistory.find((entry) => entry.runId === runId)
+    || state.projectConversations.find((entry) => entry.runId === runId);
+  const isPinned = Boolean(item?.pinned);
+  showContextMenu(anchor, [
+    {
+      label: isPinned ? "取消置顶" : "置顶聊天",
+      className: "history-pin-button",
+      icon: pinIcon(),
+      action: () => toggleHistoryPinned(runId, !isPinned),
+    },
+    {
+      label: "重命名",
+      className: "history-rename-button",
+      icon: editIcon(),
+      action: () => renameConversationFromPrompt(runId),
+    },
+    {
+      label: "移至项目",
+      className: "history-project-button",
+      icon: folderMoveIcon(),
+      submenu: buildProjectMoveItems(runId),
+    },
+    {
+      label: "删除",
+      className: "history-delete-button danger",
+      icon: trashIcon(),
+      action: () => deleteHistoryConversation(runId),
+    },
+  ]);
+}
+
+function openProjectConversationMenu(anchor, runId) {
+  if (!runId) return;
+  const item = state.projectConversations.find((entry) => entry.runId === runId)
+    || state.runHistory.find((entry) => entry.runId === runId);
+  const isPinned = Boolean(item?.pinned);
+  showContextMenu(anchor, [
+    {
+      label: isPinned ? "取消置顶" : "置顶聊天",
+      className: "history-pin-button",
+      icon: pinIcon(),
+      action: () => toggleHistoryPinned(runId, !isPinned),
+    },
+    {
+      label: "重命名",
+      className: "history-rename-button",
+      icon: editIcon(),
+      action: () => renameConversationFromPrompt(runId),
+    },
+    {
+      label: "删除",
+      className: "project-conversation-delete-button danger",
+      icon: trashIcon(),
+      action: () => deleteHistoryConversation(runId),
+    },
+  ]);
+}
+
+function buildProjectMoveItems(runId) {
+  const currentItem = state.runHistory.find((entry) => entry.runId === runId)
+    || state.projectConversations.find((entry) => entry.runId === runId);
+  const currentProjectId = currentItem?.projectId || "";
+  const projectItems = state.projects.map((project) => ({
+    label: project.name || "未命名 Project",
+    className: project.project_id === currentProjectId ? "project-move-target current" : "project-move-target",
+    icon: folderIcon(),
+    action: () => assignHistoryToProject(runId, project.project_id || ""),
+  }));
+  return [
+    {
+      label: "新项目",
+      className: "project-move-new",
+      icon: folderMoveIcon(),
+      action: () => createProjectForHistory(runId),
+    },
+    ...projectItems,
+  ];
+}
+
+function showContextMenu(anchor, items) {
+  if (!el.contextMenu || !anchor) return;
+  closeContextMenu();
+  el.contextMenu.innerHTML = items
+    .map(
+      (item, index) => `
+        <div class="context-menu-item${item.submenu ? " has-submenu" : ""}" data-menu-index="${index}">
+          <button class="${escapeHtml(item.className || "")}" type="button" role="menuitem"${item.submenu ? ' aria-haspopup="menu" aria-expanded="false"' : ""} data-menu-index="${index}">
+            ${item.icon || ""}
+            <span class="context-menu-label">${escapeHtml(item.label)}</span>
+            ${item.submenu ? `<span class="context-menu-chevron">${chevronRightIcon()}</span>` : ""}
+          </button>
+          ${item.submenu ? renderContextSubmenu(item.submenu, index) : ""}
+        </div>
+      `,
+    )
+    .join("");
+  el.contextMenu.classList.remove("hidden");
+  const rect = anchor.getBoundingClientRect();
+  const menuRect = el.contextMenu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(window.innerWidth - menuRect.width - 8, rect.right - menuRect.width));
+  const top = Math.max(8, Math.min(window.innerHeight - menuRect.height - 8, rect.bottom + 6));
+  el.contextMenu.style.left = `${left}px`;
+  el.contextMenu.style.top = `${top}px`;
+  el.contextMenu.classList.toggle("submenu-left", left + menuRect.width + 260 > window.innerWidth);
+  el.contextMenu.querySelectorAll(".context-menu-item").forEach((row) => {
+    row.addEventListener("mouseenter", () => {
+      if (row.classList.contains("has-submenu")) {
+        showContextSubmenu(row);
+      } else {
+        closeContextSubmenus();
+      }
+    });
+    row.addEventListener("focusin", () => {
+      if (row.classList.contains("has-submenu")) {
+        showContextSubmenu(row);
+      }
+    });
+  });
+  el.contextMenu.querySelectorAll("button[data-menu-index]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const item = items[Number(button.dataset.menuIndex || 0)];
+      if (item?.submenu) {
+        showContextSubmenu(button.closest(".context-menu-item"));
+        return;
+      }
+      closeContextMenu();
+      item?.action?.();
+    });
+  });
+  el.contextMenu.querySelectorAll("button[data-submenu-index]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const item = items[Number(button.dataset.parentIndex || 0)]?.submenu?.[Number(button.dataset.submenuIndex || 0)];
+      closeContextMenu();
+      item?.action?.();
+    });
+  });
+}
+
+function renderContextSubmenu(items, parentIndex) {
+  if (!items?.length) {
+    return `<div class="context-submenu hidden" role="menu"><div class="context-menu-empty">暂无 Project</div></div>`;
+  }
+  return `
+    <div class="context-submenu hidden" role="menu">
+      ${items
+        .map(
+          (item, index) => `
+            <button class="${escapeHtml(item.className || "")}" type="button" role="menuitem" data-parent-index="${parentIndex}" data-submenu-index="${index}">
+              ${item.icon || ""}
+              <span class="context-menu-label">${escapeHtml(item.label)}</span>
+            </button>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function showContextSubmenu(row) {
+  if (!row) return;
+  closeContextSubmenus();
+  row.querySelector(".context-submenu")?.classList.remove("hidden");
+  row.querySelector("button")?.setAttribute("aria-expanded", "true");
+}
+
+function closeContextSubmenus() {
+  if (!el.contextMenu) return;
+  el.contextMenu.querySelectorAll(".context-submenu").forEach((submenu) => submenu.classList.add("hidden"));
+  el.contextMenu.querySelectorAll("[aria-expanded='true']").forEach((button) => button.setAttribute("aria-expanded", "false"));
+}
+
+function closeContextMenuFromOutside(event) {
+  if (!el.contextMenu || el.contextMenu.classList.contains("hidden")) return;
+  if (event.target.closest(".context-menu, .history-menu-button, .project-menu-button, .project-conversation-menu-button")) return;
+  closeContextMenu();
+}
+
+function closeContextMenu() {
+  if (!el.contextMenu) return;
+  el.contextMenu.classList.add("hidden");
+  el.contextMenu.classList.remove("submenu-left");
+  el.contextMenu.innerHTML = "";
 }
 
 function currentProject() {
+  if (state.projectDetails?.project_id === state.projectId) return state.projectDetails;
   return state.projects.find((project) => project.project_id === state.projectId) || null;
+}
+
+function projectSourceCount(project) {
+  return Number(project?.source_count ?? project?.sources?.length ?? 0);
+}
+
+function projectMemoryCount(project) {
+  return Number(project?.memory_count ?? project?.memories?.length ?? 0);
 }
 
 async function createProjectFromPrompt() {
@@ -611,8 +908,13 @@ async function createProjectFromPrompt() {
       throw new Error(errorText(payload) || `HTTP ${response.status}`);
     }
     state.projectId = payload.project?.project_id || "";
+    state.projectDetails = payload.project || null;
+    state.projectConversations = [];
+    state.projectViewTab = "chats";
+    state.projectDraftActive = false;
     await loadProjects();
     resetConversation();
+    await loadProjectWorkspace(state.projectId);
     await loadConversations();
     setApiStatus("ready", "Project 已创建");
   } catch (error) {
@@ -621,7 +923,11 @@ async function createProjectFromPrompt() {
 }
 
 async function renameCurrentProjectFromPrompt() {
-  const current = currentProject();
+  return renameProjectFromId(state.projectId);
+}
+
+async function renameProjectFromId(projectId) {
+  const current = state.projects.find((project) => project.project_id === projectId) || currentProject();
   if (!current) return;
   const rawName = window.prompt("Project name", current.name || "未命名 Project");
   const name = String(rawName || "").trim();
@@ -636,7 +942,11 @@ async function renameCurrentProjectFromPrompt() {
     if (!response.ok || !payload.success) {
       throw new Error(errorText(payload) || `HTTP ${response.status}`);
     }
+    if (state.projectId === current.project_id) {
+      state.projectDetails = payload.project || state.projectDetails;
+    }
     await loadProjects();
+    renderProjectHome();
     setApiStatus("ready", "Project 已重命名");
   } catch (error) {
     setApiStatus("error", `Project 重命名失败：${String(error.message || error)}`);
@@ -644,7 +954,11 @@ async function renameCurrentProjectFromPrompt() {
 }
 
 async function deleteCurrentProject() {
-  const current = currentProject();
+  return deleteProjectFromId(state.projectId);
+}
+
+async function deleteProjectFromId(projectId) {
+  const current = state.projects.find((project) => project.project_id === projectId) || currentProject();
   if (!current) return;
   if (!window.confirm(`删除 Project「${current.name || "未命名 Project"}」？项目内对话会移出 Project，数据文件不会被删除。`)) return;
   try {
@@ -655,8 +969,14 @@ async function deleteCurrentProject() {
     if (!response.ok || !payload.success) {
       throw new Error(errorText(payload) || `HTTP ${response.status}`);
     }
-    state.projectId = "";
-    resetConversation();
+    const deletedActiveProject = state.projectId === current.project_id;
+    if (deletedActiveProject) {
+      state.projectId = "";
+      state.projectDetails = null;
+      state.projectConversations = [];
+      state.projectDraftActive = false;
+      resetConversation();
+    }
     await loadProjects();
     await loadConversations();
     setApiStatus("ready", "Project 已删除");
@@ -666,16 +986,274 @@ async function deleteCurrentProject() {
 }
 
 async function handleProjectChange() {
-  state.projectId = el.projectSelect?.value || "";
+  await openProject(state.projectId);
+}
+
+async function openProject(projectId) {
+  const safeProjectId = String(projectId || "").trim();
+  if (!safeProjectId) {
+    startGlobalConversation();
+    return;
+  }
+  state.projectId = safeProjectId;
+  state.projectViewTab = "chats";
+  state.projectDraftActive = false;
   renderProjects();
   resetConversation();
-  await loadConversations();
+  await loadProjectWorkspace(safeProjectId);
+  setApiStatus("ready", "Project 已打开");
+}
+
+function startGlobalConversation() {
+  state.projectId = "";
+  state.projectDetails = null;
+  state.projectConversations = [];
+  state.projectViewTab = "chats";
+  state.projectDraftActive = false;
+  renderProjects();
+  resetConversation();
+}
+
+function startProjectConversation() {
+  if (!state.projectId) return;
+  state.projectDraftActive = true;
+  resetConversation();
+  el.questionInput?.focus();
+}
+
+async function loadProjectWorkspace(projectId = state.projectId) {
+  const safeProjectId = String(projectId || "").trim();
+  if (!safeProjectId) {
+    state.projectDetails = null;
+    state.projectConversations = [];
+    renderProjectHome();
+    return;
+  }
+  try {
+    const projectResponse = await fetch(`/api/data-agent/projects/${encodeURIComponent(safeProjectId)}`);
+    const projectPayload = await projectResponse.json();
+    if (!projectResponse.ok || !projectPayload.success) {
+      throw new Error(errorText(projectPayload) || `HTTP ${projectResponse.status}`);
+    }
+    state.projectDetails = projectPayload.project || null;
+    state.projectConversations = await loadProjectConversations(safeProjectId);
+  } catch (error) {
+    state.projectDetails = currentProject();
+    state.projectConversations = [];
+    setApiStatus("error", `Project 载入失败：${String(error.message || error)}`);
+  }
+  renderProjects();
+  renderProjectHome();
+}
+
+async function loadProjectConversations(projectId) {
+  const scopedQuery = new URLSearchParams({ limit: "30", project_id: projectId });
+  const response = await fetch(`/api/data-agent/conversations?${scopedQuery.toString()}`);
+  const payload = await response.json();
+  if (!response.ok || !payload.success) {
+    throw new Error(errorText(payload) || `HTTP ${response.status}`);
+  }
+  return sortHistoryItems((payload.conversations || []).map((item) => ({
+    runId: item.conversation_id || "",
+    title: item.title || "未命名对话",
+    answer: item.last_message || "",
+    question: item.last_message || "",
+    updatedAt: item.updated_at || "",
+    pinned: Boolean(item.pinned),
+    pinnedAt: item.pinned_at || "",
+    messageCount: item.message_count || 0,
+    datasetId: item.dataset_id || "",
+    projectId: item.project_id || projectId,
+  })));
+}
+
+function setProjectTab(tab) {
+  state.projectViewTab = tab === "sources" ? "sources" : "chats";
+  renderProjectHome();
+}
+
+function renderProjectHome() {
+  if (!el.projectHome) return;
+  const current = currentProject();
+  const showProjectHome = Boolean(state.projectId && !state.conversationId && !state.projectDraftActive);
+  updateShellMode(showProjectHome);
+  el.projectHome.classList.toggle("hidden", !showProjectHome);
+  if (!showProjectHome) {
+    updateProjectTabs();
+    return;
+  }
+  el.welcomeMessage?.classList.add("hidden");
+  const projectName = current?.name || "未命名 Project";
+  if (el.projectHomeTitle) el.projectHomeTitle.textContent = projectName;
+  if (el.projectNewChatLabel) el.projectNewChatLabel.textContent = `${projectName} 中的新聊天`;
+  renderProjectConversationList();
+  renderProjectSourceList();
+  updateProjectTabs();
+}
+
+function updateShellMode(showProjectHome = Boolean(state.projectId && !state.conversationId && !state.projectDraftActive)) {
+  document.body.classList.toggle("project-home-mode", showProjectHome);
+  document.body.classList.toggle("project-context-mode", Boolean(state.projectId));
+}
+
+function updateProjectTabs() {
+  const isSources = state.projectViewTab === "sources";
+  el.projectTabChats?.classList.toggle("active", !isSources);
+  el.projectTabSources?.classList.toggle("active", isSources);
+  el.projectTabChats?.setAttribute("aria-selected", String(!isSources));
+  el.projectTabSources?.setAttribute("aria-selected", String(isSources));
+  el.projectChatsPanel?.classList.toggle("hidden", isSources);
+  el.projectSourcesPanel?.classList.toggle("hidden", !isSources);
+}
+
+function renderProjectConversationList() {
+  if (!el.projectConversationList) return;
+  const conversations = state.projectConversations || [];
+  if (!conversations.length) {
+    el.projectConversationList.innerHTML = `<li class="project-home-empty">这个 Project 还没有聊天。</li>`;
+    return;
+  }
+  el.projectConversationList.innerHTML = conversations
+    .map((item) => `
+      <li class="project-conversation-item${item.pinned ? " pinned" : ""}" data-conversation-id="${escapeHtml(item.runId || "")}">
+        <button class="project-conversation-open" type="button" title="${escapeHtml(item.title || "未命名对话")}">
+          <span class="project-conversation-title-row">
+            ${item.pinned ? `<span class="pin-indicator" title="已置顶">${pinIcon()}</span>` : ""}
+            <strong>${escapeHtml(item.title || "未命名对话")}</strong>
+          </span>
+          <span>${escapeHtml(projectConversationMeta(item))}</span>
+        </button>
+        <button class="project-conversation-menu-button" type="button" title="对话选项" aria-label="对话选项">
+          ${ellipsisIcon()}
+        </button>
+      </li>
+    `)
+    .join("");
+  el.projectConversationList.querySelectorAll(".project-conversation-open").forEach((button) => {
+    button.addEventListener("click", () => loadConversation(button.closest(".project-conversation-item")?.dataset.conversationId || ""));
+  });
+  el.projectConversationList.querySelectorAll(".project-conversation-menu-button").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openProjectConversationMenu(button, button.closest(".project-conversation-item")?.dataset.conversationId || "");
+    });
+  });
+}
+
+function renderProjectSourceList() {
+  const project = state.projectDetails || {};
+  renderProjectSourceGroup(el.projectSourceList, project.sources || [], "上传共享文件后会显示在这里。", deleteProjectSource);
+  renderProjectSourceGroup(el.projectMemoryList, project.memories || [], "保存的 Project memory 会显示在这里。", deleteProjectMemory);
+}
+
+function renderProjectSourceGroup(listEl, records, emptyText, deleteHandler) {
+  if (!listEl) return;
+  if (!records.length) {
+    listEl.innerHTML = `<li class="project-home-empty">${escapeHtml(emptyText)}</li>`;
+    return;
+  }
+  listEl.innerHTML = records
+    .map((record) => {
+      const id = record.source_id || record.memory_id || "";
+      const title = record.title || sourceTypeLabel(record.source_type || record.memory_type || "source");
+      const meta = projectSourceMeta(record);
+      return `
+        <li class="project-source-item" data-record-id="${escapeHtml(id)}">
+          <div>
+            <strong>${escapeHtml(title)}</strong>
+            <span>${escapeHtml(meta)}</span>
+          </div>
+          <button class="project-source-delete-button" type="button" title="删除" aria-label="删除">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 15h10l1-15"></path><path d="M10 11v6M14 11v6"></path></svg>
+          </button>
+        </li>
+      `;
+    })
+    .join("");
+  listEl.querySelectorAll(".project-source-delete-button").forEach((button) => {
+    button.addEventListener("click", () => deleteHandler(button.closest(".project-source-item")?.dataset.recordId || ""));
+  });
+}
+
+function projectConversationMeta(item) {
+  const count = item.messageCount ? `${item.messageCount} 条消息` : "Project chat";
+  const updated = item.updatedAt ? ` · ${formatShortDate(item.updatedAt)}` : "";
+  return `${item.pinned ? "已置顶 · " : ""}${count}${updated}`;
+}
+
+function projectSourceMeta(record) {
+  const type = sourceTypeLabel(record.source_type || record.memory_type || "source");
+  const ref = record.dataset_id || record.file_id || "";
+  return ref ? `${type} · ${ref}` : type;
+}
+
+function sourceTypeLabel(type) {
+  const labels = {
+    dataset: "共享数据",
+    rule: "规则文件",
+    note: "项目说明",
+    saved_response: "保存的回答",
+    pinned: "Pinned memory",
+    conversation_summary: "对话摘要",
+  };
+  return labels[type] || "Project source";
+}
+
+function formatShortDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+}
+
+async function deleteProjectSource(sourceId) {
+  if (!state.projectId || !sourceId) return;
+  if (!window.confirm("删除这个 Project source？")) return;
+  try {
+    const response = await fetch(`/api/data-agent/projects/${encodeURIComponent(state.projectId)}/sources/${encodeURIComponent(sourceId)}`, {
+      method: "DELETE",
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    state.projectDetails = payload.project || state.projectDetails;
+    await loadProjects();
+    await loadProjectWorkspace(state.projectId);
+    setApiStatus("ready", "Project source 已删除");
+  } catch (error) {
+    setApiStatus("error", `Project source 删除失败：${String(error.message || error)}`);
+  }
+}
+
+async function deleteProjectMemory(memoryId) {
+  if (!state.projectId || !memoryId) return;
+  if (!window.confirm("删除这个 Project memory？")) return;
+  try {
+    const response = await fetch(`/api/data-agent/projects/${encodeURIComponent(state.projectId)}/memories/${encodeURIComponent(memoryId)}`, {
+      method: "DELETE",
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    state.projectDetails = payload.project || state.projectDetails;
+    await loadProjects();
+    await loadProjectWorkspace(state.projectId);
+    setApiStatus("ready", "Project memory 已删除");
+  } catch (error) {
+    setApiStatus("error", `Project memory 删除失败：${String(error.message || error)}`);
+  }
 }
 
 function updateRunButton() {
   const hasQuestion = Boolean(getQuestionText());
   el.runButton.disabled = !hasQuestion || state.isUploading || state.isAnalyzing;
   updateBenchmarkButtons();
+}
+
+function currentMessageProjectId() {
+  if (!state.projectId) return "";
+  return state.conversationId || state.projectDraftActive ? state.projectId : "";
 }
 
 function updateBenchmarkButtons() {
@@ -1013,11 +1591,15 @@ function renderInsight(insight) {
   el.insightSummary.textContent = summary;
   const items = [];
   findings.slice(0, 2).forEach((text) => items.push({ label: "洞察", text }));
-  suggestions.slice(0, 3).forEach((text) => items.push({ label: "建议", text }));
+  suggestions.slice(0, 3).forEach((text) => items.push({ label: insightCardLabel(text), text }));
   caveats.slice(0, 2).forEach((text) => items.push({ label: "边界", text }));
   el.insightList.innerHTML = items.length
     ? items.map((item) => renderInsightCard(item)).join("")
     : "";
+}
+
+function insightCardLabel(text) {
+  return String(text || "").includes("观察") ? "洞察" : "建议";
 }
 
 function renderInsightCard(item) {
@@ -1474,12 +2056,14 @@ function pushHistory(result) {
     unread: true,
     updatedAt: conversation.updated_at || new Date().toISOString(),
     messageCount: conversation.message_count || 0,
-    projectId: conversation.project_id || state.projectId || "",
+    projectId: conversation.project_id || currentMessageProjectId(),
+    pinned: Boolean(conversation.pinned),
+    pinnedAt: conversation.pinned_at || "",
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== conversationId && (!state.activeHistoryRunId || entry.runId !== state.activeHistoryRunId));
   state.activeHistoryRunId = "";
   state.runHistory.unshift(item);
-  state.runHistory = state.runHistory.slice(0, 8);
+  state.runHistory = sortHistoryItems(state.runHistory).slice(0, 8);
   renderHistory();
 }
 
@@ -1497,11 +2081,13 @@ function markHistoryRunning(question, fallbackRunId) {
     unread: true,
     updatedAt: new Date().toISOString(),
     messageCount: existing?.messageCount || 0,
-    projectId: state.projectId || "",
+    projectId: currentMessageProjectId(),
+    pinned: Boolean(existing?.pinned),
+    pinnedAt: existing?.pinnedAt || "",
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
   state.runHistory.unshift(item);
-  state.runHistory = state.runHistory.slice(0, 8);
+  state.runHistory = sortHistoryItems(state.runHistory).slice(0, 8);
   renderHistory();
 }
 
@@ -1518,13 +2104,26 @@ function markHistoryFailed(question, message) {
     unread: true,
     updatedAt: new Date().toISOString(),
     messageCount: existing?.messageCount || 0,
-    projectId: state.projectId || "",
+    projectId: currentMessageProjectId(),
+    pinned: Boolean(existing?.pinned),
+    pinnedAt: existing?.pinnedAt || "",
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
   state.runHistory.unshift(item);
-  state.runHistory = state.runHistory.slice(0, 8);
+  state.runHistory = sortHistoryItems(state.runHistory).slice(0, 8);
   state.activeHistoryRunId = "";
   renderHistory();
+}
+
+function sortHistoryItems(items) {
+  return [...items].sort((left, right) => {
+    if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+      return left.pinned ? -1 : 1;
+    }
+    const leftTime = String(left.pinnedAt || left.updatedAt || "");
+    const rightTime = String(right.pinnedAt || right.updatedAt || "");
+    return rightTime.localeCompare(leftTime);
+  });
 }
 
 function renderHistory() {
@@ -1539,33 +2138,27 @@ function renderHistory() {
         const title = item.title || item.question || "未命名对话";
         const stateClass = item.mode === "running" ? "running" : item.success === false ? "failed" : "complete";
         return `
-        <li class="history-item ${escapeHtml(stateClass)}${item.runId === state.conversationId ? " active" : ""}" data-run-id="${escapeHtml(item.runId || "")}">
+        <li class="history-item ${escapeHtml(stateClass)}${item.runId === state.conversationId ? " active" : ""}${item.pinned ? " pinned" : ""}" data-run-id="${escapeHtml(item.runId || "")}">
           <div class="history-item-text">
-            <strong class="history-title" title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
+            <div class="history-title-row">
+              ${item.pinned ? `<span class="pin-indicator" title="已置顶">${pinIcon()}</span>` : ""}
+              <strong class="history-title" title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
+            </div>
             <input class="history-rename-input hidden" type="text" maxlength="80" value="${escapeHtml(title)}" aria-label="重命名历史对话" />
           </div>
-          <button class="history-rename-button" type="button" title="重命名" aria-label="重命名历史对话">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 20 8-8-4-4-8 8-2 6 6-2Z"></path><path d="m14 6 4 4"></path></svg>
-          </button>
-          <button class="history-project-button" type="button" title="放入 Project" aria-label="放入 Project">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path><path d="M12 12v5M9.5 14.5h5"></path></svg>
-          </button>
-          <button class="history-delete-button" type="button" title="删除" aria-label="删除历史对话">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 15h10l1-15"></path><path d="M10 11v6M14 11v6"></path></svg>
+          <button class="history-menu-button" type="button" title="对话选项" aria-label="对话选项">
+            ${ellipsisIcon()}
           </button>
         </li>
       `;
       },
     )
     .join("");
-  el.runHistory.querySelectorAll(".history-rename-button").forEach((button) => {
-    button.addEventListener("click", () => startHistoryRename(button.closest(".history-item")?.dataset.runId || ""));
-  });
-  el.runHistory.querySelectorAll(".history-project-button").forEach((button) => {
-    button.addEventListener("click", () => assignHistoryToProject(button.closest(".history-item")?.dataset.runId || ""));
-  });
-  el.runHistory.querySelectorAll(".history-delete-button").forEach((button) => {
-    button.addEventListener("click", () => deleteHistoryConversation(button.closest(".history-item")?.dataset.runId || ""));
+  el.runHistory.querySelectorAll(".history-menu-button").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openHistoryMenu(button, button.closest(".history-item")?.dataset.runId || "");
+    });
   });
   el.runHistory.querySelectorAll(".history-item").forEach((item) => {
     item.addEventListener("click", (event) => {
@@ -1649,15 +2242,126 @@ async function commitHistoryRename(runId, rawTitle) {
   }
 }
 
-async function assignHistoryToProject(runId) {
+async function renameConversationFromPrompt(runId) {
   if (!runId || !runId.startsWith("conv_")) return;
-  const targetProjectId = await chooseProjectForHistory();
-  if (!targetProjectId) return;
+  const item = state.runHistory.find((entry) => entry.runId === runId)
+    || state.projectConversations.find((entry) => entry.runId === runId);
+  const rawTitle = window.prompt("对话名称", item?.title || item?.question || "未命名对话");
+  const title = String(rawTitle || "").trim();
+  if (!title) return;
   try {
     const response = await fetch(`/api/data-agent/conversations/${encodeURIComponent(runId)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: targetProjectId }),
+      body: JSON.stringify({ title }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    const conversation = payload.conversation || {};
+    updateConversationTitleState(runId, conversation.title || title, conversation.updated_at || "");
+    await loadConversations();
+    if (state.projectId) {
+      await loadProjectWorkspace(state.projectId);
+    }
+    setApiStatus("ready", "对话已重命名");
+  } catch (error) {
+    setApiStatus("error", `重命名失败：${String(error.message || error)}`);
+  }
+}
+
+function updateConversationTitleState(runId, title, updatedAt) {
+  const apply = (item) => {
+    item.title = title || item.title;
+    item.updatedAt = updatedAt || item.updatedAt;
+    return item;
+  };
+  state.runHistory = state.runHistory.map((item) => (item.runId === runId ? apply(item) : item));
+  state.projectConversations = state.projectConversations.map((item) => (item.runId === runId ? apply(item) : item));
+  renderHistory();
+  renderProjectHome();
+}
+
+async function toggleHistoryPinned(runId, pinned) {
+  if (!runId || !runId.startsWith("conv_")) return;
+  const existing = state.runHistory.find((entry) => entry.runId === runId);
+  if (existing) {
+    existing.pinned = Boolean(pinned);
+    existing.pinnedAt = pinned ? new Date().toISOString() : "";
+    state.runHistory = sortHistoryItems(state.runHistory);
+    renderHistory();
+  }
+  try {
+    const response = await fetch(`/api/data-agent/conversations/${encodeURIComponent(runId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinned: Boolean(pinned) }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    const conversation = payload.conversation || {};
+    updateConversationPinState(runId, Boolean(conversation.pinned), conversation.pinned_at || "");
+    await loadConversations();
+    if (state.projectId) {
+      await loadProjectWorkspace(state.projectId);
+    }
+    setApiStatus("ready", conversation.pinned ? "对话已置顶" : "对话已取消置顶");
+  } catch (error) {
+    setApiStatus("error", `置顶失败：${String(error.message || error)}`);
+    await loadConversations();
+    if (state.projectId) {
+      await loadProjectWorkspace(state.projectId);
+    }
+  }
+}
+
+function updateConversationPinState(runId, pinned, pinnedAt) {
+  const apply = (item) => {
+    item.pinned = Boolean(pinned);
+    item.pinnedAt = pinnedAt || "";
+    return item;
+  };
+  state.runHistory = sortHistoryItems(state.runHistory.map((item) => (item.runId === runId ? apply(item) : item)));
+  state.projectConversations = sortHistoryItems(state.projectConversations.map((item) => (item.runId === runId ? apply(item) : item)));
+  renderHistory();
+  renderProjectHome();
+}
+
+async function createProjectForHistory(runId) {
+  if (!runId || !runId.startsWith("conv_")) return;
+  const rawName = window.prompt("Project name", "新 Project");
+  const name = String(rawName || "").trim();
+  if (!name) return;
+  try {
+    const response = await fetch("/api/data-agent/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    const projectId = payload.project?.project_id || "";
+    await loadProjects();
+    await assignHistoryToProject(runId, projectId);
+  } catch (error) {
+    setApiStatus("error", `Project 创建失败：${String(error.message || error)}`);
+  }
+}
+
+async function assignHistoryToProject(runId, targetProjectId) {
+  if (!runId || !runId.startsWith("conv_")) return;
+  const safeProjectId = String(targetProjectId || "").trim();
+  if (!safeProjectId) return;
+  try {
+    const response = await fetch(`/api/data-agent/conversations/${encodeURIComponent(runId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: safeProjectId }),
     });
     const payload = await response.json();
     if (!response.ok || !payload.success) {
@@ -1666,11 +2370,17 @@ async function assignHistoryToProject(runId) {
     const conversation = payload.conversation || {};
     const item = state.runHistory.find((entry) => entry.runId === runId);
     if (item) {
-      item.projectId = conversation.project_id || targetProjectId;
+      item.projectId = conversation.project_id || safeProjectId;
       item.updatedAt = conversation.updated_at || item.updatedAt;
+      item.pinned = Boolean(conversation.pinned);
+      item.pinnedAt = conversation.pinned_at || item.pinnedAt || "";
     }
-    state.projectId = conversation.project_id || targetProjectId;
-    await loadProjects();
+    const shouldRefreshProjectHome = state.projectId === (conversation.project_id || safeProjectId);
+    if (shouldRefreshProjectHome) {
+      await loadProjectWorkspace(conversation.project_id || safeProjectId);
+    } else {
+      await loadProjects();
+    }
     await loadConversations();
     setApiStatus("ready", "对话已放入 Project");
   } catch (error) {
@@ -1678,44 +2388,17 @@ async function assignHistoryToProject(runId) {
   }
 }
 
-async function chooseProjectForHistory() {
-  if (!state.projects.length) {
-    await loadProjects();
-  }
-  if (state.projectId && state.projects.some((project) => project.project_id === state.projectId)) {
-    return state.projectId;
-  }
-  if (!state.projects.length) {
-    setApiStatus("error", "请先新建 Project");
-    return "";
-  }
-  if (state.projects.length === 1) {
-    return state.projects[0].project_id || "";
-  }
-  const projectList = state.projects
-    .map((project, index) => `${index + 1}. ${project.name || "未命名 Project"} (${project.project_id})`)
-    .join("\n");
-  const rawTarget = window.prompt(`输入 Project 名称或 ID：\n${projectList}`, state.projects[0]?.name || "");
-  const target = String(rawTarget || "").trim();
-  if (!target) return "";
-  const matched = state.projects.find(
-    (project) => project.project_id === target || String(project.name || "").trim() === target,
-  );
-  if (!matched) {
-    setApiStatus("error", "没有找到这个 Project");
-    return "";
-  }
-  return matched.project_id || "";
-}
-
 async function deleteHistoryConversation(runId) {
   if (!runId) return;
   const item = state.runHistory.find((entry) => entry.runId === runId);
-  const title = item?.title || item?.question || "未命名对话";
+  const projectItem = state.projectConversations.find((entry) => entry.runId === runId);
+  const title = item?.title || item?.question || projectItem?.title || "未命名对话";
   if (!window.confirm(`删除对话「${title}」？`)) return;
   if (!runId.startsWith("conv_")) {
     state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
+    state.projectConversations = state.projectConversations.filter((entry) => entry.runId !== runId);
     renderHistory();
+    renderProjectHome();
     return;
   }
   try {
@@ -1730,7 +2413,11 @@ async function deleteHistoryConversation(runId) {
     if (state.conversationId === runId) {
       resetConversation();
     }
+    state.projectConversations = state.projectConversations.filter((entry) => entry.runId !== runId);
     await loadProjects();
+    if (state.projectId) {
+      await loadProjectWorkspace(state.projectId);
+    }
     await loadConversations();
     setApiStatus("ready", "对话已删除");
   } catch (error) {
@@ -1741,7 +2428,6 @@ async function deleteHistoryConversation(runId) {
 async function loadConversations() {
   try {
     const query = new URLSearchParams({ limit: "30" });
-    if (state.projectId) query.set("project_id", state.projectId);
     const response = await fetch(`/api/data-agent/conversations?${query.toString()}`);
     const payload = await response.json();
     if (!response.ok || !payload.success) {
@@ -1759,6 +2445,8 @@ async function loadConversations() {
         mode: item.last_answer_type === "chat" ? "chat" : "analysis",
         unread: existing?.unread === true,
         updatedAt: item.updated_at,
+        pinned: Boolean(item.pinned),
+        pinnedAt: item.pinned_at || "",
         messageCount: item.message_count || 0,
         datasetId: item.dataset_id || "",
         projectId: item.project_id || "",
@@ -1766,7 +2454,7 @@ async function loadConversations() {
     });
     const loadedIds = new Set(loadedHistory.map((item) => item.runId));
     const localUnreadHistory = state.runHistory.filter((item) => item.unread === true && !loadedIds.has(item.runId));
-    state.runHistory = [...localUnreadHistory, ...loadedHistory].slice(0, 30);
+    state.runHistory = sortHistoryItems([...localUnreadHistory, ...loadedHistory]).slice(0, 30);
     renderHistory();
   } catch {
     renderHistory();
@@ -1790,7 +2478,10 @@ async function loadConversation(conversationId) {
 
 async function restoreConversation(conversation) {
   state.conversationId = conversation.conversation_id || "";
-  state.projectId = conversation.project_id || state.projectId || "";
+  state.projectId = conversation.project_id || "";
+  state.projectDetails = null;
+  state.projectConversations = [];
+  state.projectDraftActive = false;
   state.datasetId = conversation.dataset_id || "";
   state.profile = null;
   state.selectedTable = "";
@@ -1807,9 +2498,13 @@ async function restoreConversation(conversation) {
   [...el.chatMessages.querySelectorAll(".user-message, .assistant-result-message")].forEach((message) => message.remove());
   bindResultMessage(el.resultTemplate);
   el.resultMessage.classList.add("hidden");
+  el.projectHome?.classList.add("hidden");
   const messages = conversation.messages || [];
+  if (state.projectId) {
+    await loadProjectWorkspace(state.projectId);
+  }
   renderProjects();
-  el.welcomeMessage?.classList.toggle("hidden", Boolean(messages.length));
+  el.welcomeMessage?.classList.toggle("hidden", Boolean(messages.length) || Boolean(state.projectId));
   for (const message of messages) {
     if (message.role === "user") {
       appendUserMessage(message.content || "");
@@ -1828,6 +2523,7 @@ async function restoreConversation(conversation) {
     el.datasetStatus.textContent = "等待上传数据集";
   }
   renderHistory();
+  renderProjectHome();
   scrollToLatest();
 }
 
@@ -1871,7 +2567,12 @@ function clearResult() {
 }
 
 function appendUserMessage(question) {
+  if (state.projectId) {
+    state.projectDraftActive = true;
+    updateShellMode(false);
+  }
   el.welcomeMessage?.classList.add("hidden");
+  el.projectHome?.classList.add("hidden");
   const message = document.createElement("article");
   message.className = "message user-message";
   message.innerHTML = `
@@ -1930,7 +2631,7 @@ function resetConversation() {
   el.ruleUploadPanel?.classList.add("hidden");
   [...el.chatMessages.querySelectorAll(".user-message, .assistant-result-message")].forEach((message) => message.remove());
   bindResultMessage(el.resultTemplate);
-  el.welcomeMessage?.classList.remove("hidden");
+  el.welcomeMessage?.classList.toggle("hidden", Boolean(state.projectId));
   el.profileMessage.classList.add("hidden");
   el.resultMessage.classList.add("hidden");
   updateFileSummary();
@@ -1941,6 +2642,7 @@ function resetConversation() {
   el.datasetStatus.textContent = "等待上传数据集";
   setQuestionText("");
   updateRunButton();
+  renderProjectHome();
   scrollToLatest();
 }
 

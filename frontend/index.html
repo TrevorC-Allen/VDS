@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Virtual Data Scientist Workbench</title>
     <link rel="icon" href="/frontend/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/frontend/styles.css?v=20260525-agent-monitor" />
+    <link rel="stylesheet" href="/frontend/styles.css?v=20260526-project-move-menu" />
   </head>
   <body>
+    <div id="context-menu" class="context-menu hidden" role="menu" aria-label="操作菜单"></div>
     <div class="app-shell">
       <aside class="sidebar" aria-label="历史 Chat">
         <div class="brand">
@@ -25,23 +26,16 @@
 
         <section class="project-panel" aria-labelledby="project-title">
           <div class="project-header">
-            <h2 id="project-title">Projects</h2>
+            <h2 id="project-title">项目</h2>
             <span id="project-count">0</span>
           </div>
-          <div class="project-controls">
-            <select id="project-select" aria-label="选择 Project">
-              <option value="">无 Project</option>
-            </select>
-            <button id="new-project-button" class="icon-button" type="button" title="新 Project" aria-label="新 Project">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-            </button>
-            <button id="rename-project-button" class="icon-button" type="button" title="重命名 Project" aria-label="重命名 Project" disabled>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 20 8-8-4-4-8 8-2 6 6-2Z"></path><path d="m14 6 4 4"></path></svg>
-            </button>
-            <button id="delete-project-button" class="icon-button danger" type="button" title="删除 Project" aria-label="删除 Project" disabled>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 15h10l1-15"></path><path d="M10 11v6M14 11v6"></path></svg>
-            </button>
-          </div>
+          <button id="new-project-button" class="project-nav-button" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path><path d="M12 12v5M9.5 14.5h5"></path></svg>
+            <span>新项目</span>
+          </button>
+          <ol id="project-list" class="project-list" aria-label="项目列表">
+            <li class="project-empty">暂无 Project</li>
+          </ol>
           <p id="project-summary" class="project-summary">project-only memory</p>
         </section>
 
@@ -73,6 +67,42 @@
         </header>
 
         <section id="chat-messages" class="chat-messages" aria-live="polite">
+          <section id="project-home" class="project-home hidden" aria-labelledby="project-home-title">
+            <div class="project-home-inner">
+              <div class="project-home-heading">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path></svg>
+                <h2 id="project-home-title">Project</h2>
+              </div>
+              <button id="project-new-chat-button" class="project-new-chat-button" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+                <span id="project-new-chat-label">Project 中的新聊天</span>
+              </button>
+              <div class="project-tabs" role="tablist" aria-label="Project 内容">
+                <button id="project-tab-chats" class="project-tab active" type="button" role="tab" aria-selected="true" aria-controls="project-chats-panel">聊天</button>
+                <button id="project-tab-sources" class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-sources-panel">来源</button>
+              </div>
+              <section id="project-chats-panel" class="project-tab-panel" role="tabpanel" aria-labelledby="project-tab-chats">
+                <ol id="project-conversation-list" class="project-conversation-list">
+                  <li class="project-home-empty">这个 Project 还没有聊天。</li>
+                </ol>
+              </section>
+              <section id="project-sources-panel" class="project-tab-panel hidden" role="tabpanel" aria-labelledby="project-tab-sources">
+                <div class="project-source-group">
+                  <h3>文件和来源</h3>
+                  <ol id="project-source-list" class="project-source-list">
+                    <li class="project-home-empty">上传共享文件后会显示在这里。</li>
+                  </ol>
+                </div>
+                <div class="project-source-group">
+                  <h3>项目记忆</h3>
+                  <ol id="project-memory-list" class="project-source-list">
+                    <li class="project-home-empty">保存的 Project memory 会显示在这里。</li>
+                  </ol>
+                </div>
+              </section>
+            </div>
+          </section>
+
           <article class="message assistant-message welcome-message">
             <div class="avatar" aria-hidden="true">V</div>
             <div class="message-content">
@@ -223,6 +253,6 @@
         </section>
       </main>
     </div>
-    <script src="/frontend/app.js?v=20260525-agent-monitor" type="module"></script>
+    <script src="/frontend/app.js?v=20260526-project-move-menu" type="module"></script>
   </body>
 </html>
