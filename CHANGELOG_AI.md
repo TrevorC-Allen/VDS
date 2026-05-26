@@ -7192,86 +7192,6 @@ YYYY-MM-DD HH:MM TZ
 
 是。README、frontend/README、API_CONTRACT、ARCHITECTURE、FEATURE_BACKLOG 和 MAIN_GOAL 已同步置顶契约与红线。
 
-2026-05-26 09:53 CST
-
-### 本次目标
-
-把 Workbench 历史对话的“移至项目”从浏览器 prompt 改成 GPT-like 右侧二级菜单，避免要求用户输入 Project 序号、名称或 ID。
-
-### 修改文件
-
-- frontend/app.js
-- frontend/styles.css
-- frontend/index.html
-- tests/backend/test_workbench_static_assets.py
-- CHANGELOG_AI.md
-
-### 修改内容
-
-- 历史对话菜单的“移至项目”改为带右箭头的 submenu，hover / click 后在右侧直接列出“新项目”和现有 Project。
-- 点击 Project 直接调用 `PATCH /api/data-agent/conversations/{conversation_id}` 写入 `project_id`，不再弹出“选择要移入的 Project”的浏览器 prompt。
-- 保留“新项目”入口；新建后会继续复用后端 Project create + conversation move 契约。
-- 新增 context submenu 样式：右侧弹层、Project 名称省略、视口边界左翻、列表滚动。
-- Workbench asset version 升级到 `20260526-project-move-menu`，避免浏览器继续加载旧 JS。
-
-### 测试方式
-
-- `node --check frontend/app.js`
-- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets -v`
-- `git diff --check`
-- `scripts/sync_workbench_runtime.sh`
-- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
-- Browser smoke：`http://127.0.0.1:8001/workbench?qa=project-move-menu-20260526095240`，打开历史对话菜单，点击“移至项目”，验证右侧 Project submenu，并点击 `222` 完成移动。
-
-### 测试结果
-
-- `node --check frontend/app.js` 通过。
-- Static workbench tests 通过：Ran 18 tests，OK。
-- `git diff --check` 通过。
-- Runtime 已同步并重启，`GET /workbench` 返回 `app.js?v=20260526-project-move-menu` 和 `styles.css?v=20260526-project-move-menu`。
-- Browser smoke 通过：菜单显示 GPT-like 二级 Project 列表；未出现 `127.0.0.1 says` prompt；点击 `222` 后页面状态显示“对话已放入 Project”；console error / warn 为空。截图保存到 `/tmp/vds-project-move-submenu.png`。
-
-### 遗留问题
-
-- “新项目”入口当前仍复用现有 Project name prompt；本轮只移除“选择要移入 Project”的 prompt，后续如果要完全 GPT-like，可继续改成页面内 popover / modal。
-- 本轮验证用 QA Conversation 已通过 API 删除，刷新后不再显示。
-
-### 是否影响主流程
-
-否。只影响 Workbench 历史菜单的项目移动交互，不改变数据分析、文件解析、join、评分或响应生成主链路。
-
-### 是否涉及 Benchmark
-
-否。
-
-### 是否涉及 Microsoft Agent Framework
-
-否。
-
-### 是否影响未来多 Agent 迁移
-
-否。变更在前端菜单和既有 conversation API 使用层，不进入 agent_runtime / ToolDispatcher / multi_agent_workflows。
-
-### 是否修改核心数据契约
-
-否。
-
-### 是否修改 API 契约
-
-否。继续使用现有 conversation PATCH 的 `project_id`。
-
-### 是否新增或修改错误类型
-
-否。
-
-### 是否新增或修改运行追踪逻辑
-
-否。
-
-### 是否已同步 README
-
-否。本轮是即时 UI 修正，未改变公开产品契约；已同步 CHANGELOG_AI。
-
 2026-05-26 09:52 CST
 
 ### 本次目标
@@ -7365,3 +7285,82 @@ YYYY-MM-DD HH:MM TZ
 ### 是否已同步 README
 
 是。Phase 12.1 / Phase 13 相关 README、MAIN_GOAL、API_CONTRACT、ARCHITECTURE、FEATURE_BACKLOG 和 frontend README 已同步。
+
+2026-05-26 09:53 CST
+
+### 本次目标
+
+把 Workbench 历史对话的“移至项目”从浏览器 prompt 改成 GPT-like 右侧二级菜单，避免要求用户输入 Project 序号、名称或 ID。
+
+### 修改文件
+
+- frontend/app.js
+- frontend/styles.css
+- frontend/index.html
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 历史对话菜单的“移至项目”改为带右箭头的 submenu，hover / click 后在右侧直接列出“新项目”和现有 Project。
+- 点击 Project 直接调用 `PATCH /api/data-agent/conversations/{conversation_id}` 写入 `project_id`，不再弹出“选择要移入的 Project”的浏览器 prompt。
+- 保留“新项目”入口；点击后直接创建默认“新项目”并把对话移入，不再使用浏览器 prompt。
+- 新增 context submenu 样式：右侧弹层、Project 名称省略、视口边界左翻、列表滚动。
+- Workbench asset version 升级到 `20260526-project-move-menu`，避免浏览器继续加载旧 JS。
+
+### 测试方式
+
+- `node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets -v`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- Browser smoke：`http://127.0.0.1:8001/workbench?qa=project-move-menu-20260526095240`，打开历史对话菜单，点击“移至项目”，验证右侧 Project submenu，并点击 `222` 完成移动。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- Static workbench tests 通过：Ran 18 tests，OK。
+- `git diff --check` 通过。
+- Runtime 已同步并重启，`GET /workbench` 返回 `app.js?v=20260526-project-move-menu` 和 `styles.css?v=20260526-project-move-menu`。
+- Browser smoke 通过：菜单显示 GPT-like 二级 Project 列表；未出现 `127.0.0.1 says` prompt；点击 `222` 后页面状态显示“对话已放入 Project”；console error / warn 为空。截图保存到 `/tmp/vds-project-move-submenu.png`。
+
+### 遗留问题
+
+- 本轮验证用 QA Conversation 已通过 API 删除，刷新后不再显示。
+
+### 是否影响主流程
+
+否。只影响 Workbench 历史菜单的项目移动交互，不改变数据分析、文件解析、join、评分或响应生成主链路。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。变更在前端菜单和既有 conversation API 使用层，不进入 agent_runtime / ToolDispatcher / multi_agent_workflows。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。继续使用现有 conversation PATCH 的 `project_id`。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮是即时 UI 修正，未改变公开产品契约；已同步 CHANGELOG_AI。
