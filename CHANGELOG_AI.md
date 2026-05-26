@@ -7306,7 +7306,7 @@ YYYY-MM-DD HH:MM TZ
 - 点击 Project 直接调用 `PATCH /api/data-agent/conversations/{conversation_id}` 写入 `project_id`，不再弹出“选择要移入的 Project”的浏览器 prompt。
 - 保留“新项目”入口；点击后直接创建默认“新项目”并把对话移入，不再使用浏览器 prompt。
 - 新增 context submenu 样式：右侧弹层、Project 名称省略、视口边界左翻、列表滚动。
-- Workbench asset version 升级到 `20260526-project-move-menu`，避免浏览器继续加载旧 JS。
+- Workbench asset version 升级到 `20260526-project-move-default`，避免浏览器继续加载旧 JS。
 
 ### 测试方式
 
@@ -7322,7 +7322,7 @@ YYYY-MM-DD HH:MM TZ
 - `node --check frontend/app.js` 通过。
 - Static workbench tests 通过：Ran 18 tests，OK。
 - `git diff --check` 通过。
-- Runtime 已同步并重启，`GET /workbench` 返回 `app.js?v=20260526-project-move-menu` 和 `styles.css?v=20260526-project-move-menu`。
+- Runtime 已同步并重启，`GET /workbench` 返回 `app.js?v=20260526-project-move-default` 和 `styles.css?v=20260526-project-move-default`。
 - Browser smoke 通过：菜单显示 GPT-like 二级 Project 列表；未出现 `127.0.0.1 says` prompt；点击 `222` 后页面状态显示“对话已放入 Project”；console error / warn 为空。截图保存到 `/tmp/vds-project-move-submenu.png`。
 
 ### 遗留问题

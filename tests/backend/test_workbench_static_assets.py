@@ -10,9 +10,9 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
     def test_workbench_uses_backend_mounted_asset_paths(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/frontend/styles.css?v=20260526-project-move-menu"', html)
+        self.assertIn('href="/frontend/styles.css?v=20260526-project-move-default"', html)
         self.assertIn('href="/frontend/favicon.svg"', html)
-        self.assertIn('src="/frontend/app.js?v=20260526-project-move-menu"', html)
+        self.assertIn('src="/frontend/app.js?v=20260526-project-move-default"', html)
         self.assertNotIn('href="./styles.css"', html)
         self.assertNotIn('src="./app.js"', html)
 
@@ -20,7 +20,7 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         html = Path("frontend/index.html").read_text(encoding="utf-8")
         backend = Path("backend/main.py").read_text(encoding="utf-8")
 
-        self.assertIn("?v=20260526-project-move-menu", html)
+        self.assertIn("?v=20260526-project-move-default", html)
         self.assertIn("NO_CACHE_HEADERS", backend)
         self.assertIn('"Cache-Control": "no-store, max-age=0"', backend)
         self.assertIn('"Pragma": "no-cache"', backend)
@@ -220,6 +220,9 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("showContextSubmenu", js)
         self.assertIn("createProjectForHistory", js)
         self.assertIn("assignHistoryToProject", js)
+        move_project_create = js[js.index("async function createProjectForHistory") : js.index("async function assignHistoryToProject")]
+        self.assertIn('body: JSON.stringify({ name: "新项目" })', move_project_create)
+        self.assertNotIn("window.prompt", move_project_create)
         self.assertIn("deleteHistoryConversation", js)
         self.assertIn("body: JSON.stringify({ pinned: Boolean(pinned) })", js)
         self.assertIn('body: JSON.stringify({ project_id: safeProjectId })', js)

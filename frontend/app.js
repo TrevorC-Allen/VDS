@@ -2332,14 +2332,11 @@ function updateConversationPinState(runId, pinned, pinnedAt) {
 
 async function createProjectForHistory(runId) {
   if (!runId || !runId.startsWith("conv_")) return;
-  const rawName = window.prompt("Project name", "新 Project");
-  const name = String(rawName || "").trim();
-  if (!name) return;
   try {
     const response = await fetch("/api/data-agent/projects", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name: "新项目" }),
     });
     const payload = await response.json();
     if (!response.ok || !payload.success) {
