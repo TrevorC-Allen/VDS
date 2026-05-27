@@ -68,6 +68,228 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-27 12:15 CST
+
+### 本次目标
+
+收紧 comparison scorer，避免 VDS 回答在网页端 GPT 明显强很多的情况下，仍因 factuality / truthfulness 较高而拿到过高总分。
+
+### 修改文件
+
+- scripts/score_comparison_answers.py
+- tests/benchmark/test_score_comparison_answers.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 调整评分权重，降低 semantic similarity / truthfulness 对总分的托底作用，提高 completeness 和 text_framework_alignment 权重。
+- 对数据类回答新增 GPT-like 硬封顶：缺少网页端 GPT 文字层级时，即使事实基本正确，总分也会被限制；缺少 completeness / instruction following 时继续封顶。
+- 数据类回答可接受门槛从“text framework >= 6”提升为 `text_framework_alignment >= 7` 且 `completeness >= 6.5`。
+- LLM judge prompt 明确：`standard_answer` 是 GPT reference，VDS 如果只是短句、字段清单、泛泛建议、没有结论/依据/口径/下一步，不能因为没有事实错误就给高分。
+- score markdown 文案把 `standard` 展示名改为 `GPT reference 回复`。
+- 单测新增“事实基本正确但不 GPT-like 的数据回答必须封顶且不可接受”。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile scripts/score_comparison_answers.py data_agent_core/llm/client.py`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.benchmark.test_score_comparison_answers tests.core.test_llm_client -v`
+- 用已落盘 GPT-5.5 judge 维度离线重新计算 UK 1150 / 1215 / 1225 的严格 GPT-like 总分。
+
+### 测试结果
+
+- Python 编译通过。
+- `tests.benchmark.test_score_comparison_answers` 和 `tests.core.test_llm_client` 共 12 tests OK。
+- 已落盘 GPT-5.5 维度按新公式重算后，UK 1150 VDS 为 60.07、UK 1215 VDS 为 63.42、UK 1225 VDS 为 63.73；GPT reference 仍为 94.98 / 95.27 / 96.19。
+
+### 遗留问题
+
+- 已有 `comparison_scored.json` 文件没有被覆盖重写；当前重算结果来自相同 GPT-5.5 judge 维度的离线公式重算。后续 quota 恢复后应重新运行 scorer 落盘新结果。
+
+### 是否影响主流程
+
+否。只影响离线 comparison scorer，不改变 VDS 分析主链路。
+
+### 是否涉及 Benchmark
+
+是。涉及 comparison artifact 的评分标准，不把标准答案或 scorer 信息传入 Agent workflow。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。只影响评测脚本。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。README 是产品/API 首页摘要；本轮只调整离线评测 scorer 口径，不改变产品能力或 API 契约。
+
+2026-05-27 12:11 CST
+
+### 本次目标
+
+支持使用 OpenAI `gpt-5.5` 作为 GPT reference 和 LLM judge 模型，并重新跑已可完成的 GPT-5.5 comparison 对比。
+
+### 修改文件
+
+- data_agent_core/llm/client.py
+- tests/core/test_llm_client.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `OpenAICompatibleChatClient` 对 `gpt-5*` 模型不再发送显式 `temperature` 参数，兼容 `gpt-5.5` 只接受默认 temperature 的 API 限制。
+- 新增单测覆盖 `gpt-5.5` payload 不包含 `temperature`。
+- 已用 `VDS_GPT_REFERENCE_MODEL=gpt-5.5`、`VDS_LLM_PROVIDER=openai`、`OPENAI_MODEL=gpt-5.5` 跑通 UK retail 三组 GPT-5.5 reference + GPT-5.5 judge comparison。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile data_agent_core/llm/client.py scripts/run_generic_dataset_eval.py scripts/score_comparison_answers.py`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_llm_client tests.benchmark.test_generic_dataset_eval_runner tests.benchmark.test_score_comparison_answers -v`
+- `VDS_GPT_REFERENCE_MODEL=gpt-5.5 VDS_LLM_PROVIDER=openai OPENAI_MODEL=gpt-5.5 scripts/run_generic_dataset_eval.py ...`
+- `VDS_LLM_PROVIDER=openai OPENAI_MODEL=gpt-5.5 scripts/score_comparison_answers.py ... --judge llm`
+
+### 测试结果
+
+- Python 编译通过。
+- `tests.core.test_llm_client`、`tests.benchmark.test_generic_dataset_eval_runner`、`tests.benchmark.test_score_comparison_answers` 共 18 tests OK。
+- UK retail 1150、1215、1225 三组已生成 GPT-5.5 reference 并完成 GPT-5.5 judge 打分，输出位于 `outputs/eval_gate/gpt55_reference_rerun_20260527/`。
+- Microsoft 1235 在生成 GPT-5.5 reference 到 `generic_quality_004` 时遇到 OpenAI `insufficient_quota` 429，未生成正式完整 comparison；Microsoft 1245 未继续跑。
+
+### 遗留问题
+
+- OpenAI 当前 key quota 不足，无法完成 Microsoft 两组 GPT-5.5 reference + judge 全量对比。
+- 如果继续使用 `gpt-5.5`，需要更换可用 quota 的 OpenAI key 或等待额度恢复后续跑。
+
+### 是否影响主流程
+
+否。只影响 OpenAI-compatible LLM client 对 GPT-5 系列参数的兼容，以及离线 comparison 评测运行。
+
+### 是否涉及 Benchmark
+
+是。涉及 generic dataset comparison 的 GPT-5.5 reference / judge 运行；不把标准答案传入 Agent workflow。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。没有新增或修改 Microsoft Agent Framework 相关内容。
+
+### 是否影响未来多 Agent 迁移
+
+否。该兼容性位于 LLM transport 层，不改变多 Agent workflow 或 ToolDispatcher。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。README 描述产品/API 能力；本轮只修正 GPT-5.5 离线评测模型调用兼容和记录实际 comparison 运行结果，不改变产品能力或 API 契约。
+
+2026-05-27 11:06 CST
+
+### 本次目标
+
+将 generic dataset eval 的 `standard_answer` 全面统一为 OpenAI GPT reference 口径，避免本地 deterministic 模板或 DeepSeek 被误当作正式 GPT 标准答案。
+
+### 修改文件
+
+- scripts/run_generic_dataset_eval.py
+- tests/benchmark/test_generic_dataset_eval_runner.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `run_generic_dataset_eval.py` 默认 `--standard-answer-source=gpt`，正式运行必须用 OpenAI GPT 生成标准答案。
+- 新增 `--standard-answer-source=deterministic/auto` 作为 smoke/debug fallback，并在 case、summary、standard answers、comparison artifacts 中明确标记 `deterministic_fallback`，禁止作为正式验收口径。
+- GPT reference prompt 只接收用户问题、computed facts 和 case fact hints，不再把 deterministic 标准答案文本传给 LLM，避免标准答案被本地模板污染。
+- 标准答案生成强制加载 `OPENAI_API_KEY`，可用 `VDS_GPT_REFERENCE_MODEL` 或 `OPENAI_MODEL` 指定模型；当前 `VDS_LLM_PROVIDER=deepseek` 不会被用于 GPT reference 标准答案。
+- comparison rows 和 markdown 增加 `standard_answer_source`、`standard_answer_model`、policy、notes、confidence 等审计元数据；保留 `**我的标准回复**` 标签以兼容现有 scorer/parser。
+- benchmark 单测增加 GPT source、deterministic fallback、非 OpenAI provider 拒绝和 comparison metadata 覆盖。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile scripts/run_generic_dataset_eval.py scripts/score_comparison_answers.py`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.benchmark.test_generic_dataset_eval_runner -v`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.benchmark.test_score_comparison_answers -v`
+- `git diff --check`
+
+### 测试结果
+
+- Python 编译通过。
+- `tests.benchmark.test_generic_dataset_eval_runner` 7 tests OK。
+- `tests.benchmark.test_score_comparison_answers` 7 tests OK。
+- `git diff --check` 通过。
+
+### 遗留问题
+
+- 本轮没有重新生成最新 comparison 的 GPT 标准答案；需要后续用真实数据运行 `scripts/run_generic_dataset_eval.py --standard-answer-source gpt` 后再跑 `scripts/score_comparison_answers.py`。
+- 当前默认 GPT reference 模型为 `VDS_GPT_REFERENCE_MODEL` / `OPENAI_MODEL` / `gpt-4o` 优先级；如需完全贴近网页端 GPT，可在环境中显式指定更高阶 reference model。
+
+### 是否影响主流程
+
+否。只影响离线 generic dataset eval 标准答案生成、comparison artifact 和 benchmark 测试，不改变 Workbench / API 主分析链路。
+
+### 是否涉及 Benchmark
+
+是。修改 generic dataset eval runner 的正式标准答案来源和 comparison artifact 审计元数据；不会把标准答案传入 Agent workflow。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。没有新增或修改 Microsoft Agent Framework 相关依赖。
+
+### 是否影响未来多 Agent 迁移
+
+否。该改动限定在离线评测标准答案生成，不改变多 Agent workflow、ToolDispatcher 或 provider-native tool loop。
+
+### 是否修改核心数据契约
+
+否。未修改 `data_agent_core/contracts` 或 `FinalResponse`。
+
+### 是否修改 API 契约
+
+否。未修改后端 API 请求或响应契约。
+
+### 是否新增或修改错误类型
+
+否。未新增错误类型。
+
+### 是否新增或修改运行追踪逻辑
+
+否。未修改 RunTrace、monitor 或 SSE 追踪逻辑。
+
+### 是否已同步 README
+
+否。README 是产品/API 首页摘要；本轮仅调整离线 eval runner 的标准答案来源和 comparison 元数据，不影响用户可见能力、API 契约或阶段状态。
+
 2026-05-26 15:23 CST
 
 ### 本次目标
@@ -7574,6 +7796,106 @@ YYYY-MM-DD HH:MM TZ
 ### 是否已同步 README
 
 否。本轮是即时 UI 修正，未改变公开产品契约；已同步 CHANGELOG_AI。
+
+2026-05-27 15:20 CST
+
+### 本次目标
+
+按演示前正确率恢复方案，把 generic dataset eval / comparison scoring 改成可执行的分层验收链路：普通题 100%、复杂题 >=90%、unexpected Not Applicable = 0；同时明确 GPT API 欠费期间不把 `gpt` 当 DeepSeek alias，正式 comparison reference 使用 `deepseek_reference` 或导入的 `browser_gpt_reference`，DeepSeek judge 作为临时评分口径。
+
+### 修改文件
+
+- scripts/run_generic_dataset_eval.py
+- scripts/score_comparison_answers.py
+- scripts/test_dataset_uk_retail.sh
+- scripts/test_dataset_health.sh
+- scripts/test_dataset_nyc_taxi.sh
+- scripts/test_dataset_brazilian_ecommerce.sh
+- scripts/test_dataset_microsoft_anonymized.sh
+- scripts/test_dataset_vds_sales.sh
+- scripts/test_dataset_vds_learning.sh
+- scripts/test_dataset_vds_medical.sh
+- scripts/test_dataset_vds_logistics.sh
+- scripts/test_dataset_vds_saas.sh
+- scripts/test_dataset_vds_original_5.sh
+- scripts/test_all_validation_datasets.sh
+- tests/benchmark/test_generic_dataset_eval_runner.py
+- tests/benchmark/test_score_comparison_answers.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- Generic eval case 新增 `difficulty_bucket`、`capability_family`、`answerability`、`acceptance_threshold` 和 Not Applicable policy，所有 comparison artifact 都带上这些字段。
+- `score_candidate_answers` 新增普通/复杂分桶、unexpected Not Applicable 计数、能力族失败归因和 `acceptance_passed`，summary / comparison markdown 同步展示。
+- `score_comparison_answers.py` 继承同一验收口径，`comparison_scored.*` 汇总普通题 100%、复杂题 >=90%、unexpected Not Applicable = 0，并按 capability family 汇总失败。
+- 标准答案来源改为显式 source：`deepseek_reference`、`browser_gpt_reference`、`deterministic_fallback`；`--standard-answer-source gpt` 直接报错，不再静默映射到 DeepSeek。
+- 新增 `--standard-answers-file`，用于导入浏览器网页版 GPT 人工采集的 reference；不自动冒充 GPT API。
+- Validation dataset wrappers 默认使用 DeepSeek reference、DeepSeek judge；`VDS_GENERIC_EVAL_QUICK` 默认改为 `0`，`1` 时明确只是 smoke coverage，不是正式验收。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile scripts/run_generic_dataset_eval.py scripts/score_comparison_answers.py`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.benchmark.test_generic_dataset_eval_runner tests.benchmark.test_score_comparison_answers`
+- `bash -n` 检查所有 validation dataset wrapper。
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_not_applicable_guardrails tests.benchmark.test_generic_dataset_eval_runner tests.benchmark.test_score_comparison_answers tests.backend.test_data_agent_service`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_chinese_retail_capabilities tests.agent_runtime.test_data_agent_tool_impl tests.core.test_text_answer_framework tests.core.test_phase10_result_experience`
+- `git diff --check`
+- 本地小 CSV deterministic smoke：`scripts/run_generic_dataset_eval.py --standard-answer-source deterministic --generate-vds-answers --quick-vds-answers --output-dir /tmp/vds_generic_eval_smoke_acceptance`
+- 本地小 CSV DeepSeek smoke：`scripts/run_generic_dataset_eval.py --standard-answer-source deepseek --generate-vds-answers --quick-vds-answers --output-dir /tmp/vds_generic_eval_deepseek_smoke_acceptance`
+- DeepSeek judge smoke：`scripts/score_comparison_answers.py /tmp/vds_generic_eval_deepseek_smoke_acceptance/comparison.md --judge llm --print-summary`
+
+### 测试结果
+
+- Python 编译通过。
+- Benchmark scorer / generic eval 单测 20 tests OK。
+- Not Applicable guardrail + backend service + benchmark scorer 单测 73 tests OK。
+- 中文零售 capability + agent runtime + text answer framework + Phase 10 result experience 单测 43 tests OK。
+- Shell wrapper 语法检查通过。
+- `git diff --check` 通过。
+- deterministic smoke 成功生成 `summary.*`、`comparison.*`、`vds_answers.*`，unexpected Not Applicable = 0；因 deterministic fallback 不是正式 reference，summary 明确标记不适合正式验收。
+- DeepSeek reference smoke 成功，`standard_answer_generation.source=deepseek_reference`，model=`deepseek:deepseek-chat`，unexpected Not Applicable = 0。
+- DeepSeek judge smoke 成功生成 `comparison_scored.*`，包含普通/复杂分桶、unexpected Not Applicable 和 capability failure 汇总。
+
+### 遗留问题
+
+- 尚未在本轮跑完 UK retail、Health、NYC Taxi、Brazilian e-commerce、Microsoft anonymized、原 VDS 五类和桌面 VDS 95 题全量验收；本轮只确认了脚本链路和小样本 DeepSeek reference/judge 可执行。
+- 小样本 DeepSeek judge 显示当前 VDS 候选回答距离普通 100% / 复杂 90% 仍有明显差距，失败集中在 overview、quality、field_mapping、trend、join 等能力族；后续应按能力族继续修复，不按单题补丁。
+
+### 是否影响主流程
+
+否。修改的是离线 eval / comparison / wrapper 验收链路，不把 standard answer 或 judge 信息传入 VDS Agent 主流程。
+
+### 是否涉及 Benchmark
+
+是。涉及 generic dataset eval、comparison artifact、DeepSeek reference、DeepSeek judge 和 validation dataset wrapper。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，轻微正向影响。新的 artifact 明确 answerability、capability family 和分桶门槛，有利于后续多 Agent 修复队列按能力族分工。
+
+### 是否修改核心数据契约
+
+否。只给离线 eval artifact 增加字段，不修改运行时数据集、上传或主响应契约。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。仅新增离线评测中的失败归因字段。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮改动聚焦演示前 eval / comparison 验收链路；README 未同步，CHANGELOG_AI 已同步。
 
 2026-05-26 14:30 CST
 

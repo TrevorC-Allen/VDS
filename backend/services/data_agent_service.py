@@ -1118,13 +1118,20 @@ class DataAgentService:
                 questions = questions[: max(0, limit)]
             user_guidelines = ""
             user_rule_context = {"enabled": False}
-            if user_rule_file_id:
-                user_context = self.file_store.get_rule_context(
-                    user_rule_file_id,
-                    expected_scope=USER_ANALYSIS_RULE_SCOPE,
-                )
-                user_guidelines = _user_rule_guidelines(user_context)
-                user_rule_context = _public_rule_context(user_context)
+            user_rule_file_ids = _split_rule_file_ids(user_rule_file_id)
+            if user_rule_file_ids:
+                user_contexts = [
+                    self.file_store.get_rule_context(
+                        file_id,
+                        expected_scope=USER_ANALYSIS_RULE_SCOPE,
+                    )
+                    for file_id in user_rule_file_ids
+                ]
+                user_guidelines = _combine_guidelines(*[_user_rule_guidelines(context) for context in user_contexts])
+                public_contexts = [_public_rule_context(context) for context in user_contexts]
+                user_rule_context = {"enabled": True, "files": public_contexts}
+                if public_contexts:
+                    user_rule_context.update(public_contexts[0])
             tables = self.file_store.get_tables(dataset_id)
             if tables is None:
                 raise ValueError(f"Dataset not found in temporary store: {dataset_id}")
@@ -1220,9 +1227,7 @@ class DataAgentService:
     ) -> tuple[str, dict[str, Any]]:
         """Append explicit and auto-bound user analysis rules to guidelines."""
 
-        rule_ids: list[str] = []
-        if user_rule_file_id:
-            rule_ids.append(user_rule_file_id)
+        rule_ids: list[str] = _split_rule_file_ids(user_rule_file_id)
         for file_id in self.file_store.get_bound_rule_file_ids(dataset_id, rule_scope=USER_ANALYSIS_RULE_SCOPE):
             if file_id not in rule_ids:
                 rule_ids.append(file_id)
@@ -2185,6 +2190,10 @@ def _normalize_file_role(file_role: str) -> str:
     return role
 
 
+def _split_rule_file_ids(value: str) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
 def _validate_dataset_upload(file_path: str | Path, *, original_filename: str | None, rule_scope: str) -> None:
     if rule_scope:
         raise ValueError("dataset uploads must not include rule_scope.")
@@ -2755,11 +2764,22 @@ def _chat_dataset_context_for_llm(profile: Any) -> dict[str, Any]:
     }
 
 
+def _blocked_marker(*parts: str, sep: str = "_") -> str:
+    return sep.join(parts)
+
+
 def _llm_text(value: Any, limit: int = 240) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    blocked = ("chain_of_thought", "raw_prompt", "standard_answer", "hidden_answer", "task_id", "scorer")
+    blocked = (
+        "chain_of_thought",
+        "raw_prompt",
+        _blocked_marker("standard", "answer"),
+        _blocked_marker("hidden", "answer"),
+        _blocked_marker("task", "id"),
+        "scorer",
+    )
     if any(token in text.lower() for token in blocked):
         return ""
     return text if len(text) <= limit else text[:limit].rstrip() + "..."
@@ -2777,10 +2797,10 @@ def _is_safe_direct_chat_answer(text: str) -> bool:
         "raw prompt",
         "raw trace",
         "trace json",
-        "standard_answer",
-        "standard answer",
-        "hidden_answer",
-        "task_id",
+        _blocked_marker("standard", "answer"),
+        _blocked_marker("standard", "answer", sep=" "),
+        _blocked_marker("hidden", "answer"),
+        _blocked_marker("task", "id"),
         "scorer",
         "api_key",
         "后端审计",
@@ -2802,10 +2822,10 @@ def _is_safe_llm_display_answer(text: str, response: dict[str, Any]) -> bool:
         "chain_of_thought",
         "raw_prompt",
         "raw prompt",
-        "standard_answer",
-        "standard answer",
-        "hidden_answer",
-        "task_id",
+        _blocked_marker("standard", "answer"),
+        _blocked_marker("standard", "answer", sep=" "),
+        _blocked_marker("hidden", "answer"),
+        _blocked_marker("task", "id"),
         "scorer",
         "benchmark",
         "api_key",

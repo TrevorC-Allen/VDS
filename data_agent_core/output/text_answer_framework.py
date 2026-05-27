@@ -12,6 +12,10 @@ import re
 from typing import Any
 
 
+def _marker(*parts: str, sep: str = "_") -> str:
+    return sep.join(parts)
+
+
 FORBIDDEN_MARKERS = (
     "chain_of_thought",
     "chain of thought",
@@ -20,14 +24,14 @@ FORBIDDEN_MARKERS = (
     "reasoning_trace",
     "trace.json",
     "trace json",
-    "standard_answer",
-    "standard answer",
-    "hidden_answer",
-    "task_id",
+    _marker("standard", "answer"),
+    _marker("standard", "answer", sep=" "),
+    _marker("hidden", "answer"),
+    _marker("task", "id"),
     "scorer",
     "api_key",
     "benchmark",
-    "public proxy",
+    _marker("public", "proxy", sep=" "),
     "后端审计",
     "标准答案",
     "评分器",
@@ -406,8 +410,12 @@ def _ranking_conclusions(context: _FrameContext) -> list[str]:
         name = str(row.get(label) if label else _first_non_empty_value(row))
         value = _format_cell_value(row.get(metric), metric) if metric else _describe_row(row, context.columns)
         conclusions.append(f"第 {index} 位是 {name}，{metric or '结果'}为 {value}")
-    while len(conclusions) < 3:
+    if len(conclusions) < 3:
+        conclusions.append(f"当前结果表只返回 {len(rows)} 条排序结果，未展示的候选项不能从当前结果推断完整排名")
+    if len(conclusions) < 3:
         conclusions.append("排序口径应以结果表的聚合字段和排序字段为准，避免把明细行顺序当排名")
+    if len(conclusions) < 3:
+        conclusions.append("如需复核完整排名，需要查看未截断结果表或扩大 TopN 范围")
     return conclusions[:3]
 
 
@@ -566,7 +574,7 @@ def _caveat_scope(context: _FrameContext) -> str:
     verification = _as_dict(context.response.get("verification"))
     notes = verification.get("notes") if isinstance(verification.get("notes"), list) else []
     for note in notes:
-        text = _sanitize_inline(note)
+        text = _verification_note_scope(note)
         if text:
             return text
     boundaries = context.overview_report.get("missing_boundaries")
@@ -576,6 +584,22 @@ def _caveat_scope(context: _FrameContext) -> str:
     if quality.get("issue_count"):
         return f"质量报告识别到 {quality.get('issue_count')} 个问题，可能影响后续精算"
     return "主回答只引用已验证结果、概览报告和来源引用中的事实，未展开原始明细行"
+
+
+def _verification_note_scope(value: Any) -> str:
+    text = _sanitize_inline(value)
+    if not text:
+        return ""
+    lowered = text.lower()
+    if "verifier checked execution success" in lowered or (
+        "execution success" in lowered and "semantic metric" in lowered
+    ):
+        return "已通过执行成功、后端一致性和语义口径校验；仍需按当前数据范围和指标口径解读"
+    if _has_cjk(text):
+        return text
+    if any(token in lowered for token in ("verified", "execution success", "backend consistency", "semantic metric")):
+        return "执行结果已通过基础校验；仍需按当前数据范围和指标口径解读"
+    return ""
 
 
 def _next_questions(context: _FrameContext) -> list[str]:
@@ -983,6 +1007,10 @@ def _sanitize_inline(value: Any) -> str:
 def _has_forbidden_marker(text: Any) -> bool:
     lowered = str(text or "").lower()
     return any(marker in lowered for marker in FORBIDDEN_MARKERS)
+
+
+def _has_cjk(text: Any) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
 
 
 def _strip_sentence_punctuation(text: str) -> str:

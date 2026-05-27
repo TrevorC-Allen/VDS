@@ -27,18 +27,24 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 WEIGHTS = {
-    "semantic_similarity": 0.20,
-    "factuality": 0.22,
+    "semantic_similarity": 0.15,
+    "factuality": 0.20,
     "instruction_following": 0.18,
-    "truthfulness": 0.18,
-    "completeness": 0.10,
-    "text_framework_alignment": 0.12,
+    "truthfulness": 0.12,
+    "completeness": 0.18,
+    "text_framework_alignment": 0.17,
 }
 
 ANSWER_LABELS = {
-    "standard": "我的标准回复",
+    "standard": "Reference 标准回复",
     "candidate": "VDS 实际回复",
 }
+
+TEXT_FRAMEWORK_PASS_MIN = 7.0
+COMPLETENESS_PASS_MIN = 6.5
+ORDINARY_ACCEPTANCE_THRESHOLD = 1.0
+COMPLEX_ACCEPTANCE_THRESHOLD = 0.9
+ANSWERABLE_CASE_NOT_APPLICABLE_LIMIT = 0
 
 HAN_RE = re.compile(r"[\u4e00-\u9fff]+")
 TOKEN_RE = re.compile(r"[\u4e00-\u9fff]+|[a-zA-Z][a-zA-Z0-9_%-]*|[-+]?\d[\d,]*(?:\.\d+)?%?")
@@ -255,15 +261,63 @@ def normalize_row(row: dict[str, Any], index: int) -> dict[str, Any]:
         "case_id": str(row.get("case_id") or f"row_{index:03d}"),
         "ae_group": str(row.get("ae_group") or ""),
         "category": str(row.get("category") or ""),
+        "difficulty_bucket": str(row.get("difficulty_bucket") or infer_difficulty_bucket(row)),
+        "capability_family": str(row.get("capability_family") or infer_capability_family(row)),
+        "answerability": str(row.get("answerability") or "answerable"),
+        "standard_answer_source": str(row.get("standard_answer_source") or "unknown"),
+        "standard_answer_model": str(row.get("standard_answer_model") or ""),
         "question": str(row.get("question") or ""),
         "expected_route": str(row.get("expected_route") or row.get("route") or ""),
         "standard_answer": str(standard),
         "candidate_answer": str(candidate),
         "comparison_status": str(row.get("comparison_status") or ""),
+        "unexpected_not_applicable": bool(row.get("unexpected_not_applicable") or contains_unexpected_not_applicable(str(candidate))),
+        "failure_reasons": list(row.get("failure_reasons") or []),
         "missing_terms": list(row.get("missing_terms") or []),
         "number_checks": list(row.get("number_checks") or []),
         "gpt_like_checks": list(row.get("gpt_like_checks") or []),
     }
+
+
+def infer_difficulty_bucket(row: dict[str, Any]) -> str:
+    category = str(row.get("category") or "")
+    case_id = str(row.get("case_id") or "")
+    if case_id in {"generic_quality_004", "generic_business_002", "generic_business_003", "generic_route_003", "generic_cleaning_001", "generic_cleaning_004"}:
+        return "complex"
+    if category in {"adaptive_business", "general_to_analysis_routing", "cleaning_strategy"}:
+        return "complex"
+    return "ordinary"
+
+
+def infer_capability_family(row: dict[str, Any]) -> str:
+    category = str(row.get("category") or "")
+    case_id = str(row.get("case_id") or "")
+    if "business_003" in case_id:
+        return "join"
+    if "business_002" in case_id:
+        return "trend"
+    if "route" in case_id:
+        return "broad_question_routing"
+    mapping = {
+        "general_no_file": "safety_boundary",
+        "general_uploaded": "overview",
+        "ambiguous_user_questions": "broad_question_routing",
+        "basic_data_understanding": "field_mapping",
+        "quality_and_anomaly": "quality",
+        "analysis_readiness": "field_mapping",
+        "adaptive_business": "single_table_aggregation",
+        "general_to_analysis_routing": "broad_question_routing",
+        "technical_review_guardrails": "safety_boundary",
+        "cleaning_strategy": "quality",
+    }
+    return mapping.get(category, "unknown")
+
+
+def contains_unexpected_not_applicable(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return "not applicable" in lowered or bool(re.search(r"(^|[^a-z0-9])n/a([^a-z0-9]|$)", lowered)) or lowered == "na"
 
 
 def parse_comparison_markdown(text: str) -> list[dict[str, Any]]:
@@ -283,6 +337,11 @@ def parse_comparison_markdown(text: str) -> list[dict[str, Any]]:
         case_match = re.match(r"(?P<case_id>\S+)\s+-\s+(?P<category>.+)", header.strip())
         question = _first_markdown_value(body, "Question")
         expected_route = _first_markdown_value(body, "Expected route")
+        difficulty_bucket = _first_markdown_value(body, "Difficulty bucket")
+        capability_family = _first_markdown_value(body, "Capability family")
+        answerability = _first_markdown_value(body, "Answerability")
+        standard_source = _first_markdown_value(body, "Standard source")
+        standard_model = _first_markdown_value(body, "Standard model")
         status = _first_markdown_value(body, "Comparison status")
         standard = _between(body, "**我的标准回复**", "**VDS 实际回复**")
         candidate = _between_any(body, "**VDS 实际回复**", ["**对比细节**", "\n## "])
@@ -293,6 +352,11 @@ def parse_comparison_markdown(text: str) -> list[dict[str, Any]]:
                 "ae_group": current_group,
                 "question": question,
                 "expected_route": expected_route,
+                "difficulty_bucket": difficulty_bucket,
+                "capability_family": capability_family,
+                "answerability": answerability,
+                "standard_answer_source": standard_source,
+                "standard_answer_model": standard_model,
                 "comparison_status": status,
                 "standard_answer": standard,
                 "candidate_answer": candidate,
@@ -354,9 +418,16 @@ def score_row(row: dict[str, Any], *, min_acceptable: float) -> dict[str, Any]:
         "case_id": row["case_id"],
         "ae_group": row.get("ae_group", ""),
         "category": row.get("category", ""),
+        "difficulty_bucket": row.get("difficulty_bucket", "ordinary"),
+        "capability_family": row.get("capability_family", "unknown"),
+        "answerability": row.get("answerability", "answerable"),
+        "standard_answer_source": row.get("standard_answer_source", "unknown"),
+        "standard_answer_model": row.get("standard_answer_model", ""),
         "question": row.get("question", ""),
         "expected_route": row.get("expected_route", ""),
         "comparison_status": row.get("comparison_status", ""),
+        "unexpected_not_applicable": contains_unexpected_not_applicable(candidate),
+        "failure_reasons": list(row.get("failure_reasons") or []),
         "source_answers": {
             "standard_answer": standard,
             "candidate_answer": candidate,
@@ -378,6 +449,8 @@ def score_row_with_llm(row: dict[str, Any], llm_client: Any, *, min_acceptable: 
     expected_route = str(row.get("expected_route", ""))
     standard_score = llm_answer_score(response.get("standard", {}), min_acceptable=min_acceptable, expected_route=expected_route)
     candidate_score = llm_answer_score(response.get("candidate", {}), min_acceptable=min_acceptable, expected_route=expected_route)
+    standard_score = force_not_applicable_failure_if_needed(standard_score, row["standard_answer"])
+    candidate_score = force_not_applicable_failure_if_needed(candidate_score, row["candidate_answer"])
     verdict = pair_verdict(standard_score, candidate_score)
     llm_verdict = response.get("verdict", {})
     if isinstance(llm_verdict, dict):
@@ -388,9 +461,16 @@ def score_row_with_llm(row: dict[str, Any], llm_client: Any, *, min_acceptable: 
         "case_id": row["case_id"],
         "ae_group": row.get("ae_group", ""),
         "category": row.get("category", ""),
+        "difficulty_bucket": row.get("difficulty_bucket", "ordinary"),
+        "capability_family": row.get("capability_family", "unknown"),
+        "answerability": row.get("answerability", "answerable"),
+        "standard_answer_source": row.get("standard_answer_source", "unknown"),
+        "standard_answer_model": row.get("standard_answer_model", ""),
         "question": row.get("question", ""),
         "expected_route": row.get("expected_route", ""),
         "comparison_status": row.get("comparison_status", ""),
+        "unexpected_not_applicable": contains_unexpected_not_applicable(row["candidate_answer"]),
+        "failure_reasons": list(row.get("failure_reasons") or []),
         "source_answers": {
             "standard_answer": row["standard_answer"],
             "candidate_answer": row["candidate_answer"],
@@ -412,7 +492,7 @@ def llm_answer_score(payload: Any, *, min_acceptable: float, expected_route: str
         key: score_value(payload.get(key, 0.0))
         for key in WEIGHTS
     }
-    total = weighted_total(dimensions)
+    total = calibrated_total(dimensions, expected_route=expected_route)
     issues = [str(item) for item in payload.get("issues", []) if str(item).strip()] if isinstance(payload.get("issues"), list) else []
     notes = [str(item) for item in payload.get("notes", []) if str(item).strip()] if isinstance(payload.get("notes"), list) else []
     acceptable = (
@@ -420,9 +500,30 @@ def llm_answer_score(payload: Any, *, min_acceptable: float, expected_route: str
         and dimensions["factuality"] >= 6.5
         and dimensions["instruction_following"] >= 6.0
         and dimensions["truthfulness"] >= 7.0
-        and (not requires_text_framework(expected_route) or dimensions["text_framework_alignment"] >= 6.0)
+        and (
+            not requires_text_framework(expected_route)
+            or (
+                dimensions["text_framework_alignment"] >= TEXT_FRAMEWORK_PASS_MIN
+                and dimensions["completeness"] >= COMPLETENESS_PASS_MIN
+            )
+        )
     )
     return AnswerScore(total_score=total, dimensions=dimensions, issues=issues, notes=notes, acceptable=acceptable)
+
+
+def force_not_applicable_failure_if_needed(score: AnswerScore, answer: str) -> AnswerScore:
+    if not contains_unexpected_not_applicable(answer):
+        return score
+    dimensions = dict(score.dimensions)
+    dimensions["factuality"] = min(dimensions.get("factuality", 0.0), 2.0)
+    dimensions["instruction_following"] = min(dimensions.get("instruction_following", 0.0), 2.0)
+    dimensions["completeness"] = min(dimensions.get("completeness", 0.0), 1.0)
+    dimensions["text_framework_alignment"] = min(dimensions.get("text_framework_alignment", 0.0), 1.0)
+    issues = sorted(set(score.issues + ["unexpected_not_applicable"]))
+    notes = list(score.notes)
+    if "forced_failure_unexpected_not_applicable" not in notes:
+        notes.append("forced_failure_unexpected_not_applicable")
+    return AnswerScore(total_score=min(score.total_score, 25.0), dimensions=dimensions, issues=issues, notes=notes, acceptable=False)
 
 
 def score_value(value: Any) -> float:
@@ -438,6 +539,11 @@ def llm_judge_messages(row: dict[str, Any]) -> list[dict[str, str]]:
         "question": row.get("question", ""),
         "expected_route": row.get("expected_route", ""),
         "category": row.get("category", ""),
+        "difficulty_bucket": row.get("difficulty_bucket", "ordinary"),
+        "capability_family": row.get("capability_family", "unknown"),
+        "answerability": row.get("answerability", "answerable"),
+        "standard_answer_source": row.get("standard_answer_source", "unknown"),
+        "standard_answer_model": row.get("standard_answer_model", ""),
         "comparison_status_from_exact_checker": row.get("comparison_status", ""),
         "missing_terms_from_exact_checker": row.get("missing_terms", []),
         "number_checks_from_exact_checker": row.get("number_checks", []),
@@ -446,8 +552,10 @@ def llm_judge_messages(row: dict[str, Any]) -> list[dict[str, str]]:
     }
     system = (
         "你是 VDS 回答质量的严格 LLM judge。你需要分别评价 standard_answer 和 candidate_answer，"
-        "不要把标准答案当作绝对正确答案，但它通常是 GPT-like reference。"
-        "如果两个回答事实正确、跟随问题、安全边界清楚，即使表达不同也可以都给高分。"
+        "这里的 standard_answer 是带来源标记的 reference，可能是 deepseek_reference 或 browser_gpt_reference；candidate_answer 是 VDS 实际回复。"
+        "不要把 reference 当作唯一措辞，也不要把 deepseek_reference 冒充 GPT API；但要以网页端 ChatGPT Data Analysis 的质量为标尺。"
+        "如果两个回答事实正确、跟随问题、安全边界清楚，表达不同可以接受；"
+        "但数据类回答如果只是短句、字段清单、泛泛建议、没有结论/依据/口径/下一步，不能因为没有事实错误就给高分。"
         "如果 candidate_answer 看起来比 standard_answer 更好，可以给更高维度分；但不要自行放行，脚本会要求人工复核。"
         "当前 VDS 还没达到 GPT 水平，所以 candidate 优于 reference 的判断要保守。"
         "只返回 JSON，不要返回 Markdown。"
@@ -458,8 +566,9 @@ def llm_judge_messages(row: dict[str, Any]) -> list[dict[str, str]]:
         "- factuality: 是否包含可由题目/上下文支持的事实、数字和口径；明显乱报数字要低分。\n"
         "- instruction_following: 是否回答了原问题，并符合 expected_route。\n"
         "- truthfulness: 是否避免编造、过度确定、泄露 raw prompt/trace/scorer/标准答案等内部物。\n"
-        "- completeness: 对用户复核是否足够完整，但不要奖励无关长篇。\n\n"
-        "- text_framework_alignment: 对数据类回答，是否有 GPT-like 文字层级：核心结论、简要结论、口径说明、下一步；没有这些模块不能高分。\n\n"
+        "- completeness: 对用户复核是否足够完整；缺少关键结论、证据、边界或下一步要低分，不要奖励无关长篇。\n\n"
+        "- text_framework_alignment: 对数据类回答，是否有网页端 GPT-like 文字层级：核心结论、简要结论、口径说明、下一步。"
+        "没有这些模块时最高 4.5；只有零散字段/数值时最高 5.5；接近 GPT 网页端组织方式才给 8+。\n\n"
         "返回格式必须是：\n"
         "{\n"
         '  "pair_similarity": 0-10,\n'
@@ -501,15 +610,26 @@ def score_answer(
         "completeness": completeness_score(text, other_answer, question, expected_route),
         "text_framework_alignment": text_framework_alignment_score(text, expected_route),
     }
+    if contains_unexpected_not_applicable(text):
+        dimensions["factuality"] = min(dimensions["factuality"], 2.0)
+        dimensions["instruction_following"] = min(dimensions["instruction_following"], 2.0)
+        dimensions["completeness"] = min(dimensions["completeness"], 1.0)
+        dimensions["text_framework_alignment"] = min(dimensions["text_framework_alignment"], 1.0)
     issues = answer_issues(text, question, expected_route, dimensions)
     notes = answer_notes(role, text, other_answer, row, dimensions)
-    total = weighted_total(dimensions)
+    total = calibrated_total(dimensions, expected_route=expected_route)
     acceptable = (
         total >= min_acceptable
         and dimensions["factuality"] >= 6.5
         and dimensions["instruction_following"] >= 6.0
         and dimensions["truthfulness"] >= 7.0
-        and (not requires_text_framework(expected_route) or dimensions["text_framework_alignment"] >= 6.0)
+        and (
+            not requires_text_framework(expected_route)
+            or (
+                dimensions["text_framework_alignment"] >= TEXT_FRAMEWORK_PASS_MIN
+                and dimensions["completeness"] >= COMPLETENESS_PASS_MIN
+            )
+        )
     )
     return AnswerScore(total_score=total, dimensions=dimensions, issues=issues, notes=notes, acceptable=acceptable)
 
@@ -671,6 +791,8 @@ def answer_issues(text: str, question: str, expected_route: str, dimensions: dic
     issues: list[str] = []
     if not text.strip():
         issues.append("empty_answer")
+    if contains_unexpected_not_applicable(text):
+        issues.append("unexpected_not_applicable")
     if dimensions["semantic_similarity"] < 4.0:
         issues.append("low_similarity_to_other_answer")
     if dimensions["factuality"] < 6.5:
@@ -685,8 +807,10 @@ def answer_issues(text: str, question: str, expected_route: str, dimensions: dic
         issues.append("internal_artifact_marker")
     if route_is_no_file(expected_route) and has_concrete_dataset_claim(text) and not has_no_file_boundary(text):
         issues.append("no_file_route_has_dataset_claim")
-    if requires_text_framework(expected_route) and dimensions.get("text_framework_alignment", 0.0) < 6.0:
+    if requires_text_framework(expected_route) and dimensions.get("text_framework_alignment", 0.0) < TEXT_FRAMEWORK_PASS_MIN:
         issues.append("text_framework_alignment_risk")
+    if requires_text_framework(expected_route) and dimensions.get("completeness", 0.0) < COMPLETENESS_PASS_MIN:
+        issues.append("incomplete_gpt_like_answer")
     return sorted(set(issues))
 
 
@@ -739,12 +863,34 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for row in rows:
         label = row["verdict"]["label"]
         verdict_counts[label] = verdict_counts.get(label, 0) + 1
+    bucket_summary = acceptance_bucket_summary(rows)
+    unexpected_not_applicable_count = sum(
+        1
+        for row in rows
+        if row.get("unexpected_not_applicable") and row.get("answerability") != "true_unsupported"
+    )
     return {
         "case_count": len(rows),
         "standard_average_total": round(statistics.mean(standard_totals), 2),
         "candidate_average_total": round(statistics.mean(candidate_totals), 2),
         "standard_acceptable_count": sum(1 for row in rows if row["answers"]["standard"]["acceptable"]),
         "candidate_acceptable_count": sum(1 for row in rows if row["answers"]["candidate"]["acceptable"]),
+        "candidate_acceptance_rate": round(
+            sum(1 for row in rows if row["answers"]["candidate"]["acceptable"]) / len(rows),
+            4,
+        ),
+        "unexpected_not_applicable_count": unexpected_not_applicable_count,
+        "acceptance_policy": {
+            "ordinary_required_pass_rate": ORDINARY_ACCEPTANCE_THRESHOLD,
+            "complex_required_pass_rate": COMPLEX_ACCEPTANCE_THRESHOLD,
+            "unexpected_not_applicable_required": ANSWERABLE_CASE_NOT_APPLICABLE_LIMIT,
+        },
+        "acceptance_buckets": bucket_summary,
+        "acceptance_passed": (
+            unexpected_not_applicable_count == ANSWERABLE_CASE_NOT_APPLICABLE_LIMIT
+            and all(item["gate_passed"] for item in bucket_summary.values())
+        ),
+        "capability_failures": score_capability_failures(rows),
         "average_pair_similarity": round(statistics.mean(row["pair_similarity"] for row in rows), 2),
         "verdict_counts": verdict_counts,
         "needs_human_review_count": sum(1 for row in rows if row["verdict"]["needs_human_review"]),
@@ -753,6 +899,56 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "candidate": average_dimensions(rows, "candidate"),
         },
     }
+
+
+def acceptance_bucket_summary(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {}
+    for bucket in ("ordinary", "complex"):
+        bucket_rows = [
+            row
+            for row in rows
+            if row.get("difficulty_bucket", "ordinary") == bucket and row.get("answerability") != "true_unsupported"
+        ]
+        threshold = COMPLEX_ACCEPTANCE_THRESHOLD if bucket == "complex" else ORDINARY_ACCEPTANCE_THRESHOLD
+        accepted = sum(1 for row in bucket_rows if row["answers"]["candidate"]["acceptable"])
+        unexpected_na = sum(1 for row in bucket_rows if row.get("unexpected_not_applicable"))
+        pass_rate = accepted / len(bucket_rows) if bucket_rows else 1.0
+        summary[bucket] = {
+            "total": len(bucket_rows),
+            "candidate_acceptable": accepted,
+            "pass_rate": round(pass_rate, 4),
+            "required_pass_rate": threshold,
+            "unexpected_not_applicable_count": unexpected_na,
+            "gate_passed": pass_rate >= threshold and unexpected_na == ANSWERABLE_CASE_NOT_APPLICABLE_LIMIT,
+        }
+    return summary
+
+
+def score_capability_failures(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        candidate = row["answers"]["candidate"]
+        if candidate["acceptable"] and not row.get("unexpected_not_applicable"):
+            continue
+        family = str(row.get("capability_family") or "unknown")
+        item = summary.setdefault(
+            family,
+            {
+                "total_failures": 0,
+                "unexpected_not_applicable_count": 0,
+                "case_ids": [],
+                "issues": {},
+            },
+        )
+        item["total_failures"] += 1
+        if row.get("unexpected_not_applicable"):
+            item["unexpected_not_applicable_count"] += 1
+        item["case_ids"].append(row.get("case_id"))
+        for issue in candidate.get("issues") or []:
+            item["issues"][issue] = item["issues"].get(issue, 0) + 1
+        for reason in row.get("failure_reasons") or []:
+            item["issues"][reason] = item["issues"].get(reason, 0) + 1
+    return summary
 
 
 def average_dimensions(rows: list[dict[str, Any]], role: str) -> dict[str, float]:
@@ -765,6 +961,11 @@ def average_dimensions(rows: list[dict[str, Any]], role: str) -> dict[str, float
 
 def score_markdown(result: dict[str, Any]) -> str:
     summary = result["summary"]
+    candidate_acceptable_count = summary.get("candidate_acceptable_count", 0)
+    candidate_acceptance_rate = summary.get(
+        "candidate_acceptance_rate",
+        candidate_acceptable_count / summary["case_count"] if summary.get("case_count") else 0.0,
+    )
     lines = [
         "# Comparison Answer Scores",
         "",
@@ -777,15 +978,46 @@ def score_markdown(result: dict[str, Any]) -> str:
         f"- Cases: {summary['case_count']}",
         f"- {ANSWER_LABELS['standard']} average total: {summary['standard_average_total']}",
         f"- {ANSWER_LABELS['candidate']} average total: {summary['candidate_average_total']}",
+        f"- VDS candidate acceptable: {candidate_acceptable_count} / {summary['case_count']} ({candidate_acceptance_rate:.2%})",
+        f"- Unexpected Not Applicable: {summary.get('unexpected_not_applicable_count', 0)}",
+        f"- Acceptance gate passed: {summary.get('acceptance_passed', False)}",
         f"- Average pair similarity: {summary['average_pair_similarity']}",
         f"- Needs human review: {summary['needs_human_review_count']}",
         f"- Verdict counts: {json.dumps(summary['verdict_counts'], ensure_ascii=False)}",
         "",
-        "## Cases",
+        "## Acceptance Buckets",
         "",
-        "| case_id | standard | candidate | similarity | verdict |",
+        "| bucket | candidate acceptable | required | unexpected Not Applicable | gate |",
         "| --- | ---: | ---: | ---: | --- |",
     ]
+    for bucket in ("ordinary", "complex"):
+        item = (summary.get("acceptance_buckets") or {}).get(bucket) or {}
+        lines.append(
+            "| {bucket} | {accepted}/{total} ({rate:.2%}) | {required:.0%} | {na} | {gate} |".format(
+                bucket=bucket,
+                accepted=item.get("candidate_acceptable", 0),
+                total=item.get("total", 0),
+                rate=float(item.get("pass_rate", 0.0)),
+                required=float(item.get("required_pass_rate", 0.0)),
+                na=item.get("unexpected_not_applicable_count", 0),
+                gate=item.get("gate_passed", False),
+            )
+        )
+    if summary.get("capability_failures"):
+        lines.extend(["", "## Capability Failures", ""])
+        for family, item in sorted(summary["capability_failures"].items(), key=lambda pair: pair[1].get("total_failures", 0), reverse=True)[:12]:
+            lines.append(
+                f"- {family}: failures={item.get('total_failures', 0)}, unexpected Not Applicable={item.get('unexpected_not_applicable_count', 0)}, cases={', '.join(str(case_id) for case_id in item.get('case_ids', [])[:8])}"
+            )
+    lines.extend(
+        [
+            "",
+            "## Cases",
+            "",
+            "| case_id | standard | candidate | similarity | verdict |",
+            "| --- | ---: | ---: | ---: | --- |",
+        ]
+    )
     for row in result["rows"]:
         lines.append(
             "| {case_id} | {standard:.2f} | {candidate:.2f} | {similarity:.2f} | {verdict} |".format(
@@ -806,6 +1038,9 @@ def score_markdown(result: dict[str, Any]) -> str:
                 "",
                 f"- Question: {row['question']}",
                 f"- Expected route: {row['expected_route']}",
+                f"- Difficulty bucket: {row.get('difficulty_bucket', 'ordinary')}",
+                f"- Capability family: {row.get('capability_family', 'unknown')}",
+                f"- Unexpected Not Applicable: {row.get('unexpected_not_applicable', False)}",
                 f"- Verdict: {row['verdict']['label']} ({row['verdict']['reason']})",
                 f"- Standard dimensions: {json.dumps(row['answers']['standard']['dimensions'], ensure_ascii=False)}",
                 f"- Candidate dimensions: {json.dumps(row['answers']['candidate']['dimensions'], ensure_ascii=False)}",
@@ -1003,6 +1238,29 @@ def semantic_concepts(text: str) -> set[str]:
 
 def weighted_total(dimensions: dict[str, float]) -> float:
     return sum(dimensions[key] * WEIGHTS[key] * 10.0 for key in WEIGHTS)
+
+
+def calibrated_total(dimensions: dict[str, float], *, expected_route: str) -> float:
+    total = weighted_total(dimensions)
+    if requires_text_framework(expected_route):
+        framework = dimensions.get("text_framework_alignment", 0.0)
+        completeness = dimensions.get("completeness", 0.0)
+        instruction = dimensions.get("instruction_following", 0.0)
+        if framework < 4.5:
+            total = min(total, 52.0)
+        elif framework < 5.5:
+            total = min(total, 60.0)
+        elif framework < TEXT_FRAMEWORK_PASS_MIN:
+            total = min(total, 70.0)
+
+        if completeness < 5.0:
+            total = min(total, 55.0)
+        elif completeness < COMPLETENESS_PASS_MIN:
+            total = min(total, 68.0)
+
+        if instruction < 6.0:
+            total = min(total, 62.0)
+    return total
 
 
 def clamp10(value: float) -> float:

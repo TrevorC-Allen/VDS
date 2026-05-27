@@ -194,7 +194,7 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.assertEqual(answer, "80.00")
         self.tables["v_trd_dist_ord_dtl"] = original
 
-    def test_distribution_sum_not_applicable_is_true_unsupported_when_filtered_data_missing(self) -> None:
+    def test_distribution_sum_returns_zero_when_filtered_data_missing(self) -> None:
         original = self.tables["v_trd_dist_ord_dtl"]
         self.tables["v_trd_dist_ord_dtl"] = pd.concat(
             [
@@ -236,9 +236,9 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
             verification=VerificationResult(passed=True),
         )
 
-        self.assertEqual("Not Applicable", response.answer)
+        self.assertEqual("0.00", response.answer)
         self.assertTrue(response.success)
-        self.assertEqual("true_unsupported", response.debug["not_applicable_attribution"]["category"])
+        self.assertNotIn("not_applicable_attribution", response.debug)
         self.tables["v_trd_dist_ord_dtl"] = original
 
     def test_route_contract_product_quantity_uses_store_set_join(self) -> None:

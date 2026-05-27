@@ -132,6 +132,27 @@ class TextAnswerFrameworkTest(unittest.TestCase):
         for forbidden in ("task_id", "standard_answer", "trace", "scorer"):
             self.assertNotIn(forbidden, framed)
 
+    def test_ranking_frame_localizes_verifier_note_and_avoids_duplicate_caveat(self) -> None:
+        response = {
+            "success": True,
+            "answer_type": "table",
+            "answer": "上海销售额最高。",
+            "logic_form": {"operation": "ranking", "source_tables": ["销售表"]},
+            "result": {"columns": ["城市", "销售额"], "rows": [{"城市": "上海", "销售额": 300}]},
+            "verification": {
+                "passed": True,
+                "notes": ["Verifier checked execution success, optional backend consistency, and semantic metric contract."],
+            },
+        }
+
+        framed = apply_text_answer_framework(response, question="哪个城市销售额最高？")["answer"]
+
+        self.assertIn("上海", framed)
+        self.assertIn("已通过执行成功、后端一致性和语义口径校验", framed)
+        self.assertNotIn("Verifier checked execution success", framed)
+        self.assertNotIn("semantic metric contract", framed)
+        self.assertEqual(framed.count("排序口径应以结果表的聚合字段和排序字段为准"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -42,7 +42,7 @@ def generate_insight(
         suggestions=suggestions,
         business_suggestions=suggestions,
         caveats=caveats,
-        next_questions=_next_questions(plan, rows),
+        next_questions=_next_questions(question, plan, rows),
         evidence_rows=rows[:5],
         confidence=0.82 if rows else 0.72,
     )
@@ -194,10 +194,139 @@ def _suggestions(
     return ["建议：先补充具体指标、时间范围和分组维度，再继续做可验证分析。"]
 
 
-def _next_questions(plan: AnalysisPlan | dict[str, Any] | None, rows: list[dict[str, Any]]) -> list[str]:
-    if not rows:
-        return ["是否需要按维度展开明细？"]
-    return ["异常值来自哪些明细记录？", "这个结果按时间趋势是否稳定？", "是否需要对 Top 结果继续下钻？"]
+def _next_questions(question: str, plan: AnalysisPlan | dict[str, Any] | None, rows: list[dict[str, Any]]) -> list[str]:
+    logic = _logic_form_dict(plan)
+    parameters = logic.get("parameters") if isinstance(logic.get("parameters"), dict) else {}
+    time_window = logic.get("time_window") if isinstance(logic.get("time_window"), dict) else {}
+    columns = [str(column) for column in (rows[0].keys() if rows else [])]
+    metric = _first_text(logic.get("metric"), parameters.get("metric"), _first_numeric_column(rows, columns), "核心指标")
+    dimension = _first_text(
+        logic.get("group_by"),
+        parameters.get("dimension"),
+        parameters.get("group_by"),
+        _first_dimension_column(rows, columns),
+        "关键维度",
+    )
+    time_column = _first_text(_time_column(columns), parameters.get("time_column"), time_window.get("column"), "时间")
+    has_time_column = time_column != "时间"
+    operation = str(logic.get("operation") or logic.get("task_type") or "").lower()
+    question_text = str(question or "").lower().replace(" ", "")
+
+    candidates: list[str] = []
+    if _looks_like_trend(operation, question_text):
+        candidates.extend(
+            [
+                f"把{metric}的峰值、低点和最大波动期标出来？",
+                f"按{dimension}拆分同一趋势，看看是谁拉动变化？",
+                f"检查最近一期{time_column}是否完整、是否影响趋势判断？",
+            ]
+        )
+    elif _looks_like_ranking(operation, question_text):
+        candidates.extend(
+            [
+                f"比较 Top 结果之间的{metric}差距有多大？",
+                f"把排名靠前的{dimension}按{time_column}继续下钻？" if has_time_column else f"把排名靠前的{dimension}按其他维度继续下钻？",
+                f"看低排名对象是否受缺失值、异常值或样本量影响？",
+            ]
+        )
+    elif _looks_like_share_or_rate(operation, question_text):
+        candidates.extend(
+            [
+                f"按{dimension}拆分这个占比，找出贡献最大的分组？",
+                f"看这个比例在{time_column}上是否稳定？",
+                "检查分子、分母口径是否有过滤条件或缺失值影响？",
+            ]
+        )
+    elif _looks_like_quality(question_text):
+        candidates.extend(
+            [
+                f"列出影响{metric}的异常值、缺失值和重复记录？",
+                f"模拟清洗前后{metric}会差多少？",
+                f"按{dimension}看哪些分组受数据质量问题影响最大？",
+            ]
+        )
+    elif rows:
+        candidates.extend(
+            [
+                f"按{dimension}继续拆解{metric}的构成和集中度？",
+                f"按{time_column}看{metric}的趋势和波动？",
+                f"检查{metric}是否存在异常值或质量问题影响结论？",
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                f"补充{metric}、{dimension}或{time_column}后重新计算？",
+                "需要先确认用哪张表和哪些字段作为口径？",
+            ]
+        )
+    return _dedupe_questions(candidates)[:3]
+
+
+def _logic_form_dict(plan: AnalysisPlan | dict[str, Any] | None) -> dict[str, Any]:
+    if isinstance(plan, AnalysisPlan):
+        return _as_dict(plan.logic_form)
+    if isinstance(plan, dict):
+        logic = plan.get("logic_form")
+        if isinstance(logic, dict):
+            return logic
+        return plan
+    return {}
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _first_numeric_column(rows: list[dict[str, Any]], columns: list[str]) -> str:
+    for column in _numeric_columns(rows, columns):
+        return column
+    return ""
+
+
+def _first_dimension_column(rows: list[dict[str, Any]], columns: list[str]) -> str:
+    numeric = set(_numeric_columns(rows, columns))
+    for column in columns:
+        if column not in numeric and column != _time_column(columns):
+            return column
+    return ""
+
+
+def _looks_like_trend(operation: str, question_text: str) -> bool:
+    return "trend" in operation or any(token in question_text for token in ("趋势", "波动", "环比", "同比", "增长", "下降", "trend", "mom", "yoy"))
+
+
+def _looks_like_ranking(operation: str, question_text: str) -> bool:
+    return any(token in operation for token in ("rank", "top")) or any(
+        token in question_text for token in ("排名", "top", "最高", "最低", "最大", "最小", "第一", "前")
+    )
+
+
+def _looks_like_share_or_rate(operation: str, question_text: str) -> bool:
+    return any(token in operation for token in ("percent", "percentage", "rate", "ratio", "share")) or any(
+        token in question_text for token in ("占比", "比例", "率", "percent", "rate", "ratio", "share")
+    )
+
+
+def _looks_like_quality(question_text: str) -> bool:
+    return any(token in question_text for token in ("缺失", "重复", "异常", "离群", "质量", "清洗", "填充", "删除"))
+
+
+def _dedupe_questions(candidates: list[str]) -> list[str]:
+    result: list[str] = []
+    for item in candidates:
+        text = str(item or "").strip().rstrip("。；;")
+        if not text:
+            continue
+        if not text.endswith(("?", "？")):
+            text += "？"
+        if text not in result:
+            result.append(text)
+    return result
 
 
 def _numeric_columns(rows: list[dict[str, Any]], columns: list[str] | None = None) -> list[str]:

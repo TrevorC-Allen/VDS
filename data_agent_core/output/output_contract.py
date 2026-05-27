@@ -103,7 +103,7 @@ def validate_final_answer(answer: Any, output_format: dict[str, Any] | None = No
 
 def _coerce_value_for_answer(value: Any, answer_type: str, guidelines: str, output_format: dict[str, Any] | None = None) -> Any:
     output_format = dict(output_format or {})
-    if value is None or value == "Not Applicable":
+    if value is None or _is_not_applicable_text(value):
         return "Not Applicable"
     if answer_type in STRUCTURED_ANSWER_TYPES:
         return value
@@ -145,12 +145,12 @@ def _coerce_mapping(value: dict[str, Any], answer_type: str, guidelines: str, ou
         return scalar_values[0]
     if scalar_values:
         return ", ".join(str(item) for item in scalar_values)
-    return "Not Applicable"
+    return "没有匹配记录" if answer_type in {"table", "list"} else "没有可用结果"
 
 
 def _coerce_sequence(value: list[Any] | tuple[Any, ...], answer_type: str, guidelines: str, output_format: dict[str, Any] | None = None) -> Any:
     if not value:
-        return "Not Applicable"
+        return "没有匹配记录" if answer_type in {"table", "list"} else "Not Applicable"
     if answer_type in {"number", "percentage"} or _guidelines_request_plain_number(guidelines):
         first_numeric = _first_numeric_from_sequence(value)
         if first_numeric is not None:
@@ -159,6 +159,13 @@ def _coerce_sequence(value: list[Any] | tuple[Any, ...], answer_type: str, guide
     if answer_type not in {"list", "table"} and len(coerced) == 1:
         return coerced[0]
     return [item for item in coerced if item not in {None, ""}]
+
+
+def _is_not_applicable_text(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip().lower()
+    return text in {"not applicable", "n/a", "na"} or "not applicable" in text
 
 
 def _coerce_answer_target(value: Any, answer_target: str, output_format: dict[str, Any]) -> Any:
@@ -262,12 +269,18 @@ def _extract_segment_vector(value: Any, output_format: dict[str, Any]) -> Any:
 
 def _format_scalar(value: Any, answer_type: str, output_format: dict[str, Any], guidelines: str) -> str:
     decimals = output_format.get("decimals")
-    if value is None or value == "Not Applicable":
+    if value is None or _is_not_applicable_text(value):
         return "Not Applicable"
     if answer_type == "number":
-        return _format_number(float(value), decimals)
+        try:
+            return _format_number(float(value), decimals)
+        except (TypeError, ValueError):
+            return str(value)
     if answer_type == "percentage":
-        number = _format_number(float(value), 2 if decimals is None else decimals)
+        try:
+            number = _format_number(float(value), 2 if decimals is None else decimals)
+        except (TypeError, ValueError):
+            return str(value)
         return number if _guidelines_request_plain_number(guidelines) else f"{number}%"
     if answer_type == "yes_no":
         return _format_yes_no(value)
@@ -276,7 +289,7 @@ def _format_scalar(value: Any, answer_type: str, output_format: dict[str, Any], 
     if answer_type == "scheme_fee" and isinstance(value, dict):
         return f"{value['card_scheme']}:{_format_number(float(value['fee']), decimals)}"
     if answer_type == "aci" and isinstance(value, dict):
-        return str(value.get("aci") or value.get("answer") or "Not Applicable")
+        return str(value.get("aci") or value.get("answer") or "没有匹配记录")
     if answer_type == "aci_fee" and isinstance(value, dict):
         return f"{value['aci']}:{_format_number(float(value['fee']), decimals)}"
     if answer_type == "card_scheme" and isinstance(value, dict):
@@ -392,7 +405,7 @@ def _format_decimal(value: float, places: int) -> str:
 
 def _format_grouped_amounts(rows: Any, decimals: int | None) -> str:
     if not rows:
-        return "Not Applicable"
+        return "没有匹配记录"
     if not isinstance(rows, list) or not isinstance(rows[0], dict):
         return str(rows)
     group_key = next(key for key in rows[0] if key != "eur_amount")

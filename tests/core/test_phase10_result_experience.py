@@ -241,6 +241,30 @@ class Phase10ResultExperienceTest(unittest.TestCase):
         self.assertIn("下一步", insight.business_suggestions[0])
         self.assertGreater(insight.confidence, 0)
 
+    def test_insight_generator_tailors_next_questions_to_plan_context(self) -> None:
+        result = ExecutionResult(
+            backend="pandas",
+            success=True,
+            columns=["城市", "销售额"],
+            rows=[{"城市": "上海", "销售额": 300}, {"城市": "北京", "销售额": 200}],
+        )
+        plan = AnalysisPlan(
+            plan_id="plan_rank",
+            logic_form=LogicForm(task_type="ranking", operation="ranking", metric="销售额", group_by="城市"),
+        )
+
+        insight = generate_insight(
+            question="哪个城市销售额最高？",
+            plan=plan,
+            execution_result=result,
+            verification_passed=True,
+        )
+
+        joined = " ".join(insight.next_questions)
+        self.assertIn("销售额", joined)
+        self.assertIn("城市", joined)
+        self.assertNotIn("异常值来自哪些明细记录", joined)
+
     def test_data_quality_report_scans_missing_duplicates_and_outliers(self) -> None:
         df = pd.DataFrame(
             [

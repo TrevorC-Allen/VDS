@@ -62,6 +62,7 @@ CHINESE_RETAIL_OPERATIONS = {
     "retail_top_employee_visit_success_rate_trend",
     "retail_category_distribution_monthly_trend",
 }
+NO_MATCHING_RECORDS = "没有匹配记录"
 
 
 def is_chinese_retail_operation(operation: str) -> bool:
@@ -74,7 +75,9 @@ def execute_chinese_retail_operation(logic: LogicForm, context: dict[str, Any]) 
     """Execute a Chinese retail LogicForm against uploaded tables."""
 
     op = logic.operation
-    params = logic.parameters
+    params = dict(logic.parameters)
+    if logic.output_format.get("not_applicable_type"):
+        params["_not_applicable_type"] = logic.output_format["not_applicable_type"]
     tables = context["tables"]
     if op == "retail_distribution_sum":
         return _retail_distribution_sum(tables, params)
@@ -177,21 +180,23 @@ def _retail_distribution_sum(tables: dict[str, pd.DataFrame], params: dict[str, 
     data = _filter_person(data, params.get("person"), params.get("role"))
     data = _filter_product(data, params.get("product"))
     if data.empty:
-        return "Not Applicable"
+        if params.get("_not_applicable_type") == "true_unsupported" and not params.get("person") and not params.get("product"):
+            return "Not Applicable"
+        return 0.0
     return _sum(data, str(params.get("metric") or "sign_amt"))
 
 
 def _retail_distribution_product_share(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
     product = params.get("product")
     if not product:
-        return "Not Applicable"
+        return 0.0
     hist = _history_table(tables)
     data = _filter_ym(hist, "sign_time", params.get("ym"))
     data = _filter_person(data, params.get("person"), params.get("role"))
     metric = str(params.get("metric") or "sign_amt")
     denominator = _sum(data, metric)
     if denominator == 0:
-        return "Not Applicable"
+        return 0.0
     numerator = _sum(_filter_product(data, product), metric)
     return numerator / denominator * 100
 
@@ -200,14 +205,14 @@ def _retail_distribution_ranking(tables: dict[str, pd.DataFrame], params: dict[s
     hist = _history_table(tables)
     data = _filter_ym(hist, "sign_time", params.get("ym"))
     if data.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     dimension = _first_existing_column(data, str(params.get("dimension") or "emp_name"), ("sku_name", "cmdt_name", "sku_code"))
     metric = str(params.get("metric") or "sign_amt")
     if dimension not in data.columns or metric not in data.columns:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     ranking = data.groupby(dimension, dropna=True)[metric].sum().sort_values(ascending=False)
     if ranking.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     limit = int(params.get("limit") or 1)
     if limit == 1:
         return str(ranking.index[0])
@@ -220,10 +225,10 @@ def _retail_audit_sku_category_record_top(tables: dict[str, pd.DataFrame], param
     audit = _filter_audit_ym(_audit_sku_table(tables), params.get("ym"))
     category_column = _first_existing_column(audit, "ctg_name", ("clfc_name", "p_clfc_name", "category_name", "品类"))
     if audit.empty or category_column not in audit.columns:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     counts = audit[category_column].dropna().astype(str).value_counts()
     if counts.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     name = str(counts.index[0])
     return f"{name}:{int(counts.iloc[0])}" if params.get("include_metric") else name
 
@@ -233,10 +238,10 @@ def _retail_audit_sku_store_sku_count_top(tables: dict[str, pd.DataFrame], param
     store_column = _first_existing_column(audit, "cust_name", ("终端客户", "store_name", "客户名称"))
     sku_column = _first_existing_column(audit, "sku_code", ("sku_name", "cmdt_code", "cmdt_name", "商品编码"))
     if audit.empty or store_column not in audit.columns or sku_column not in audit.columns:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     counts = audit.groupby(store_column, dropna=True)[sku_column].apply(_nunique_with_missing_bucket).sort_values(ascending=False)
     if counts.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     name = str(counts.index[0])
     return f"{name}:{int(counts.iloc[0])}" if params.get("include_metric") else name
 
@@ -247,10 +252,10 @@ def _retail_average_active_sku_per_store(tables: dict[str, pd.DataFrame], params
     store_column = _first_existing_column(data, "cust_code", ("cust_name", "终端客户", "客户名称"))
     sku_column = _first_existing_column(data, "sku_code", ("sku_name", "cmdt_code", "cmdt_name"))
     if data.empty or store_column not in data.columns or sku_column not in data.columns:
-        return "Not Applicable"
+        return 0.0
     counts = data.groupby(store_column, dropna=True)[sku_column].nunique()
     if counts.empty:
-        return "Not Applicable"
+        return 0.0
     return float(counts.mean())
 
 
@@ -258,20 +263,20 @@ def _retail_target_lookup(tables: dict[str, pd.DataFrame], params: dict[str, Any
     person = params.get("person")
     ym = params.get("ym")
     if not person or not ym:
-        return "Not Applicable"
+        return 0.0
     if params.get("role") == "manager":
         target = _table_with_columns(tables, {"stat_month", "mgr_name", "target_amt"})
         data = target[(target["stat_month"].astype(int) == int(ym)) & (target["mgr_name"].astype(str) == str(person))]
-        return "Not Applicable" if data.empty else float(pd.to_numeric(data["target_amt"], errors="coerce").sum())
+        return 0.0 if data.empty else float(pd.to_numeric(data["target_amt"], errors="coerce").sum())
     target = _table_with_columns(tables, {"stat_month", "emp_name", "target"})
     data = target[(target["stat_month"].astype(int) == int(ym)) & (target["emp_name"].astype(str) == str(person))]
-    return "Not Applicable" if data.empty else float(pd.to_numeric(data["target"], errors="coerce").sum())
+    return 0.0 if data.empty else float(pd.to_numeric(data["target"], errors="coerce").sum())
 
 
 def _retail_target_entity_count(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> int | str:
     ym = params.get("ym")
     if not ym:
-        return "Not Applicable"
+        return 0
     if params.get("role") == "manager":
         target = _table_with_columns(tables, {"stat_month", "mgr_name", "target_amt"})
         data = target[target["stat_month"].astype(int) == int(ym)]
@@ -285,20 +290,20 @@ def _retail_target_achievement_rate(tables: dict[str, pd.DataFrame], params: dic
     ym = params.get("ym")
     person = params.get("person")
     if not ym or not person:
-        return "Not Applicable"
+        return 0.0
     hist = _filter_ym(_history_table(tables), "sign_time", ym)
     hist = _filter_person(hist, person, params.get("role"))
     actual = _sum(hist, "sign_amt")
     target = _retail_target_lookup(tables, params)
-    if target == "Not Applicable" or float(target) == 0.0:
-        return "Not Applicable"
+    if float(target) == 0.0:
+        return 0.0
     return actual / float(target) * 100
 
 
 def _retail_target_achievement_monthly(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
     monthly = _target_actual_monthly_rows(tables, params)
     if not monthly:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     achieved = [row["月份"] for row in monthly if float(row["达成率"]) >= 100.0]
     person = str(params.get("person") or "")
     answer = (
@@ -312,7 +317,7 @@ def _retail_target_achievement_monthly(tables: dict[str, pd.DataFrame], params: 
 def _retail_target_actual_monthly_comparison(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
     monthly = _target_actual_monthly_rows(tables, params)
     if not monthly:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     person = str(params.get("person") or "")
     best = max(monthly, key=lambda row: float(row["达成率"]))
     answer = (
@@ -326,10 +331,10 @@ def _retail_distribution_monthly_mom(tables: dict[str, pd.DataFrame], params: di
     hist = _history_table(tables)
     months = _month_range(params.get("start_ym"), params.get("end_ym"))
     if not months:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     data = _filter_date_month_range(hist, "sign_time", months)
     if data.empty or "sign_amt" not in data.columns:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     data = data.copy()
     data["month"] = pd.to_datetime(data["sign_time"], errors="coerce").dt.strftime("%Y%m").astype(int)
     totals = data.groupby("month", dropna=True)["sign_amt"].sum().reindex(months, fill_value=0.0)
@@ -346,12 +351,12 @@ def _retail_distribution_monthly_mom(tables: dict[str, pd.DataFrame], params: di
         rows.append({"月份": _ym_label(int(month)), "分销金额": amount_f, "环比": None if mom is None else mom})
         previous = amount_f
     if not rows:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     growth = max(changes, key=lambda item: item[1]) if changes else None
     decline = min(changes, key=lambda item: item[1]) if changes else None
     answer = "；".join(
         f"{row['月份']} 分销金额{_format_decimal(float(row['分销金额']), 2)}，环比"
-        f"{'Not Applicable' if row['环比'] is None else _format_decimal(float(row['环比']), 2) + '%'}"
+        f"{'无可比基期' if row['环比'] is None else _format_decimal(float(row['环比']), 2) + '%'}"
         for row in rows
     )
     if growth and decline:
@@ -367,11 +372,11 @@ def _retail_distribution_topn_chart(tables: dict[str, pd.DataFrame], params: dic
     dimension = _first_existing_column(hist, str(params.get("dimension") or "sku_name"), ("cmdt_name", "cmdt_sname", "sku_code"))
     metric = str(params.get("metric") or "sign_amt")
     if hist.empty or dimension not in hist.columns or metric not in hist.columns:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     ranking = _numeric(hist[metric]).groupby(hist[dimension]).sum().sort_values(ascending=False)
     ranking = ranking[ranking > 0]
     if ranking.empty:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     limit = int(params.get("limit") or 10)
     rows = [{_dimension_label(dimension): str(name), _metric_label(metric): float(value)} for name, value in ranking.head(limit).items()]
     answer = "；".join(f"{row[_dimension_label(dimension)]}:{_format_decimal(float(row[_metric_label(metric)]), 2)}" for row in rows)
@@ -386,14 +391,14 @@ def _retail_route_store_count(tables: dict[str, pd.DataFrame], params: dict[str,
 def _retail_route_history_category_top(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> str:
     route_codes = _route_customer_codes(tables, params)
     if not route_codes:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     hist = _filter_ym(_history_table(tables), "sign_time", params.get("ym"))
     if "ctg_name" not in hist.columns:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     data = hist[hist["cust_code"].dropna().astype(str).isin(route_codes)]
     ranking = data.groupby("ctg_name", dropna=True)["sign_amt"].sum().sort_values(ascending=False)
     if ranking.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     if params.get("include_metric"):
         return f"{ranking.index[0]}:{_format_decimal(float(ranking.iloc[0]), int(params.get('decimals') or 2))}"
     return str(ranking.index[0])
@@ -403,7 +408,7 @@ def _retail_display_item_top(tables: dict[str, pd.DataFrame], params: dict[str, 
     display = _display_plan_table(tables)
     data = _filter_execute_ym(display, params.get("ym"))
     counts = data["dsp_name"].dropna().astype(str).value_counts()
-    return "Not Applicable" if counts.empty else str(counts.index[0])
+    return NO_MATCHING_RECORDS if counts.empty else str(counts.index[0])
 
 
 def _retail_contract_store_count(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> int:
@@ -421,7 +426,7 @@ def _retail_service_customer_count(tables: dict[str, pd.DataFrame], params: dict
 def _retail_service_contract_store_rate(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
     customer = _service_customer_rows(tables, params.get("ym"))
     if customer.empty:
-        return "Not Applicable"
+        return 0.0
     service_codes = set(customer["终端客户编码"].dropna().astype(str))
     contract_codes = set(customer.loc[customer["是否合约店"].astype(str) == "是", "终端客户编码"].dropna().astype(str))
     return 0.0 if not service_codes else len(contract_codes) / len(service_codes) * 100
@@ -430,10 +435,10 @@ def _retail_service_contract_store_rate(tables: dict[str, pd.DataFrame], params:
 def _retail_service_freezer_customer_rate(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
     customer = _service_customer_rows(tables, params.get("ym"))
     if customer.empty:
-        return "Not Applicable"
+        return 0.0
     freezer_column = _first_existing_column(customer, "是否冰柜客户", ("是否我司冰柜客户", "是否冰柜"))
     if freezer_column not in customer.columns:
-        return "Not Applicable"
+        return 0.0
     service_codes = set(customer["终端客户编码"].dropna().astype(str))
     freezer_codes = set(
         customer.loc[customer[freezer_column].fillna("").astype(str) == "是", "终端客户编码"]
@@ -454,21 +459,21 @@ def _retail_today_category_top(tables: dict[str, pd.DataFrame], params: dict[str
     today = _today_table(tables)
     data = _filter_date(today, "sign_time", params.get("date"))
     counts = data["ctg_name"].dropna().astype(str).value_counts()
-    return "Not Applicable" if counts.empty else str(counts.index[0])
+    return NO_MATCHING_RECORDS if counts.empty else str(counts.index[0])
 
 
 def _retail_today_distribution_ranking(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> str:
     today = _today_table(tables)
     data = _filter_date(today, "sign_time", params.get("date"))
     if data.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     dimension = str(params.get("dimension") or "emp_name")
     metric = str(params.get("metric") or "sign_amt")
     if dimension not in data.columns or metric not in data.columns:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     ranking = data.groupby(dimension, dropna=True)[metric].sum().sort_values(ascending=False)
     if ranking.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     limit = int(params.get("limit") or 1)
     if limit == 1:
         return str(ranking.index[0])
@@ -485,7 +490,7 @@ def _retail_visit_success_count(tables: dict[str, pd.DataFrame], params: dict[st
 def _retail_visit_success_rate(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
     visits = _visit_rows(tables, params)
     if visits.empty:
-        return "Not Applicable"
+        return 0.0
     return float((_numeric(visits["if_visit_sucess"]) == 1).mean() * 100)
 
 
@@ -501,7 +506,7 @@ def _retail_daily_progress_rate(tables: dict[str, pd.DataFrame], params: dict[st
     calendar = _table_with_columns(tables, {"month_id", "dist_day_cnt"})
     day_rows = calendar[calendar["month_id"].astype(int) == int(ym)]
     if target_rows.empty or day_rows.empty:
-        return "Not Applicable"
+        return 0.0
     month_target = float(pd.to_numeric(target_rows["target"], errors="coerce").sum())
     day_count = float(pd.to_numeric(day_rows["dist_day_cnt"], errors="coerce").dropna().max())
     return 0.0 if month_target == 0 or day_count == 0 else amount / (month_target / day_count) * 100
@@ -511,7 +516,7 @@ def _retail_daily_progress_worst_employee(tables: dict[str, pd.DataFrame], param
     rows = _employee_daily_progress_rows(tables, params)
     rows = [row for row in rows if float(row["当日分销额"]) > 0]
     if not rows:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     selected = min(rows, key=lambda row: float(row["进度"]))
     answer = f"{selected['业代']}:{_format_decimal(float(selected['进度']), 2)}%,{_format_decimal(float(selected['差距']), 2)}%"
     return {"answer": answer, "candidate_table": rows, "x": "业代", "metric": "进度"}
@@ -521,15 +526,15 @@ def _retail_manager_daily_gap_contribution(tables: dict[str, pd.DataFrame], para
     ym = params.get("ym")
     date_text = params.get("date")
     if not ym or not date_text:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     day_count = _distribution_day_count(tables, ym)
     if not day_count:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     today = _filter_date(_today_table(tables), "sign_time", date_text)
     mgr_target = _table_with_columns(tables, {"stat_month", "mgr_name", "target_amt"})
     mgr_target = mgr_target[pd.to_numeric(mgr_target["stat_month"], errors="coerce").fillna(0).astype(int) == int(ym)]
     if mgr_target.empty:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     emp_progress = _employee_daily_progress_rows(tables, params, include_zero_actual=True)
     rows: list[dict[str, Any]] = []
     for _, target_row in mgr_target.iterrows():
@@ -550,7 +555,7 @@ def _retail_manager_daily_gap_contribution(tables: dict[str, pd.DataFrame], para
         )
     rows = [row for row in rows if float(row["主任日目标缺口"]) > 0]
     if not rows:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     selected = max(rows, key=lambda row: float(row["主任日目标缺口"]))
     answer = (
         f"{selected['主任']}:{_format_decimal(float(selected['主任日目标缺口']), 2)};"
@@ -563,13 +568,13 @@ def _retail_route_history_sum(tables: dict[str, pd.DataFrame], params: dict[str,
     cust_codes = _route_customer_codes(tables, params)
     hist = _filter_ym(_history_table(tables), "sign_time", params.get("ym"))
     data = hist[hist["cust_code"].dropna().astype(str).isin(cust_codes)]
-    return "Not Applicable" if data.empty else _sum(data, "sign_amt")
+    return 0.0 if data.empty else _sum(data, "sign_amt")
 
 
 def _retail_route_contract_product_quantity(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
     route_codes = _route_customer_codes(tables, params)
     if not route_codes:
-        return "Not Applicable"
+        return 0.0
     contract_codes = _contract_customer_codes(tables, params.get("ym"))
     hist = _filter_ym(_history_table(tables), "sign_time", params.get("ym"))
     data = hist[hist["cust_code"].dropna().astype(str).isin(route_codes & contract_codes)]
@@ -580,7 +585,7 @@ def _retail_route_contract_product_quantity(tables: dict[str, pd.DataFrame], par
 def _retail_fiscal_product_quantity(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
     fiscal_year = int(params.get("fiscal_year") or 0)
     if not fiscal_year:
-        return "Not Applicable"
+        return 0.0
     hist = _history_table(tables)
     dates = pd.to_datetime(hist["sign_time"], errors="coerce")
     start = pd.Timestamp(year=fiscal_year - 1, month=12, day=1)
@@ -588,7 +593,7 @@ def _retail_fiscal_product_quantity(tables: dict[str, pd.DataFrame], params: dic
     data = hist[(dates >= start) & (dates <= end)]
     data = _filter_person(data, params.get("person"), params.get("role"))
     data = _filter_product(data, params.get("product"))
-    return "Not Applicable" if data.empty else _sum(data, "sign_box_cnt")
+    return 0.0 if data.empty else _sum(data, "sign_box_cnt")
 
 
 def _retail_new_contract_store_names(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> str:
@@ -642,12 +647,12 @@ def _retail_display_execution_image_pass_top(tables: dict[str, pd.DataFrame], pa
     store_column = _first_existing_column(display, "cust_name", ("终端客户", "客户名称", "store_name", "cust_code"))
     result_column = _first_existing_column(display, "check_result_name", ("img_dsp_result_name", "dsp_result_name", "检查结果"))
     if display.empty or store_column not in display.columns or result_column not in display.columns:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     result_text = display[result_column].fillna("").astype(str)
     passed = display[result_text.str.contains("合格", regex=False) & ~result_text.str.contains("不合格", regex=False)]
     counts = passed[store_column].dropna().astype(str).value_counts()
     if counts.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     name = str(counts.index[0])
     if not params.get("include_metric"):
         return name
@@ -678,10 +683,10 @@ def _retail_display_execution_item_count_top(tables: dict[str, pd.DataFrame], pa
         display = display[display["dsp_name"].astype(str) == str(item)]
     store_column = _first_existing_column(display, "cust_name", ("终端客户", "客户名称", "store_name", "cust_code"))
     if display.empty or store_column not in display.columns:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     counts = display[store_column].dropna().astype(str).value_counts()
     if counts.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     name = str(counts.index[0])
     if not params.get("include_metric"):
         return name
@@ -697,7 +702,7 @@ def _retail_display_fee_rate(tables: dict[str, pd.DataFrame], params: dict[str, 
     hist = _filter_ym(_history_table(tables), "sign_time", params.get("ym"))
     hist = _filter_person(hist, params.get("person"), params.get("role"))
     denominator = _sum(hist, "sign_amt")
-    return "Not Applicable" if denominator == 0 else numerator / denominator * 100
+    return 0.0 if denominator == 0 else numerator / denominator * 100
 
 
 def _retail_display_pass_rate(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
@@ -707,7 +712,7 @@ def _retail_display_pass_rate(tables: dict[str, pd.DataFrame], params: dict[str,
         display = display[display["dsp_name"].astype(str) == str(item)]
     checked = display[display["check_result_name"].notna()]
     if checked.empty:
-        return "Not Applicable"
+        return 0.0
     return float((checked["check_result_name"].astype(str) == "合格").mean() * 100)
 
 
@@ -739,10 +744,10 @@ def _retail_active_sku_top(tables: dict[str, pd.DataFrame], params: dict[str, An
     hist = _filter_ym(_history_table(tables), "sign_time", params.get("ym"))
     data = _active_sku_rows(hist)
     if data.empty or "cust_name" not in data.columns or "sku_code" not in data.columns:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     counts = data.groupby("cust_name", dropna=True)["sku_code"].nunique().sort_values(ascending=False)
     if counts.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     name = str(counts.index[0])
     return f"{name}:{int(counts.iloc[0])}"
 
@@ -778,15 +783,15 @@ def _retail_manager_target_monthly_trend(tables: dict[str, pd.DataFrame], params
     target = _table_with_columns(tables, {"stat_month", "mgr_name", "target_amt"}, ("ads_trd_dist_ord_target_mgr_1m_df",))
     months = _month_range(params.get("start_ym"), params.get("end_ym"))
     if not months:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     data = _filter_stat_month_range(target, months)
     if data.empty:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     data = data.copy()
     data["target_amt_n"] = _numeric(data["target_amt"])
     managers = sorted([str(value) for value in data["mgr_name"].dropna().astype(str).unique() if str(value)])
     if not managers:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     pivot = (
         data.groupby(["stat_month", "mgr_name"], dropna=True)["target_amt_n"]
         .sum()
@@ -806,14 +811,14 @@ def _retail_top_employee_visit_success_rate_trend(tables: dict[str, pd.DataFrame
     visits = _visit_table(tables)
     months = _month_range(params.get("start_ym"), params.get("end_ym"))
     if not months:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     data = _filter_date_month_range(visits, "visit_date", months)
     if data.empty or "emp_name" not in data.columns or "if_visit_sucess" not in data.columns:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     limit = int(params.get("limit") or 5)
     top_employees = data["emp_name"].dropna().astype(str).value_counts().head(limit).index.tolist()
     if not top_employees:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     scoped = data[data["emp_name"].astype(str).isin(top_employees)].copy()
     scoped["month"] = pd.to_datetime(scoped["visit_date"], errors="coerce").dt.strftime("%Y%m").astype(int)
     scoped["success"] = (_numeric(scoped["if_visit_sucess"]) == 1).astype(int)
@@ -842,17 +847,17 @@ def _retail_category_distribution_monthly_trend(tables: dict[str, pd.DataFrame],
     hist = _history_table(tables)
     months = _month_range(params.get("start_ym"), params.get("end_ym"))
     if not months:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     data = _filter_date_month_range(hist, "sign_time", months)
     if data.empty or "ctg_name" not in data.columns or "sign_amt" not in data.columns:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     limit = int(params.get("limit") or 5)
     data = data.copy()
     data["month"] = pd.to_datetime(data["sign_time"], errors="coerce").dt.strftime("%Y%m").astype(int)
     data["sign_amt_n"] = _numeric(data["sign_amt"])
     categories = data.groupby("ctg_name", dropna=True)["sign_amt_n"].sum().sort_values(ascending=False).head(limit).index.tolist()
     if not categories:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     pivot = (
         data[data["ctg_name"].isin(categories)]
         .groupby(["month", "ctg_name"], dropna=True)["sign_amt_n"]

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Virtual Data Scientist Workbench</title>
     <link rel="icon" href="/frontend/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/frontend/styles.css?v=20260527-thinking-drawer-v1" />
+    <link rel="stylesheet" href="/frontend/styles.css?v=20260527-interactive-chart-v5-normal-font" />
   </head>
   <body>
     <div id="context-menu" class="context-menu hidden" role="menu" aria-label="操作菜单"></div>
@@ -94,6 +94,19 @@
             </a>
             <span id="api-status" class="status-pill idle">准备就绪</span>
             <span id="dataset-chip" class="dataset-chip">未上传数据</span>
+            <div id="file-status-wrap" class="file-status-wrap topbar-file-status hidden">
+              <div class="file-status" aria-live="polite">
+                <button id="file-summary" class="file-summary-button" type="button" disabled aria-expanded="false" aria-controls="file-panel">选择文件</button>
+                <span id="file-detail">数据文件和规则文件支持多选</span>
+              </div>
+              <section id="file-panel" class="file-panel hidden" aria-label="文件列表">
+                <div class="file-panel-header">
+                  <strong>文件</strong>
+                  <span id="file-panel-count">0</span>
+                </div>
+                <ul id="file-panel-list" class="file-panel-list"></ul>
+              </section>
+            </div>
           </div>
         </header>
 
@@ -245,6 +258,7 @@
 
         <section class="composer-shell" aria-label="对话输入">
           <div class="composer">
+            <div id="composer-file-tray" class="composer-file-tray hidden" aria-label="已选择文件"></div>
             <div
               id="question-input"
               class="composer-input is-empty"
@@ -265,23 +279,16 @@
             <div class="composer-actions">
               <div class="upload-controls" aria-label="文件上传">
                 <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md,.txt,.yaml,.yml,.doc,.docx,.docm,.rtf,.odt,.pdf,.pages,.html,.htm" />
-                <label class="icon-button upload-pick-button" for="file-input" title="选择文件" aria-label="选择文件">
+                <input id="rule-file-input" class="visually-hidden" type="file" multiple accept=".yaml,.yml,.json,.txt,.md,.doc,.docx,.docm,.rtf,.odt,.pdf,.pages,.html,.htm" />
+                <label class="button data-file-button upload-pick-button" for="file-input" title="上传数据文件" aria-label="上传数据文件">
                   <svg viewBox="0 0 24 24"><path d="m21.4 11.6-8.5 8.5a5 5 0 0 1-7.1-7.1l9-9a3.2 3.2 0 0 1 4.5 4.5l-9.1 9.1a1.5 1.5 0 0 1-2.1-2.1l8.3-8.3" /></svg>
+                  <span>上传数据文件</span>
                 </label>
+                <button id="rule-upload-button" class="rule-file-button" type="button" aria-describedby="rule-file-status" title="上传语义模型、指标口径或计算方法规则，后续分析会基于此规则">
+                  <span>添加规则</span>
+                </button>
+                <span id="rule-file-status" class="rule-file-status">可选：上传规则文件可以补充语义模型、指标口径和计算方法</span>
                 <button id="upload-button" class="button secondary upload-button" type="button" disabled>上传</button>
-                <div class="file-status-wrap">
-                  <div class="file-status" aria-live="polite">
-                    <button id="file-summary" class="file-summary-button" type="button" disabled aria-expanded="false" aria-controls="file-panel">选择文件</button>
-                    <span id="file-detail">数据和说明文件支持多选</span>
-                  </div>
-                  <section id="file-panel" class="file-panel hidden" aria-label="文件列表">
-                    <div class="file-panel-header">
-                      <strong>文件</strong>
-                      <span id="file-panel-count">0</span>
-                    </div>
-                    <ul id="file-panel-list" class="file-panel-list"></ul>
-                  </section>
-                </div>
               </div>
               <div class="controls-row">
                 <label>
@@ -326,6 +333,6 @@
         </aside>
       </main>
     </div>
-    <script src="/frontend/app.js?v=20260527-upload-sources-v1" type="module"></script>
+    <script src="/frontend/app.js?v=20260527-interactive-chart-v5-normal-font-activity-drawer-autoscroll-v1-contextual-next-questions-v1" type="module"></script>
   </body>
 </html>

@@ -100,7 +100,7 @@ class DataAgentToolImplTest(unittest.TestCase):
         self.assertTrue(chart.success)
         self.assertEqual("bar", chart.output_payload["chart_type"])
         self.assertTrue(insight.success)
-        self.assertIn("Verified result", insight.output_payload["summary"])
+        self.assertIn("通过校验", insight.output_payload["summary"])
 
 
 if __name__ == "__main__":

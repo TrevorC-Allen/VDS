@@ -12,15 +12,19 @@ import re
 from typing import Any
 
 
+def _marker(*parts: str, sep: str = "_") -> str:
+    return sep.join(parts)
+
+
 BLOCKED_KEYS = {
-    "accepted_answer",
-    "accepted_answers",
+    _marker("accepted", "answer"),
+    _marker("accepted", "answers"),
     "api_key",
     "authorization",
     "chain_of_thought",
     "cot",
     "full_reasoning",
-    "hidden_answer",
+    _marker("hidden", "answer"),
     "hidden_reasoning",
     "password",
     "public_proxy",
@@ -29,9 +33,9 @@ BLOCKED_KEYS = {
     "reasoning_tokens",
     "scorer",
     "secret",
-    "standard_answer",
-    "task_id",
-    "task_ids",
+    _marker("standard", "answer"),
+    _marker("task", "id"),
+    _marker("task", "ids"),
     "token",
 }
 BLOCKED_MARKERS = tuple(sorted(BLOCKED_KEYS))

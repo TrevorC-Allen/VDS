@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
@@ -11,21 +12,28 @@ from scripts.run_generic_dataset_eval import (
     build_comparison_rows,
     comparison_markdown,
     gpt_like_style_checks,
+    score_candidate_answers,
 )
 
 
-class FakeGPTReferenceClient:
+class FakeDeepSeekReferenceClient:
     def __init__(self) -> None:
-        self.config = SimpleNamespace(provider="openai", model="gpt-reference-test")
+        self.config = SimpleNamespace(provider="deepseek", model="deepseek-chat")
         self.messages: list[list[dict[str, str]]] = []
 
     def complete_json(self, messages: list[dict[str, str]], temperature: float = 0.0) -> dict[str, object]:
         self.messages.append(messages)
         return {
-            "standard_answer": "已帮你看了这个数据，核心结论是：GPT reference 标准答案。",
+            "standard_answer": "已帮你看了这个数据，核心结论是：DeepSeek reference 标准答案。",
             "notes": ["grounded in computed facts"],
             "confidence": 0.91,
         }
+
+
+class FakeOpenAIReferenceClient(FakeDeepSeekReferenceClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.config = SimpleNamespace(provider="openai", model="gpt-reference-test")
 
 
 class GenericDatasetEvalRunnerTest(unittest.TestCase):
@@ -34,6 +42,10 @@ class GenericDatasetEvalRunnerTest(unittest.TestCase):
             "case_id": "generic_uploaded_001",
             "ae_group": "B_uploaded_general_data_understanding",
             "category": "general_uploaded",
+            "difficulty_bucket": "ordinary",
+            "capability_family": "overview",
+            "answerability": "answerable",
+            "acceptance_threshold": 1.0,
             "question": "这个数据主要讲什么？",
             "expected_route": "dataset_overview",
             "scoring_dimensions": ["grounded"],
@@ -72,36 +84,91 @@ class GenericDatasetEvalRunnerTest(unittest.TestCase):
             ],
         }
 
-    def test_formal_standard_answers_use_gpt_source(self) -> None:
-        client = FakeGPTReferenceClient()
+    def test_formal_standard_answers_use_explicit_deepseek_source(self) -> None:
+        client = FakeDeepSeekReferenceClient()
 
-        cases, generation = apply_standard_answer_source([self._case()], self._facts(), source="gpt", llm_client=client)
+        cases, generation = apply_standard_answer_source([self._case()], self._facts(), source="deepseek", llm_client=client)
 
-        self.assertEqual(cases[0]["standard_answer"], "已帮你看了这个数据，核心结论是：GPT reference 标准答案。")
-        self.assertEqual(cases[0]["standard_answer_source"], "gpt")
-        self.assertEqual(cases[0]["standard_answer_model"], "openai:gpt-reference-test")
-        self.assertEqual(generation["source"], "gpt")
+        self.assertEqual(cases[0]["standard_answer"], "已帮你看了这个数据，核心结论是：DeepSeek reference 标准答案。")
+        self.assertEqual(cases[0]["standard_answer_source"], "deepseek_reference")
+        self.assertEqual(cases[0]["standard_answer_model"], "deepseek:deepseek-chat")
+        self.assertEqual(generation["source"], "deepseek_reference")
         sent_payload = json.dumps(client.messages, ensure_ascii=False)
         self.assertIn("case_fact_hints", sent_payload)
         self.assertNotIn("deterministic template should not be sent", sent_payload)
+
+    def test_gpt_source_is_not_deepseek_alias(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "not a DeepSeek alias"):
+            apply_standard_answer_source([self._case()], self._facts(), source="gpt", llm_client=FakeDeepSeekReferenceClient())
+
+    def test_browser_gpt_source_requires_complete_external_answers(self) -> None:
+        cases, generation = apply_standard_answer_source(
+            [self._case()],
+            self._facts(),
+            source="browser_gpt",
+            external_standard_answers={"generic_uploaded_001": "浏览器 GPT reference 标准答案。"},
+        )
+
+        self.assertEqual(cases[0]["standard_answer"], "浏览器 GPT reference 标准答案。")
+        self.assertEqual(cases[0]["standard_answer_source"], "browser_gpt_reference")
+        self.assertEqual(generation["source"], "browser_gpt_reference")
 
     def test_deterministic_standard_source_is_marked_as_fallback_only(self) -> None:
         cases, generation = apply_standard_answer_source([self._case()], self._facts(), source="deterministic")
 
         self.assertEqual(cases[0]["standard_answer_source"], "deterministic_fallback")
         self.assertEqual(cases[0]["standard_answer_model"], "deterministic")
-        self.assertIn("not a formal GPT reference", cases[0]["standard_answer_policy"])
+        self.assertIn("not a formal DeepSeek/browser GPT reference", cases[0]["standard_answer_policy"])
         self.assertEqual(generation["source"], "deterministic_fallback")
 
+    def test_llm_standard_source_rejects_openai_provider(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "DeepSeek standard answers are required"):
+            apply_standard_answer_source(
+                [self._case()],
+                self._facts(),
+                source="llm",
+                llm_client=FakeOpenAIReferenceClient(),
+            )
+
     def test_comparison_rows_include_standard_answer_metadata(self) -> None:
-        client = FakeGPTReferenceClient()
-        cases, _generation = apply_standard_answer_source([self._case()], self._facts(), source="gpt", llm_client=client)
+        client = FakeDeepSeekReferenceClient()
+        cases, _generation = apply_standard_answer_source([self._case()], self._facts(), source="llm", llm_client=client)
 
         rows = build_comparison_rows(cases, candidate_answers={}, candidate_score=None)
 
-        self.assertEqual(rows[0]["standard_answer_source"], "gpt")
-        self.assertEqual(rows[0]["standard_answer_model"], "openai:gpt-reference-test")
-        self.assertIn("GPT reference answer", rows[0]["standard_answer_policy"])
+        self.assertEqual(rows[0]["standard_answer_source"], "deepseek_reference")
+        self.assertEqual(rows[0]["standard_answer_model"], "deepseek:deepseek-chat")
+        self.assertEqual(rows[0]["difficulty_bucket"], "ordinary")
+        self.assertEqual(rows[0]["capability_family"], "overview")
+        self.assertIn("DeepSeek reference answer", rows[0]["standard_answer_policy"])
+
+    def test_score_candidate_answers_reports_acceptance_buckets_and_not_applicable(self) -> None:
+        ordinary = self._case()
+        complex_case = {
+            **self._case(),
+            "case_id": "generic_business_002",
+            "category": "adaptive_business",
+            "difficulty_bucket": "complex",
+            "capability_family": "trend",
+            "required_terms": ["趋势"],
+            "expected_numbers": [],
+        }
+
+        score = score_candidate_answers(
+            [ordinary, complex_case],
+            {
+                "generic_uploaded_001": "这个数据主要讲什么？数据概览完整，下一步可以继续分析。",
+                "generic_business_002": "Not Applicable",
+            },
+            {"numeric_tolerance": 0.01},
+            candidate_path=Path(__file__),
+        )
+
+        self.assertEqual(score["unexpected_not_applicable_count"], 1)
+        self.assertEqual(score["bucket_summary"]["ordinary"]["required_pass_rate"], 1.0)
+        self.assertEqual(score["bucket_summary"]["complex"]["required_pass_rate"], 0.9)
+        self.assertFalse(score["acceptance_passed"])
+        self.assertIn("trend", score["capability_failures"])
 
     def test_comparison_markdown_truncates_raw_detail_like_candidate_answers(self) -> None:
         raw_rows = "\n".join(
@@ -162,6 +229,20 @@ class GenericDatasetEvalRunnerTest(unittest.TestCase):
 
         by_name = {item["name"]: item["passed"] for item in checks}
         self.assertTrue(by_name["no_internal_artifact_markers"])
+
+    def test_gpt_like_checks_reject_not_applicable_for_answerable_generic_case(self) -> None:
+        checks = gpt_like_style_checks(
+            {
+                "case_id": "generic_quality_001",
+                "category": "quality_and_anomaly",
+                "question": "有没有明显的数据质量问题？",
+                "expected_route": "analysis",
+            },
+            "Not Applicable",
+        )
+
+        by_name = {item["name"]: item["passed"] for item in checks}
+        self.assertFalse(by_name["no_unexpected_not_applicable"])
 
 
 if __name__ == "__main__":

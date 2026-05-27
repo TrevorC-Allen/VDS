@@ -60,6 +60,7 @@ const state = {
   latestActivityResult: null,
   drawerResult: null,
   drawerTriggerSummary: null,
+  activityDrawerAutoScroll: true,
   textDialogResolve: null,
   chatSearchQuery: "",
 };
@@ -77,6 +78,8 @@ const el = {
   chatSearchCloseButton: document.querySelector("#chat-search-close-button"),
   chatSearchResults: document.querySelector("#chat-search-results"),
   fileInput: document.querySelector("#file-input"),
+  composerFileTray: document.querySelector("#composer-file-tray"),
+  fileStatusWrap: document.querySelector("#file-status-wrap"),
   fileSummary: document.querySelector("#file-summary"),
   fileDetail: document.querySelector("#file-detail"),
   filePanel: document.querySelector("#file-panel"),
@@ -166,9 +169,10 @@ window.addEventListener("resize", closeContextMenu);
 window.addEventListener("scroll", closeContextMenu, true);
 el.activityBackdrop?.addEventListener("click", closeActivityDrawer);
 el.activityDrawerClose?.addEventListener("click", closeActivityDrawer);
+el.activityDrawerList?.addEventListener("scroll", handleActivityDrawerScroll);
 el.ruleModeToggle?.addEventListener("change", updateRuleMode);
-el.ruleFileInput?.addEventListener("change", updateRuleFileSummary);
-el.ruleUploadButton?.addEventListener("click", uploadUserRule);
+el.ruleFileInput?.addEventListener("change", handleRuleFileSelection);
+el.ruleUploadButton?.addEventListener("click", handleRuleUploadButtonClick);
 el.benchmarkRuleInput?.addEventListener("change", updateBenchmarkRuleSummary);
 el.benchmarkRuleUploadButton?.addEventListener("click", uploadBenchmarkRule);
 el.benchmarkRunButton?.addEventListener("click", runBenchmark);
@@ -223,7 +227,7 @@ function updateFileSummary() {
     state.hasPendingUpload = false;
     state.fileRecords = [];
     el.fileSummary.textContent = "选择文件";
-    el.fileDetail.textContent = "数据和说明文件支持多选";
+    el.fileDetail.textContent = "数据文件和规则文件支持多选";
     el.uploadButton.disabled = true;
     renderFilePanel();
     updateRunButton();
@@ -259,7 +263,7 @@ function clearRestoredFileRecords() {
   el.uploadButton.disabled = true;
   renderFilePanel();
   el.fileSummary.textContent = state.datasetId ? "文件信息不可用" : "选择文件";
-  el.fileDetail.textContent = state.datasetId ? "需重新上传后继续分析" : "数据和说明文件支持多选";
+  el.fileDetail.textContent = state.datasetId ? "需重新上传后继续分析" : "数据文件和规则文件支持多选";
   updateRunButton();
 }
 
@@ -296,7 +300,9 @@ function handleGlobalKeydown(event) {
 function renderFilePanel() {
   const records = state.fileRecords || [];
   el.fileSummary.disabled = !records.length;
+  el.fileStatusWrap?.classList.toggle("hidden", !records.length);
   if (el.filePanelCount) el.filePanelCount.textContent = String(records.length);
+  renderComposerFileTray(records);
   if (!records.length) {
     closeFilePanel();
     if (el.filePanelList) el.filePanelList.innerHTML = "";
@@ -316,6 +322,39 @@ function renderFilePanel() {
       `,
     )
     .join("");
+}
+
+function renderComposerFileTray(records) {
+  if (!el.composerFileTray) return;
+  el.composerFileTray.classList.toggle("hidden", !records.length);
+  if (!records.length) {
+    el.composerFileTray.innerHTML = "";
+    return;
+  }
+  el.composerFileTray.innerHTML = records
+    .map(
+      (file) => `
+        <button class="composer-file-card" type="button" title="点击查看文件">
+          <span class="composer-file-icon" aria-hidden="true"></span>
+          <span class="composer-file-copy">
+            <strong title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</strong>
+            <span>${escapeHtml(fileCardTypeText(file))}</span>
+          </span>
+        </button>
+      `,
+    )
+    .join("");
+  el.composerFileTray.querySelectorAll(".composer-file-card").forEach((button) => {
+    button.addEventListener("click", toggleFilePanel);
+  });
+}
+
+function fileCardTypeText(file) {
+  const name = String(file?.name || "").toLowerCase();
+  if (/\.(csv|xlsx|xls|parquet|arrow|feather)$/.test(name)) return "电子表格";
+  if (/\.(json|yaml|yml)$/.test(name)) return "结构化文件";
+  if (/\.(pdf|doc|docx|docm|rtf|odt|pages|md|txt|html|htm)$/.test(name)) return "规则/说明文件";
+  return file?.meta || "文件";
 }
 
 function fileRecordFromFile(file, status, profile = null) {
@@ -437,6 +476,12 @@ function fileStatusText(status) {
   return "待上传";
 }
 
+const RULE_FILE_EMPTY_HINT = "可选：上传规则文件可以补充语义模型、指标口径和计算方法";
+
+function setRuleFileStatus(message) {
+  if (el.ruleFileStatus) el.ruleFileStatus.textContent = message;
+}
+
 function updateRuleMode() {
   state.ruleModeEnabled = Boolean(el.ruleModeToggle?.checked);
   el.ruleUploadPanel?.classList.toggle("hidden", !state.ruleModeEnabled);
@@ -444,53 +489,93 @@ function updateRuleMode() {
     state.userRuleFileId = "";
     state.hasPendingRuleUpload = false;
     if (el.ruleFileInput) el.ruleFileInput.value = "";
-    if (el.ruleFileStatus) el.ruleFileStatus.textContent = "未上传用户分析规则";
+    setRuleFileStatus(RULE_FILE_EMPTY_HINT);
   }
   updateRunButton();
   updateBenchmarkButtons();
 }
 
-function updateRuleFileSummary() {
-  const file = el.ruleFileInput?.files?.[0];
-  state.hasPendingRuleUpload = Boolean(file);
-  state.userRuleFileId = state.hasPendingRuleUpload ? "" : state.userRuleFileId;
-  if (el.ruleUploadButton) el.ruleUploadButton.disabled = !state.hasPendingRuleUpload;
-  if (el.ruleFileStatus) {
-    el.ruleFileStatus.textContent = file ? `待上传：${file.name}` : (state.userRuleFileId ? "用户分析规则已上传" : "未上传用户分析规则");
+function handleRuleUploadButtonClick() {
+  if (state.hasPendingRuleUpload) {
+    void uploadUserRule();
+    return;
   }
+  el.ruleFileInput?.click();
+}
+
+function handleRuleFileSelection() {
+  updateRuleFileSummary();
+  if (state.hasPendingRuleUpload) {
+    void uploadUserRule();
+  }
+}
+
+function selectedRuleFiles() {
+  return [...(el.ruleFileInput?.files || [])];
+}
+
+function updateRuleFileSummary() {
+  const files = selectedRuleFiles();
+  state.hasPendingRuleUpload = Boolean(files.length);
+  state.userRuleFileId = state.hasPendingRuleUpload ? "" : state.userRuleFileId;
+  state.ruleModeEnabled = state.hasPendingRuleUpload || Boolean(state.userRuleFileId);
+  if (el.ruleUploadButton) {
+    el.ruleUploadButton.disabled = false;
+    el.ruleUploadButton.title = state.hasPendingRuleUpload
+      ? `上传 ${files.length} 个规则文件`
+      : "上传语义模型、指标口径或计算方法规则，后续分析会基于此规则";
+  }
+  const pendingText = files.length === 1 ? `待上传：${files[0].name}` : `待上传：${files.length} 个规则文件`;
+  setRuleFileStatus(files.length ? pendingText : (state.userRuleFileId ? "规则文件已启用" : RULE_FILE_EMPTY_HINT));
   updateRunButton();
 }
 
 async function uploadUserRule() {
-  const file = el.ruleFileInput?.files?.[0];
-  if (!file) return null;
-  setApiStatus("idle", "上传规则中");
+  const files = selectedRuleFiles();
+  if (!files.length) return null;
+  setApiStatus("idle", files.length === 1 ? "上传规则中" : `上传 ${files.length} 个规则文件中`);
+  setRuleFileStatus(files.length === 1 ? `上传中：${files[0].name}` : `上传中：${files.length} 个规则文件`);
   if (el.ruleUploadButton) el.ruleUploadButton.disabled = true;
   try {
     const payload = new FormData();
-    payload.append("file", file);
+    const endpoint = files.length === 1 ? "/api/data-agent/upload" : "/api/data-agent/upload-batch";
+    if (files.length === 1) {
+      payload.append("file", files[0]);
+    } else {
+      files.forEach((file) => payload.append("files", file));
+    }
     payload.append("file_role", "rule");
     payload.append("rule_scope", "user_analysis");
     if (state.datasetId) payload.append("bind_dataset_id", state.datasetId);
-    const response = await fetch("/api/data-agent/upload", { method: "POST", body: payload });
+    const response = await fetch(endpoint, { method: "POST", body: payload });
     const result = await response.json();
     if (!response.ok || !result.success) {
       throw new Error(errorText(result) || `HTTP ${response.status}`);
     }
-    state.userRuleFileId = result.file_id || "";
+    const uploadedFileIds = Array.isArray(result.file_ids) ? result.file_ids : (result.file_id ? [result.file_id] : []);
+    const uploadedFiles = Array.isArray(result.files) ? result.files : [];
+    state.userRuleFileId = uploadedFileIds.join(",");
     state.hasPendingRuleUpload = false;
-    if (el.ruleFileStatus) el.ruleFileStatus.textContent = `${result.file_name || "分析规则"} 已启用`;
-    setApiStatus("ready", "Rule Mode 已启用");
+    state.ruleModeEnabled = Boolean(state.userRuleFileId);
+    if (el.ruleFileInput) el.ruleFileInput.value = "";
+    setRuleFileStatus(
+      files.length === 1
+        ? `${result.file_name || uploadedFiles[0]?.file_name || "规则文件"} 已启用`
+        : `${uploadedFileIds.length || files.length} 个规则文件已启用`,
+    );
+    setApiStatus("ready", files.length === 1 ? "规则文件已启用" : "规则文件已启用");
     updateBenchmarkButtons();
     return result;
   } catch (error) {
     state.userRuleFileId = "";
-    state.hasPendingRuleUpload = true;
-    if (el.ruleFileStatus) el.ruleFileStatus.textContent = `规则上传失败：${String(error.message || error)}`;
+    state.hasPendingRuleUpload = false;
+    state.ruleModeEnabled = false;
+    if (el.ruleFileInput) el.ruleFileInput.value = "";
+    setRuleFileStatus(`规则上传失败：${String(error.message || error)}`);
     setApiStatus("error", "规则上传失败");
     return null;
   } finally {
-    if (el.ruleUploadButton) el.ruleUploadButton.disabled = !state.hasPendingRuleUpload;
+    if (el.ruleUploadButton) el.ruleUploadButton.disabled = false;
     updateRunButton();
   }
 }
@@ -2171,7 +2256,7 @@ function renderResult(result, options = {}) {
   el.resultStatus.textContent = isChat ? "已回复" : result.success ? "已完成" : "需要继续确认";
   renderRows(rows, columns, result);
   renderChart(isOverviewShaped ? null : result.chart, rows, columns, result.answer);
-  renderInsight(!isChat && result.success ? result.insight : null);
+  renderInsight(!isChat && result.success ? result.insight : null, result);
   renderProcess(result.process_view_v2 || result.reasoning_trace_view || [], result);
   renderExecutionArtifacts(result.execution_artifacts || []);
   renderAnswerSources(result);
@@ -2256,6 +2341,22 @@ function renderChart(chart, fallbackRows = [], fallbackColumns = [], answer = ""
     el.chartPanel.className = "chart-panel hidden";
     return;
   }
+  if (type === "line") {
+    const seriesValues = resolveLineSeries(chart, rows, x, y, fallbackColumns);
+    if (!seriesValues.length) {
+      if (chart?.image_data_uri) {
+        el.chartPanel.className = "chart-panel";
+        el.chartPanel.innerHTML = renderChartImage(chart);
+        return;
+      }
+      el.chartPanel.className = "chart-panel hidden";
+      return;
+    }
+    el.chartPanel.className = "chart-panel";
+    el.chartPanel.innerHTML = renderLineChart(seriesValues, chart);
+    bindChartInteractions(el.chartPanel);
+    return;
+  }
   const values = rows
     .map((row) => ({ label: String(row[x] ?? ""), value: Number(row[y]) }))
     .filter((item) => item.label && Number.isFinite(item.value));
@@ -2269,9 +2370,7 @@ function renderChart(chart, fallbackRows = [], fallbackColumns = [], answer = ""
     return;
   }
   el.chartPanel.className = "chart-panel";
-  if (type === "line") {
-    el.chartPanel.innerHTML = renderLineChart(values, chart);
-  } else if (type === "pie" || type === "donut") {
+  if (type === "pie" || type === "donut") {
     el.chartPanel.innerHTML = renderPieChart(values, chart, type);
   } else {
     el.chartPanel.innerHTML = renderBarChart(values, chart, type === "horizontal_bar");
@@ -2284,6 +2383,31 @@ function resolveChartY(rows, requestedY, fallbackColumns) {
     return requestedY;
   }
   return fallbackColumns.find((column) => rows.some((row) => Number.isFinite(Number(row?.[column]))));
+}
+
+function resolveLineSeries(chart, rows, xColumn, yColumn, fallbackColumns) {
+  const requestedColumns = [];
+  for (const series of chart?.series || []) {
+    const column = String(series?.y || "");
+    if (column && column !== xColumn && !requestedColumns.includes(column)) {
+      requestedColumns.push(column);
+    }
+  }
+  if (yColumn && !requestedColumns.includes(yColumn)) {
+    requestedColumns.unshift(yColumn);
+  }
+  const fallbackNumericColumns = fallbackColumns.filter((column) => column !== xColumn && rows.some((row) => Number.isFinite(Number(row?.[column]))));
+  const candidateColumns = (requestedColumns.length ? requestedColumns : fallbackNumericColumns).filter((column) =>
+    rows.some((row) => Number.isFinite(Number(row?.[column]))),
+  );
+  return candidateColumns
+    .map((column) => {
+      const points = rows
+        .map((row) => ({ label: String(row[xColumn] ?? ""), value: Number(row[column]) }))
+        .filter((item) => item.label && Number.isFinite(item.value));
+      return { name: column, points };
+    })
+    .filter((series) => series.points.length > 1);
 }
 
 function renderChartImage(chart) {
@@ -2426,73 +2550,114 @@ function renderHorizontalBarChart(displayValues, chart, width, colors, domain, t
   `;
 }
 
-function renderLineChart(values, chart) {
-  const width = 680;
-  const height = 340;
-  const left = 72;
-  const right = 32;
-  const top = 28;
-  const bottom = 74;
+function renderLineChart(seriesValues, chart) {
+  const width = 820;
+  const height = 450;
+  const left = 112;
+  const right = seriesValues.length > 1 ? 160 : 44;
+  const top = 70;
+  const bottom = 86;
   const plotWidth = width - left - right;
   const plotHeight = height - top - bottom;
-  const displayValues = values.slice(0, 30);
-  const domain = chartNumberDomain(displayValues, false);
+  const displaySeries = seriesValues.slice(0, 8).map((series) => ({ ...series, points: series.points.slice(0, 30) }));
+  const allPoints = displaySeries.flatMap((series) => series.points);
+  const domain = chartNumberDomain(allPoints, displaySeries.length > 1);
   const ticks = chartTicks(domain.min, domain.max, 5);
-  const { xName, yName } = chartAxisMeta(chart);
-  const points = displayValues.map((item, index, list) => {
-    const x = left + (index / Math.max(list.length - 1, 1)) * plotWidth;
-    const y = chartScale(item.value, domain.min, domain.max, top + plotHeight, top);
-    return { x, y, label: item.label, value: item.value };
-  });
+  const { xName } = chartAxisMeta(chart);
+  const yName = resolveLineYAxisName(chart, displaySeries);
+  const colors = ["#2563eb", "#0ea5e9", "#14b8a6", "#f59e0b", "#4f46e5", "#64748b", "#22c55e", "#ef4444"];
+  const plottedSeries = displaySeries.map((series, seriesIndex) => ({
+    ...series,
+    color: colors[seriesIndex % colors.length],
+    points: series.points.map((item, index, list) => {
+      const x = left + (index / Math.max(list.length - 1, 1)) * plotWidth;
+      const y = chartScale(item.value, domain.min, domain.max, top + plotHeight, top);
+      return { x, y, label: item.label, value: item.value };
+    }),
+  }));
   const grid = ticks
     .map((tick) => {
       const y = chartScale(tick, domain.min, domain.max, top + plotHeight, top);
       return `
         <line x1="${left}" y1="${y.toFixed(1)}" x2="${left + plotWidth}" y2="${y.toFixed(1)}" class="grid-line"></line>
-        <text x="${left - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="axis-label">${formatNumber(tick)}</text>
+        <text x="${left - 14}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="axis-label">${formatAxisNumber(tick)}</text>
       `;
     })
     .join("");
-  const step = Math.max(1, Math.ceil(points.length / 6));
-  const xLabels = points
+  const xPoints = plottedSeries[0]?.points || [];
+  const step = Math.max(1, Math.ceil(xPoints.length / 6));
+  const xLabels = xPoints
     .map((point, index) =>
-      index % step === 0 || index === points.length - 1
-        ? `<text x="${point.x.toFixed(1)}" y="${top + plotHeight + 24}" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(point.label, 8))}</text>`
+      index % step === 0 || index === xPoints.length - 1
+        ? `<text x="${point.x.toFixed(1)}" y="${top + plotHeight + 32}" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(point.label, 8))}</text>`
         : "",
     )
     .join("");
+  const seriesMarkup = plottedSeries
+    .map((series) => {
+      const path = series.points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+      const points = series.points
+        .map(
+          (point) => `
+            <g class="chart-hit" tabindex="0" focusable="true">
+              <title>${escapeHtml(`${xName}: ${point.label}\n${series.name}: ${formatNumber(point.value)}`)}</title>
+              <line x1="${point.x.toFixed(1)}" y1="${top}" x2="${point.x.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
+              <circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="5" class="line-dot" style="stroke:${series.color}"></circle>
+              <circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="12" class="line-hit-area"></circle>
+              ${chartTooltip({
+                label: point.label,
+                value: point.value,
+                xName,
+                yName: series.name,
+                x: point.x - 86,
+                y: point.y - 78,
+                width,
+              })}
+            </g>
+          `,
+        )
+        .join("");
+      return `
+        <polyline points="${path}" class="line-path" style="stroke:${series.color}"></polyline>
+        ${points}
+      `;
+    })
+    .join("");
+  const legend = plottedSeries.length > 1
+    ? plottedSeries
+        .map((series, index) => {
+          const y = top + 10 + index * 28;
+          return `
+            <g class="chart-legend-item">
+              <line x1="${left + plotWidth + 24}" y1="${y}" x2="${left + plotWidth + 42}" y2="${y}" style="stroke:${series.color};stroke-width:1.8"></line>
+              <circle cx="${left + plotWidth + 33}" cy="${y}" r="3.5" fill="#fff" style="stroke:${series.color};stroke-width:1.6"></circle>
+              <text x="${left + plotWidth + 50}" y="${y + 4}" class="chart-legend-label">${escapeHtml(shortLabel(series.name, 10))}</text>
+            </g>
+          `;
+        })
+        .join("")
+    : "";
   return `
     <div class="chart-title">${escapeHtml(chart?.title || "趋势图")}</div>
     <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img">
       ${grid}
       <line x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}" class="axis-line"></line>
       <line x1="${left}" y1="${top + plotHeight}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
-      <text x="${left + plotWidth / 2}" y="${height - 18}" text-anchor="middle" class="axis-title">${escapeHtml(xName)}</text>
-      <text transform="translate(18 ${top + plotHeight / 2}) rotate(-90)" text-anchor="middle" class="axis-title">${escapeHtml(yName)}</text>
+      <text x="${left + plotWidth / 2}" y="${height - 20}" text-anchor="middle" class="axis-title">${escapeHtml(xName)}</text>
+      <text x="${left}" y="${top - 34}" text-anchor="start" class="axis-title">${escapeHtml(yName)}</text>
       ${xLabels}
-      <polyline points="${points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}" class="line-path"></polyline>
-      ${points
-        .map(
-          (point) => `
-            <g class="chart-hit" tabindex="0" focusable="true">
-              <title>${escapeHtml(`${xName}: ${point.label}\n${yName}: ${formatNumber(point.value)}`)}</title>
-              <line x1="${point.x.toFixed(1)}" y1="${top}" x2="${point.x.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
-              <circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="5" class="line-dot"></circle>
-              ${chartTooltip({
-                label: point.label,
-                value: point.value,
-                xName,
-                yName,
-                x: point.x - 78,
-                y: point.y - 72,
-                width,
-              })}
-            </g>
-          `,
-        )
-        .join("")}
+      ${seriesMarkup}
+      ${legend}
     </svg>
   `;
+}
+
+function resolveLineYAxisName(chart, displaySeries) {
+  const text = `${chart?.title || ""} ${chart?.reason || ""}`.toLowerCase();
+  if (/分销金额|金额|销售额|收入|gmv|revenue|amount/.test(text)) return "分销金额";
+  if (/占比|比例|率|percent|percentage|rate|ratio/.test(text)) return "比例";
+  if (displaySeries.length > 1) return "数值";
+  return displaySeries[0]?.name || chartAxisMeta(chart).yName;
 }
 
 function renderPieChart(values, chart, type) {
@@ -2564,6 +2729,16 @@ function bindChartInteractions(panel) {
       if (hit !== except) hit.classList.remove("is-active");
     });
   };
+  const activateFromEvent = (event) => {
+    const hit = event.target?.closest?.(".chart-hit");
+    if (!hit || !panel.contains(hit)) return;
+    clearActive(hit);
+    hit.classList.add("is-active");
+  };
+  panel.addEventListener("pointerover", activateFromEvent);
+  panel.addEventListener("click", activateFromEvent);
+  panel.addEventListener("focusin", activateFromEvent);
+  panel.addEventListener("pointerleave", () => clearActive());
   hits.forEach((hit) => {
     hit.addEventListener("pointerenter", () => {
       clearActive(hit);
@@ -2617,7 +2792,7 @@ function chartScale(value, domainMin, domainMax, rangeMin, rangeMax) {
 }
 
 function chartTooltip({ label, value, xName, yName, x, y, width }) {
-  const tooltipWidth = 156;
+  const tooltipWidth = 172;
   const tooltipHeight = 54;
   const safeX = Math.min(Math.max(4, x), width - tooltipWidth - 4);
   const safeY = Math.max(4, y);
@@ -2628,6 +2803,12 @@ function chartTooltip({ label, value, xName, yName, x, y, width }) {
       <text x="10" y="39" class="chart-tooltip-value">${escapeHtml(`${yName}: ${formatNumber(value)}`)}</text>
     </g>
   `;
+}
+
+function formatAxisNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value ?? "-");
+  return number.toLocaleString("zh-CN", { maximumFractionDigits: Math.abs(number) >= 1000 ? 0 : 1 });
 }
 
 function pieSlicePath(cx, cy, radius, startDeg, endDeg) {
@@ -2645,13 +2826,14 @@ function polarPoint(cx, cy, radius, angleDeg) {
   };
 }
 
-function renderInsight(insight) {
+function renderInsight(insight, result = {}) {
+  const hasInsightPayload = Boolean(insight && typeof insight === "object");
   const suggestions = (insight?.business_suggestions || insight?.suggestions || []).filter(isUserFacingInsightText);
   const findings = [...(insight?.anomaly_findings || []), ...(insight?.volatility_findings || [])]
     .map((item) => item?.message)
     .filter(isUserFacingInsightText);
   const caveats = (insight?.caveats || []).filter(isUserFacingInsightText);
-  const nextQuestions = (insight?.next_questions || []).filter(isUserFacingInsightText).slice(0, 2);
+  const nextQuestions = hasInsightPayload ? resolveInsightNextQuestions(insight?.next_questions || [], result).slice(0, 2) : [];
   const summary = cleanInsightSummary(insight?.summary || "");
   const primaryAdvice = pickInsightAdvice(suggestions, findings, caveats);
   const hasInsight = Boolean(summary || primaryAdvice || nextQuestions.length);
@@ -2668,6 +2850,141 @@ function renderInsight(insight) {
 function pickInsightAdvice(suggestions, findings, caveats) {
   const candidates = [...suggestions, ...findings, ...caveats];
   return candidates.find(isUserFacingInsightText) || "";
+}
+
+function resolveInsightNextQuestions(nextQuestions, result = {}) {
+  const cleaned = uniqueStrings((Array.isArray(nextQuestions) ? nextQuestions : []).filter(isUserFacingInsightText));
+  const contextual = buildContextualNextQuestions(result);
+  if (!cleaned.length) return contextual;
+  if (isGenericNextQuestionSet(cleaned)) return contextual;
+  return uniqueStrings([...cleaned, ...contextual]);
+}
+
+function isGenericNextQuestionSet(nextQuestions) {
+  const normalized = nextQuestions.map((item) => String(item || "").replace(/[?？。；;\s]/g, ""));
+  const genericPatterns = [
+    "异常值来自哪些明细记录",
+    "这个结果按时间趋势是否稳定",
+    "是否需要对Top结果继续下钻",
+    "把这个结论按关键维度下钻",
+    "检查是否存在异常值或质量问题影响结果",
+    "生成可复核的结果表和图表",
+    "是否需要按维度展开明细",
+  ];
+  return Boolean(normalized.length && normalized.every((item) => genericPatterns.some((pattern) => item.includes(pattern))));
+}
+
+function buildContextualNextQuestions(result = {}) {
+  const rows = resultRowsForSuggestions(result);
+  const columns = resultColumnsForSuggestions(result, rows);
+  const logic = result?.logic_form || {};
+  const parameters = logic.parameters && typeof logic.parameters === "object" ? logic.parameters : {};
+  const timeWindow = logic.time_window && typeof logic.time_window === "object" ? logic.time_window : {};
+  const question = String(result?.question || "");
+  const operation = [logic.operation, logic.task_type, result?.debug?.operation, result?.answer_type].filter(Boolean).join(" ").toLowerCase();
+  const metric = firstText(logic.metric, parameters.metric, result?.chart?.y, firstNumericColumn(rows, columns), "核心指标");
+  const dimension = firstText(logic.group_by, parameters.dimension, parameters.group_by, chartDimension(result?.chart), firstDimensionColumn(rows, columns), "关键维度");
+  const timeColumn = firstText(firstTimeColumn(columns), parameters.time_column, timeWindow.column, chartTimeColumn(result?.chart), "时间");
+  const hasTimeColumn = timeColumn !== "时间";
+  const text = `${question} ${operation}`.toLowerCase().replace(/\s+/g, "");
+  let candidates;
+  if (looksLikeCleaningOrQuality(text)) {
+    candidates = [
+      `列出影响${metric}的缺失、重复和异常记录？`,
+      `模拟清洗前后${metric}会差多少？`,
+      `按${dimension}看哪些分组受质量问题影响最大？`,
+    ];
+  } else if (looksLikeShareOrRateQuestion(text)) {
+    candidates = [
+      `按${dimension}拆分这个占比，找出贡献最大的分组？`,
+      `看这个比例在${timeColumn}上是否稳定？`,
+      "检查分子、分母口径是否有过滤条件或缺失值影响？",
+    ];
+  } else if (looksLikeTrendQuestion(text)) {
+    candidates = [
+      `把${metric}的峰值、低点和最大波动期标出来？`,
+      `按${dimension}拆分同一趋势，看看是谁拉动变化？`,
+      `检查最近一期${timeColumn}是否完整、是否影响趋势判断？`,
+    ];
+  } else if (looksLikeRankingQuestion(text)) {
+    candidates = [
+      `比较 Top 结果之间的${metric}差距有多大？`,
+      hasTimeColumn ? `把排名靠前的${dimension}按${timeColumn}继续下钻？` : `把排名靠前的${dimension}按其他维度继续下钻？`,
+      "看低排名对象是否受缺失值、异常值或样本量影响？",
+    ];
+  } else {
+    candidates = rows.length
+      ? [
+          `按${dimension}继续拆解${metric}的构成和集中度？`,
+          `按${timeColumn}看${metric}的趋势和波动？`,
+          `检查${metric}是否存在异常值或质量问题影响结论？`,
+        ]
+      : [`补充${metric}、${dimension}或${timeColumn}后重新计算？`, "需要先确认用哪张表和哪些字段作为口径？"];
+  }
+  return uniqueStrings(candidates.filter(isUserFacingInsightText));
+}
+
+function resultRowsForSuggestions(result = {}) {
+  const rows = result?.result?.rows;
+  if (Array.isArray(rows)) return rows.filter((row) => row && typeof row === "object");
+  const chartData = result?.chart?.data;
+  if (Array.isArray(chartData)) return chartData.filter((row) => row && typeof row === "object");
+  return [];
+}
+
+function resultColumnsForSuggestions(result = {}, rows = []) {
+  const columns = Array.isArray(result?.result?.columns) ? result.result.columns.map(String).filter(Boolean) : [];
+  if (columns.length) return columns;
+  if (rows[0]) return Object.keys(rows[0]);
+  return [result?.chart?.x, result?.chart?.y].map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function firstNumericColumn(rows, columns) {
+  return columns.find((column) => rows.some((row) => Number.isFinite(Number(row?.[column])))) || "";
+}
+
+function firstDimensionColumn(rows, columns) {
+  const numeric = new Set(columns.filter((column) => rows.some((row) => Number.isFinite(Number(row?.[column])))));
+  const timeColumn = firstTimeColumn(columns);
+  return columns.find((column) => column !== timeColumn && !numeric.has(column)) || "";
+}
+
+function firstTimeColumn(columns) {
+  return columns.find((column) => /date|day|month|year|week|time|日期|时间|月份|年份|周/i.test(column)) || "";
+}
+
+function chartDimension(chart = {}) {
+  const x = String(chart?.x || "").trim();
+  return x && !firstTimeColumn([x]) ? x : "";
+}
+
+function chartTimeColumn(chart = {}) {
+  const x = String(chart?.x || "").trim();
+  return x && firstTimeColumn([x]) ? x : "";
+}
+
+function looksLikeTrendQuestion(text) {
+  return /trend|mom|yoy|趋势|波动|环比|同比|增长|下降/.test(text);
+}
+
+function looksLikeRankingQuestion(text) {
+  return /ranking|topn|top|rank|排名|最高|最低|最大|最小|第一|前/.test(text);
+}
+
+function looksLikeShareOrRateQuestion(text) {
+  return /percent|percentage|rate|ratio|share|占比|比例|率/.test(text);
+}
+
+function looksLikeCleaningOrQuality(text) {
+  return /clean|quality|缺失|重复|异常|离群|质量|清洗|填充|删除/.test(text);
 }
 
 function renderInsightBody(summary, advice, nextQuestions) {
@@ -3070,12 +3387,118 @@ function activityStepFromMonitorEvent(event) {
     answer_outline_ready: cleanActivityText(event.summary) || "正在整理最终回答结构。",
   };
   if (!titleByType[type]) return null;
+  const specificSummary = liveActivitySummaryFromEvent(event, type, status);
   return {
     eventId: event.event_id || `${type}_${state.activityEvents.length}`,
     title: titleByType[type],
-    summary: summaryByType[type] || cleanActivityText(event.summary) || "正在处理。",
+    summary: specificSummary || summaryByType[type] || cleanActivityText(event.summary) || "正在处理。",
     status,
   };
+}
+
+function liveActivitySummaryFromEvent(event, type, status) {
+  const payload = event.payload || {};
+  const role = String(event.role || payload.role || "");
+  const result = payload.result?.output_payload || payload.result || {};
+  const before = payload.state_before || {};
+  const after = payload.state_after || payload.state_after_correction || {};
+  const question = cleanActivityText(payload.question || before.question || "");
+  const dataset = cleanActivityText(payload.dataset_id || before.dataset_id || after.dataset_id || "");
+  if (type === "message_requested") {
+    return question ? `收到问题“${question}”，正在判断它是普通对话、数据概览，还是需要读取数据后计算。` : "";
+  }
+  if (type === "analysis_requested") {
+    return dataset ? `已锁定数据集 ${dataset}，开始读取表结构、字段名和样例值，避免拿错文件回答。` : "开始读取上传数据的表结构、字段名和样例值，准备选择正确的数据路径。";
+  }
+  if (type === "workflow_started") {
+    return "后端分析流程已开始：先理解问题和数据，再计算、校验，最后组织成用户可读的回答。";
+  }
+  if (type === "agent_started") {
+    return activityRoleStartSummary(role);
+  }
+  if (type === "agent_completed") {
+    return activityRoleCompletionSummary(role, result, before, after);
+  }
+  if (type === "agent_failed") {
+    return `${monitorRoleName(role)}遇到问题，正在保留可读错误并避免把不可靠结果直接当答案。`;
+  }
+  if (type === "workflow_completed") {
+    return "计算、校验和回答组装已经完成，正在把最终结果同步到聊天页面。";
+  }
+  if (type === "response_ready") {
+    const answer = cleanActivityText(payload.response?.answer || payload.answer || "");
+    return answer ? `最终回答已生成：${answer}` : "最终回答已生成，正在展示主答案、图表和处理过程。";
+  }
+  if (type === "activity_trace_delta" && event.payload?.node) {
+    const node = normalizeActivityNode(event.payload.node);
+    return activityNodePlainSummary(node) || "";
+  }
+  if (status === "failed") return cleanActivityText(event.summary) || "当前步骤失败，正在返回可读错误。";
+  return "";
+}
+
+function activityRoleStartSummary(role) {
+  const labels = {
+    planner: "计划节点开始把问题拆成分析口径：确认要用哪些表、看哪个指标、按什么维度或时间范围比较。",
+    data_engineer: "数据理解节点开始检查上传文件：看表、字段、样例值和数据质量，给后续计算做准备。",
+    pandas_executor: "Pandas 计算节点开始按计划执行主计算，先产出可用于回答的结构化结果。",
+    sql_executor: "SQL 复算节点开始判断是否能用只读 SQL 交叉核对，不能支持时会说明跳过原因。",
+    verifier: "校验节点开始核对结果是否成功、口径是否一致，避免错误结果直接进入回答。",
+    correction: "修正节点开始判断是否需要有边界地调整口径并重跑计算。",
+    insight: "洞察节点开始把已验证结果整理成普通用户能读懂的业务结论。",
+    visualization: "图表节点开始判断结果是否适合画图，并选择横轴、纵轴和图表类型。",
+    response_builder: "回答组装节点开始把结果、图表、来源和提示整理成最终页面回答。",
+  };
+  return labels[role] || `${monitorRoleName(role)}开始处理当前步骤。`;
+}
+
+function activityRoleCompletionSummary(role, result = {}, before = {}, after = {}) {
+  if (role === "planner") {
+    const logic = result.logic_form || after.logic_form || {};
+    const tables = normalizeStringList(logic.source_tables || after.source_tables);
+    const operation = activityOperationLabel(logic.operation || after.operation);
+    return `计划节点已确定分析口径：${operation}${tables.length ? `，使用 ${tables.join("、")}` : ""}，下一步交给计算节点。`;
+  }
+  if (role === "data_engineer") {
+    const tables = activityTableNames(result.tables || after.source_tables || before.source_tables);
+    return tables.length ? `数据理解节点已看完可用表和字段：重点使用 ${tables.slice(0, 3).join("、")}，并把字段画像交给后续节点。` : "数据理解节点已完成表结构和字段画像检查，后续节点会按这些信息选表和匹配字段。";
+  }
+  if (role === "pandas_executor") {
+    return activityExecutionSummary("Pandas", result || after.pandas || {});
+  }
+  if (role === "sql_executor") {
+    return activityExecutionSummary("SQL", result || after.sql || {});
+  }
+  if (role === "verifier") {
+    const verification = result.verification || after.verification || {};
+    if (verification.passed === false) return "校验节点发现结果还不能直接使用，正在把问题交给修正或错误处理。";
+    return "校验节点已确认计算结果可以用于回答，并检查了执行状态和一致性。";
+  }
+  if (role === "correction") {
+    return result.needs_correction ? "修正节点已给出调整方向，准备让执行节点按新口径重算。" : "修正节点确认本次不需要重跑，流程可以继续整理结论。";
+  }
+  if (role === "insight") {
+    const summary = cleanActivityText(result.insight?.summary || result.summary || after.insight?.summary || "");
+    return summary ? `洞察节点已提炼业务结论：${summary}` : "洞察节点已把验证后的结果整理成业务结论、建议和限制说明。";
+  }
+  if (role === "visualization") {
+    const chart = result.chart || after.chart || {};
+    return chart.chart_type ? `图表节点已选择 ${chart.chart_type} 展示，并确认要使用的横轴和指标。` : "图表节点已判断本次结果是否适合画图，并把展示方式交给前端。";
+  }
+  if (role === "response_builder") {
+    return "回答组装节点已把主答案、图表、来源和处理过程整理成页面可展示的结果。";
+  }
+  return cleanActivityText(result.summary || "");
+}
+
+function activityExecutionSummary(label, result = {}) {
+  if (result.skipped) {
+    const reason = cleanActivityText(result.reason || "");
+    return `${label} 路径已跳过${reason ? `：${reason}` : ""}，不会拿不适合的计算结果回答。`;
+  }
+  if (result.success === false) return `${label} 计算失败，后续会返回可读错误或触发修正。`;
+  const value = activityReadableValue(result.value ?? result.answer);
+  return value ? `${label} 已按计划完成计算，得到结果摘要：${value}，接下来进入校验。` : `${label} 已按计划完成计算，结构化结果会交给校验节点。`;
 }
 
 function activityNodeFromMonitorEvent(event) {
@@ -3152,12 +3575,13 @@ function mergeActivityTraceNode(node) {
 function openActivityDrawer(result = {}, triggerSummary = null) {
   state.drawerResult = result || state.latestActivityResult || {};
   state.drawerTriggerSummary = triggerSummary || null;
+  state.activityDrawerAutoScroll = true;
   el.activityDrawer?.classList.remove("hidden");
   el.activityBackdrop?.classList.remove("hidden");
   el.activityDrawer?.setAttribute("aria-hidden", "false");
   document.body.classList.add("activity-drawer-open");
   updateThinkingSummaryExpanded(true);
-  renderActivityDrawer(state.drawerResult);
+  renderActivityDrawer(state.drawerResult, { scrollToLatest: true });
 }
 
 function closeActivityDrawer() {
@@ -3167,6 +3591,7 @@ function closeActivityDrawer() {
   document.body.classList.remove("activity-drawer-open");
   updateThinkingSummaryExpanded(false);
   state.drawerTriggerSummary = null;
+  state.activityDrawerAutoScroll = true;
 }
 
 function handleThinkingSummaryClick(event) {
@@ -3196,17 +3621,45 @@ function updateThinkingSummaryExpanded(expanded) {
   });
 }
 
-function renderActivityDrawer(result = {}) {
+function renderActivityDrawer(result = {}, options = {}) {
   if (!el.activityDrawerList) return;
+  const shouldScrollToLatest =
+    Boolean(options.scrollToLatest) || (isActivityDrawerVisible() && state.activityDrawerAutoScroll && isActivityDrawerNearLatest());
   const sections = buildActivityDrawerSections(result);
   const trace = sections.flatMap((section) => section.nodes);
   if (el.activityDrawerTitle) el.activityDrawerTitle.textContent = "思考与执行链路";
   if (el.activityDrawerSummary) el.activityDrawerSummary.textContent = drawerSummary(result, trace);
   if (!sections.length) {
     el.activityDrawerList.innerHTML = `<li class="activity-drawer-empty">暂无活动。</li>`;
+    if (shouldScrollToLatest) scrollActivityDrawerToLatest();
     return;
   }
   el.activityDrawerList.innerHTML = sections.map(renderActivityDrawerSection).join("");
+  if (shouldScrollToLatest) scrollActivityDrawerToLatest();
+}
+
+function isActivityDrawerVisible() {
+  return Boolean(el.activityDrawer && !el.activityDrawer.classList.contains("hidden"));
+}
+
+function isActivityDrawerNearLatest() {
+  if (!el.activityDrawerList) return true;
+  const remaining = el.activityDrawerList.scrollHeight - el.activityDrawerList.clientHeight - el.activityDrawerList.scrollTop;
+  return remaining <= 96;
+}
+
+function scrollActivityDrawerToLatest() {
+  if (!el.activityDrawerList || !isActivityDrawerVisible()) return;
+  requestAnimationFrame(() => {
+    if (!el.activityDrawerList || !isActivityDrawerVisible()) return;
+    el.activityDrawerList.scrollTop = el.activityDrawerList.scrollHeight;
+    state.activityDrawerAutoScroll = true;
+  });
+}
+
+function handleActivityDrawerScroll() {
+  if (!isActivityDrawerVisible()) return;
+  state.activityDrawerAutoScroll = isActivityDrawerNearLatest();
 }
 
 function buildActivityDrawerSections(result = {}) {
@@ -3272,10 +3725,11 @@ function activityTraceFromProcessView(result = {}) {
   );
 }
 
-function renderActivityDrawerNode(node) {
+function renderActivityDrawerNode(node, index = 0, nodes = []) {
   const actions = normalizeStringList(node.actions);
   const toolCalls = Array.isArray(node.tool_calls) ? node.tool_calls : [];
   const artifacts = normalizeActivityArtifacts(node.artifacts);
+  const digest = activityNodeDigest(node, index, nodes);
   return `
     <li class="activity-node ${escapeHtml(node.status || "completed")} ${escapeHtml(node.kind || "agent")}">
       <div class="activity-node-marker" aria-hidden="true"></div>
@@ -3288,6 +3742,7 @@ function renderActivityDrawerNode(node) {
           <em>${escapeHtml(activityStatusLabel(node.status))}</em>
         </header>
         ${node.summary ? `<p class="activity-node-summary">${escapeHtml(node.summary)}</p>` : ""}
+        ${renderActivityNodeDigest(digest)}
         ${actions.length ? `<ul class="activity-action-list">${actions.slice(0, 6).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
         ${toolCalls.length ? renderActivityToolCalls(toolCalls) : ""}
         ${artifacts.length ? renderActivityArtifactCards(artifacts) : ""}
@@ -3304,10 +3759,245 @@ function renderActivityDrawerSection(section) {
     <li class="activity-drawer-section">
       <h3>${escapeHtml(section.title || "执行链路")}</h3>
       <ol class="activity-section-list">
-        ${nodes.map(renderActivityDrawerNode).join("")}
+        ${nodes.map((node, index) => renderActivityDrawerNode(node, index, nodes)).join("")}
       </ol>
     </li>
   `;
+}
+
+function renderActivityNodeDigest(digest) {
+  if (!digest || !digest.hasContent) return "";
+  return `
+    <div class="activity-node-transfer" aria-label="节点流转">
+      <span>上游：${escapeHtml(digest.upstream)}</span>
+      <span>当前：${escapeHtml(digest.current)}</span>
+      <span>下游：${escapeHtml(digest.downstream)}</span>
+    </div>
+    <div class="activity-node-columns">
+      ${renderActivityNodeBox("收到什么（输入）", digest.received)}
+      ${renderActivityNodeBox("干了什么（处理）", digest.did)}
+      ${renderActivityNodeBox("发出什么（输出）", digest.sent)}
+    </div>
+    ${digest.note ? `<p class="activity-node-note">${escapeHtml(digest.note)}</p>` : ""}
+  `;
+}
+
+function renderActivityNodeBox(title, lines) {
+  const items = normalizeStringList(lines).slice(0, 5);
+  return `
+    <section class="activity-node-box">
+      <h4>${escapeHtml(title)}</h4>
+      ${
+        items.length
+          ? `<ul>${items.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>`
+          : `<p>没有新的可读信息。</p>`
+      }
+    </section>
+  `;
+}
+
+function activityNodeDigest(node, index, nodes) {
+  const role = String(node.role || "");
+  const supportedRoles = new Set(["planner", "data_engineer", "pandas_executor", "sql_executor", "verifier", "correction", "insight", "visualization", "response_builder", "single_agent"]);
+  if (!supportedRoles.has(role)) {
+    return { hasContent: false };
+  }
+  const inputs = node.inputs_summary || {};
+  const outputs = node.outputs_summary || {};
+  const actions = normalizeStringList(node.actions);
+  const upstream = index === 0 ? "用户问题 / 上传数据" : activityNodeDisplayName(nodes[index - 1]);
+  const downstream = index === nodes.length - 1 ? "最终页面 / API" : activityNodeDisplayName(nodes[index + 1]);
+  const base = {
+    upstream,
+    current: activityNodeDisplayName(node),
+    downstream,
+    received: activityInputLines(inputs),
+    did: [activityNodePlainSummary(node), ...actions.slice(0, 3)],
+    sent: activityOutputLines(outputs),
+    note: "",
+  };
+
+  if (role === "planner") {
+    const tables = normalizeStringList(outputs.source_tables);
+    const joinLine = activityJoinPlanLine(outputs.join_plan);
+    base.received.push("用户问题、表结构、字段名、样例值和当前执行模式。");
+    base.did = [
+      outputs.operation ? `判断分析类型：${activityOperationLabel(outputs.operation)}` : activityNodePlainSummary(node),
+      tables.length ? `选择要用的数据表：${tables.join("、")}` : "",
+      joinLine || "把指标、维度和候选范围拆成后续节点能执行的口径。",
+    ];
+    base.sent = [
+      outputs.operation ? `分析口径：${activityOperationLabel(outputs.operation)}` : "",
+      tables.length ? `交给执行节点的数据表：${tables.join("、")}` : "",
+      joinLine,
+    ];
+    base.note = "计划节点决定后面按什么口径计算，但不直接产出最终答案。";
+  } else if (role === "data_engineer") {
+    const tables = activityTableNames(outputs.source_tables);
+    base.received.push("上传文件、表名、字段类型、样例值和数据质量摘要。");
+    base.did = [tables.length ? `检查可用表：${tables.join("、")}` : activityNodePlainSummary(node), activityQualityLine(outputs.quality)];
+    base.sent = [tables.length ? `可用数据表：${tables.join("、")}` : "", activityQualityLine(outputs.quality) || "把数据画像交给计划和计算节点。"];
+    base.note = "数据理解节点不回答问题，只说明数据长什么样、哪些字段能用。";
+  } else if (role === "pandas_executor" || role === "sql_executor") {
+    const label = role === "pandas_executor" ? "Pandas" : "SQL";
+    base.received.push("计划节点给出的表、指标、维度、筛选条件和排序方式。");
+    base.did = [
+      outputs.skipped ? `${label} 不适合本题或当前模式，已跳过。` : `用 ${label} 执行受控计算。`,
+      outputs.reason ? `原因：${cleanActivityText(outputs.reason)}` : "",
+      activityReadableValue(outputs.value ?? outputs.answer) ? `结果摘要：${activityReadableValue(outputs.value ?? outputs.answer)}` : "",
+    ];
+    base.sent = [
+      outputs.skipped ? `${label} 状态：跳过` : outputs.success === false ? `${label} 状态：失败` : `${label} 状态：完成`,
+      activityReadableValue(outputs.value ?? outputs.answer) ? `计算结果：${activityReadableValue(outputs.value ?? outputs.answer)}` : "",
+    ];
+    base.note = `${label} 节点只负责按计划计算，不单独决定业务结论。`;
+  } else if (role === "verifier") {
+    base.received = [
+      inputs.pandas ? `Pandas 结果：${inputs.pandas}` : "",
+      inputs.sql ? `SQL 结果：${inputs.sql}` : "",
+      "计划口径和执行结果。",
+    ];
+    base.did = [
+      outputs.passed === false ? "检查到结果还不能直接使用。" : "检查计算是否成功、是否一致、是否符合问题口径。",
+      outputs.pandas_sql_consistent !== undefined ? `Pandas/SQL 是否一致：${outputs.pandas_sql_consistent ? "一致" : "不一致"}` : "",
+    ];
+    base.sent = [
+      outputs.passed === false ? "校验结论：需要修正或提示错误。" : "校验结论：可以进入最终回答。",
+      Array.isArray(outputs.issues) && outputs.issues.length ? `问题：${outputs.issues.slice(0, 2).join("；")}` : "",
+    ];
+    base.note = "校验节点是防止错口径、错结果进入最终回答的关口。";
+  } else if (role === "correction") {
+    base.received.push("校验节点发现的问题和上一轮计划。");
+    base.did = [outputs.action ? `修正动作：${cleanActivityText(outputs.action)}` : activityNodePlainSummary(node), outputs.reasoning_summary || outputs.summary || ""];
+    base.sent = [outputs.correction_attempts ? `修正尝试：${activityReadableValue(outputs.correction_attempts)}` : "", "决定是否让执行节点按新口径重跑。"];
+    base.note = "修正节点只做有边界的口径调整，不访问标准答案。";
+  } else if (role === "insight") {
+    base.received.push("已经通过校验的结果和图表信息。");
+    base.did = [outputs.summary ? `提炼结论：${cleanActivityText(outputs.summary)}` : activityNodePlainSummary(node)];
+    base.sent = [outputs.summary ? "业务结论已交给最终回答节点。" : "", Array.isArray(outputs.suggestions) && outputs.suggestions.length ? `建议：${outputs.suggestions.slice(0, 2).join("；")}` : ""];
+    base.note = "洞察节点只解释已验证结果，不重新计算。";
+  } else if (role === "visualization") {
+    base.received.push("可展示的结果数据、指标字段和维度字段。");
+    base.did = [outputs.chart_type ? `选择图表：${outputs.chart_type}` : activityNodePlainSummary(node), outputs.title ? `图表标题：${cleanActivityText(outputs.title)}` : ""];
+    base.sent = [outputs.chart_type ? `图表配置：${outputs.chart_type}` : "没有生成图表配置。", outputs.reason || outputs.fallback_reason || ""];
+    base.note = "图表节点输出展示配置，前端负责真正渲染。";
+  } else if (role === "response_builder") {
+    base.received.push("已验证的计算结果、洞察、图表配置、来源和提示。");
+    base.did = ["把内部结果整理成稳定的页面回答和 API 响应。", ...actions.slice(0, 1)];
+    base.sent = [outputs.success === false ? "返回状态：需要继续确认" : "返回状态：已完成", outputs.answer_type ? `回答类型：${outputs.answer_type}` : ""];
+    base.note = "这是返回给聊天页和外部接口前的最后一道格式化节点。";
+  } else if (role === "single_agent") {
+    base.received.push("用户问题、上传数据上下文和可用工具。");
+    base.did = [activityNodePlainSummary(node), ...actions.slice(0, 2)];
+    base.sent = activityOutputLines(outputs);
+    base.note = "单 Agent 链路会在一个节点里完成理解、执行、校验和回答。";
+  }
+
+  base.received = normalizeStringList(base.received);
+  base.did = normalizeStringList(base.did);
+  base.sent = normalizeStringList(base.sent);
+  return { ...base, hasContent: Boolean(base.received.length || base.did.length || base.sent.length) };
+}
+
+function activityNodeDisplayName(node = {}) {
+  return monitorRoleName(node.role || node.kind || node.title);
+}
+
+function activityInputLines(inputs = {}) {
+  const lines = [];
+  if (inputs.question) lines.push(`用户问题：${cleanActivityText(inputs.question)}`);
+  if (inputs.dataset_id) lines.push(`数据集：${cleanActivityText(inputs.dataset_id)}`);
+  if (inputs.pandas) lines.push(`Pandas 结果：${cleanActivityText(inputs.pandas)}`);
+  if (inputs.sql) lines.push(`SQL 结果：${cleanActivityText(inputs.sql)}`);
+  return lines;
+}
+
+function activityTableNames(value) {
+  const items = Array.isArray(value) ? value : value ? [value] : [];
+  return items
+    .map((item) => (item && typeof item === "object" ? item.table_name || item.name || item.id || "" : item))
+    .map((item) => cleanActivityText(item))
+    .filter(Boolean);
+}
+
+function activityOutputLines(outputs = {}) {
+  const lines = [];
+  if (outputs.operation) lines.push(`分析类型：${activityOperationLabel(outputs.operation)}`);
+  if (Array.isArray(outputs.source_tables) && outputs.source_tables.length) lines.push(`数据表：${outputs.source_tables.join("、")}`);
+  if (outputs.success !== undefined) lines.push(`执行状态：${outputs.success ? "成功" : "失败"}`);
+  if (outputs.skipped) lines.push(`跳过原因：${cleanActivityText(outputs.reason || "当前问题不适合这个路径")}`);
+  const value = activityReadableValue(outputs.value ?? outputs.answer ?? outputs.candidate_table);
+  if (value) lines.push(`结果摘要：${value}`);
+  const joinLine = activityJoinPlanLine(outputs.join_plan);
+  if (joinLine) lines.push(joinLine);
+  return lines;
+}
+
+function activityNodePlainSummary(node = {}) {
+  return cleanActivityText(node.summary || "");
+}
+
+function activityJoinPlanLine(joinPlan = {}) {
+  if (!joinPlan || typeof joinPlan !== "object" || !joinPlan.trusted) return "";
+  const left = cleanActivityText(joinPlan.left_table || "左表");
+  const right = cleanActivityText(joinPlan.right_table || "右表");
+  const key = joinPlan.left_key && joinPlan.right_key && joinPlan.left_key === joinPlan.right_key ? joinPlan.left_key : `${joinPlan.left_key || "-"} / ${joinPlan.right_key || "-"}`;
+  return `需要关联：${left} 和 ${right} 按 ${cleanActivityText(key)} 对齐。`;
+}
+
+function activityQualityLine(quality = {}) {
+  if (!quality || typeof quality !== "object") return "";
+  if (quality.summary) return `数据质量：${cleanActivityText(quality.summary)}`;
+  if (quality.issue_count !== undefined) return `数据质量问题数：${quality.issue_count}`;
+  return "";
+}
+
+function activityReadableValue(value) {
+  if (value === undefined || value === null || value === "") return "";
+  if (Array.isArray(value)) {
+    return value.length ? `${value.length} 条结果，示例 ${activityCompactValue(value[0], 90)}` : "空结果";
+  }
+  if (typeof value === "object") {
+    if (value.answer) return cleanActivityText(value.answer);
+    if (Array.isArray(value.candidate_table)) return activityReadableValue(value.candidate_table);
+    return activityCompactValue(value, 120);
+  }
+  if (typeof value === "number") return formatNumber(value);
+  return cleanActivityText(value);
+}
+
+function activityCompactValue(value, limit = 120) {
+  let text = "";
+  try {
+    text = JSON.stringify(redactActivityObject(value), null, 0);
+  } catch {
+    text = String(value || "");
+  }
+  return shortLabel(text, limit);
+}
+
+function activityOperationLabel(operation) {
+  const raw = String(operation || "").trim();
+  if (!raw) return "-";
+  const labels = {
+    aggregation: "汇总计算",
+    boolean_percentage: "占比计算",
+    distinct_count: "去重计数",
+    field_lookup: "字段查询",
+    metric_per_distinct_entity: "按唯一实体计算指标",
+    rank_by_metric: "按指标排名",
+    ranking: "排名/最高最低",
+    row_count: "行数统计",
+    top_count: "出现次数最高/最常见",
+    trend: "趋势分析",
+    vds_current_filtered_metric_top: "按条件找当前最高指标",
+    vds_current_metric_top: "找当前最高指标",
+    vds_period_growth_count_share: "周期增长数量占比",
+    vds_period_rank_change: "周期排名变化",
+    vds_peer_anomaly: "同类异常对比",
+    vds_status_impact_top: "状态影响排名",
+  };
+  return labels[raw] ? `${labels[raw]} (${raw})` : raw.replaceAll("_", " ");
 }
 
 function renderActivityToolCalls(toolCalls) {
@@ -3366,6 +4056,7 @@ function normalizeActivityNode(node = {}) {
     status: ["active", "completed", "failed", "pending"].includes(String(safeNode.status)) ? String(safeNode.status) : "completed",
     title: cleanActivityText(safeNode.title || safeNode.role || safeNode.kind || "活动"),
     summary: cleanActivityText(safeNode.summary || ""),
+    inputs_summary: safeNode.inputs_summary && typeof safeNode.inputs_summary === "object" ? redactActivityObject(safeNode.inputs_summary) : {},
     actions: normalizeStringList(safeNode.actions),
     outputs_summary: safeNode.outputs_summary && typeof safeNode.outputs_summary === "object" ? safeNode.outputs_summary : {},
     tool_calls: Array.isArray(safeNode.tool_calls) ? safeNode.tool_calls.map(normalizeActivityToolCall).filter(Boolean) : [],
@@ -3463,11 +4154,17 @@ function formatJsonPreview(value, limit = 600) {
 function monitorRoleName(role) {
   const key = String(role || "").trim();
   const names = {
-    planner: "计划节点",
+    planner: "计划节点 (Planner)",
+    data_engineer: "数据理解节点",
+    pandas_executor: "Pandas 计算节点",
+    sql_executor: "SQL 复算节点",
     executor: "执行节点",
     verifier: "校验节点",
     correction: "修正节点",
+    insight: "洞察节点",
+    visualization: "图表节点",
     response_builder: "回答节点",
+    code_artifact: "复现代码",
     single_agent: "单 Agent",
   };
   return names[key] || key || "后端节点";
@@ -3535,8 +4232,8 @@ function renderProcessItems(steps, summary, artifacts = [], options = {}) {
 function oneLineProcessSummary(summary) {
   const text = String(summary || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
-  const firstSentence = text.match(/^(.{1,96}?[。！？!?])(?:\s|$)/)?.[1] || text.split(/[；;]/)[0] || text;
-  return shortLabel(firstSentence, 96);
+  const firstSentence = text.match(/^(.{1,132}?[。！？!?])(?:\s|$)/)?.[1] || text.split(/[；;]/)[0] || text;
+  return shortLabel(firstSentence, 132);
 }
 
 function normalizeProcessList(value, limit) {
@@ -4321,7 +5018,7 @@ function resetConversation() {
   if (el.ruleModeToggle) el.ruleModeToggle.checked = false;
   if (el.ruleFileInput) el.ruleFileInput.value = "";
   if (el.benchmarkRuleInput) el.benchmarkRuleInput.value = "";
-  if (el.ruleFileStatus) el.ruleFileStatus.textContent = "未上传用户分析规则";
+  setRuleFileStatus(RULE_FILE_EMPTY_HINT);
   if (el.benchmarkStatus) el.benchmarkStatus.textContent = "内部 Benchmark 入口";
   el.ruleUploadPanel?.classList.add("hidden");
   [...el.chatMessages.querySelectorAll(".user-message, .assistant-result-message")].forEach((message) => message.remove());

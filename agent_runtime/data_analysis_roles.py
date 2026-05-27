@@ -22,6 +22,7 @@ from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.core.capability_registry import coverage_summary_for_logic_form
 from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
 from data_agent_core.core.intent_parser import parse_generic_table_question, parse_question
+from data_agent_core.core.planner_guardrails import available_columns_by_table_from_context, validate_logic_form_with_guardrails
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMStageResult, complete_stage_with_llm, plan_with_llm
 from data_agent_core.output.chart_renderer import attach_rendered_chart
@@ -118,7 +119,7 @@ class DataAnalysisRoleRuntime:
             guidelines=guidelines,
             context_summary=context_summary | {"rule_column_mapping": column_mapping},
         )
-        logic_form = _validated_logic_form(llm_plan.logic_form, guardrail_logic_form)
+        logic_form = _validated_logic_form(llm_plan.logic_form, guardrail_logic_form, self.context)
         tool_result = self.dispatcher.dispatch(
             ToolCall(
                 step_id=task.task_id + "_tool",
@@ -502,12 +503,12 @@ def _append_tool_trace(state: WorkflowState, trace_event: ToolTraceEvent | None)
         state.tool_call_trace.append(trace_event.to_dict())
 
 
-def _validated_logic_form(llm_logic_form: LogicForm, guardrail_logic_form: LogicForm) -> LogicForm:
-    if llm_logic_form.operation == guardrail_logic_form.operation:
-        _merge_optional_contract_fields(guardrail_logic_form, llm_logic_form)
-        for key, value in llm_logic_form.output_format.items():
-            guardrail_logic_form.output_format.setdefault(key, value)
-    return guardrail_logic_form
+def _validated_logic_form(llm_logic_form: LogicForm, guardrail_logic_form: LogicForm, context: dict[str, Any]) -> LogicForm:
+    return validate_logic_form_with_guardrails(
+        llm_logic_form,
+        guardrail_logic_form,
+        available_columns_by_table=available_columns_by_table_from_context(context),
+    )
 
 
 def _merge_optional_contract_fields(target: LogicForm, source: LogicForm) -> None:
