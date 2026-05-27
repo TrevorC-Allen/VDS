@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate dataset-agnostic VDS eval-gate standard answers.
+"""Generate dataset-agnostic VDS eval-gate GPT reference answers.
 
 The generic gate applies to any uploaded dataset before domain-specific tests.
 It reads one or more files, profiles schema and data quality, then writes
-GPT-like standard answers grounded in computed facts. These answers are offline
+GPT reference answers grounded in computed facts. These answers are offline
 evaluation references only and must never be passed into the Agent workflow.
 """
 
@@ -66,6 +66,15 @@ def main() -> None:
         action="store_true",
         help="Reuse representative overview/cleaning answers for fast smoke comparisons on large files.",
     )
+    parser.add_argument(
+        "--standard-answer-source",
+        choices=("gpt", "deterministic", "auto"),
+        default=os.environ.get("VDS_STANDARD_ANSWER_SOURCE", "gpt"),
+        help=(
+            "Source for standard_answer. Default gpt. Use deterministic only for local smoke/debug; "
+            "auto tries GPT and records deterministic fallback if no LLM is configured."
+        ),
+    )
     parser.add_argument("--print-summary", action="store_true")
     args = parser.parse_args()
 
@@ -84,7 +93,12 @@ def main() -> None:
     con = duckdb.connect(database=":memory:")
     tables = load_tables(con, files, args.table_names or [])
     facts = build_generic_facts(con, tables, dataset_name=args.dataset_name)
-    cases = build_generic_cases(facts)
+    deterministic_cases = build_generic_cases(facts)
+    cases, standard_generation = apply_standard_answer_source(
+        deterministic_cases,
+        facts,
+        source=args.standard_answer_source,
+    )
     candidate_score = None
     candidate_answers: dict[str, str] = {}
     if args.generate_vds_answers:
@@ -107,9 +121,10 @@ def main() -> None:
         "input_files": [str(path) for path in files],
         "facts": facts,
         "cases": cases,
+        "standard_answer_generation": standard_generation,
         "comparison": comparison_rows,
         "candidate_score": candidate_score,
-        "note": "Standard answers are generated from source files after case definition and are offline-only.",
+        "note": "Standard answers are generated as GPT references from source-file facts after case definition and are offline-only.",
     }
     write_json(output_dir / "summary.json", run)
     write_json(output_dir / "standard_answers.json", {"cases": cases})
@@ -270,6 +285,284 @@ def build_generic_cases(facts: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return cases
+
+
+def apply_standard_answer_source(
+    cases: list[dict[str, Any]],
+    facts: dict[str, Any],
+    *,
+    source: str,
+    llm_client: Any | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Replace deterministic case text with GPT reference answers when requested."""
+
+    normalized = str(source or "gpt").strip().lower()
+    if normalized not in {"gpt", "deterministic", "auto"}:
+        raise ValueError("standard answer source must be one of: gpt, deterministic, auto")
+    if normalized == "deterministic":
+        return _mark_deterministic_standard_cases(cases, reason="explicit_deterministic_source")
+
+    try:
+        client = llm_client or _load_formal_gpt_reference_client()
+        _validate_formal_gpt_reference_client(client)
+    except Exception as exc:  # noqa: BLE001 - CLI should explain fallback policy directly.
+        if normalized == "auto":
+            return _mark_deterministic_standard_cases(cases, reason=f"gpt_unavailable:{type(exc).__name__}:{str(exc)[:180]}")
+        raise RuntimeError(
+            "GPT standard answers are required. Set OPENAI_API_KEY and optionally VDS_GPT_REFERENCE_MODEL "
+            "or pass --standard-answer-source deterministic only for smoke/debug runs."
+        ) from exc
+
+    gpt_cases: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for index, case in enumerate(cases, start=1):
+        try:
+            generated = generate_gpt_standard_answer(case, facts, client, index=index, total=len(cases))
+        except Exception as exc:  # noqa: BLE001 - case-level failures should fail formal GPT source.
+            if normalized == "auto":
+                generated = {"standard_answer": case["standard_answer"], "notes": [f"deterministic fallback after {type(exc).__name__}: {str(exc)[:160]}"], "confidence": 0.0}
+                failures.append({"case_id": case["case_id"], "error": f"{type(exc).__name__}: {str(exc)[:300]}"})
+            else:
+                raise RuntimeError(f"GPT standard answer failed for {case['case_id']}: {type(exc).__name__}: {str(exc)[:300]}") from exc
+        next_case = dict(case)
+        next_case["standard_answer"] = str(generated.get("standard_answer") or "").strip()
+        if not next_case["standard_answer"]:
+            raise RuntimeError(f"GPT standard answer was empty for {case['case_id']}.")
+        generated_notes = [str(item) for item in generated.get("notes", []) if str(item).strip()]
+        used_fallback = bool(generated_notes and generated_notes[0].startswith("deterministic fallback"))
+        next_case["standard_answer_source"] = "deterministic_fallback" if used_fallback else "gpt"
+        next_case["standard_answer_policy"] = (
+            "DETERMINISTIC FALLBACK ONLY: not a formal GPT reference. Use --standard-answer-source=gpt for acceptance scoring."
+            if used_fallback
+            else (
+                "GPT reference answer generated by the configured LLM from computed dataset facts; "
+                "offline evaluation only, never passed into VDS agent execution."
+            )
+        )
+        next_case["standard_answer_model"] = "deterministic" if used_fallback else _llm_model_name(client)
+        next_case["standard_answer_notes"] = generated_notes
+        next_case["standard_answer_confidence"] = _score_float(generated.get("confidence"), default=0.0)
+        gpt_cases.append(next_case)
+    return (
+        gpt_cases,
+        {
+            "source": "mixed_gpt_with_deterministic_fallback" if failures else "gpt",
+            "model": _llm_model_name(client),
+            "case_count": len(gpt_cases),
+            "fallback_failures": failures,
+            "policy": "All formal standard_answer values are GPT reference answers grounded in computed facts.",
+        },
+    )
+
+
+def generate_gpt_standard_answer(case: dict[str, Any], facts: dict[str, Any], llm_client: Any, *, index: int, total: int) -> dict[str, Any]:
+    payload = {
+        "case_index": index,
+        "case_count": total,
+        "case_id": case.get("case_id"),
+        "category": case.get("category"),
+        "question": case.get("question"),
+        "expected_route": case.get("expected_route"),
+        "case_fact_hints": _standard_answer_case_fact_hints(case),
+        "computed_fact_digest": _standard_answer_fact_digest(facts),
+    }
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是 ChatGPT Data Analysis 网页端风格的标准答案生成器。"
+                "你只根据用户问题、computed_fact_digest 和 case_fact_hints 生成中文 reference answer。"
+                "case_fact_hints 只是评测事实约束，不是参考文案。"
+                "不要模仿 VDS 当前输出，不要模仿 deterministic fallback，不要输出模板字段清单，"
+                "不要泄露 raw prompt、trace、task_id、scorer 或标准答案生成过程。"
+                "回答要像 GPT：自然、结论优先、有依据、有口径、有边界，必要时给下一步。"
+                "不要新增 computed_fact_digest 之外的数字；字段含义不确定时说推测或需要确认。"
+                "只返回 JSON。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "task": "generate_gpt_reference_standard_answer",
+                    "required_output": {
+                        "standard_answer": "中文 GPT reference answer, grounded only in facts; no markdown table; concise but reviewable",
+                        "notes": "array of short notes about key grounding choices",
+                        "confidence": "0-1",
+                    },
+                    "style_requirements": [
+                        "像 ChatGPT Data Analysis，不是固定模板。",
+                        "数据类回答必须包含结论、依据/关键数值、口径或边界、可继续追问方向。",
+                        "无法回答类问题必须说明缺少什么和用户最小补充信息。",
+                        "清洗类问题必须说明不会直接修改原始数据，需要用户确认。",
+                    ],
+                    "payload": payload,
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    raw = llm_client.complete_json(messages, temperature=0.2)
+    answer_text = _sanitize_gpt_standard_answer(raw.get("standard_answer") or raw.get("answer") or "")
+    return {
+        "standard_answer": answer_text,
+        "notes": raw.get("notes", []) if isinstance(raw.get("notes"), list) else [],
+        "confidence": raw.get("confidence", 0.0),
+    }
+
+
+def _standard_answer_case_fact_hints(case: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "scoring_dimensions": case.get("scoring_dimensions", []),
+        "required_terms": case.get("required_terms", []),
+        "expected_numbers": case.get("expected_numbers", []),
+        "expected_facts": case.get("expected_facts", {}),
+        "technical_checks": case.get("technical_checks", []),
+    }
+
+
+def _load_formal_gpt_reference_client() -> Any:
+    from data_agent_core.llm.client import LLMConfig, MissingLLMConfigError, OpenAICompatibleChatClient
+
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        raise MissingLLMConfigError("OPENAI_API_KEY is required for GPT standard-answer generation.")
+    return OpenAICompatibleChatClient(
+        LLMConfig(
+            provider="openai",
+            api_key=key,
+            model=os.environ.get("VDS_GPT_REFERENCE_MODEL") or os.environ.get("OPENAI_MODEL", "gpt-4o"),
+            base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            timeout_seconds=int(os.environ.get("VDS_LLM_TIMEOUT_SECONDS", "60")),
+            max_retries=int(os.environ.get("VDS_LLM_MAX_RETRIES", "3")),
+            retry_backoff_seconds=float(os.environ.get("VDS_LLM_RETRY_BACKOFF_SECONDS", "1.0")),
+        )
+    )
+
+
+def _validate_formal_gpt_reference_client(client: Any) -> None:
+    from data_agent_core.llm.client import MissingLLMConfigError, MockLLMClient
+
+    if isinstance(client, MockLLMClient):
+        raise MissingLLMConfigError("Mock LLM is not allowed for GPT standard-answer generation.")
+    config = getattr(client, "config", None)
+    provider = str(getattr(config, "provider", "") or "").strip().lower()
+    if provider and provider != "openai":
+        raise MissingLLMConfigError(
+            f"GPT standard-answer generation requires OpenAI/GPT, not provider={provider}."
+        )
+
+
+def _mark_deterministic_standard_cases(cases: list[dict[str, Any]], *, reason: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    marked: list[dict[str, Any]] = []
+    for case in cases:
+        next_case = dict(case)
+        next_case["standard_answer_source"] = "deterministic_fallback"
+        next_case["standard_answer_policy"] = (
+            "DETERMINISTIC FALLBACK ONLY: not a formal GPT reference. "
+            "Use --standard-answer-source=gpt for acceptance scoring."
+        )
+        next_case["standard_answer_model"] = "deterministic"
+        next_case["standard_answer_notes"] = [reason]
+        next_case["standard_answer_confidence"] = 0.0
+        marked.append(next_case)
+    return (
+        marked,
+        {
+            "source": "deterministic_fallback",
+            "reason": reason,
+            "case_count": len(marked),
+            "policy": "Not valid as formal GPT reference; smoke/debug only.",
+        },
+    )
+
+
+def _standard_answer_fact_digest(facts: dict[str, Any]) -> dict[str, Any]:
+    tables = []
+    for table in facts.get("tables", [])[:8]:
+        tables.append(
+            {
+                "table_name": table.get("table_name"),
+                "source_file": table.get("source_file"),
+                "sheet": table.get("sheet"),
+                "row_count": table.get("row_count"),
+                "column_count": table.get("column_count"),
+                "columns": [
+                    {
+                        "name": column.get("name"),
+                        "type": column.get("type"),
+                        "semantic_hints": column.get("semantic_hints", []),
+                        "sample_values": column.get("sample_values", [])[:3],
+                    }
+                    for column in table.get("columns", [])[:24]
+                ],
+                "field_roles": table.get("field_roles", {}),
+                "quality_issues": table.get("quality_issues", [])[:10],
+                "missing": table.get("missing", [])[:8],
+                "numeric_flags": [
+                    {
+                        "column": item.get("column"),
+                        "negative_count": item.get("negative_count"),
+                        "zero_count": item.get("zero_count"),
+                        "high_outlier_count": item.get("high_outlier_count"),
+                        "min": item.get("min"),
+                        "max": item.get("max"),
+                        "avg": item.get("avg"),
+                    }
+                    for item in table.get("numeric", [])[:10]
+                ],
+                "temporal": table.get("temporal", [])[:8],
+                "categorical": [
+                    {
+                        "column": item.get("column"),
+                        "unique_count": item.get("unique_count"),
+                        "top_values": item.get("top_values", [])[:5],
+                    }
+                    for item in table.get("categorical", [])[:8]
+                ],
+                "analysis_suggestions": table.get("analysis_suggestions", [])[:6],
+                "cleaning_policy": {
+                    "rules": (table.get("cleaning_policy") or {}).get("rules", [])[:8],
+                    "rough_impacted_rows_sum": (table.get("cleaning_policy") or {}).get("rough_impacted_rows_sum"),
+                    "rough_impacted_rate_sum": (table.get("cleaning_policy") or {}).get("rough_impacted_rate_sum"),
+                    "requires_user_confirmation": (table.get("cleaning_policy") or {}).get("requires_user_confirmation"),
+                    "mutation_allowed": (table.get("cleaning_policy") or {}).get("mutation_allowed"),
+                },
+            }
+        )
+    return {
+        "dataset_name": facts.get("dataset_name"),
+        "table_count": facts.get("table_count"),
+        "total_rows": facts.get("total_rows"),
+        "dataset_wide_notes": facts.get("dataset_wide_notes", []),
+        "schema_compare": facts.get("schema_compare", {}),
+        "tables": tables,
+    }
+
+
+def _sanitize_gpt_standard_answer(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    forbidden = ("chain_of_thought", "raw_prompt", "reasoning_trace", "trace.json", "task_id", "scorer", "api_key")
+    safe_lines = [line.rstrip() for line in text.splitlines() if not any(token in line.lower() for token in forbidden)]
+    return "\n".join(safe_lines).strip()
+
+
+def _llm_model_name(client: Any) -> str:
+    config = getattr(client, "config", None)
+    model = getattr(config, "model", "")
+    provider = getattr(config, "provider", "")
+    if provider or model:
+        return f"{provider}:{model}".strip(":")
+    return client.__class__.__name__
+
+
+def _score_float(value: Any, *, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _profile_registered_table(con: duckdb.DuckDBPyConnection, view_name: str, table_name: str, path: Path, sheet: str | None) -> TableRef:
@@ -1047,6 +1340,11 @@ def build_comparison_rows(
                 "question": case["question"],
                 "expected_route": case["expected_route"],
                 "standard_answer": case["standard_answer"],
+                "standard_answer_source": case.get("standard_answer_source", "unknown"),
+                "standard_answer_model": case.get("standard_answer_model", ""),
+                "standard_answer_policy": case.get("standard_answer_policy", ""),
+                "standard_answer_notes": case.get("standard_answer_notes", []),
+                "standard_answer_confidence": case.get("standard_answer_confidence"),
                 "candidate_answer": candidate_answer,
                 "comparison_status": status,
                 "missing_terms": score.get("missing_terms", []),
@@ -1296,6 +1594,7 @@ def candidate_contains_number(text: str, check: dict[str, Any], default_toleranc
 
 def summary_markdown(run: dict[str, Any]) -> str:
     facts = run["facts"]
+    standard_generation = run.get("standard_answer_generation") or {}
     ae_counts: dict[str, int] = {}
     for case in run["cases"]:
         ae_counts[case["ae_group"]] = ae_counts.get(case["ae_group"], 0) + 1
@@ -1307,11 +1606,16 @@ def summary_markdown(run: dict[str, Any]) -> str:
         f"- Tables: {facts['table_count']}",
         f"- Total rows: {_int(facts['total_rows'])}",
         f"- Cases: {len(run['cases'])}",
+        f"- Standard answer source: {standard_generation.get('source', 'unknown')}",
+        f"- Standard answer model: {standard_generation.get('model', 'n/a')}",
         f"- Git branch: {run['repo'].get('branch')}",
         f"- Git commit: {run['repo'].get('commit')}",
         "",
         "This is the required dataset-agnostic gate. Domain-specific packs run after it.",
+        "Formal standard answers must be GPT reference answers grounded in computed source-file facts.",
     ]
+    if standard_generation.get("source") != "gpt":
+        lines.append("Warning: this run does not contain all-GPT standard answers and is not valid for formal acceptance scoring.")
     for table in facts["tables"]:
         lines.append(f"- {table['table_name']}: {_int(table['row_count'])} rows, {table['column_count']} columns, quality issues={len(table['quality_issues'])}")
     lines.extend(["", "## A-E Coverage"])
@@ -1339,23 +1643,50 @@ def summary_markdown(run: dict[str, Any]) -> str:
 
 
 def standard_answers_markdown(run: dict[str, Any]) -> str:
-    lines = ["# Generic Dataset Standard Answers", "", "这些答案由源文件画像生成，只用于离线评估。", ""]
+    standard_generation = run.get("standard_answer_generation") or {}
+    lines = [
+        "# Generic Dataset GPT Reference Standard Answers",
+        "",
+        "这些标准回复应由 GPT reference 生成，并且只能基于源文件画像和已计算事实；只用于离线评估，不会传入 VDS Agent。",
+        "",
+        f"- Standard answer source: {standard_generation.get('source', 'unknown')}",
+        f"- Standard answer model: {standard_generation.get('model', 'n/a')}",
+        f"- Policy: {standard_generation.get('policy', 'n/a')}",
+        "",
+    ]
     for case in run["cases"]:
-        lines.extend([f"## {case['case_id']} - {case['category']}", "", f"Question: {case['question']}", "", case["standard_answer"], ""])
+        lines.extend(
+            [
+                f"## {case['case_id']} - {case['category']}",
+                "",
+                f"Question: {case['question']}",
+                f"Standard source: {case.get('standard_answer_source', 'unknown')}",
+                f"Standard model: {case.get('standard_answer_model', 'n/a')}",
+                f"Standard policy: {case.get('standard_answer_policy', 'n/a')}",
+                "",
+                case["standard_answer"],
+                "",
+            ]
+        )
     return "\n".join(lines)
 
 
 def comparison_markdown(run: dict[str, Any]) -> str:
     has_candidate = bool(run.get("candidate_score"))
+    standard_generation = run.get("standard_answer_generation") or {}
     lines = [
         "# Generic Dataset Comparison",
         "",
         f"Dataset: {run['dataset_name']}",
+        f"Standard answer source: {standard_generation.get('source', 'unknown')}",
+        f"Standard answer model: {standard_generation.get('model', 'n/a')}",
         "",
-        "本文件用于会议逐题对比：问题、预期路由、我的标准回复、VDS 实际回复、对比状态会放在一起。",
+        "本文件用于会议逐题对比：问题、预期路由、GPT reference 标准回复、VDS 实际回复、对比状态会放在一起。",
     ]
+    if standard_generation.get("source") != "gpt":
+        lines.append("注意：当前 standard_answer 不是全量 GPT reference，不应用作正式验收口径。")
     if not has_candidate:
-        lines.append("当前未提供 VDS 实际回答，所以只列出我的标准回复；后续传入 `--candidate-answers` 后会自动填充对比结果。")
+        lines.append("当前未提供 VDS 实际回答，所以只列出 GPT reference 标准回复；后续传入 `--candidate-answers` 后会自动填充对比结果。")
     else:
         score = run["candidate_score"]
         lines.append(f"VDS exact score: {score['passed']} / {score['total']} ({_pct(score['pass_rate'])})")
@@ -1372,6 +1703,8 @@ def comparison_markdown(run: dict[str, Any]) -> str:
                 f"- Question: {row['question']}",
                 f"- Expected route: {row['expected_route']}",
                 f"- Comparison status: {row['comparison_status']}",
+                f"- Standard source: {row.get('standard_answer_source', 'unknown')}",
+                f"- Standard model: {row.get('standard_answer_model', 'n/a')}",
                 "",
                 "**我的标准回复**",
                 "",

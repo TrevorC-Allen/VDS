@@ -331,8 +331,24 @@ function fileRecordFromFile(file, status, profile = null) {
 
 function buildReadyFileRecords(files, profile) {
   const fileByName = new Map(files.map((file) => [file.name, file]));
+  const uploadedRecords = backendUploadedFileRecords(profile);
+  if (uploadedRecords.length) {
+    return uploadedRecords.map((record) => {
+      const file = fileByName.get(record.name);
+      const tableCount = countTablesForSource(profile, record.name);
+      const size = record.size || file?.size || 0;
+      return {
+        name: record.name,
+        size,
+        status: "ready",
+        statusText: fileStatusText("ready"),
+        meta: fileMetaText(size, tableCount, record.sourceType),
+      };
+    });
+  }
   const sourceNames = uniqueSourceFileNames(profile);
-  const names = sourceNames.length ? sourceNames : files.map((file) => file.name);
+  const ruleNames = boundRuleFileNames(profile);
+  const names = uniqueNames([...(sourceNames.length ? sourceNames : files.map((file) => file.name)), ...ruleNames]);
   return names.map((name) => {
     const file = fileByName.get(name);
     const tableCount = countTablesForSource(profile, name);
@@ -344,6 +360,43 @@ function buildReadyFileRecords(files, profile) {
       meta: fileMetaText(file?.size || 0, tableCount),
     };
   });
+}
+
+function backendUploadedFileRecords(profile) {
+  const records = [];
+  const uploadedFiles = Array.isArray(profile?.uploaded_files) ? profile.uploaded_files : [];
+  uploadedFiles.forEach((item) => {
+    const name = String(item.file_name || item.name || "").trim();
+    if (!name || records.some((record) => record.name === name)) return;
+    const size = Number(item.size_bytes || item.size || 0);
+    records.push({
+      name,
+      size: Number.isFinite(size) ? size : 0,
+      sourceType: String(item.source_type || item.file_role || ""),
+    });
+  });
+  return records;
+}
+
+function boundRuleFileNames(profile) {
+  const boundFiles = Array.isArray(profile?.auto_bound_rule_files)
+    ? profile.auto_bound_rule_files
+    : Array.isArray(profile?.files)
+      ? profile.files
+      : [];
+  return uniqueNames(
+    boundFiles
+      .map((file) => String(file.file_name || file.name || "").trim())
+      .filter(Boolean),
+  );
+}
+
+function uniqueNames(names) {
+  const result = [];
+  names.forEach((name) => {
+    if (name && !result.includes(name)) result.push(name);
+  });
+  return result;
 }
 
 function uniqueSourceFileNames(profile) {
@@ -369,8 +422,13 @@ function countTablesForSource(profile, sourceName) {
   return (profile.tables || []).filter((table) => String(table.source_file || profile.file_name || "") === sourceName).length;
 }
 
-function fileMetaText(size, tableCount) {
-  return [size ? formatFileSize(size) : "", tableCount ? `${tableCount} 张表` : ""].filter(Boolean).join(" / ") || "文件";
+function fileMetaText(size, tableCount, sourceType = "") {
+  const meta = [size ? formatFileSize(size) : "", tableCount ? `${tableCount} 张表` : ""].filter(Boolean).join(" / ");
+  if (meta) return meta;
+  if (sourceType === "table") return "表格文件";
+  if (sourceType === "rule") return "规则/说明文件";
+  if (sourceType === "source") return "说明文件";
+  return "文件";
 }
 
 function fileStatusText(status) {

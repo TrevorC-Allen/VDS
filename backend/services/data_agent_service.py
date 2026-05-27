@@ -96,11 +96,14 @@ class DataAgentService:
                 response = dataset_profile_response(stored.profile)
                 response["dataset_kind"] = stored.dataset_kind
                 response["source_file_count"] = 1
+                _attach_uploaded_file_records(response, [file_path], [original_filename])
                 return to_json_ready(response)
             _validate_dataset_upload(file_path, original_filename=original_filename, rule_scope=rule_scope)
             parsed = parse_dataset_file(file_path, source_name=original_filename)
             self.file_store.save_parsed_dataset(file_path, parsed)
-            return dataset_profile_response(parsed.profile)
+            response = dataset_profile_response(parsed.profile)
+            _attach_uploaded_file_records(response, [file_path], [original_filename])
+            return response
         except Exception as exc:  # noqa: BLE001 - service must normalize API errors.
             return error_response(
                 error=ErrorResult(
@@ -146,6 +149,7 @@ class DataAgentService:
                 response = dataset_profile_response(stored.profile)
                 response["dataset_kind"] = stored.dataset_kind
                 response["source_file_count"] = len(file_paths)
+                _attach_uploaded_file_records(response, file_paths, original_filenames)
                 return to_json_ready(response)
             _raise_if_rule_only_dabstep_partial(file_paths, original_filenames)
             dataset_paths, dataset_names, rule_paths, rule_names = _split_dataset_and_auto_rule_files(
@@ -164,6 +168,8 @@ class DataAgentService:
                     dataset_id=stored.dataset_id,
                 )
             response = dataset_profile_response(stored.profile)
+            response["dataset_kind"] = stored.dataset_kind
+            _attach_uploaded_file_records(response, file_paths, original_filenames)
             if bound_rules:
                 response["auto_bound_user_rule_file_ids"] = [record.file_id for record in bound_rules]
                 response["auto_bound_rule_files"] = [_public_rule_record(record) for record in bound_rules]
@@ -2311,6 +2317,50 @@ def _is_project_text_source_upload(file_paths: list[str | Path], original_filena
         if suffix not in text_source_suffixes:
             return False
     return True
+
+
+def _attach_uploaded_file_records(
+    response: dict[str, Any],
+    file_paths: list[str | Path],
+    original_filenames: list[str | None] | None,
+) -> None:
+    records = _uploaded_file_records(file_paths, original_filenames)
+    if not records:
+        return
+    response["uploaded_files"] = records
+    response["uploaded_file_count"] = len(records)
+
+
+def _uploaded_file_records(
+    file_paths: list[str | Path],
+    original_filenames: list[str | None] | None,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, file_path in enumerate(file_paths):
+        original_name = None if original_filenames is None or index >= len(original_filenames) else original_filenames[index]
+        path = Path(file_path)
+        display_name = Path(str(original_name or path.name)).name
+        if not display_name or display_name in seen:
+            continue
+        seen.add(display_name)
+        suffix = Path(display_name).suffix.lower() or path.suffix.lower()
+        try:
+            size_bytes = path.stat().st_size
+        except OSError:
+            size_bytes = 0
+        source_type = "table" if suffix in DATASET_FILE_EXTENSIONS else "source"
+        records.append(
+            {
+                "file_name": display_name,
+                "size_bytes": size_bytes,
+                "file_ext": suffix,
+                "file_role": DATASET_FILE_ROLE,
+                "source_type": source_type,
+                "status": "ready",
+            }
+        )
+    return records
 
 
 def _read_project_text_source(file_path: str | Path) -> str:

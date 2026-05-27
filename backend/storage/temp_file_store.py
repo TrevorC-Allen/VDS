@@ -313,7 +313,7 @@ class TempFileStore:
         if dataset_id and self.get_profile(dataset_id) is None:
             raise ValueError(f"Cannot bind rule file to missing dataset_id: {dataset_id}")
 
-        raw_text = _read_text_file(source)
+        raw_text = _read_text_file(source, suffix=suffix)
         parsed_rule, warnings = _parse_rule_text(raw_text, suffix=suffix, rule_scope=scope)
         _validate_rule_payload(parsed_rule, rule_scope=scope)
 
@@ -375,7 +375,7 @@ class TempFileStore:
     ) -> StoredDataset:
         """Persist a DABstep-style context package uploaded through the workbench."""
 
-        file_map, ignored_names = _dabstep_file_map(file_paths, original_filenames)
+        file_map, extra_upload_names = _dabstep_file_map(file_paths, original_filenames)
         missing = sorted(DABSTEP_CONTEXT_REQUIRED_FILES - set(file_map))
         if missing:
             raise ValueError(f"DABstep context package is incomplete. Missing: {', '.join(missing)}.")
@@ -390,6 +390,27 @@ class TempFileStore:
             if source.resolve() != stored_source.resolve():
                 shutil.copy2(source, stored_source)
 
+        extra_source_files: list[str] = []
+        ignored_names: list[str] = []
+        if extra_upload_names:
+            source_dir = dataset_dir / "source_file"
+            source_dir.mkdir(parents=True, exist_ok=True)
+            for index, file_path in enumerate(file_paths):
+                display_name = Path(
+                    str((None if original_filenames is None else original_filenames[index]) or Path(file_path).name)
+                ).name
+                if display_name.lower() in DABSTEP_CONTEXT_REQUIRED_FILES:
+                    continue
+                suffix = Path(display_name).suffix.lower() or Path(file_path).suffix.lower()
+                if suffix not in DATASET_FILE_EXTENSIONS and suffix not in RULE_FILE_EXTENSIONS:
+                    ignored_names.append(display_name)
+                    continue
+                source = Path(file_path)
+                stored_source = _unique_child_path(source_dir, display_name)
+                if source.resolve() != stored_source.resolve():
+                    shutil.copy2(source, stored_source)
+                extra_source_files.append(stored_source.name)
+
         context = load_dabstep_context(context_dir)
         tables = dict(context["tables"])
         table_metadata = {
@@ -402,8 +423,10 @@ class TempFileStore:
         warnings = [
             "已识别 DABstep 规则上下文包；manual.md、fees.json、merchant_data.json 会作为后端规则知识库参与分析。",
         ]
+        if extra_source_files:
+            warnings.append("已额外保存非 DAB 必需来源文件：" + ", ".join(extra_source_files) + "。")
         if ignored_names:
-            warnings.append("已忽略非 DAB context 必需文件：" + ", ".join(ignored_names) + "。")
+            warnings.append("已忽略暂不支持的非 DAB context 文件：" + ", ".join(ignored_names) + "。")
         table_profiles = list(profile_tables(tables, table_metadata=table_metadata).values())
         quality_report = build_data_quality_report(tables, generated_from="dabstep_context_upload")
         profile = DatasetProfile(
@@ -431,6 +454,7 @@ class TempFileStore:
                     "dataset_kind": DABSTEP_DATASET_KIND,
                     "context_files": sorted(DABSTEP_CONTEXT_REQUIRED_FILES),
                     "table_names": list(tables.keys()),
+                    "extra_source_files": extra_source_files,
                     "ignored_files": ignored_names,
                 },
                 ensure_ascii=False,
@@ -943,6 +967,20 @@ def _stored_display_names(source_marker: Path) -> dict[str, str]:
     return {}
 
 
+def _unique_child_path(directory: Path, display_name: str) -> Path:
+    candidate = directory / Path(display_name).name
+    if not candidate.exists():
+        return candidate
+    stem = candidate.stem or "file"
+    suffix = candidate.suffix
+    index = 2
+    while True:
+        alternate = directory / f"{stem}-{index}{suffix}"
+        if not alternate.exists():
+            return alternate
+        index += 1
+
+
 def _source_entry_from_path(path: Path, *, source_type: str) -> dict[str, Any]:
     suffix = path.suffix.lower()
     text = _read_source_text(path, suffix=suffix)
@@ -1397,8 +1435,8 @@ def _normalize_rule_scope(rule_scope: str) -> str:
     return scope
 
 
-def _read_text_file(path: Path) -> str:
-    text = _read_source_text(path, suffix=path.suffix.lower())
+def _read_text_file(path: Path, *, suffix: str | None = None) -> str:
+    text = _read_source_text(path, suffix=suffix or path.suffix.lower())
     if not text.strip():
         raise ValueError("Rule/source file content could not be extracted as text.")
     return text

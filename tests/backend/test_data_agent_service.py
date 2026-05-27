@@ -562,6 +562,34 @@ class DataAgentServiceTest(unittest.TestCase):
             self.assertIn("sql", {item["language"] for item in payload["execution_artifacts"]})
             self.assertTrue(any("source_manifest" in item["code"] for item in payload["execution_artifacts"] if item["language"] == "sql"))
 
+    def test_dabstep_upload_keeps_extra_common_document_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            file_paths = _write_dabstep_context_package(root)
+            docx_path = root / "额外说明.docx"
+            _write_simple_docx(docx_path, "额外 Word 说明：ACI 表示交易授权响应代码。")
+            file_paths.append(docx_path)
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(file_paths, original_filenames=[path.name for path in file_paths])
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="额外说明.docx 是什么",
+                execution_mode="dual",
+            )
+
+        serialized = json.dumps(response, ensure_ascii=False)
+        self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertEqual(7, upload["uploaded_file_count"])
+        self.assertIn("额外说明.docx", [file["file_name"] for file in upload["uploaded_files"]])
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("dataset_source_overview", response["debug"]["operation"])
+        self.assertIn("额外说明.docx", serialized)
+        self.assertIn("ACI 表示交易授权响应代码", serialized)
+
     def test_generic_dataset_source_files_are_bound_and_answerable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -597,6 +625,11 @@ class DataAgentServiceTest(unittest.TestCase):
 
         serialized = json.dumps(response, ensure_ascii=False)
         self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertEqual(5, upload["uploaded_file_count"])
+        self.assertEqual(
+            ["sales.csv", "字段说明.md", "业务口径.txt", "fee_rules.json", "分析说明.docx"],
+            [file["file_name"] for file in upload["uploaded_files"]],
+        )
         self.assertIn("auto_bound_rule_files", upload)
         self.assertTrue(response["success"], response.get("errors"))
         self.assertEqual("overview", response["answer_type"])
@@ -640,6 +673,8 @@ class DataAgentServiceTest(unittest.TestCase):
 
         serialized = json.dumps(response, ensure_ascii=False)
         self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertEqual(1, upload["uploaded_file_count"])
+        self.assertEqual("说明.md", upload["uploaded_files"][0]["file_name"])
         self.assertEqual("uploaded_sources", upload["dataset_kind"])
         self.assertEqual(1, upload["source_file_count"])
         self.assertEqual([], upload["tables"])
@@ -680,6 +715,11 @@ class DataAgentServiceTest(unittest.TestCase):
 
         serialized = json.dumps(response, ensure_ascii=False)
         self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertEqual(4, upload["uploaded_file_count"])
+        self.assertEqual(
+            ["分析说明.docx", "业务口径.rtf", "Pages说明.pages", "旧版Word说明.doc"],
+            [file["file_name"] for file in upload["uploaded_files"]],
+        )
         self.assertEqual("uploaded_sources", upload["dataset_kind"])
         self.assertEqual(4, upload["source_file_count"])
         self.assertEqual([], upload["tables"])
