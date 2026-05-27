@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -13,6 +14,65 @@ from backend.services.data_agent_service import DataAgentService, _suppress_raw_
 from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.llm.client import MockLLMClient
 from data_agent_core.tracing.live_monitor import live_run_monitor
+
+
+class PresentationLLMClient(MockLLMClient):
+    def __init__(self) -> None:
+        self.stage_names: list[str] = []
+        self.temperatures: list[float] = []
+
+    def complete_json(self, messages: list[dict[str, str]], temperature: float = 0.0) -> dict[str, object]:
+        payload = json.loads(messages[-1]["content"])
+        stage_name = str(payload.get("stage_name") or "")
+        self.stage_names.append(stage_name)
+        self.temperatures.append(temperature)
+        if stage_name == "fast_path_presentation":
+            return {
+                "display_answer": "这份数据可以先按订单、客户、月份和销售额理解：它不是单纯行列表，而是后续做客户、时间和销售指标分析的基础表。",
+                "summary": "AI 已复核这组表，关键是先确定主事实表和关联边界。",
+                "next_step": "下一步先确认订单明细表与客户维表的关联键，再做趋势分析。",
+                "next_questions": ["哪张表适合作为主事实表？", "这些表能按哪些字段关联？"],
+                "confidence": 0.73,
+                "reasoning_summary": "基于已验证 overview 结果做表达整理。",
+            }
+        return super().complete_json(messages, temperature=temperature)
+
+
+class SummaryOnlyPresentationLLMClient(PresentationLLMClient):
+    def complete_json(self, messages: list[dict[str, str]], temperature: float = 0.0) -> dict[str, object]:
+        payload = json.loads(messages[-1]["content"])
+        stage_name = str(payload.get("stage_name") or "")
+        self.stage_names.append(stage_name)
+        self.temperatures.append(temperature)
+        if stage_name == "fast_path_presentation":
+            return {
+                "summary": "AI 已把这次概览收敛到订单事实表和销售指标，不再只复述行列数。",
+                "next_step": "下一步按月份看销售额趋势。",
+                "next_questions": ["按月份看销售额趋势吗？"],
+                "confidence": 0.71,
+                "reasoning_summary": "只返回 summary，测试主回答前导语兜底。",
+            }
+        return super().complete_json(messages, temperature=temperature)
+
+
+class DirectChatLLMClient(MockLLMClient):
+    def __init__(self) -> None:
+        self.stage_names: list[str] = []
+        self.temperatures: list[float] = []
+
+    def complete_json(self, messages: list[dict[str, str]], temperature: float = 0.0) -> dict[str, object]:
+        payload = json.loads(messages[-1]["content"])
+        stage_name = str(payload.get("stage_name") or "")
+        self.stage_names.append(stage_name)
+        self.temperatures.append(temperature)
+        if stage_name == "direct_chat":
+            return {
+                "answer": "可以。你现在是在和直连 LLM 对话；如果你问具体数据结论，我会把问题交给后端数据分析 agent 去算。",
+                "handoff_hint": "涉及数据计算、图表或 join 时交给数据分析链路。",
+                "confidence": 0.82,
+                "reasoning_summary": "普通能力说明问题，直接聊天回复。",
+            }
+        return super().complete_json(messages, temperature=temperature)
 
 
 class DataAgentServiceTest(unittest.TestCase):
@@ -56,11 +116,20 @@ class DataAgentServiceTest(unittest.TestCase):
             self.assertEqual("multi_agent", analysis["debug"]["agent_mode"])
             self.assertIn("planner", analysis["debug"]["multi_agent_roles"])
             self.assertIn("trace_path", analysis["debug"])
+            self.assertEqual("sales.csv", analysis["source_references"][0]["file_name"])
+            self.assertEqual(["sales"], [table["table_name"] for table in analysis["source_references"][0]["tables"]])
             self.assertTrue(analysis["reasoning_trace_view"])
             self.assertTrue(analysis["process_view_v2"]["steps"])
+            self.assertTrue(analysis["activity_trace_v2"])
+            self.assertIn("pandas_executor", {node["role"] for node in analysis["activity_trace_v2"]})
+            self.assertIn("sql_executor", {node["role"] for node in analysis["activity_trace_v2"]})
+            self.assertIn("verifier", {node["role"] for node in analysis["activity_trace_v2"]})
+            self.assertTrue(analysis["execution_artifacts"])
+            self.assertTrue(any(node.get("artifacts") for node in analysis["activity_trace_v2"]))
             self.assertEqual("single_agent", single_agent_analysis["debug"]["agent_mode"])
             self.assertTrue(single_agent_analysis["reasoning_trace_view"])
             self.assertTrue(single_agent_analysis["process_view_v2"]["steps"])
+            self.assertTrue(single_agent_analysis["activity_trace_v2"])
 
     def test_analyze_publishes_live_monitor_events(self) -> None:
         monitor_run_id = "test_monitor_service"
@@ -102,6 +171,7 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertIn("workflow_started", event_types)
         self.assertIn("agent_started", event_types)
         self.assertIn("agent_completed", event_types)
+        self.assertIn("activity_trace_delta", event_types)
         self.assertIn("response_ready", event_types)
         self.assertIn("planner", roles)
         self.assertIn("response_builder", roles)
@@ -123,6 +193,7 @@ class DataAgentServiceTest(unittest.TestCase):
             self.assertNotIn(forbidden, serialized_events)
         response_ready = next(event for event in events if event["event_type"] == "response_ready")
         self.assertIn("process_view_v2", response_ready["payload"])
+        self.assertIn("activity_trace_v2", response_ready["payload"])
         self.assertNotIn("response", response_ready["payload"])
         self.assertNotIn("debug", response_ready["payload"])
         self.assertNotIn("trace_path", response_ready["payload"])
@@ -437,6 +508,324 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual("dabstep_context", reloaded_response["debug"]["dataset_kind"])
         self.assertIn("O", reloaded_response["answer"])
 
+    def test_dabstep_source_file_question_reads_knowledge_files_not_not_applicable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            file_paths = _write_dabstep_context_package(root)
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(file_paths, original_filenames=[path.name for path in file_paths])
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="还有几个文件是干什么用的",
+                execution_mode="dual",
+            )
+            manual_response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="manual.md 是干什么用的？",
+                execution_mode="dual",
+            )
+            form_content_response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="这些表单有什么内容",
+                execution_mode="dual",
+            )
+            colloquial_content_response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="这里面都装了啥",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(upload["success"], upload.get("errors"))
+        for payload in (response, manual_response, form_content_response, colloquial_content_response):
+            serialized = json.dumps(payload, ensure_ascii=False)
+            self.assertTrue(payload["success"], payload.get("errors"))
+            self.assertEqual("overview", payload["answer_type"])
+            self.assertEqual("dataset_source_overview", payload["debug"]["operation"])
+            self.assertEqual("dataset_source_overview", payload["debug"]["message_intent"])
+            self.assertNotEqual("Not Applicable", payload["answer"])
+            self.assertNotIn('"answer": "Not Applicable"', serialized)
+            self.assertIn("manual.md", serialized)
+            self.assertIn("fees.json", serialized)
+            self.assertIn("merchant_data.json", serialized)
+            self.assertIn("业务说明手册", serialized)
+            self.assertIn("费率规则", serialized)
+            self.assertEqual(["文件", "类型", "用途", "读取状态", "关键内容"], payload["result"]["columns"])
+            self.assertEqual("dataset_source_overview", payload["process_view_v2"]["mode"])
+            self.assertGreaterEqual(len(payload["process_view_v2"]["steps"]), 6)
+            self.assertTrue(any("Python / Pandas" in step["title"] for step in payload["process_view_v2"]["steps"]))
+            self.assertTrue(payload["execution_artifacts"])
+            self.assertIn("import pandas as pd", payload["execution_artifacts"][0]["code"])
+            self.assertIn("sql", {item["language"] for item in payload["execution_artifacts"]})
+            self.assertTrue(any("source_manifest" in item["code"] for item in payload["execution_artifacts"] if item["language"] == "sql"))
+
+    def test_dabstep_upload_keeps_extra_common_document_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            file_paths = _write_dabstep_context_package(root)
+            docx_path = root / "额外说明.docx"
+            _write_simple_docx(docx_path, "额外 Word 说明：ACI 表示交易授权响应代码。")
+            file_paths.append(docx_path)
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(file_paths, original_filenames=[path.name for path in file_paths])
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="额外说明.docx 是什么",
+                execution_mode="dual",
+            )
+
+        serialized = json.dumps(response, ensure_ascii=False)
+        self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertEqual(7, upload["uploaded_file_count"])
+        self.assertIn("额外说明.docx", [file["file_name"] for file in upload["uploaded_files"]])
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("dataset_source_overview", response["debug"]["operation"])
+        self.assertIn("额外说明.docx", serialized)
+        self.assertIn("ACI 表示交易授权响应代码", serialized)
+
+    def test_generic_dataset_source_files_are_bound_and_answerable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sales_path = root / "tmp_upload_sales.csv"
+            manual_path = root / "字段说明.md"
+            rule_path = root / "业务口径.txt"
+            metadata_path = root / "fee_rules.json"
+            docx_path = root / "分析说明.docx"
+            sales_path.write_text(
+                "订单ID,月份,城市,销售额\n"
+                "O1,2026-01,上海,100\n"
+                "O2,2026-02,北京,200\n",
+                encoding="utf-8",
+            )
+            manual_path.write_text("# 字段说明\n\n销售额表示订单成交金额，城市表示客户所在城市。", encoding="utf-8")
+            rule_path.write_text("业务口径：销售额按订单金额汇总；月份按订单发生月份统计。", encoding="utf-8")
+            metadata_path.write_text(json.dumps({"rules": [{"metric": "销售额", "definition": "订单成交金额"}]}, ensure_ascii=False), encoding="utf-8")
+            _write_simple_docx(docx_path, "Word 说明：这份文件解释销售数据的分析背景。")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(
+                [sales_path, manual_path, rule_path, metadata_path, docx_path],
+                original_filenames=["sales.csv", "字段说明.md", "业务口径.txt", "fee_rules.json", "分析说明.docx"],
+            )
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="这些说明文件是干什么用的？",
+                execution_mode="dual",
+            )
+
+        serialized = json.dumps(response, ensure_ascii=False)
+        self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertEqual(5, upload["uploaded_file_count"])
+        self.assertEqual(
+            ["sales.csv", "字段说明.md", "业务口径.txt", "fee_rules.json", "分析说明.docx"],
+            [file["file_name"] for file in upload["uploaded_files"]],
+        )
+        self.assertIn("auto_bound_rule_files", upload)
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("overview", response["answer_type"])
+        self.assertEqual("dataset_source_overview", response["debug"]["operation"])
+        self.assertNotEqual("Not Applicable", response["answer"])
+        self.assertIn("sales.csv", serialized)
+        self.assertNotIn("tmp_upload_sales.csv", serialized)
+        self.assertIn("字段说明.md", serialized)
+        self.assertIn("业务口径.txt", serialized)
+        self.assertIn("fee_rules.json", serialized)
+        self.assertIn("分析说明.docx", serialized)
+        self.assertIn("销售额表示订单成交金额", serialized)
+        self.assertIn("JSON 对象", serialized)
+        self.assertIn("Word 说明", serialized)
+
+    def test_standalone_markdown_upload_is_answerable_source_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            note_path = root / "说明.md"
+            note_path.write_text("# 业务说明\n\n销售额表示订单成交金额，城市表示客户所在城市。", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(note_path, original_filename="说明.md")
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="这个文件是什么",
+                execution_mode="dual",
+            )
+            reloaded_service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            restored_response = reloaded_service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="这个文件里面有什么",
+                execution_mode="dual",
+            )
+
+        serialized = json.dumps(response, ensure_ascii=False)
+        self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertEqual(1, upload["uploaded_file_count"])
+        self.assertEqual("说明.md", upload["uploaded_files"][0]["file_name"])
+        self.assertEqual("uploaded_sources", upload["dataset_kind"])
+        self.assertEqual(1, upload["source_file_count"])
+        self.assertEqual([], upload["tables"])
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("overview", response["answer_type"])
+        self.assertEqual("dataset_source_overview", response["debug"]["operation"])
+        self.assertIn("说明.md", serialized)
+        self.assertIn("销售额表示订单成交金额", serialized)
+        self.assertTrue(restored_response["success"], restored_response.get("errors"))
+        self.assertEqual("dataset_source_overview", restored_response["debug"]["operation"])
+        self.assertIn("说明.md", json.dumps(restored_response, ensure_ascii=False))
+
+    def test_standalone_common_document_uploads_are_answerable_source_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docx_path = root / "分析说明.docx"
+            rtf_path = root / "业务口径.rtf"
+            pages_path = root / "Pages说明.pages"
+            legacy_doc_path = root / "旧版Word说明.doc"
+            _write_simple_docx(docx_path, "Word 说明：销售额表示订单成交金额。")
+            rtf_path.write_text(r"{\rtf1\ansi RTF 说明：城市表示客户所在城市。}", encoding="utf-8")
+            _write_simple_pages(pages_path, "Pages 说明：月份表示订单发生月份。")
+            legacy_doc_path.write_bytes(b"\xd0\xcf\x11\xe0" + "旧版 Word 说明：商品表示销售对象。".encode("utf-8"))
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(
+                [docx_path, rtf_path, pages_path, legacy_doc_path],
+                original_filenames=["分析说明.docx", "业务口径.rtf", "Pages说明.pages", "旧版Word说明.doc"],
+            )
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="这些文件是什么",
+                execution_mode="dual",
+            )
+
+        serialized = json.dumps(response, ensure_ascii=False)
+        self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertEqual(4, upload["uploaded_file_count"])
+        self.assertEqual(
+            ["分析说明.docx", "业务口径.rtf", "Pages说明.pages", "旧版Word说明.doc"],
+            [file["file_name"] for file in upload["uploaded_files"]],
+        )
+        self.assertEqual("uploaded_sources", upload["dataset_kind"])
+        self.assertEqual(4, upload["source_file_count"])
+        self.assertEqual([], upload["tables"])
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("dataset_source_overview", response["debug"]["operation"])
+        self.assertIn("分析说明.docx", serialized)
+        self.assertIn("业务口径.rtf", serialized)
+        self.assertIn("Pages说明.pages", serialized)
+        self.assertIn("旧版Word说明.doc", serialized)
+        self.assertIn("销售额表示订单成交金额", serialized)
+        self.assertIn("城市表示客户所在城市", serialized)
+        self.assertIn("月份表示订单发生月份", serialized)
+        self.assertIn("商品表示销售对象", serialized)
+
+    def test_broad_not_applicable_is_rescued_to_overview(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            csv_path.write_text(
+                "订单ID,月份,城市,销售额\n"
+                "O1,2026-01,上海,100\n"
+                "O2,2026-02,北京,200\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            upload = service.upload_dataset(csv_path, original_filename="sales.csv")
+            tables = service.file_store.get_tables(upload["dataset_id"]) or {}
+            profile = service.file_store.get_profile(upload["dataset_id"])
+            rescued = service._rescue_unexpected_not_applicable(
+                {
+                    "success": True,
+                    "run_id": "run_bad",
+                    "dataset_id": upload["dataset_id"],
+                    "question": "这里面都装了啥",
+                    "answer_type": "text",
+                    "answer": "Not Applicable",
+                    "result": {"columns": ["answer"], "rows": [{"answer": "Not Applicable"}], "value": "Not Applicable"},
+                    "debug": {"operation": "not_applicable"},
+                },
+                question="这里面都装了啥",
+                tables=tables,
+                profile=profile,
+                source_manifest=service.file_store.get_dataset_sources(upload["dataset_id"]),
+                agent_mode="multi_agent",
+            )
+
+        self.assertEqual("overview", rescued["answer_type"])
+        self.assertEqual("dataset_overview", rescued["debug"]["message_intent"])
+        self.assertTrue(rescued["debug"]["not_applicable_rescue"]["applied"])
+        self.assertNotEqual("Not Applicable", rescued["answer"])
+
+    def test_stored_broad_not_applicable_history_is_repaired_on_load(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            file_paths = _write_dabstep_context_package(root)
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            upload = service.upload_datasets(file_paths, original_filenames=[path.name for path in file_paths])
+            bad_payload = {
+                "success": True,
+                "run_id": "run_bad_history",
+                "dataset_id": upload["dataset_id"],
+                "question": "还有几个文件是干什么用的",
+                "answer_type": "table",
+                "answer": "Not Applicable",
+                "result": {"columns": ["answer"], "rows": [{"answer": "Not Applicable"}], "value": "Not Applicable"},
+                "debug": {"operation": "detail_lookup", "agent_mode": "multi_agent"},
+            }
+            record = service.conversation_store.append_turn(
+                question="还有几个文件是干什么用的",
+                response=bad_payload,
+                dataset_id=upload["dataset_id"],
+            )
+            unsupported = service.conversation_store.append_turn(
+                question="请计算不存在字段的利润率",
+                response={**bad_payload, "run_id": "run_real_unsupported", "question": "请计算不存在字段的利润率"},
+                dataset_id=upload["dataset_id"],
+            )
+
+            repaired = service.get_conversation(record["conversation_id"])
+            still_unsupported = service.get_conversation(unsupported["conversation_id"])
+            persisted = service.conversation_store.get_conversation(record["conversation_id"])
+            stale = service.conversation_store.get_conversation(record["conversation_id"])
+            stale["messages"][1]["payload"]["answer"] = "刚才 N/A 的问题还在旧历史文本里。"
+            stale["messages"][1]["content"] = "刚才 N/A 的问题还在旧历史文本里。"
+            service.conversation_store.save_conversation(stale)
+            repaired_stale = service.get_conversation(record["conversation_id"])
+
+        assistant = repaired["conversation"]["messages"][1]
+        serialized = json.dumps(assistant, ensure_ascii=False)
+        self.assertEqual("overview", assistant["answer_type"])
+        self.assertNotIn('"answer": "Not Applicable"', serialized)
+        self.assertNotIn("N/A", assistant["content"])
+        self.assertIn("manual.md", serialized)
+        self.assertIn("fees.json", serialized)
+        self.assertTrue(assistant["payload"]["debug"]["stored_not_applicable_repair"]["applied"])
+        self.assertEqual("dataset_source_overview", assistant["payload"]["debug"]["stored_not_applicable_repair"]["route"])
+        self.assertEqual("overview", persisted["messages"][1]["answer_type"])
+        self.assertNotIn("N/A", repaired_stale["conversation"]["messages"][1]["content"])
+        self.assertEqual("Not Applicable", still_unsupported["conversation"]["messages"][1]["payload"]["answer"])
+
     def test_incomplete_dabstep_context_upload_returns_clear_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -530,6 +919,7 @@ class DataAgentServiceTest(unittest.TestCase):
                 question="看一下这个数据",
                 execution_mode="dual",
             )
+            loaded = service.get_conversation(response["conversation_id"])
 
         self.assertTrue(response["success"])
         self.assertEqual("overview", response["answer_type"])
@@ -540,13 +930,86 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertNotEqual("3", response["answer"])
         self.assertEqual(["指标", "数值"], response["result"]["columns"])
         self.assertTrue(response["insight"]["business_suggestions"])
+        self.assertLessEqual(len(response["insight"]["business_suggestions"]), 1)
         self.assertIn("依据", response["insight"]["business_suggestions"][0])
         self.assertTrue(response["execution_artifacts"])
         self.assertIn("python", {item["language"] for item in response["execution_artifacts"]})
+        self.assertIn("sql", {item["language"] for item in response["execution_artifacts"]})
         self.assertTrue(response["debug"]["user_experience_shaping"]["applied"])
         self.assertEqual("dataset_overview", response["debug"]["message_intent"])
         self.assertEqual("dataset_overview", response["process_view_v2"]["mode"])
         self.assertTrue(response["process_view_v2"]["steps"])
+        self.assertEqual("SaaS销售.csv", response["source_references"][0]["file_name"])
+        self.assertEqual(response["source_references"], loaded["conversation"]["messages"][1]["payload"]["source_references"])
+
+    def test_fast_dataset_overview_invokes_llm_presentation_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            csv_path.write_text(
+                "订单ID,客户ID,月份,销售额\n"
+                "O1,C1,2026-01,100\n"
+                "O2,C2,2026-01,200\n",
+                encoding="utf-8",
+            )
+            llm_client = PresentationLLMClient()
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=llm_client,
+            )
+
+            upload = service.upload_dataset(csv_path, original_filename="sales.csv")
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="看一下这个数据",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(response["success"])
+        self.assertIn("fast_path_presentation", llm_client.stage_names)
+        self.assertGreater(llm_client.temperatures[-1], 0)
+        self.assertTrue(response["debug"]["llm_presentation"]["used"])
+        self.assertIn("不是单纯行列表", response["answer"])
+        self.assertTrue(response["debug"]["llm_presentation"]["updated_answer"])
+        self.assertEqual(["指标", "数值"], response["result"]["columns"])
+        self.assertEqual("AI 已复核这组表，关键是先确定主事实表和关联边界。", response["insight"]["summary"])
+        self.assertEqual(["哪张表适合作为主事实表？", "这些表能按哪些字段关联？"], response["insight"]["next_questions"])
+        self.assertIn("下一步先确认订单明细表", response["insight"]["business_suggestions"][0])
+        self.assertIn("LLM 表达整理", json.dumps(response["process_view_v2"], ensure_ascii=False))
+        self.assertIn("updated_answer=True", json.dumps(response["process_view_v2"], ensure_ascii=False))
+        self.assertIn("调用LLM整理表达", response["process_view_v2"]["summary"])
+
+    def test_fast_dataset_overview_prefaces_answer_when_llm_only_returns_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            csv_path.write_text(
+                "订单ID,客户ID,月份,销售额\n"
+                "O1,C1,2026-01,100\n"
+                "O2,C2,2026-01,200\n",
+                encoding="utf-8",
+            )
+            llm_client = SummaryOnlyPresentationLLMClient()
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=llm_client,
+            )
+
+            upload = service.upload_dataset(csv_path, original_filename="sales.csv")
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="看一下这个数据",
+                execution_mode="dual",
+        )
+
+        self.assertTrue(response["success"])
+        self.assertIn("核心结论是", response["answer"])
+        self.assertIn("AI 已把这次概览收敛", response["answer"])
+        self.assertIn("已读取这个数据", response["answer"])
+        self.assertIn("口径说明：", response["answer"])
+        self.assertTrue(response["debug"]["llm_presentation"]["updated_answer"])
+        self.assertEqual("summary_preface", response["debug"]["llm_presentation"]["answer_update_source"])
+        self.assertIn("answer_update_source=summary_preface", json.dumps(response["process_view_v2"], ensure_ascii=False))
 
     def test_multi_table_field_overview_never_dumps_detail_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -590,12 +1053,102 @@ class DataAgentServiceTest(unittest.TestCase):
             self.assertTrue(response["success"])
             self.assertEqual("overview", response["answer_type"])
             self.assertEqual("multi_table_dataset_overview", response["debug"]["operation"])
+            self.assertEqual(["orders.csv", "customers.csv"], [item["file_name"] for item in response["source_references"]])
             self.assertEqual(["表名", "来源", "行数", "列数", "可能含义", "关键字段"], response["result"]["columns"])
             payload = json.dumps(response, ensure_ascii=False)
             self.assertIn("orders", response["answer"])
             self.assertIn("customers", response["answer"])
+            self.assertLess(len(response["answer"]), 1200)
+            self.assertNotIn("1. 多表含义", response["answer"])
             self.assertNotIn("WHITE HANGING HEART T-LIGHT HOLDER,6,2.55", payload)
             self.assertNotIn("WHITE METAL LANTERN,6,3.39", payload)
+        self.assertIn("关键字段", field_response["answer"])
+        self.assertIn("建议分析方向", story_response["answer"])
+        self.assertNotEqual(field_response["answer"], story_response["answer"])
+
+    def test_multi_table_browse_questions_are_distinct_overview_not_not_applicable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            orders_path = root / "orders.csv"
+            customers_path = root / "customers.csv"
+            orders_path.write_text(
+                "InvoiceNo,StockCode,Description,Quantity,UnitPrice,CustomerID,Country\n"
+                "536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,6,2.55,17850,United Kingdom\n"
+                "536366,22633,HAND WARMER UNION JACK,-1,1.85,,United Kingdom\n",
+                encoding="utf-8",
+            )
+            customers_path.write_text(
+                "CustomerID,Segment,Region\n"
+                "17850,Retail,UK\n"
+                "13047,Wholesale,UK\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(
+                [orders_path, customers_path],
+                original_filenames=["orders.csv", "customers.csv"],
+            )
+            generic = service.respond_to_message(dataset_id=upload["dataset_id"], question="看一下这几张表")
+            story = service.respond_to_message(dataset_id=upload["dataset_id"], question="这几张表讲的什么")
+            difference = service.respond_to_message(dataset_id=upload["dataset_id"], question="这些文件有什么区别？")
+            content = service.respond_to_message(dataset_id=upload["dataset_id"], question="这些表有什么内容？")
+
+        for response in (generic, story, difference, content):
+            self.assertTrue(response["success"], response.get("errors"))
+            self.assertEqual("overview", response["answer_type"])
+            self.assertEqual("multi_table_dataset_overview", response["debug"]["operation"])
+            self.assertNotEqual("Not Applicable", response["answer"])
+            self.assertIn("orders", response["answer"])
+            self.assertIn("customers", response["answer"])
+            self.assertTrue(response["execution_artifacts"])
+            self.assertIn("import pandas as pd", response["execution_artifacts"][0]["code"])
+            process = response["process_view_v2"]
+            self.assertEqual("dataset_overview", process["mode"])
+            self.assertGreaterEqual(len(process["steps"]), 6)
+            self.assertTrue(any("Python / Pandas" in step["title"] for step in process["steps"]))
+
+        self.assertIn("已读取这组数据", generic["answer"])
+        self.assertIn("主要是在描述", story["answer"])
+        self.assertIn("区别主要在", difference["answer"])
+        self.assertIn("orders", content["answer"])
+        self.assertEqual(4, len({generic["answer"], story["answer"], difference["answer"], content["answer"]}))
+
+    def test_multi_file_shape_question_returns_gpt_like_counts_not_value_dump(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            jan_path = root / "jan.csv"
+            feb_path = root / "feb.csv"
+            jan_path.write_text("月份,客户,金额\n2026-01,A,100\n2026-01,B,200\n", encoding="utf-8")
+            feb_path.write_text("月份,客户,金额,区域\n2026-02,A,150,华东\n", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(
+                [jan_path, feb_path],
+                original_filenames=["jan.csv", "feb.csv"],
+            )
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="每个文件分别有多少行、多少列？",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("overview", response["answer_type"])
+        self.assertEqual("multi_table_dataset_overview", response["debug"]["operation"])
+        self.assertIn("jan", response["answer"])
+        self.assertIn("2 行、3 列", response["answer"])
+        self.assertIn("feb", response["answer"])
+        self.assertIn("1 行、4 列", response["answer"])
+        self.assertIn("没有展示原始明细行", response["answer"])
+        self.assertNotIn("2026-01-01 00:00:00, 89", response["answer"])
+        self.assertLess(len(response["answer"]), 800)
 
     def test_cleaning_guidance_routes_before_detail_lookup_and_keeps_source_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -620,6 +1173,11 @@ class DataAgentServiceTest(unittest.TestCase):
                 question="给出建议清洗规则、影响行数、影响比例，并说明是否需要用户确认。",
                 execution_mode="dual",
             )
+            anomaly_policy = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="给我异常规则、数量、占比和样例说明。",
+                execution_mode="dual",
+            )
             boundary = service.respond_to_message(
                 dataset_id=upload["dataset_id"],
                 question="你会直接修改原始数据吗？",
@@ -631,13 +1189,56 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertIn("建议清洗规则", policy["answer"])
         self.assertIn("影响", policy["answer"])
         self.assertIn("不能覆盖原始文件", policy["answer"])
+        self.assertLess(len(policy["answer"]), 1000)
         self.assertEqual(["表名", "规则", "影响行数", "影响比例", "建议"], policy["result"]["columns"])
         self.assertNotIn("WHITE HANGING HEART T-LIGHT HOLDER,6,2.55", json.dumps(policy, ensure_ascii=False))
         self.assertTrue(policy["debug"]["user_experience_shaping"]["applied"])
+        self.assertTrue(anomaly_policy["success"])
+        self.assertEqual("cleaning_simulation", anomaly_policy["answer_type"])
+        self.assertIn("建议清洗规则", anomaly_policy["answer"])
+        self.assertNotEqual("0", str(anomaly_policy["answer"]).strip())
         self.assertTrue(boundary["success"])
         self.assertEqual("chat", boundary["answer_type"])
         self.assertIn("不会直接修改原始数据", boundary["answer"])
         self.assertIn("必须等用户明确确认", boundary["answer"])
+
+    def test_schema_quality_and_cleaning_questions_are_not_template_collapsed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "retail.csv"
+            csv_path.write_text(
+                "InvoiceNo,StockCode,Description,Quantity,InvoiceDate,UnitPrice,CustomerID,Country\n"
+                "536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,6,2026-01-01,2.55,17850,United Kingdom\n"
+                "536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,6,2026-01-01,2.55,17850,United Kingdom\n"
+                "536366,22633,HAND WARMER UNION JACK,-1,bad-date,1.85,,United Kingdom\n"
+                "536367,22632,HAND WARMER RED POLKA DOT,10000,2026-01-03,0,13047,United Kingdom\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(csv_path, original_filename="retail.csv")
+            schema = service.respond_to_message(dataset_id=upload["dataset_id"], question="字段是否一致？有没有新增、缺失、类型变化？")
+            quality = service.respond_to_message(dataset_id=upload["dataset_id"], question="有没有明显的数据质量问题？")
+            numeric = service.respond_to_message(dataset_id=upload["dataset_id"], question="哪些数值字段存在负值、0 值或极端值？")
+            temporal = service.respond_to_message(dataset_id=upload["dataset_id"], question="哪些日期字段范围异常或无法解析？")
+            roles = service.respond_to_message(dataset_id=upload["dataset_id"], question="哪些字段适合做指标、维度、时间和 ID？")
+
+        self.assertEqual("overview", schema["answer_type"])
+        self.assertIn("主要是一张表", schema["answer"])
+        self.assertEqual("cleaning_simulation", quality["answer_type"])
+        self.assertIn("不能简单说数据完全正常", quality["answer"])
+        self.assertIn("CustomerID 缺失", quality["answer"])
+        self.assertIn("负值", numeric["answer"])
+        self.assertIn("0 值", numeric["answer"])
+        self.assertIn("InvoiceDate 范围", temporal["answer"])
+        self.assertIn("无法解析", temporal["answer"])
+        self.assertEqual("overview", roles["answer_type"])
+        self.assertIn("指标=", roles["answer"])
+        self.assertIn("ID=", roles["answer"])
+        self.assertEqual(5, len({schema["answer"], quality["answer"], numeric["answer"], temporal["answer"], roles["answer"]}))
 
     def test_raw_detail_exit_guard_replaces_agent_csv_dump_with_overview(self) -> None:
         rows = [
@@ -702,9 +1303,48 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertTrue(guarded["debug"]["raw_detail_answer_guard"]["applied"])
         self.assertIn("online_retail", guarded["answer"])
         self.assertIn("订单 / 零售交易明细表", guarded["answer"])
-        self.assertIn("InvoiceDate：时间字段", guarded["answer"])
-        self.assertIn("Country：地理或区域维度", guarded["answer"])
+        self.assertIn("InvoiceDate", guarded["answer"])
+        self.assertIn("完整字段画像", guarded["answer"])
+        self.assertLess(len(guarded["answer"]), 1200)
         self.assertNotIn("WHITE HANGING HEART T-LIGHT HOLDER,6,2.55", serialized)
+
+    def test_raw_detail_exit_guard_replaces_compact_date_value_sequence(self) -> None:
+        raw_answer = (
+            "2025-01-01 00:00:00, 89, 2025-02-01 00:00:00, 95, "
+            "2025-03-01 00:00:00, 101, 2025-04-01 00:00:00, 88"
+        )
+        payload = {
+            "response_version": "v1",
+            "success": True,
+            "run_id": "run_compact_dump",
+            "dataset_id": "dataset_compact_dump",
+            "question": "每个文件分别有多少行、多少列？",
+            "answer_type": "analysis",
+            "execution_mode": "dual",
+            "answer": raw_answer,
+            "result": {"columns": [], "rows": [], "value": None},
+            "debug": {"agent_mode": "multi_agent"},
+        }
+        tables = {
+            "monthly_sales": pd.DataFrame(
+                [
+                    {"月份": "2025-01", "客户": "A", "金额": 89},
+                    {"月份": "2025-02", "客户": "B", "金额": 95},
+                ]
+            )
+        }
+
+        guarded = _suppress_raw_detail_answer(
+            payload,
+            question="每个文件分别有多少行、多少列？",
+            tables=tables,
+            profile=None,
+            agent_mode="multi_agent",
+        )
+
+        self.assertEqual("overview", guarded["answer_type"])
+        self.assertIn("2 行、3 列", guarded["answer"])
+        self.assertNotIn("2025-01-01 00:00:00, 89", guarded["answer"])
 
     def test_broad_dataset_readiness_questions_do_not_return_row_count_only(self) -> None:
         questions = [
@@ -712,6 +1352,7 @@ class DataAgentServiceTest(unittest.TestCase):
             "这个数据正常吗？",
             "这个数据能不能用？",
             "这个数据能不能做趋势、环比或同比？",
+            "帮我看看哪里有问题。",
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -736,6 +1377,8 @@ class DataAgentServiceTest(unittest.TestCase):
             self.assertTrue(response["success"], response.get("errors"))
             self.assertIn(response["answer_type"], {"overview", "cleaning_simulation"})
             self.assertNotEqual("2", str(response["answer"]).strip())
+            self.assertLess(len(str(response["answer"])), 1200)
+            self.assertNotIn("1. 表整体情况", str(response["answer"]))
             self.assertNotIn("WHITE HANGING HEART T-LIGHT HOLDER,6,2026", json.dumps(response, ensure_ascii=False))
 
     def test_dataset_overview_generalizes_beyond_payments_tables(self) -> None:
@@ -793,6 +1436,7 @@ class DataAgentServiceTest(unittest.TestCase):
             upload = service.upload_dataset(csv_path)
             greeting = service.respond_to_message(dataset_id=upload["dataset_id"], question="你好")
             model = service.respond_to_message(dataset_id=upload["dataset_id"], question="你是什么模型")
+            capability = service.respond_to_message(dataset_id=upload["dataset_id"], question="我能干什么")
 
         self.assertTrue(greeting["success"])
         self.assertEqual("chat", greeting["answer_type"])
@@ -804,6 +1448,39 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual("chat", model["answer_type"])
         self.assertIn("VDS 数据分析助手", model["answer"])
         self.assertEqual("chat_with_dataset", model["debug"]["agent_mode"])
+        self.assertTrue(capability["success"])
+        self.assertEqual("chat", capability["answer_type"])
+        self.assertEqual("chat_with_dataset", capability["debug"]["agent_mode"])
+        self.assertEqual("chat", capability["process_view_v2"]["mode"])
+        self.assertIn("当前数据已经上传", capability["answer"])
+        self.assertNotIn("Not Applicable", json.dumps(capability, ensure_ascii=False))
+        self.assertEqual([], capability["result"]["rows"])
+
+    def test_meta_chat_uses_direct_llm_before_data_analysis_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            csv_path.write_text("city,sales\nShanghai,100\nBeijing,150\n", encoding="utf-8")
+            llm_client = DirectChatLLMClient()
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=llm_client,
+            )
+
+            upload = service.upload_dataset(csv_path)
+            response = service.respond_to_message(dataset_id=upload["dataset_id"], question="我能干什么")
+
+        self.assertTrue(response["success"])
+        self.assertEqual("chat", response["answer_type"])
+        self.assertEqual("chat", response["process_view_v2"]["mode"])
+        self.assertEqual([], response["result"]["rows"])
+        self.assertIn("直连 LLM", response["answer"])
+        self.assertIn("direct_chat", llm_client.stage_names)
+        self.assertGreater(llm_client.temperatures[-1], 0)
+        self.assertTrue(response["debug"]["direct_llm_chat"]["used"])
+        self.assertTrue(response["debug"]["direct_llm_chat"]["updated_answer"])
+        self.assertIn("LLM 直接对话", json.dumps(response["process_view_v2"], ensure_ascii=False))
+        self.assertNotIn("Not Applicable", json.dumps(response, ensure_ascii=False))
 
     def test_chat_without_dataset_returns_vds_reply(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -841,6 +1518,9 @@ class DataAgentServiceTest(unittest.TestCase):
             loaded_after_restart = reloaded_service.get_conversation(conversation_id)
 
         self.assertTrue(first["success"])
+        self.assertIn("started_at", first)
+        self.assertIn("responded_at", first)
+        self.assertIsInstance(first["thinking_elapsed_ms"], int)
         self.assertTrue(conversation_id.startswith("conv_"))
         self.assertEqual(conversation_id, second["conversation_id"])
         self.assertEqual("VDS 助手介绍", renamed["conversation"]["title"])
@@ -849,9 +1529,39 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual("chat", listed["conversations"][0]["last_answer_type"])
         self.assertEqual(4, len(loaded["conversation"]["messages"]))
         self.assertEqual("user", loaded["conversation"]["messages"][0]["role"])
+        self.assertTrue(loaded["conversation"]["messages"][0]["created_at"])
         self.assertEqual("assistant", loaded["conversation"]["messages"][1]["role"])
         self.assertEqual("chat", loaded["conversation"]["messages"][1]["payload"]["answer_type"])
+        self.assertIn("thinking_elapsed_ms", loaded["conversation"]["messages"][1]["payload"])
         self.assertEqual("VDS 助手介绍", loaded_after_restart["conversation"]["title"])
+
+    def test_conversation_pin_persists_and_sorts_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = Path(temp_dir) / "storage"
+            service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+
+            first = service.respond_to_message(question="第一条")
+            second = service.respond_to_message(question="第二条")
+            pinned = service.update_conversation(first["conversation_id"], pinned=True)
+            listed = service.list_conversations()
+            reloaded_service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+            loaded_after_restart = reloaded_service.get_conversation(first["conversation_id"])
+            unpinned = reloaded_service.update_conversation(first["conversation_id"], pinned=False)
+
+        self.assertTrue(pinned["conversation"]["pinned"])
+        self.assertTrue(pinned["conversation"]["pinned_at"])
+        self.assertEqual(first["conversation_id"], listed["conversations"][0]["conversation_id"])
+        self.assertTrue(listed["conversations"][0]["pinned"])
+        self.assertEqual(second["conversation_id"], listed["conversations"][1]["conversation_id"])
+        self.assertTrue(loaded_after_restart["conversation"]["pinned"])
+        self.assertFalse(unpinned["conversation"]["pinned"])
+        self.assertEqual("", unpinned["conversation"]["pinned_at"])
 
     def test_conversation_can_move_into_project_and_be_deleted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -866,6 +1576,7 @@ class DataAgentServiceTest(unittest.TestCase):
             project = service.create_project(name="可归档 Project")
             project_id = project["project"]["project_id"]
             moved = service.update_conversation(conversation_id, project_id=project_id)
+            listed_global_after_move = service.list_conversations()
             listed_project = service.list_conversations(project_id=project_id)
             loaded_project = service.get_project(project_id)
             deleted = service.delete_conversation(conversation_id)
@@ -874,6 +1585,7 @@ class DataAgentServiceTest(unittest.TestCase):
 
         self.assertTrue(moved["success"], moved.get("errors"))
         self.assertEqual(project_id, moved["conversation"]["project_id"])
+        self.assertEqual([], listed_global_after_move["conversations"])
         self.assertEqual(conversation_id, listed_project["conversations"][0]["conversation_id"])
         self.assertEqual([conversation_id], loaded_project["project"]["conversation_ids"])
         self.assertTrue(deleted["deleted"])
@@ -1129,6 +1841,30 @@ def _write_dabstep_context_package(root: Path) -> list[Path]:
         path.write_text(content, encoding="utf-8")
         paths.append(path)
     return paths
+
+
+def _write_simple_docx(path: Path, text: str) -> None:
+    escaped = (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body><w:p><w:r><w:t>{escaped}</w:t></w:r></w:p></w:body>"
+        "</w:document>"
+    )
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", "")
+        archive.writestr("_rels/.rels", "")
+        archive.writestr("word/document.xml", document_xml)
+
+
+def _write_simple_pages(path: Path, text: str) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("QuickLook/Preview.txt", text)
 
 
 if __name__ == "__main__":

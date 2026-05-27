@@ -103,7 +103,7 @@ def build_overview_execution_artifacts(
         )
     if metric and dimension:
         lines.append(f'top_groups = df.groupby("{dimension}")["{metric}"].sum().sort_values(ascending=False).head(5)')
-    return [
+    artifacts = [
         {
             "artifact_id": "overview_python",
             "language": "python",
@@ -113,6 +113,43 @@ def build_overview_execution_artifacts(
             "output_summary": f"读取 {row_count} 行、{column_count} 列，并生成表规模、字段画像、分布和可追问方向。",
         }
     ]
+    sql = _overview_sql_code(table=table, metric=metric, dimension=dimension)
+    if sql:
+        artifacts.append(
+            {
+                "artifact_id": "overview_sql",
+                "language": "sql",
+                "title": "SQL 概览参考口径",
+                "purpose": "展示同一张上传表在只读 SQL 视角下的概览口径，用于和 Pandas 结果对照。",
+                "code": _safe_code(sql),
+                "output_summary": f"读取 {row_count} 行、{column_count} 列，并生成表规模或指标汇总。",
+            }
+        )
+    return artifacts
+
+
+def _overview_sql_code(*, table: str, metric: str, dimension: str) -> str:
+    quoted_table = _quote_sql(table)
+    if metric and dimension:
+        quoted_metric = _quote_sql(metric)
+        quoted_dimension = _quote_sql(dimension)
+        return (
+            f"SELECT {quoted_dimension}, SUM({quoted_metric}) AS {quoted_metric}\n"
+            f"FROM {quoted_table}\n"
+            f"GROUP BY {quoted_dimension}\n"
+            f"ORDER BY {quoted_metric} DESC\n"
+            "LIMIT 5;"
+        )
+    if metric:
+        quoted_metric = _quote_sql(metric)
+        return (
+            f"SELECT SUM({quoted_metric}) AS total,\n"
+            f"       AVG({quoted_metric}) AS average,\n"
+            f"       MIN({quoted_metric}) AS minimum,\n"
+            f"       MAX({quoted_metric}) AS maximum\n"
+            f"FROM {quoted_table};"
+        )
+    return f"SELECT COUNT(*) AS row_count\nFROM {quoted_table};"
 
 
 def _python_code(*, source_table: str, metric: str, group_by: str, operation: str) -> str:

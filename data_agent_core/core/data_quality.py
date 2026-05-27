@@ -66,7 +66,7 @@ def _table_issues(table_name: str, df: pd.DataFrame) -> list[DataQualityIssue]:
         )
         return issues
 
-    duplicate_count = int(df.duplicated(keep=False).sum())
+    duplicate_count = int(df.duplicated().sum())
     if duplicate_count:
         issues.append(
             DataQualityIssue(
@@ -231,8 +231,8 @@ def _numeric_outlier_issues(table_name: str, column_name: str, numeric: pd.Serie
     iqr = q3 - q1
     if iqr == 0:
         return []
-    lower = q1 - 1.5 * iqr
-    upper = q3 + 1.5 * iqr
+    lower = q1 - 3 * iqr
+    upper = q3 + 3 * iqr
     mask = (numeric < lower) | (numeric > upper)
     count = int(mask.sum())
     if not count:

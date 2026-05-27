@@ -382,7 +382,7 @@ def _top_group(rows: list[dict[str, Any]], dimension_column: str, metric_column:
 def classify_not_applicable(value: Any, plan: AnalysisPlan) -> dict[str, Any]:
     """Classify Not Applicable as true unsupported or a capability gap."""
 
-    if value != "Not Applicable":
+    if not _is_not_applicable_value(value):
         return {"category": None, "message": ""}
     logic = plan.logic_form
     reason = str(logic.parameters.get("reason") or "")
@@ -403,6 +403,20 @@ def classify_not_applicable(value: Any, plan: AnalysisPlan) -> dict[str, Any]:
         "operation": logic.operation,
         "message": message,
     }
+
+
+def _is_not_applicable_value(value: Any) -> bool:
+    if isinstance(value, str):
+        text = value.strip().lower()
+        return text in {"not applicable", "n/a", "na"} or "not applicable" in text
+    if isinstance(value, dict):
+        for key in ("answer", "value", "result"):
+            if key in value and _is_not_applicable_value(value[key]):
+                return True
+        return False
+    if isinstance(value, (list, tuple)):
+        return bool(value) and all(_is_not_applicable_value(item) for item in value)
+    return False
 
 
 def _looks_true_unsupported(reason: str) -> bool:
@@ -442,7 +456,7 @@ def _format_decimal(value: float, places: int) -> str:
 
 def _format_grouped_amounts(rows: list[dict[str, Any]], decimals: int | None) -> str:
     if not rows:
-        return "Not Applicable"
+        return "没有匹配记录"
     group_key = next(key for key in rows[0] if key != "eur_amount")
     parts = [f"{row[group_key]}: {_format_number(float(row['eur_amount']), decimals)}" for row in rows]
     return "[" + ", ".join(parts) + "]"

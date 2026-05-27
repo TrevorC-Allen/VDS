@@ -311,6 +311,9 @@ def _verify_join_contract(
     notes: list[str] = []
 
     if len(source_tables) > 1 and not join_plan:
+        if _uses_schema_backed_internal_source_alignment(logic):
+            notes.append("Schema-backed business operation handles source alignment internally.")
+            return True, notes, None
         notes.append("Plan references multiple source tables but does not define a join plan.")
         return False, notes, {"action": "clarify_join_key", "reason": "multi_table_without_join_plan"}
     if not join_plan:
@@ -344,6 +347,14 @@ def _verify_join_contract(
         notes.append("Question asks for a named dimension, but the plan would return an ID field.")
         return False, notes, {"action": "repair_table_selection_or_join", "reason": "dimension_fell_back_to_id"}
     return True, notes, None
+
+
+def _uses_schema_backed_internal_source_alignment(logic: Any) -> bool:
+    operation = str(getattr(logic, "operation", "") or "")
+    if not operation.startswith("retail_"):
+        return False
+    capability = capability_for_operation(operation)
+    return capability.capability_family == "chinese_retail_business_metric"
 
 
 def _asks_named_dimension(question: str) -> bool:

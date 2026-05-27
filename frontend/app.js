@@ -1,5 +1,6 @@
 const MONITOR_RUN_INDEX_KEY = "vds-monitor-runs";
 const ACTIVE_MONITOR_RUN_KEY = "vds-active-monitor-run";
+const PROJECT_PANEL_COLLAPSED_KEY = "vds-project-panel-collapsed";
 const MAX_MONITOR_RUN_RECORDS = 80;
 const ACTIVITY_EVENT_TYPES = [
   "monitor_connected",
@@ -8,6 +9,9 @@ const ACTIVITY_EVENT_TYPES = [
   "workflow_started",
   "agent_started",
   "agent_completed",
+  "agent_failed",
+  "correction_rerun_started",
+  "activity_trace_delta",
   "workflow_completed",
   "response_ready",
   "analysis_failed",
@@ -25,12 +29,19 @@ const state = {
   conversationId: "",
   projectId: "",
   projects: [],
+  projectDetails: null,
+  projectConversations: [],
+  projectViewTab: "chats",
+  projectDraftActive: false,
+  projectPanelCollapsed: false,
   profile: null,
   selectedTable: "",
   fileRecords: [],
   runHistory: [],
   progressTimer: null,
+  thinkingElapsedTimer: null,
   progressStep: 0,
+  thinkingStartedAt: 0,
   isUploading: false,
   isAnalyzing: false,
   hasPendingUpload: false,
@@ -45,6 +56,13 @@ const state = {
   activeHistoryRunId: "",
   activitySource: null,
   activityEvents: [],
+  liveActivityTrace: [],
+  latestActivityResult: null,
+  drawerResult: null,
+  drawerTriggerSummary: null,
+  activityDrawerAutoScroll: true,
+  textDialogResolve: null,
+  chatSearchQuery: "",
 };
 
 const el = {
@@ -54,7 +72,14 @@ const el = {
   resultTemplate: document.querySelector("#result-message"),
   resultMessage: document.querySelector("#result-message"),
   newChatButton: document.querySelector("#new-chat-button"),
+  chatSearchButton: document.querySelector("#chat-search-button"),
+  chatSearchDialog: document.querySelector("#chat-search-dialog"),
+  chatSearchInput: document.querySelector("#chat-search-input"),
+  chatSearchCloseButton: document.querySelector("#chat-search-close-button"),
+  chatSearchResults: document.querySelector("#chat-search-results"),
   fileInput: document.querySelector("#file-input"),
+  composerFileTray: document.querySelector("#composer-file-tray"),
+  fileStatusWrap: document.querySelector("#file-status-wrap"),
   fileSummary: document.querySelector("#file-summary"),
   fileDetail: document.querySelector("#file-detail"),
   filePanel: document.querySelector("#file-panel"),
@@ -92,32 +117,98 @@ const el = {
   processPanel: document.querySelector(".process-panel"),
   processSummary: document.querySelector("#process-summary"),
   processTimeline: document.querySelector("#process-timeline"),
+  activityBackdrop: document.querySelector("#activity-backdrop"),
+  activityDrawer: document.querySelector("#activity-drawer"),
+  activityDrawerClose: document.querySelector("#activity-drawer-close"),
+  activityDrawerTitle: document.querySelector("#activity-drawer-title"),
+  activityDrawerSummary: document.querySelector("#activity-drawer-summary"),
+  activityDrawerList: document.querySelector("#activity-drawer-list"),
   artifactPanel: document.querySelector(".artifact-panel"),
   artifactList: document.querySelector(".artifact-list"),
+  sourcePanel: document.querySelector(".answer-source-panel"),
+  sourceList: document.querySelector(".answer-source-list"),
   runHistory: document.querySelector("#run-history"),
   historyCount: document.querySelector("#history-count"),
-  projectSelect: document.querySelector("#project-select"),
+  projectPanel: document.querySelector(".project-panel"),
+  projectCollapseButton: document.querySelector("#project-collapse-button"),
+  projectSectionBody: document.querySelector("#project-section-body"),
+  projectList: document.querySelector("#project-list"),
   newProjectButton: document.querySelector("#new-project-button"),
-  renameProjectButton: document.querySelector("#rename-project-button"),
-  deleteProjectButton: document.querySelector("#delete-project-button"),
   projectCount: document.querySelector("#project-count"),
   projectSummary: document.querySelector("#project-summary"),
+  projectHome: document.querySelector("#project-home"),
+  projectHomeTitle: document.querySelector("#project-home-title"),
+  projectNewChatButton: document.querySelector("#project-new-chat-button"),
+  projectNewChatLabel: document.querySelector("#project-new-chat-label"),
+  projectTabChats: document.querySelector("#project-tab-chats"),
+  projectTabSources: document.querySelector("#project-tab-sources"),
+  projectChatsPanel: document.querySelector("#project-chats-panel"),
+  projectSourcesPanel: document.querySelector("#project-sources-panel"),
+  projectConversationList: document.querySelector("#project-conversation-list"),
+  projectSourceList: document.querySelector("#project-source-list"),
+  projectMemoryList: document.querySelector("#project-memory-list"),
+  projectSourceUploadInput: document.querySelector("#project-source-upload-input"),
+  projectSourceUploadDropzone: document.querySelector("#project-source-upload-dropzone"),
+  projectSourceUploadStatus: document.querySelector("#project-source-upload-status"),
+  contextMenu: document.querySelector("#context-menu"),
+  textDialog: document.querySelector("#text-dialog"),
+  textDialogForm: document.querySelector("#text-dialog .text-dialog-card"),
+  textDialogTitle: document.querySelector("#text-dialog-title"),
+  textDialogLabel: document.querySelector("#text-dialog-label"),
+  textDialogInput: document.querySelector("#text-dialog-input"),
+  textDialogCancel: document.querySelector("#text-dialog-cancel"),
+  textDialogConfirm: document.querySelector("#text-dialog-confirm"),
 };
 
 el.fileInput.addEventListener("change", updateFileSummary);
 el.fileSummary.addEventListener("click", toggleFilePanel);
 document.addEventListener("click", closeFilePanelFromOutside);
+document.addEventListener("click", closeContextMenuFromOutside);
+document.addEventListener("keydown", handleGlobalKeydown);
+window.addEventListener("resize", closeContextMenu);
+window.addEventListener("scroll", closeContextMenu, true);
+el.activityBackdrop?.addEventListener("click", closeActivityDrawer);
+el.activityDrawerClose?.addEventListener("click", closeActivityDrawer);
+el.activityDrawerList?.addEventListener("scroll", handleActivityDrawerScroll);
 el.ruleModeToggle?.addEventListener("change", updateRuleMode);
-el.ruleFileInput?.addEventListener("change", updateRuleFileSummary);
-el.ruleUploadButton?.addEventListener("click", uploadUserRule);
+el.ruleFileInput?.addEventListener("change", handleRuleFileSelection);
+el.ruleUploadButton?.addEventListener("click", handleRuleUploadButtonClick);
 el.benchmarkRuleInput?.addEventListener("change", updateBenchmarkRuleSummary);
 el.benchmarkRuleUploadButton?.addEventListener("click", uploadBenchmarkRule);
 el.benchmarkRunButton?.addEventListener("click", runBenchmark);
-el.newChatButton.addEventListener("click", resetConversation);
+el.newChatButton.addEventListener("click", startGlobalConversation);
+el.chatSearchButton?.addEventListener("click", openChatSearch);
+el.chatSearchCloseButton?.addEventListener("click", closeChatSearch);
+el.chatSearchInput?.addEventListener("input", handleChatSearchInput);
+el.chatSearchInput?.addEventListener("keydown", handleChatSearchKeydown);
+el.chatSearchDialog?.addEventListener("click", (event) => {
+  if (event.target === el.chatSearchDialog) closeChatSearch();
+});
+el.projectCollapseButton?.addEventListener("click", toggleProjectPanelCollapsed);
 el.newProjectButton?.addEventListener("click", createProjectFromPrompt);
-el.renameProjectButton?.addEventListener("click", renameCurrentProjectFromPrompt);
-el.deleteProjectButton?.addEventListener("click", deleteCurrentProject);
-el.projectSelect?.addEventListener("change", handleProjectChange);
+el.textDialogForm?.addEventListener("submit", submitTextDialog);
+el.textDialogCancel?.addEventListener("click", () => closeTextDialog(null));
+el.textDialog?.addEventListener("click", (event) => {
+  if (event.target === el.textDialog) closeTextDialog(null);
+});
+el.textDialogInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeTextDialog(null);
+  }
+});
+el.chatMessages?.addEventListener("click", handleThinkingSummaryClick);
+el.chatMessages?.addEventListener("keydown", handleThinkingSummaryKeydown);
+el.projectNewChatButton?.addEventListener("click", startProjectConversation);
+el.projectTabChats?.addEventListener("click", () => setProjectTab("chats"));
+el.projectTabSources?.addEventListener("click", () => setProjectTab("sources"));
+el.projectSourceUploadInput?.addEventListener("change", () => uploadProjectSourceFiles([...el.projectSourceUploadInput.files]));
+el.projectSourceUploadDropzone?.addEventListener("click", () => el.projectSourceUploadInput?.click());
+el.projectSourceUploadDropzone?.addEventListener("keydown", handleProjectSourceUploadKeydown);
+el.projectSourceUploadDropzone?.addEventListener("dragenter", handleProjectSourceDragEnter);
+el.projectSourceUploadDropzone?.addEventListener("dragover", handleProjectSourceDragEnter);
+el.projectSourceUploadDropzone?.addEventListener("dragleave", handleProjectSourceDragLeave);
+el.projectSourceUploadDropzone?.addEventListener("drop", handleProjectSourceDrop);
 el.uploadButton.addEventListener("click", uploadFiles);
 el.runButton.addEventListener("click", runAnalysis);
 el.questionInput.addEventListener("input", handleQuestionInput);
@@ -127,6 +218,7 @@ el.questionInput.addEventListener("keydown", handleQuestionKeydown);
 
 updateFileSummary();
 updateQuestionEmptyState();
+loadProjectPanelCollapsed();
 loadProjects().finally(() => loadConversations());
 
 function updateFileSummary() {
@@ -135,7 +227,7 @@ function updateFileSummary() {
     state.hasPendingUpload = false;
     state.fileRecords = [];
     el.fileSummary.textContent = "选择文件";
-    el.fileDetail.textContent = "数据和说明文件支持多选";
+    el.fileDetail.textContent = "数据文件和规则文件支持多选";
     el.uploadButton.disabled = true;
     renderFilePanel();
     updateRunButton();
@@ -171,7 +263,7 @@ function clearRestoredFileRecords() {
   el.uploadButton.disabled = true;
   renderFilePanel();
   el.fileSummary.textContent = state.datasetId ? "文件信息不可用" : "选择文件";
-  el.fileDetail.textContent = state.datasetId ? "需重新上传后继续分析" : "数据和说明文件支持多选";
+  el.fileDetail.textContent = state.datasetId ? "需重新上传后继续分析" : "数据文件和规则文件支持多选";
   updateRunButton();
 }
 
@@ -193,10 +285,24 @@ function closeFilePanel() {
   el.fileSummary.setAttribute("aria-expanded", "false");
 }
 
+function handleGlobalKeydown(event) {
+  if (event.key === "Escape" && isChatSearchOpen()) {
+    event.preventDefault();
+    closeChatSearch();
+    return;
+  }
+  if (event.key === "Escape" && !el.activityDrawer?.classList.contains("hidden")) {
+    event.preventDefault();
+    closeActivityDrawer();
+  }
+}
+
 function renderFilePanel() {
   const records = state.fileRecords || [];
   el.fileSummary.disabled = !records.length;
+  el.fileStatusWrap?.classList.toggle("hidden", !records.length);
   if (el.filePanelCount) el.filePanelCount.textContent = String(records.length);
+  renderComposerFileTray(records);
   if (!records.length) {
     closeFilePanel();
     if (el.filePanelList) el.filePanelList.innerHTML = "";
@@ -218,6 +324,39 @@ function renderFilePanel() {
     .join("");
 }
 
+function renderComposerFileTray(records) {
+  if (!el.composerFileTray) return;
+  el.composerFileTray.classList.toggle("hidden", !records.length);
+  if (!records.length) {
+    el.composerFileTray.innerHTML = "";
+    return;
+  }
+  el.composerFileTray.innerHTML = records
+    .map(
+      (file) => `
+        <button class="composer-file-card" type="button" title="点击查看文件">
+          <span class="composer-file-icon" aria-hidden="true"></span>
+          <span class="composer-file-copy">
+            <strong title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</strong>
+            <span>${escapeHtml(fileCardTypeText(file))}</span>
+          </span>
+        </button>
+      `,
+    )
+    .join("");
+  el.composerFileTray.querySelectorAll(".composer-file-card").forEach((button) => {
+    button.addEventListener("click", toggleFilePanel);
+  });
+}
+
+function fileCardTypeText(file) {
+  const name = String(file?.name || "").toLowerCase();
+  if (/\.(csv|xlsx|xls|parquet|arrow|feather)$/.test(name)) return "电子表格";
+  if (/\.(json|yaml|yml)$/.test(name)) return "结构化文件";
+  if (/\.(pdf|doc|docx|docm|rtf|odt|pages|md|txt|html|htm)$/.test(name)) return "规则/说明文件";
+  return file?.meta || "文件";
+}
+
 function fileRecordFromFile(file, status, profile = null) {
   const tableCount = countTablesForSource(profile, file.name);
   return {
@@ -231,8 +370,24 @@ function fileRecordFromFile(file, status, profile = null) {
 
 function buildReadyFileRecords(files, profile) {
   const fileByName = new Map(files.map((file) => [file.name, file]));
+  const uploadedRecords = backendUploadedFileRecords(profile);
+  if (uploadedRecords.length) {
+    return uploadedRecords.map((record) => {
+      const file = fileByName.get(record.name);
+      const tableCount = countTablesForSource(profile, record.name);
+      const size = record.size || file?.size || 0;
+      return {
+        name: record.name,
+        size,
+        status: "ready",
+        statusText: fileStatusText("ready"),
+        meta: fileMetaText(size, tableCount, record.sourceType),
+      };
+    });
+  }
   const sourceNames = uniqueSourceFileNames(profile);
-  const names = sourceNames.length ? sourceNames : files.map((file) => file.name);
+  const ruleNames = boundRuleFileNames(profile);
+  const names = uniqueNames([...(sourceNames.length ? sourceNames : files.map((file) => file.name)), ...ruleNames]);
   return names.map((name) => {
     const file = fileByName.get(name);
     const tableCount = countTablesForSource(profile, name);
@@ -244,6 +399,43 @@ function buildReadyFileRecords(files, profile) {
       meta: fileMetaText(file?.size || 0, tableCount),
     };
   });
+}
+
+function backendUploadedFileRecords(profile) {
+  const records = [];
+  const uploadedFiles = Array.isArray(profile?.uploaded_files) ? profile.uploaded_files : [];
+  uploadedFiles.forEach((item) => {
+    const name = String(item.file_name || item.name || "").trim();
+    if (!name || records.some((record) => record.name === name)) return;
+    const size = Number(item.size_bytes || item.size || 0);
+    records.push({
+      name,
+      size: Number.isFinite(size) ? size : 0,
+      sourceType: String(item.source_type || item.file_role || ""),
+    });
+  });
+  return records;
+}
+
+function boundRuleFileNames(profile) {
+  const boundFiles = Array.isArray(profile?.auto_bound_rule_files)
+    ? profile.auto_bound_rule_files
+    : Array.isArray(profile?.files)
+      ? profile.files
+      : [];
+  return uniqueNames(
+    boundFiles
+      .map((file) => String(file.file_name || file.name || "").trim())
+      .filter(Boolean),
+  );
+}
+
+function uniqueNames(names) {
+  const result = [];
+  names.forEach((name) => {
+    if (name && !result.includes(name)) result.push(name);
+  });
+  return result;
 }
 
 function uniqueSourceFileNames(profile) {
@@ -269,14 +461,25 @@ function countTablesForSource(profile, sourceName) {
   return (profile.tables || []).filter((table) => String(table.source_file || profile.file_name || "") === sourceName).length;
 }
 
-function fileMetaText(size, tableCount) {
-  return [size ? formatFileSize(size) : "", tableCount ? `${tableCount} 张表` : ""].filter(Boolean).join(" / ") || "文件";
+function fileMetaText(size, tableCount, sourceType = "") {
+  const meta = [size ? formatFileSize(size) : "", tableCount ? `${tableCount} 张表` : ""].filter(Boolean).join(" / ");
+  if (meta) return meta;
+  if (sourceType === "table") return "表格文件";
+  if (sourceType === "rule") return "规则/说明文件";
+  if (sourceType === "source") return "说明文件";
+  return "文件";
 }
 
 function fileStatusText(status) {
   if (status === "ready") return "已就绪";
   if (status === "failed") return "失败";
   return "待上传";
+}
+
+const RULE_FILE_EMPTY_HINT = "可选：上传规则文件可以补充语义模型、指标口径和计算方法";
+
+function setRuleFileStatus(message) {
+  if (el.ruleFileStatus) el.ruleFileStatus.textContent = message;
 }
 
 function updateRuleMode() {
@@ -286,53 +489,93 @@ function updateRuleMode() {
     state.userRuleFileId = "";
     state.hasPendingRuleUpload = false;
     if (el.ruleFileInput) el.ruleFileInput.value = "";
-    if (el.ruleFileStatus) el.ruleFileStatus.textContent = "未上传用户分析规则";
+    setRuleFileStatus(RULE_FILE_EMPTY_HINT);
   }
   updateRunButton();
   updateBenchmarkButtons();
 }
 
-function updateRuleFileSummary() {
-  const file = el.ruleFileInput?.files?.[0];
-  state.hasPendingRuleUpload = Boolean(file);
-  state.userRuleFileId = state.hasPendingRuleUpload ? "" : state.userRuleFileId;
-  if (el.ruleUploadButton) el.ruleUploadButton.disabled = !state.hasPendingRuleUpload;
-  if (el.ruleFileStatus) {
-    el.ruleFileStatus.textContent = file ? `待上传：${file.name}` : (state.userRuleFileId ? "用户分析规则已上传" : "未上传用户分析规则");
+function handleRuleUploadButtonClick() {
+  if (state.hasPendingRuleUpload) {
+    void uploadUserRule();
+    return;
   }
+  el.ruleFileInput?.click();
+}
+
+function handleRuleFileSelection() {
+  updateRuleFileSummary();
+  if (state.hasPendingRuleUpload) {
+    void uploadUserRule();
+  }
+}
+
+function selectedRuleFiles() {
+  return [...(el.ruleFileInput?.files || [])];
+}
+
+function updateRuleFileSummary() {
+  const files = selectedRuleFiles();
+  state.hasPendingRuleUpload = Boolean(files.length);
+  state.userRuleFileId = state.hasPendingRuleUpload ? "" : state.userRuleFileId;
+  state.ruleModeEnabled = state.hasPendingRuleUpload || Boolean(state.userRuleFileId);
+  if (el.ruleUploadButton) {
+    el.ruleUploadButton.disabled = false;
+    el.ruleUploadButton.title = state.hasPendingRuleUpload
+      ? `上传 ${files.length} 个规则文件`
+      : "上传语义模型、指标口径或计算方法规则，后续分析会基于此规则";
+  }
+  const pendingText = files.length === 1 ? `待上传：${files[0].name}` : `待上传：${files.length} 个规则文件`;
+  setRuleFileStatus(files.length ? pendingText : (state.userRuleFileId ? "规则文件已启用" : RULE_FILE_EMPTY_HINT));
   updateRunButton();
 }
 
 async function uploadUserRule() {
-  const file = el.ruleFileInput?.files?.[0];
-  if (!file) return null;
-  setApiStatus("idle", "上传规则中");
+  const files = selectedRuleFiles();
+  if (!files.length) return null;
+  setApiStatus("idle", files.length === 1 ? "上传规则中" : `上传 ${files.length} 个规则文件中`);
+  setRuleFileStatus(files.length === 1 ? `上传中：${files[0].name}` : `上传中：${files.length} 个规则文件`);
   if (el.ruleUploadButton) el.ruleUploadButton.disabled = true;
   try {
     const payload = new FormData();
-    payload.append("file", file);
+    const endpoint = files.length === 1 ? "/api/data-agent/upload" : "/api/data-agent/upload-batch";
+    if (files.length === 1) {
+      payload.append("file", files[0]);
+    } else {
+      files.forEach((file) => payload.append("files", file));
+    }
     payload.append("file_role", "rule");
     payload.append("rule_scope", "user_analysis");
     if (state.datasetId) payload.append("bind_dataset_id", state.datasetId);
-    const response = await fetch("/api/data-agent/upload", { method: "POST", body: payload });
+    const response = await fetch(endpoint, { method: "POST", body: payload });
     const result = await response.json();
     if (!response.ok || !result.success) {
       throw new Error(errorText(result) || `HTTP ${response.status}`);
     }
-    state.userRuleFileId = result.file_id || "";
+    const uploadedFileIds = Array.isArray(result.file_ids) ? result.file_ids : (result.file_id ? [result.file_id] : []);
+    const uploadedFiles = Array.isArray(result.files) ? result.files : [];
+    state.userRuleFileId = uploadedFileIds.join(",");
     state.hasPendingRuleUpload = false;
-    if (el.ruleFileStatus) el.ruleFileStatus.textContent = `${result.file_name || "分析规则"} 已启用`;
-    setApiStatus("ready", "Rule Mode 已启用");
+    state.ruleModeEnabled = Boolean(state.userRuleFileId);
+    if (el.ruleFileInput) el.ruleFileInput.value = "";
+    setRuleFileStatus(
+      files.length === 1
+        ? `${result.file_name || uploadedFiles[0]?.file_name || "规则文件"} 已启用`
+        : `${uploadedFileIds.length || files.length} 个规则文件已启用`,
+    );
+    setApiStatus("ready", files.length === 1 ? "规则文件已启用" : "规则文件已启用");
     updateBenchmarkButtons();
     return result;
   } catch (error) {
     state.userRuleFileId = "";
-    state.hasPendingRuleUpload = true;
-    if (el.ruleFileStatus) el.ruleFileStatus.textContent = `规则上传失败：${String(error.message || error)}`;
+    state.hasPendingRuleUpload = false;
+    state.ruleModeEnabled = false;
+    if (el.ruleFileInput) el.ruleFileInput.value = "";
+    setRuleFileStatus(`规则上传失败：${String(error.message || error)}`);
     setApiStatus("error", "规则上传失败");
     return null;
   } finally {
-    if (el.ruleUploadButton) el.ruleUploadButton.disabled = !state.hasPendingRuleUpload;
+    if (el.ruleUploadButton) el.ruleUploadButton.disabled = false;
     updateRunButton();
   }
 }
@@ -407,6 +650,7 @@ async function uploadFiles() {
       throw new Error(errorText(profile) || `HTTP ${response.status}`);
     }
     const hasDatasetProfile = Boolean(profile.dataset_id);
+    const hasSourceOnlyProfile = hasDatasetProfile && (profile.dataset_kind === "uploaded_sources" || (profile.source_file_count && !(profile.tables || []).length));
     if (hasDatasetProfile) {
       state.profile = profile;
       state.datasetId = profile.dataset_id;
@@ -416,13 +660,18 @@ async function uploadFiles() {
     }
     state.fileRecords = buildReadyFileRecords(files, profile);
     await loadProjects();
+    if (state.projectId) {
+      await loadProjectWorkspace(state.projectId);
+    }
     renderProfile();
     renderFilePanel();
     el.profileMessage.classList.add("hidden");
     setApiStatus(
       "ready",
       hasDatasetProfile
-        ? state.autoRuleFileIds.length
+        ? hasSourceOnlyProfile
+          ? "来源文件已就绪"
+          : state.autoRuleFileIds.length
           ? "数据和规则已就绪"
           : "数据集已就绪"
         : "项目共享文件已添加",
@@ -449,6 +698,92 @@ async function uploadFiles() {
   }
 }
 
+function handleProjectSourceUploadKeydown(event) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  el.projectSourceUploadInput?.click();
+}
+
+function handleProjectSourceDragEnter(event) {
+  if (!state.projectId) return;
+  event.preventDefault();
+  el.projectSourceUploadDropzone?.classList.add("drag-over");
+}
+
+function handleProjectSourceDragLeave(event) {
+  event.preventDefault();
+  const relatedTarget = event.relatedTarget;
+  if (relatedTarget instanceof Node && event.currentTarget?.contains(relatedTarget)) return;
+  el.projectSourceUploadDropzone?.classList.remove("drag-over");
+}
+
+function handleProjectSourceDrop(event) {
+  event.preventDefault();
+  el.projectSourceUploadDropzone?.classList.remove("drag-over");
+  uploadProjectSourceFiles([...(event.dataTransfer?.files || [])]);
+}
+
+function setProjectSourceUploadStatus(message, stateName = "idle") {
+  if (!el.projectSourceUploadStatus) return;
+  el.projectSourceUploadStatus.textContent = message;
+  el.projectSourceUploadStatus.classList.toggle("hidden", !message);
+  el.projectSourceUploadStatus.classList.toggle("ready", stateName === "ready");
+  el.projectSourceUploadStatus.classList.toggle("error", stateName === "error");
+}
+
+function setProjectSourceUploadBusy(isBusy) {
+  el.projectSourceUploadDropzone?.classList.toggle("uploading", isBusy);
+  el.projectSourceUploadDropzone?.toggleAttribute("disabled", isBusy);
+  el.projectSourceUploadDropzone?.setAttribute("aria-busy", String(isBusy));
+}
+
+async function uploadProjectSourceFiles(files) {
+  const selectedFiles = files.filter(Boolean);
+  if (!selectedFiles.length) return null;
+  if (!state.projectId) {
+    setProjectSourceUploadStatus("请先打开一个 Project。", "error");
+    setApiStatus("error", "请先打开 Project");
+    return null;
+  }
+  state.isUploading = true;
+  setProjectSourceUploadBusy(true);
+  setProjectSourceUploadStatus(`正在上传 ${selectedFiles.length} 个来源。`);
+  setApiStatus("idle", "添加来源中");
+  updateRunButton();
+  try {
+    const payload = new FormData();
+    selectedFiles.forEach((file) => payload.append("files", file));
+    const endpoint = `/api/data-agent/projects/${encodeURIComponent(state.projectId)}/sources/upload`;
+    const response = await fetch(endpoint, { method: "POST", body: payload });
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+      throw new Error(errorText(result) || `HTTP ${response.status}`);
+    }
+    if (result.dataset_id) {
+      state.profile = result;
+      state.datasetId = result.dataset_id;
+      state.autoRuleFileIds = result.auto_bound_user_rule_file_ids || [];
+      state.userRuleFileId = state.autoRuleFileIds[0] || state.userRuleFileId || "";
+      state.selectedTable = result.tables?.[0]?.table_name || "";
+      renderProfile();
+    }
+    await loadProjects();
+    await loadProjectWorkspace(state.projectId);
+    setProjectSourceUploadStatus(`${selectedFiles.length} 个来源已添加。`, "ready");
+    setApiStatus("ready", result.dataset_id ? "项目数据源已添加" : "项目来源已添加");
+    return result;
+  } catch (error) {
+    setProjectSourceUploadStatus(`来源上传失败：${String(error.message || error)}`, "error");
+    setApiStatus("error", "来源上传失败");
+    return null;
+  } finally {
+    state.isUploading = false;
+    setProjectSourceUploadBusy(false);
+    if (el.projectSourceUploadInput) el.projectSourceUploadInput.value = "";
+    updateRunButton();
+  }
+}
+
 async function runAnalysis() {
   const question = getQuestionText();
   if (!question || state.isUploading || state.isAnalyzing) {
@@ -471,12 +806,18 @@ async function runAnalysis() {
   }
   state.isAnalyzing = true;
   el.runButton.disabled = true;
+  const submittedAt = new Date().toISOString();
+  const thinkingStartedAt = performance.now();
   const monitorRunId = startMonitorRun(question);
+  state.liveActivityTrace = [];
+  state.latestActivityResult = null;
+  state.drawerResult = null;
   const liveActivity = Boolean(window.EventSource && monitorRunId);
-  markHistoryRunning(question, monitorRunId);
-  appendUserMessage(question);
+  const messageProjectId = currentMessageProjectId();
+  markHistoryRunning(question, monitorRunId, messageProjectId);
+  appendUserMessage(question, { createdAt: submittedAt });
   setQuestionText("");
-  renderProgress(question, { liveActivity });
+  renderProgress(question, { liveActivity, startedAtMs: thinkingStartedAt, createdAt: submittedAt });
   if (liveActivity) connectActivityStream(monitorRunId);
   setApiStatus("idle", "处理中");
   try {
@@ -486,7 +827,7 @@ async function runAnalysis() {
       body: JSON.stringify({
         dataset_id: state.datasetId,
         conversation_id: state.conversationId,
-        project_id: state.projectId,
+        project_id: messageProjectId,
         question,
         execution_mode: el.executionMode.value,
         agent_mode: el.agentMode.value,
@@ -501,17 +842,24 @@ async function runAnalysis() {
     stopProgress();
     closeActivityStream();
     result.question = question;
-    renderResult(result);
+    const fallbackElapsedMs = Math.round(performance.now() - thinkingStartedAt);
+    renderResult(result, { thinkingElapsedMs: resolveThinkingElapsedMs(result, fallbackElapsedMs) });
     finishMonitorRun(result, question);
     const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset" || result.debug?.agent_mode === "chat_with_dataset";
     setApiStatus(result.success ? "ready" : "error", result.success ? (isChat ? "已回复" : "分析完成") : "需要继续确认");
+    if (state.projectId) {
+      await loadProjects();
+      await loadProjectWorkspace(state.projectId);
+    }
+    await loadConversations();
   } catch (error) {
+    const fallbackElapsedMs = Math.round(performance.now() - thinkingStartedAt);
     stopProgress();
     closeActivityStream();
     failMonitorRun(question, String(error.message || error));
-    markHistoryFailed(question, String(error.message || error));
+    markHistoryFailed(question, String(error.message || error), messageProjectId);
     setApiStatus("error", "分析失败");
-    renderUserFacingError("分析失败", String(error.message || error));
+    renderUserFacingError("分析失败", String(error.message || error), { thinkingElapsedMs: fallbackElapsedMs });
   } finally {
     state.isAnalyzing = false;
     updateRunButton();
@@ -555,7 +903,7 @@ function updateQuestionEmptyState() {
 }
 
 async function loadProjects() {
-  if (!el.projectSelect) return;
+  if (!el.projectList) return;
   try {
     const response = await fetch("/api/data-agent/projects?limit=50");
     const payload = await response.json();
@@ -565,6 +913,9 @@ async function loadProjects() {
     state.projects = payload.projects || [];
     if (state.projectId && !state.projects.some((project) => project.project_id === state.projectId)) {
       state.projectId = "";
+      state.projectDetails = null;
+      state.projectConversations = [];
+      state.projectDraftActive = false;
     }
     renderProjects();
   } catch {
@@ -574,30 +925,529 @@ async function loadProjects() {
 }
 
 function renderProjects() {
-  if (!el.projectSelect) return;
-  const options = [
-    `<option value="">无 Project</option>`,
-    ...state.projects.map((project) => `<option value="${escapeHtml(project.project_id || "")}">${escapeHtml(project.name || "未命名 Project")}</option>`),
-  ];
-  el.projectSelect.innerHTML = options.join("");
-  el.projectSelect.value = state.projectId || "";
-  if (el.renameProjectButton) el.renameProjectButton.disabled = !state.projectId;
-  if (el.deleteProjectButton) el.deleteProjectButton.disabled = !state.projectId;
+  if (!el.projectList) return;
   if (el.projectCount) el.projectCount.textContent = String(state.projects.length);
   const current = currentProject();
   if (el.projectSummary) {
     el.projectSummary.textContent = current
-      ? `${current.source_count || 0} files / ${current.memory_count || 0} memories`
+      ? `${projectSourceCount(current)} files / ${projectMemoryCount(current)} memories`
       : "project-only memory";
   }
+  if (!state.projects.length) {
+    el.projectList.innerHTML = `<li class="project-empty">暂无 Project</li>`;
+    return;
+  }
+  el.projectList.innerHTML = state.projects
+    .map((project) => {
+      const projectId = project.project_id || "";
+      const name = project.name || "未命名 Project";
+      const active = projectId && projectId === state.projectId ? " active" : "";
+      return `
+        <li class="project-item${active}" data-project-id="${escapeHtml(projectId)}">
+          <button class="project-open-button" type="button" title="${escapeHtml(name)}" aria-label="打开 Project ${escapeHtml(name)}">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path></svg>
+            <span>${escapeHtml(name)}</span>
+          </button>
+          <button class="project-menu-button" type="button" title="Project 选项" aria-label="Project 选项">
+            ${ellipsisIcon()}
+          </button>
+        </li>
+      `;
+    })
+    .join("");
+  el.projectList.querySelectorAll(".project-open-button").forEach((button) => {
+    button.addEventListener("click", () => openProject(button.closest(".project-item")?.dataset.projectId || ""));
+  });
+  el.projectList.querySelectorAll(".project-menu-button").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openProjectMenu(button, button.closest(".project-item")?.dataset.projectId || "");
+    });
+  });
+}
+
+function ellipsisIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"></path></svg>`;
+}
+
+function editIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 20 8-8-4-4-8 8-2 6 6-2Z"></path><path d="m14 6 4 4"></path></svg>`;
+}
+
+function folderMoveIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path><path d="M12 12v5M9.5 14.5h5"></path></svg>`;
+}
+
+function folderIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path></svg>`;
+}
+
+function chevronRightIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>`;
+}
+
+function pinIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5"></path><path d="m5 17 14 0"></path><path d="M7 17l2-7-2-5h10l-2 5 2 7"></path></svg>`;
+}
+
+function trashIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 15h10l1-15"></path><path d="M10 11v6M14 11v6"></path></svg>`;
+}
+
+function openProjectMenu(anchor, projectId) {
+  if (!projectId) return;
+  showContextMenu(anchor, [
+    {
+      label: "重命名",
+      className: "project-rename-button",
+      icon: editIcon(),
+      action: () => renameProjectFromId(projectId),
+    },
+    {
+      label: "删除",
+      className: "project-delete-button danger",
+      icon: trashIcon(),
+      action: () => deleteProjectFromId(projectId),
+    },
+  ]);
+}
+
+async function openHistoryMenu(anchor, runId) {
+  if (!runId) return;
+  if (!state.projects.length) {
+    await loadProjects();
+  }
+  const item = state.runHistory.find((entry) => entry.runId === runId)
+    || state.projectConversations.find((entry) => entry.runId === runId);
+  const isPinned = Boolean(item?.pinned);
+  showContextMenu(anchor, [
+    {
+      label: isPinned ? "取消置顶" : "置顶聊天",
+      className: "history-pin-button",
+      icon: pinIcon(),
+      action: () => toggleHistoryPinned(runId, !isPinned),
+    },
+    {
+      label: "重命名",
+      className: "history-rename-button",
+      icon: editIcon(),
+      action: () => renameConversationFromPrompt(runId),
+    },
+    {
+      label: "移至项目",
+      className: "history-project-button",
+      icon: folderMoveIcon(),
+      submenu: buildProjectMoveItems(runId),
+    },
+    {
+      label: "删除",
+      className: "history-delete-button danger",
+      icon: trashIcon(),
+      action: () => deleteHistoryConversation(runId),
+    },
+  ]);
+}
+
+function openProjectConversationMenu(anchor, runId) {
+  if (!runId) return;
+  const item = state.projectConversations.find((entry) => entry.runId === runId)
+    || state.runHistory.find((entry) => entry.runId === runId);
+  const isPinned = Boolean(item?.pinned);
+  showContextMenu(anchor, [
+    {
+      label: isPinned ? "取消置顶" : "置顶聊天",
+      className: "history-pin-button",
+      icon: pinIcon(),
+      action: () => toggleHistoryPinned(runId, !isPinned),
+    },
+    {
+      label: "重命名",
+      className: "history-rename-button",
+      icon: editIcon(),
+      action: () => renameConversationFromPrompt(runId),
+    },
+    {
+      label: "删除",
+      className: "project-conversation-delete-button danger",
+      icon: trashIcon(),
+      action: () => deleteHistoryConversation(runId),
+    },
+  ]);
+}
+
+function buildProjectMoveItems(runId) {
+  const currentItem = state.runHistory.find((entry) => entry.runId === runId)
+    || state.projectConversations.find((entry) => entry.runId === runId);
+  const currentProjectId = currentItem?.projectId || "";
+  const projectItems = state.projects.map((project) => ({
+    label: project.name || "未命名 Project",
+    className: project.project_id === currentProjectId ? "project-move-target current" : "project-move-target",
+    icon: folderIcon(),
+    action: () => assignHistoryToProject(runId, project.project_id || ""),
+  }));
+  return [
+    {
+      label: "新项目",
+      className: "project-move-new",
+      icon: folderMoveIcon(),
+      action: () => createProjectForHistory(runId),
+    },
+    ...projectItems,
+  ];
+}
+
+function showContextMenu(anchor, items) {
+  if (!el.contextMenu || !anchor) return;
+  closeContextMenu();
+  el.contextMenu.innerHTML = items
+    .map(
+      (item, index) => `
+        <div class="context-menu-item${item.submenu ? " has-submenu" : ""}" data-menu-index="${index}">
+          <button class="${escapeHtml(item.className || "")}" type="button" role="menuitem"${item.submenu ? ' aria-haspopup="menu" aria-expanded="false"' : ""} data-menu-index="${index}">
+            ${item.icon || ""}
+            <span class="context-menu-label">${escapeHtml(item.label)}</span>
+            ${item.submenu ? `<span class="context-menu-chevron">${chevronRightIcon()}</span>` : ""}
+          </button>
+          ${item.submenu ? renderContextSubmenu(item.submenu, index) : ""}
+        </div>
+      `,
+    )
+    .join("");
+  el.contextMenu.classList.remove("hidden");
+  const rect = anchor.getBoundingClientRect();
+  const menuRect = el.contextMenu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(window.innerWidth - menuRect.width - 8, rect.right - menuRect.width));
+  const top = Math.max(8, Math.min(window.innerHeight - menuRect.height - 8, rect.bottom + 6));
+  el.contextMenu.style.left = `${left}px`;
+  el.contextMenu.style.top = `${top}px`;
+  el.contextMenu.classList.toggle("submenu-left", left + menuRect.width + 260 > window.innerWidth);
+  el.contextMenu.querySelectorAll(".context-menu-item").forEach((row) => {
+    row.addEventListener("mouseenter", () => {
+      if (row.classList.contains("has-submenu")) {
+        showContextSubmenu(row);
+      } else {
+        closeContextSubmenus();
+      }
+    });
+    row.addEventListener("focusin", () => {
+      if (row.classList.contains("has-submenu")) {
+        showContextSubmenu(row);
+      }
+    });
+  });
+  el.contextMenu.querySelectorAll("button[data-menu-index]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const item = items[Number(button.dataset.menuIndex || 0)];
+      if (item?.submenu) {
+        showContextSubmenu(button.closest(".context-menu-item"));
+        return;
+      }
+      closeContextMenu();
+      item?.action?.();
+    });
+  });
+  el.contextMenu.querySelectorAll("button[data-submenu-index]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const item = items[Number(button.dataset.parentIndex || 0)]?.submenu?.[Number(button.dataset.submenuIndex || 0)];
+      closeContextMenu();
+      item?.action?.();
+    });
+  });
+}
+
+function renderContextSubmenu(items, parentIndex) {
+  if (!items?.length) {
+    return `<div class="context-submenu hidden" role="menu"><div class="context-menu-empty">暂无 Project</div></div>`;
+  }
+  return `
+    <div class="context-submenu hidden" role="menu">
+      ${items
+        .map(
+          (item, index) => `
+            <button class="${escapeHtml(item.className || "")}" type="button" role="menuitem" data-parent-index="${parentIndex}" data-submenu-index="${index}">
+              ${item.icon || ""}
+              <span class="context-menu-label">${escapeHtml(item.label)}</span>
+            </button>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function showContextSubmenu(row) {
+  if (!row) return;
+  closeContextSubmenus();
+  row.querySelector(".context-submenu")?.classList.remove("hidden");
+  row.querySelector("button")?.setAttribute("aria-expanded", "true");
+}
+
+function closeContextSubmenus() {
+  if (!el.contextMenu) return;
+  el.contextMenu.querySelectorAll(".context-submenu").forEach((submenu) => submenu.classList.add("hidden"));
+  el.contextMenu.querySelectorAll("[aria-expanded='true']").forEach((button) => button.setAttribute("aria-expanded", "false"));
+}
+
+function closeContextMenuFromOutside(event) {
+  if (!el.contextMenu || el.contextMenu.classList.contains("hidden")) return;
+  if (event.target.closest(".context-menu, .history-menu-button, .project-menu-button, .project-conversation-menu-button")) return;
+  closeContextMenu();
+}
+
+function closeContextMenu() {
+  if (!el.contextMenu) return;
+  el.contextMenu.classList.add("hidden");
+  el.contextMenu.classList.remove("submenu-left");
+  el.contextMenu.innerHTML = "";
 }
 
 function currentProject() {
+  if (state.projectDetails?.project_id === state.projectId) return state.projectDetails;
   return state.projects.find((project) => project.project_id === state.projectId) || null;
 }
 
+function projectSourceCount(project) {
+  if (project?.sources?.length) {
+    return buildProjectSourceRows(project.sources).filter((row) => row.kind !== "dataset-group").length;
+  }
+  return Number(project?.source_count ?? project?.sources?.length ?? 0);
+}
+
+function projectMemoryCount(project) {
+  return Number(project?.memory_count ?? project?.memories?.length ?? 0);
+}
+
+function loadProjectPanelCollapsed() {
+  try {
+    state.projectPanelCollapsed = window.localStorage.getItem(PROJECT_PANEL_COLLAPSED_KEY) === "true";
+  } catch {
+    state.projectPanelCollapsed = false;
+  }
+  renderProjectPanelCollapsed();
+}
+
+function toggleProjectPanelCollapsed() {
+  state.projectPanelCollapsed = !state.projectPanelCollapsed;
+  try {
+    window.localStorage.setItem(PROJECT_PANEL_COLLAPSED_KEY, String(state.projectPanelCollapsed));
+  } catch {
+    // UI preference only; ignore storage failures.
+  }
+  renderProjectPanelCollapsed();
+}
+
+function renderProjectPanelCollapsed() {
+  el.projectPanel?.classList.toggle("collapsed", state.projectPanelCollapsed);
+  el.projectSectionBody?.classList.toggle("hidden", state.projectPanelCollapsed);
+  el.projectCollapseButton?.setAttribute("aria-expanded", String(!state.projectPanelCollapsed));
+}
+
+function openTextDialog({ title, label, value = "", confirmText = "确认" }) {
+  if (!el.textDialog || !el.textDialogInput) return Promise.resolve(null);
+  closeContextMenu();
+  if (state.textDialogResolve) {
+    state.textDialogResolve(null);
+  }
+  if (el.textDialogTitle) el.textDialogTitle.textContent = title || "名称";
+  if (el.textDialogLabel) el.textDialogLabel.textContent = label || title || "名称";
+  if (el.textDialogConfirm) el.textDialogConfirm.textContent = confirmText;
+  el.textDialogInput.value = value || "";
+  el.textDialog.classList.remove("hidden");
+  document.body.classList.add("dialog-open");
+  requestAnimationFrame(() => {
+    el.textDialogInput.focus();
+    el.textDialogInput.select();
+  });
+  return new Promise((resolve) => {
+    state.textDialogResolve = resolve;
+  });
+}
+
+function submitTextDialog(event) {
+  event.preventDefault();
+  closeTextDialog(el.textDialogInput?.value || "");
+}
+
+function closeTextDialog(value) {
+  if (!el.textDialog) return;
+  const resolve = state.textDialogResolve;
+  state.textDialogResolve = null;
+  el.textDialog.classList.add("hidden");
+  document.body.classList.remove("dialog-open");
+  resolve?.(value);
+}
+
+function isChatSearchOpen() {
+  return Boolean(el.chatSearchDialog && !el.chatSearchDialog.classList.contains("hidden"));
+}
+
+function openChatSearch() {
+  if (!el.chatSearchDialog || !el.chatSearchInput) return;
+  closeContextMenu();
+  closeTextDialog(null);
+  closeActivityDrawer();
+  state.chatSearchQuery = "";
+  el.chatSearchInput.value = "";
+  renderChatSearchResults();
+  el.chatSearchDialog.classList.remove("hidden");
+  document.body.classList.add("dialog-open");
+  requestAnimationFrame(() => {
+    el.chatSearchInput?.focus();
+  });
+  refreshChatSearchConversations();
+}
+
+function closeChatSearch() {
+  if (!el.chatSearchDialog) return;
+  el.chatSearchDialog.classList.add("hidden");
+  document.body.classList.remove("dialog-open");
+  state.chatSearchQuery = "";
+  if (el.chatSearchInput) el.chatSearchInput.value = "";
+}
+
+async function refreshChatSearchConversations() {
+  await loadConversations();
+  if (state.projectId) {
+    await loadProjectWorkspace(state.projectId);
+  }
+  if (isChatSearchOpen()) {
+    renderChatSearchResults();
+  }
+}
+
+function handleChatSearchInput(event) {
+  state.chatSearchQuery = event.currentTarget.value || "";
+  renderChatSearchResults();
+}
+
+function handleChatSearchKeydown(event) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeChatSearch();
+    return;
+  }
+  if (event.key === "Enter" && !event.isComposing) {
+    const firstResult = el.chatSearchResults?.querySelector(".chat-search-result");
+    if (!firstResult) return;
+    event.preventDefault();
+    openChatSearchConversation(firstResult.dataset.runId || "");
+  }
+}
+
+function renderChatSearchResults() {
+  if (!el.chatSearchResults) return;
+  const items = getChatSearchItems();
+  const query = normalizeSearchText(state.chatSearchQuery);
+  const filteredItems = query ? items.filter((item) => chatSearchMatches(item, query)) : items;
+  const content = [
+    `
+      <button id="chat-search-new-chat" class="chat-search-new-chat" type="button">
+        ${editIcon()}
+        <span>新聊天</span>
+      </button>
+    `,
+  ];
+  if (!filteredItems.length) {
+    content.push(`<div class="chat-search-empty">${query ? "没有匹配的聊天" : "暂无聊天"}</div>`);
+  } else {
+    let currentGroup = "";
+    filteredItems.forEach((item) => {
+      const group = chatSearchGroupLabel(item.updatedAt);
+      if (group !== currentGroup) {
+        currentGroup = group;
+        content.push(`<div class="chat-search-section-label">${escapeHtml(group)}</div>`);
+      }
+      const title = item.title || item.question || "未命名对话";
+      content.push(`
+        <button class="chat-search-result${item.runId === state.conversationId ? " active" : ""}" type="button" data-run-id="${escapeHtml(item.runId || "")}">
+          <span class="chat-search-result-icon" aria-hidden="true">${chatBubbleIcon()}</span>
+          <span class="chat-search-result-title">${escapeHtml(title)}</span>
+        </button>
+      `);
+    });
+  }
+  el.chatSearchResults.innerHTML = content.join("");
+  el.chatSearchResults.querySelector("#chat-search-new-chat")?.addEventListener("click", startChatFromSearch);
+  el.chatSearchResults.querySelectorAll(".chat-search-result").forEach((button) => {
+    button.addEventListener("click", () => openChatSearchConversation(button.dataset.runId || ""));
+  });
+}
+
+function getChatSearchItems() {
+  const byId = new Map();
+  [...(state.runHistory || []), ...(state.projectConversations || [])].forEach((item) => {
+    if (!item?.runId || !item.runId.startsWith("conv_")) return;
+    byId.set(item.runId, { ...item });
+  });
+  return sortHistoryItems([...byId.values()]);
+}
+
+function chatSearchMatches(item, query) {
+  const searchable = [
+    item.title,
+    item.question,
+    item.answer,
+    item.projectId ? projectNameById(item.projectId) : "",
+  ]
+    .map(normalizeSearchText)
+    .join(" ");
+  return query
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((part) => searchable.includes(part));
+}
+
+function normalizeSearchText(value) {
+  return String(value || "").trim().toLocaleLowerCase("zh-CN");
+}
+
+function projectNameById(projectId) {
+  return state.projects.find((project) => project.project_id === projectId)?.name || "";
+}
+
+function chatSearchGroupLabel(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "较早";
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const dateStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const dayDelta = Math.round((todayStart - dateStart) / 86400000);
+  if (dayDelta === 0) return "今天";
+  if (dayDelta === 1) return "昨天";
+  return date.getFullYear() === today.getFullYear()
+    ? `${date.getMonth() + 1}月${date.getDate()}日`
+    : `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
+function startChatFromSearch() {
+  closeChatSearch();
+  if (state.projectId) {
+    startProjectConversation();
+    return;
+  }
+  startGlobalConversation();
+}
+
+function openChatSearchConversation(runId) {
+  if (!runId) return;
+  closeChatSearch();
+  acknowledgeHistoryItem(runId);
+  loadConversation(runId);
+}
+
+function chatBubbleIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7A8.4 8.4 0 0 1 4 11.5a8.5 8.5 0 0 1 17 0Z"></path></svg>`;
+}
+
 async function createProjectFromPrompt() {
-  const rawName = window.prompt("Project name", "新 Project");
+  const rawName = await openTextDialog({
+    title: "新项目",
+    label: "项目名称",
+    value: "新项目",
+    confirmText: "创建",
+  });
   const name = String(rawName || "").trim();
   if (!name) return;
   try {
@@ -611,8 +1461,13 @@ async function createProjectFromPrompt() {
       throw new Error(errorText(payload) || `HTTP ${response.status}`);
     }
     state.projectId = payload.project?.project_id || "";
+    state.projectDetails = payload.project || null;
+    state.projectConversations = [];
+    state.projectViewTab = "chats";
+    state.projectDraftActive = false;
     await loadProjects();
     resetConversation();
+    await loadProjectWorkspace(state.projectId);
     await loadConversations();
     setApiStatus("ready", "Project 已创建");
   } catch (error) {
@@ -621,9 +1476,18 @@ async function createProjectFromPrompt() {
 }
 
 async function renameCurrentProjectFromPrompt() {
-  const current = currentProject();
+  return renameProjectFromId(state.projectId);
+}
+
+async function renameProjectFromId(projectId) {
+  const current = state.projects.find((project) => project.project_id === projectId) || currentProject();
   if (!current) return;
-  const rawName = window.prompt("Project name", current.name || "未命名 Project");
+  const rawName = await openTextDialog({
+    title: "重命名项目",
+    label: "项目名称",
+    value: current.name || "未命名 Project",
+    confirmText: "保存",
+  });
   const name = String(rawName || "").trim();
   if (!name || name === current.name) return;
   try {
@@ -636,7 +1500,11 @@ async function renameCurrentProjectFromPrompt() {
     if (!response.ok || !payload.success) {
       throw new Error(errorText(payload) || `HTTP ${response.status}`);
     }
+    if (state.projectId === current.project_id) {
+      state.projectDetails = payload.project || state.projectDetails;
+    }
     await loadProjects();
+    renderProjectHome();
     setApiStatus("ready", "Project 已重命名");
   } catch (error) {
     setApiStatus("error", `Project 重命名失败：${String(error.message || error)}`);
@@ -644,7 +1512,11 @@ async function renameCurrentProjectFromPrompt() {
 }
 
 async function deleteCurrentProject() {
-  const current = currentProject();
+  return deleteProjectFromId(state.projectId);
+}
+
+async function deleteProjectFromId(projectId) {
+  const current = state.projects.find((project) => project.project_id === projectId) || currentProject();
   if (!current) return;
   if (!window.confirm(`删除 Project「${current.name || "未命名 Project"}」？项目内对话会移出 Project，数据文件不会被删除。`)) return;
   try {
@@ -655,8 +1527,14 @@ async function deleteCurrentProject() {
     if (!response.ok || !payload.success) {
       throw new Error(errorText(payload) || `HTTP ${response.status}`);
     }
-    state.projectId = "";
-    resetConversation();
+    const deletedActiveProject = state.projectId === current.project_id;
+    if (deletedActiveProject) {
+      state.projectId = "";
+      state.projectDetails = null;
+      state.projectConversations = [];
+      state.projectDraftActive = false;
+      resetConversation();
+    }
     await loadProjects();
     await loadConversations();
     setApiStatus("ready", "Project 已删除");
@@ -666,16 +1544,586 @@ async function deleteCurrentProject() {
 }
 
 async function handleProjectChange() {
-  state.projectId = el.projectSelect?.value || "";
+  await openProject(state.projectId);
+}
+
+async function openProject(projectId) {
+  const safeProjectId = String(projectId || "").trim();
+  if (!safeProjectId) {
+    startGlobalConversation();
+    return;
+  }
+  state.projectId = safeProjectId;
+  state.projectViewTab = "chats";
+  state.projectDraftActive = false;
   renderProjects();
   resetConversation();
-  await loadConversations();
+  await loadProjectWorkspace(safeProjectId);
+  setApiStatus("ready", "Project 已打开");
+}
+
+function startGlobalConversation() {
+  state.projectId = "";
+  state.projectDetails = null;
+  state.projectConversations = [];
+  state.projectViewTab = "chats";
+  state.projectDraftActive = false;
+  renderProjects();
+  resetConversation();
+}
+
+function startProjectConversation() {
+  if (!state.projectId) return;
+  state.projectDraftActive = true;
+  resetConversation();
+  el.questionInput?.focus();
+}
+
+async function loadProjectWorkspace(projectId = state.projectId) {
+  const safeProjectId = String(projectId || "").trim();
+  if (!safeProjectId) {
+    state.projectDetails = null;
+    state.projectConversations = [];
+    renderProjectHome();
+    return;
+  }
+  try {
+    const projectResponse = await fetch(`/api/data-agent/projects/${encodeURIComponent(safeProjectId)}`);
+    const projectPayload = await projectResponse.json();
+    if (!projectResponse.ok || !projectPayload.success) {
+      throw new Error(errorText(projectPayload) || `HTTP ${projectResponse.status}`);
+    }
+    state.projectDetails = projectPayload.project || null;
+    state.projectConversations = await loadProjectConversations(safeProjectId);
+  } catch (error) {
+    state.projectDetails = currentProject();
+    state.projectConversations = [];
+    setApiStatus("error", `Project 载入失败：${String(error.message || error)}`);
+  }
+  renderProjects();
+  renderProjectHome();
+}
+
+async function loadProjectConversations(projectId) {
+  const scopedQuery = new URLSearchParams({ limit: "30", project_id: projectId });
+  const response = await fetch(`/api/data-agent/conversations?${scopedQuery.toString()}`);
+  const payload = await response.json();
+  if (!response.ok || !payload.success) {
+    throw new Error(errorText(payload) || `HTTP ${response.status}`);
+  }
+  return sortHistoryItems((payload.conversations || []).map((item) => ({
+    runId: item.conversation_id || "",
+    title: item.title || "未命名对话",
+    answer: item.last_message || "",
+    question: item.last_message || "",
+    updatedAt: item.updated_at || "",
+    pinned: Boolean(item.pinned),
+    pinnedAt: item.pinned_at || "",
+    messageCount: item.message_count || 0,
+    datasetId: item.dataset_id || "",
+    projectId: item.project_id || projectId,
+  })));
+}
+
+function setProjectTab(tab) {
+  state.projectViewTab = tab === "sources" ? "sources" : "chats";
+  renderProjectHome();
+}
+
+function renderProjectHome() {
+  if (!el.projectHome) return;
+  const current = currentProject();
+  const showProjectHome = Boolean(state.projectId && !state.conversationId && !state.projectDraftActive);
+  updateShellMode(showProjectHome);
+  el.projectHome.classList.toggle("hidden", !showProjectHome);
+  if (!showProjectHome) {
+    updateProjectTabs();
+    return;
+  }
+  el.welcomeMessage?.classList.add("hidden");
+  const projectName = current?.name || "未命名 Project";
+  if (el.projectHomeTitle) el.projectHomeTitle.textContent = projectName;
+  if (el.projectNewChatLabel) el.projectNewChatLabel.textContent = `${projectName} 中的新聊天`;
+  renderProjectConversationList();
+  renderProjectSourceList();
+  updateProjectTabs();
+}
+
+function updateShellMode(showProjectHome = Boolean(state.projectId && !state.conversationId && !state.projectDraftActive)) {
+  document.body.classList.toggle("project-home-mode", showProjectHome);
+  document.body.classList.toggle("project-context-mode", Boolean(state.projectId));
+}
+
+function updateProjectTabs() {
+  const isSources = state.projectViewTab === "sources";
+  el.projectTabChats?.classList.toggle("active", !isSources);
+  el.projectTabSources?.classList.toggle("active", isSources);
+  el.projectTabChats?.setAttribute("aria-selected", String(!isSources));
+  el.projectTabSources?.setAttribute("aria-selected", String(isSources));
+  el.projectChatsPanel?.classList.toggle("hidden", isSources);
+  el.projectSourcesPanel?.classList.toggle("hidden", !isSources);
+}
+
+function renderProjectConversationList() {
+  if (!el.projectConversationList) return;
+  const conversations = state.projectConversations || [];
+  if (!conversations.length) {
+    el.projectConversationList.innerHTML = `<li class="project-home-empty">这个 Project 还没有聊天。</li>`;
+    if (isChatSearchOpen()) renderChatSearchResults();
+    return;
+  }
+  el.projectConversationList.innerHTML = conversations
+    .map((item) => `
+      <li class="project-conversation-item${item.pinned ? " pinned" : ""}" data-conversation-id="${escapeHtml(item.runId || "")}">
+        <button class="project-conversation-open" type="button" title="${escapeHtml(item.title || "未命名对话")}">
+          <span class="project-conversation-title-row">
+            ${item.pinned ? `<span class="pin-indicator" title="已置顶">${pinIcon()}</span>` : ""}
+            <strong>${escapeHtml(item.title || "未命名对话")}</strong>
+          </span>
+          <span>${escapeHtml(projectConversationMeta(item))}</span>
+        </button>
+        <button class="project-conversation-menu-button" type="button" title="对话选项" aria-label="对话选项">
+          ${ellipsisIcon()}
+        </button>
+      </li>
+    `)
+    .join("");
+  el.projectConversationList.querySelectorAll(".project-conversation-open").forEach((button) => {
+    button.addEventListener("click", () => loadConversation(button.closest(".project-conversation-item")?.dataset.conversationId || ""));
+  });
+  el.projectConversationList.querySelectorAll(".project-conversation-menu-button").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openProjectConversationMenu(button, button.closest(".project-conversation-item")?.dataset.conversationId || "");
+    });
+  });
+  if (isChatSearchOpen()) renderChatSearchResults();
+}
+
+function renderProjectSourceList() {
+  const project = state.projectDetails || {};
+  const sourceRows = buildProjectSourceRows(project.sources || []);
+  renderProjectSourceRows(el.projectSourceList, sourceRows, "上传共享文件后会显示在这里。");
+  renderProjectMemoryRows(el.projectMemoryList, project.memories || [], "保存的 Project memory 会显示在这里。", deleteProjectMemory);
+}
+
+function renderProjectSourceRows(listEl, records, emptyText) {
+  if (!listEl) return;
+  if (!records.length) {
+    listEl.innerHTML = `<li class="project-home-empty">${escapeHtml(emptyText)}</li>`;
+    return;
+  }
+  listEl.innerHTML = records
+    .map((row) => {
+      const itemClass = row.kind === "dataset-group" ? " dataset-group" : row.kind === "file" ? " file-source" : "";
+      const actionButton = row.sourceId
+        ? `<button class="project-source-menu-button" type="button" title="来源选项" aria-label="来源选项">${ellipsisIcon()}</button>`
+        : "";
+      return `
+        <li class="project-source-item${itemClass}" data-source-id="${escapeHtml(row.sourceId || "")}">
+          <span class="project-source-row-icon ${escapeHtml(row.iconClass || "")}" aria-hidden="true">${row.icon || fileSourceIcon()}</span>
+          <div class="project-source-main">
+            <strong title="${escapeHtml(row.title)}">${escapeHtml(row.title)}</strong>
+            <span>${escapeHtml(row.meta || "")}</span>
+          </div>
+          ${actionButton}
+        </li>
+      `;
+    })
+    .join("");
+  listEl.querySelectorAll(".project-source-menu-button").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openProjectSourceMenu(button, button.closest(".project-source-item")?.dataset.sourceId || "");
+    });
+  });
+}
+
+function renderProjectMemoryRows(listEl, records, emptyText, deleteHandler) {
+  if (!listEl) return;
+  if (!records.length) {
+    listEl.innerHTML = `<li class="project-home-empty">${escapeHtml(emptyText)}</li>`;
+    return;
+  }
+  listEl.innerHTML = records
+    .map((record) => {
+      const id = record.memory_id || "";
+      const title = record.title || sourceTypeLabel(record.memory_type || "source");
+      const meta = projectSourceMeta(record);
+      return `
+        <li class="project-source-item memory-source" data-record-id="${escapeHtml(id)}">
+          <span class="project-source-row-icon note" aria-hidden="true">${noteSourceIcon()}</span>
+          <div class="project-source-main">
+            <strong>${escapeHtml(title)}</strong>
+            <span>${escapeHtml(meta)}</span>
+          </div>
+          <button class="project-source-delete-button" type="button" title="删除" aria-label="删除">${trashIcon()}</button>
+        </li>
+      `;
+    })
+    .join("");
+  listEl.querySelectorAll(".project-source-delete-button").forEach((button) => {
+    button.addEventListener("click", () => deleteHandler(button.closest(".project-source-item")?.dataset.recordId || ""));
+  });
+}
+
+function buildProjectSourceRows(records) {
+  const rows = [];
+  records.forEach((record) => {
+    const sourceId = record.source_id || "";
+    const type = record.source_type || "source";
+    if (type === "dataset") {
+      const fileNames = projectSourceFileNames(record);
+      rows.push({
+        kind: "dataset-group",
+        sourceId,
+        title: projectDatasetTitle(record),
+        meta: formatSourceDate(record.created_at),
+        icon: folderIcon(),
+        iconClass: "folder",
+      });
+      fileNames.forEach((name) => {
+        rows.push({
+          kind: "file",
+          sourceId: "",
+          title: name,
+          meta: "文件内容可能无法访问",
+          icon: sourceFileIcon(name),
+          iconClass: sourceFileIconClass(name),
+        });
+      });
+      return;
+    }
+    rows.push({
+      kind: type,
+      sourceId,
+      title: record.title || sourceTypeLabel(type),
+      meta: projectSourceMeta(record),
+      icon: type === "note" ? noteSourceIcon() : fileSourceIcon(),
+      iconClass: type === "note" ? "note" : "file",
+    });
+  });
+  return rows;
+}
+
+function projectSourceFileNames(record) {
+  const names = [];
+  (record.metadata?.tables || []).forEach((table) => {
+    const name = String(table.source_file || table.file_name || table.table_name || "").trim();
+    if (name && !names.includes(name)) names.push(name);
+  });
+  if (!names.length && record.title?.includes(":")) {
+    record.title
+      .split(":")
+      .slice(1)
+      .join(":")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .forEach((name) => {
+        if (!names.includes(name)) names.push(name);
+      });
+  }
+  if (!names.length && record.title) names.push(record.title);
+  return names;
+}
+
+function projectDatasetTitle(record) {
+  const rawTitle = String(record.title || "").trim();
+  if (!rawTitle) return "上传的数据源";
+  return rawTitle.includes(":") ? rawTitle.split(":")[0].trim() || "上传的数据源" : rawTitle;
+}
+
+function formatSourceDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
+function openProjectSourceMenu(anchor, sourceId) {
+  if (!sourceId) return;
+  showContextMenu(anchor, [
+    {
+      label: "删除",
+      className: "project-source-delete-button danger",
+      icon: trashIcon(),
+      action: () => deleteProjectSource(sourceId),
+    },
+  ]);
+}
+
+function sourceFileIconClass(fileName) {
+  const ext = String(fileName || "").split(".").pop()?.toLowerCase() || "";
+  if (["csv", "xlsx", "xls", "parquet", "arrow", "feather"].includes(ext)) return "spreadsheet";
+  if (["md", "txt", "yaml", "yml"].includes(ext)) return "note";
+  return "file";
+}
+
+function sourceFileIcon(fileName) {
+  const iconClass = sourceFileIconClass(fileName);
+  if (iconClass === "spreadsheet") return spreadsheetSourceIcon();
+  if (iconClass === "note") return noteSourceIcon();
+  return fileSourceIcon();
+}
+
+function spreadsheetSourceIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h12a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z"></path><path d="M5 10h14M10 5v14"></path></svg>`;
+}
+
+function noteSourceIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13H7z"></path><path d="M14 3v5h5"></path><path d="M9 13h6M9 17h6"></path></svg>`;
+}
+
+function fileSourceIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13H7z"></path><path d="M14 3v5h5"></path></svg>`;
+}
+
+function projectConversationMeta(item) {
+  const count = item.messageCount ? `${item.messageCount} 条消息` : "Project chat";
+  const updated = item.updatedAt ? ` · ${formatShortDate(item.updatedAt)}` : "";
+  return `${item.pinned ? "已置顶 · " : ""}${count}${updated}`;
+}
+
+function projectSourceMeta(record) {
+  const type = sourceTypeLabel(record.source_type || record.memory_type || "source");
+  const ref = record.dataset_id || record.file_id || "";
+  return ref ? `${type} · ${ref}` : type;
+}
+
+function sourceTypeLabel(type) {
+  const labels = {
+    dataset: "共享数据",
+    rule: "规则文件",
+    note: "项目说明",
+    saved_response: "保存的回答",
+    pinned: "Pinned memory",
+    conversation_summary: "对话摘要",
+  };
+  return labels[type] || "Project source";
+}
+
+function formatShortDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+}
+
+function formatMessageTime(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const datePart =
+    date.getFullYear() === now.getFullYear()
+      ? `${date.getMonth() + 1}月${date.getDate()}日`
+      : `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+  return `${datePart}，${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function setMessageTime(message, value) {
+  const node = message?.querySelector(".message-meta");
+  if (!node) return;
+  const label = value ? formatMessageTime(value) : "";
+  node.textContent = label;
+  if (value) {
+    node.setAttribute("datetime", value instanceof Date ? value.toISOString() : String(value));
+  } else {
+    node.removeAttribute("datetime");
+  }
+  node.classList.toggle("hidden", !label);
+}
+
+function updateCopyReplyButton(message, text) {
+  const button = message?.querySelector(".copy-reply-button");
+  if (!button) return;
+  const hasText = Boolean(String(text || "").trim());
+  button.classList.toggle("hidden", !hasText);
+  button.disabled = !hasText;
+  if (hasText) {
+    button.dataset.copyText = String(text || "").trim();
+    resetCopyReplyButton(button);
+  } else {
+    delete button.dataset.copyText;
+  }
+}
+
+async function copyReplyFromMessage(message) {
+  const button = message?.querySelector(".copy-reply-button");
+  const text = button?.dataset.copyText || message?.querySelector(".answer-box")?.textContent || "";
+  const cleanText = String(text || "").trim();
+  if (!button || !cleanText) return;
+  const copied = await writeClipboardText(cleanText);
+  const selected = copied ? false : selectReplyText(message);
+  setCopyReplyButtonFeedback(button, copied, selected);
+}
+
+async function writeClipboardText(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through to the textarea fallback below.
+  }
+  return writeClipboardTextFallback(text);
+}
+
+function writeClipboardTextFallback(text) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.className = "clipboard-fallback";
+  document.body.append(textarea);
+  textarea.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+  textarea.remove();
+  return copied;
+}
+
+function selectReplyText(message) {
+  const source = message?.querySelector(".answer-box");
+  if (!source) return false;
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(source);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function setCopyReplyButtonFeedback(button, copied, selected = false) {
+  const label = copied ? "已复制" : selected ? "已选中" : "复制失败";
+  button.classList.toggle("copied", copied);
+  button.classList.toggle("selected", selected && !copied);
+  button.innerHTML = copied || selected ? checkReplyIcon() : copyReplyIcon();
+  button.setAttribute("aria-label", label);
+  button.setAttribute("title", label);
+  button.dataset.tooltip = label;
+  window.clearTimeout(Number(button.dataset.copyFeedbackTimer || 0));
+  button.dataset.copyFeedbackTimer = String(window.setTimeout(() => resetCopyReplyButton(button), 1600));
+}
+
+function resetCopyReplyButton(button) {
+  button.classList.remove("copied");
+  button.classList.remove("selected");
+  button.innerHTML = copyReplyIcon();
+  button.setAttribute("aria-label", "复制回复");
+  button.setAttribute("title", "复制回复");
+  button.dataset.tooltip = "复制回复";
+}
+
+function copyReplyIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2"></path><path d="M6 8h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z"></path></svg>`;
+}
+
+function checkReplyIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"></path></svg>`;
+}
+
+function startThinkingElapsed(message, startedAtMs = performance.now()) {
+  state.thinkingStartedAt = startedAtMs;
+  setThinkingElapsed(message, 0);
+  state.thinkingElapsedTimer = window.setInterval(() => {
+    setThinkingElapsed(message, performance.now() - state.thinkingStartedAt);
+  }, 500);
+}
+
+function setThinkingElapsed(message, elapsedMs) {
+  const node = message?.querySelector(".thinking-elapsed");
+  if (!node) return;
+  if (elapsedMs === null || elapsedMs === undefined || elapsedMs === "") {
+    node.textContent = "查看处理过程";
+    return;
+  }
+  const milliseconds = Number(elapsedMs);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+    node.textContent = "查看处理过程";
+    return;
+  }
+  node.textContent = `已思考 ${formatThinkingDuration(milliseconds)}`;
+}
+
+function resolveThinkingElapsedMs(result = {}, fallbackMs) {
+  const candidates = [
+    result.thinking_elapsed_ms,
+    result.elapsed_ms,
+    result.elapsedMilliseconds,
+    result.debug?.thinking_elapsed_ms,
+    fallbackMs,
+  ];
+  for (const candidate of candidates) {
+    const value = Number(candidate);
+    if (Number.isFinite(value) && value >= 0) return value;
+  }
+  return null;
+}
+
+function formatThinkingDuration(milliseconds) {
+  const totalSeconds = Math.max(0, Math.round(Number(milliseconds) / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}秒`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds ? `${minutes}分${seconds}秒` : `${minutes}分钟`;
+}
+
+async function deleteProjectSource(sourceId) {
+  if (!state.projectId || !sourceId) return;
+  if (!window.confirm("删除这个 Project source？")) return;
+  try {
+    const response = await fetch(`/api/data-agent/projects/${encodeURIComponent(state.projectId)}/sources/${encodeURIComponent(sourceId)}`, {
+      method: "DELETE",
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    state.projectDetails = payload.project || state.projectDetails;
+    await loadProjects();
+    await loadProjectWorkspace(state.projectId);
+    setApiStatus("ready", "Project source 已删除");
+  } catch (error) {
+    setApiStatus("error", `Project source 删除失败：${String(error.message || error)}`);
+  }
+}
+
+async function deleteProjectMemory(memoryId) {
+  if (!state.projectId || !memoryId) return;
+  if (!window.confirm("删除这个 Project memory？")) return;
+  try {
+    const response = await fetch(`/api/data-agent/projects/${encodeURIComponent(state.projectId)}/memories/${encodeURIComponent(memoryId)}`, {
+      method: "DELETE",
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    state.projectDetails = payload.project || state.projectDetails;
+    await loadProjects();
+    await loadProjectWorkspace(state.projectId);
+    setApiStatus("ready", "Project memory 已删除");
+  } catch (error) {
+    setApiStatus("error", `Project memory 删除失败：${String(error.message || error)}`);
+  }
 }
 
 function updateRunButton() {
   const hasQuestion = Boolean(getQuestionText());
   el.runButton.disabled = !hasQuestion || state.isUploading || state.isAnalyzing;
   updateBenchmarkButtons();
+}
+
+function currentMessageProjectId() {
+  if (!state.projectId) return "";
+  return state.conversationId || state.projectDraftActive ? state.projectId : "";
 }
 
 function updateBenchmarkButtons() {
@@ -731,9 +2179,7 @@ function renderProfile() {
   const profile = state.profile;
   const tables = profile?.tables || [];
   el.datasetChip.textContent = state.datasetId ? "数据已上传" : "未上传数据";
-  el.datasetStatus.textContent = profile
-    ? `${profile.file_name || "uploaded dataset"} / 数据已就绪`
-    : "等待上传数据集";
+  clearDatasetHeaderStatus();
   el.profileSummary.textContent = profile
     ? `${tables.length} 张表，${tables.reduce((sum, table) => sum + Number(table.row_count || 0), 0)} 行`
     : "暂无数据概览";
@@ -767,6 +2213,13 @@ function renderProfile() {
   renderFieldTable(tables.find((table) => table.table_name === state.selectedTable) || tables[0]);
 }
 
+function clearDatasetHeaderStatus() {
+  if (!el.datasetStatus) return;
+  el.datasetStatus.textContent = "";
+  el.datasetStatus.classList.add("hidden");
+  el.datasetStatus.setAttribute("aria-hidden", "true");
+}
+
 function renderFieldTable(table) {
   if (!table) {
     el.fieldTableBody.innerHTML = `<tr><td colspan="3" class="muted-cell">选择一个表查看字段预览。</td></tr>`;
@@ -786,6 +2239,7 @@ function renderFieldTable(table) {
 }
 
 function renderResult(result, options = {}) {
+  el.resultMessage.__vdsResult = result;
   if (result.conversation_id) {
     state.conversationId = result.conversation_id;
   }
@@ -802,9 +2256,18 @@ function renderResult(result, options = {}) {
   el.resultStatus.textContent = isChat ? "已回复" : result.success ? "已完成" : "需要继续确认";
   renderRows(rows, columns, result);
   renderChart(isOverviewShaped ? null : result.chart, rows, columns, result.answer);
-  renderInsight(!isChat && result.success ? result.insight : null);
+  renderInsight(!isChat && result.success ? result.insight : null, result);
   renderProcess(result.process_view_v2 || result.reasoning_trace_view || [], result);
-  renderExecutionArtifacts([]);
+  renderExecutionArtifacts(result.execution_artifacts || []);
+  renderAnswerSources(result);
+  state.latestActivityResult = result;
+  state.liveActivityTrace = normalizeActivityTrace(result.activity_trace_v2 || state.liveActivityTrace);
+  if (el.activityDrawer && !el.activityDrawer.classList.contains("hidden")) {
+    renderActivityDrawer(result);
+  }
+  setMessageTime(el.resultMessage, options.createdAt || result.responded_at || result.completed_at || result.conversation?.updated_at || result.created_at || new Date().toISOString());
+  setThinkingElapsed(el.resultMessage, resolveThinkingElapsedMs(result, options.thinkingElapsedMs));
+  updateCopyReplyButton(el.resultMessage, result.answer || "");
   if (options.updateHistory !== false) {
     pushHistory(result);
   }
@@ -855,7 +2318,7 @@ function shouldRenderRows(rows, columns, result = {}) {
 
 function looksLikeGeneralQuestion(question) {
   const compact = String(question || "").replace(/\s+/g, "");
-  const tokens = ["看一下", "看下", "看看", "总结", "概览", "总览", "主要讲什么", "讲什么", "有什么字段", "有哪些字段", "字段含义", "什么意思", "清洗", "影响行数", "影响比例", "修改原始数据"];
+  const tokens = ["看一下", "看下", "看看", "总结", "概览", "总览", "主要讲什么", "讲什么", "有什么字段", "有哪些字段", "字段含义", "什么意思", "有什么区别", "区别", "这几张表", "这几个表", "这些表", "这些文件", "清洗", "影响行数", "影响比例", "修改原始数据"];
   return tokens.some((token) => compact.includes(token));
 }
 
@@ -868,31 +2331,51 @@ function renderChart(chart, fallbackRows = [], fallbackColumns = [], answer = ""
     el.chartPanel.className = "chart-panel hidden";
     return;
   }
-  if (chart?.image_data_uri) {
-    el.chartPanel.className = "chart-panel";
-    el.chartPanel.innerHTML = renderChartImage(chart);
-    return;
-  }
   const y = resolveChartY(rows, chart?.y, fallbackColumns);
   if (!rows.length || !x || !y) {
+    if (chart?.image_data_uri) {
+      el.chartPanel.className = "chart-panel";
+      el.chartPanel.innerHTML = renderChartImage(chart);
+      return;
+    }
     el.chartPanel.className = "chart-panel hidden";
+    return;
+  }
+  if (type === "line") {
+    const seriesValues = resolveLineSeries(chart, rows, x, y, fallbackColumns);
+    if (!seriesValues.length) {
+      if (chart?.image_data_uri) {
+        el.chartPanel.className = "chart-panel";
+        el.chartPanel.innerHTML = renderChartImage(chart);
+        return;
+      }
+      el.chartPanel.className = "chart-panel hidden";
+      return;
+    }
+    el.chartPanel.className = "chart-panel";
+    el.chartPanel.innerHTML = renderLineChart(seriesValues, chart);
+    bindChartInteractions(el.chartPanel);
     return;
   }
   const values = rows
     .map((row) => ({ label: String(row[x] ?? ""), value: Number(row[y]) }))
     .filter((item) => item.label && Number.isFinite(item.value));
   if (values.length <= 1) {
+    if (chart?.image_data_uri) {
+      el.chartPanel.className = "chart-panel";
+      el.chartPanel.innerHTML = renderChartImage(chart);
+      return;
+    }
     el.chartPanel.className = "chart-panel hidden";
     return;
   }
   el.chartPanel.className = "chart-panel";
-  if (type === "line") {
-    el.chartPanel.innerHTML = renderLineChart(values, chart);
-  } else if (type === "pie" || type === "donut") {
+  if (type === "pie" || type === "donut") {
     el.chartPanel.innerHTML = renderPieChart(values, chart, type);
   } else {
     el.chartPanel.innerHTML = renderBarChart(values, chart, type === "horizontal_bar");
   }
+  bindChartInteractions(el.chartPanel);
 }
 
 function resolveChartY(rows, requestedY, fallbackColumns) {
@@ -900,6 +2383,31 @@ function resolveChartY(rows, requestedY, fallbackColumns) {
     return requestedY;
   }
   return fallbackColumns.find((column) => rows.some((row) => Number.isFinite(Number(row?.[column]))));
+}
+
+function resolveLineSeries(chart, rows, xColumn, yColumn, fallbackColumns) {
+  const requestedColumns = [];
+  for (const series of chart?.series || []) {
+    const column = String(series?.y || "");
+    if (column && column !== xColumn && !requestedColumns.includes(column)) {
+      requestedColumns.push(column);
+    }
+  }
+  if (yColumn && !requestedColumns.includes(yColumn)) {
+    requestedColumns.unshift(yColumn);
+  }
+  const fallbackNumericColumns = fallbackColumns.filter((column) => column !== xColumn && rows.some((row) => Number.isFinite(Number(row?.[column]))));
+  const candidateColumns = (requestedColumns.length ? requestedColumns : fallbackNumericColumns).filter((column) =>
+    rows.some((row) => Number.isFinite(Number(row?.[column]))),
+  );
+  return candidateColumns
+    .map((column) => {
+      const points = rows
+        .map((row) => ({ label: String(row[xColumn] ?? ""), value: Number(row[column]) }))
+        .filter((item) => item.label && Number.isFinite(item.value));
+      return { name: column, points };
+    })
+    .filter((series) => series.points.length > 1);
 }
 
 function renderChartImage(chart) {
@@ -910,133 +2418,594 @@ function renderChartImage(chart) {
 }
 
 function renderBarChart(values, chart, horizontal) {
-  const width = 620;
+  const width = 680;
   const displayValues = values.slice(0, horizontal ? 18 : 16);
-  const height = Math.max(230, displayValues.length * (horizontal ? 26 : 0) + 170);
-  const max = Math.max(...values.map((item) => Math.abs(item.value)), 1);
   const colors = ["#2563eb", "#0ea5e9", "#4f46e5", "#14b8a6", "#f59e0b", "#64748b"];
+  const { xName, yName } = chartAxisMeta(chart);
+  const domain = chartNumberDomain(displayValues, true);
+  const ticks = chartTicks(domain.min, domain.max, 5);
   const bars = displayValues.map((item, index) => {
     if (horizontal) {
-      const barWidth = (Math.abs(item.value) / max) * 410;
-      const y = 58 + index * 28;
-      return `
-        <text x="20" y="${y + 15}" class="axis-label">${escapeHtml(shortLabel(item.label, 16))}</text>
-        <rect x="150" y="${y}" width="${barWidth}" height="18" fill="${colors[index % colors.length]}" rx="3"></rect>
-        <text x="${160 + barWidth}" y="${y + 14}" class="value-label">${formatNumber(item.value)}</text>
-      `;
+      return "";
     }
-    const barWidth = Math.max(18, 420 / displayValues.length - 10);
-    const x = 70 + index * (barWidth + 10);
-    const barHeight = (Math.abs(item.value) / max) * 130;
-    const y = 190 - barHeight;
+    const left = 72;
+    const right = 28;
+    const top = 28;
+    const bottom = 74;
+    const height = 340;
+    const plotWidth = width - left - right;
+    const plotHeight = height - top - bottom;
+    const zeroY = chartScale(0, domain.min, domain.max, top + plotHeight, top);
+    const gap = 8;
+    const barWidth = Math.max(16, (plotWidth - gap * (displayValues.length - 1)) / displayValues.length);
+    const x = left + index * (barWidth + gap);
+    const valueY = chartScale(item.value, domain.min, domain.max, top + plotHeight, top);
+    const y = Math.min(zeroY, valueY);
+    const barHeight = Math.max(2, Math.abs(zeroY - valueY));
+    const tooltip = chartTooltip({
+      label: item.label,
+      value: item.value,
+      xName,
+      yName,
+      x: x + barWidth / 2 - 78,
+      y: y - 66,
+      width,
+    });
     return `
-      <rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${colors[index % colors.length]}" rx="3"></rect>
-      <text x="${x + barWidth / 2}" y="213" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(item.label, 8))}</text>
-      <text x="${x + barWidth / 2}" y="${Math.max(48, y - 6)}" text-anchor="middle" class="value-label">${formatNumber(item.value)}</text>
+      <g class="chart-hit" tabindex="0" focusable="true">
+        <title>${escapeHtml(`${xName}: ${item.label}\n${yName}: ${formatNumber(item.value)}`)}</title>
+        <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" fill="${colors[index % colors.length]}" rx="4"></rect>
+        <text x="${(x + barWidth / 2).toFixed(1)}" y="${(top + plotHeight + 24).toFixed(1)}" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(item.label, 8))}</text>
+        ${tooltip}
+      </g>
     `;
   });
+  if (horizontal) {
+    return renderHorizontalBarChart(displayValues, chart, width, colors, domain, ticks, xName, yName);
+  }
+  const height = 340;
+  const left = 72;
+  const right = 28;
+  const top = 28;
+  const bottom = 74;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const zeroY = chartScale(0, domain.min, domain.max, top + plotHeight, top);
+  const grid = ticks
+    .map((tick) => {
+      const y = chartScale(tick, domain.min, domain.max, top + plotHeight, top);
+      return `
+        <line x1="${left}" y1="${y.toFixed(1)}" x2="${left + plotWidth}" y2="${y.toFixed(1)}" class="grid-line"></line>
+        <text x="${left - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="axis-label">${formatNumber(tick)}</text>
+      `;
+    })
+    .join("");
   return `
     <div class="chart-title">${escapeHtml(chart?.title || "自动图表")}</div>
     <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img">
-      <line x1="60" y1="190" x2="580" y2="190" class="axis-line"></line>
+      ${grid}
+      <line x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left}" y1="${zeroY.toFixed(1)}" x2="${left + plotWidth}" y2="${zeroY.toFixed(1)}" class="axis-line"></line>
+      <text x="${left + plotWidth / 2}" y="${height - 18}" text-anchor="middle" class="axis-title">${escapeHtml(xName)}</text>
+      <text transform="translate(18 ${top + plotHeight / 2}) rotate(-90)" text-anchor="middle" class="axis-title">${escapeHtml(yName)}</text>
       ${bars.join("")}
     </svg>
   `;
 }
 
-function renderLineChart(values, chart) {
-  const width = 620;
-  const height = 250;
-  const min = Math.min(...values.map((item) => item.value));
-  const max = Math.max(...values.map((item) => item.value));
-  const span = Math.max(max - min, 1);
-  const points = values.slice(0, 30).map((item, index, list) => {
-    const x = 58 + (index / Math.max(list.length - 1, 1)) * 500;
-    const y = 190 - ((item.value - min) / span) * 135;
-    return { x, y, label: item.label, value: item.value };
-  });
+function renderHorizontalBarChart(displayValues, chart, width, colors, domain, ticks, xName, yName) {
+  const left = 154;
+  const right = 54;
+  const top = 28;
+  const rowHeight = 32;
+  const bottom = 62;
+  const height = Math.max(300, top + bottom + displayValues.length * rowHeight);
+  const plotWidth = width - left - right;
+  const plotHeight = displayValues.length * rowHeight;
+  const zeroX = chartScale(0, domain.min, domain.max, left, left + plotWidth);
+  const grid = ticks
+    .map((tick) => {
+      const x = chartScale(tick, domain.min, domain.max, left, left + plotWidth);
+      return `
+        <line x1="${x.toFixed(1)}" y1="${top - 6}" x2="${x.toFixed(1)}" y2="${top + plotHeight}" class="grid-line"></line>
+        <text x="${x.toFixed(1)}" y="${top + plotHeight + 22}" text-anchor="middle" class="axis-label">${formatNumber(tick)}</text>
+      `;
+    })
+    .join("");
+  const bars = displayValues
+    .map((item, index) => {
+      const y = top + index * rowHeight + 5;
+      const valueX = chartScale(item.value, domain.min, domain.max, left, left + plotWidth);
+      const barX = Math.min(zeroX, valueX);
+      const barWidth = Math.max(2, Math.abs(valueX - zeroX));
+      const tooltip = chartTooltip({
+        label: item.label,
+        value: item.value,
+        xName,
+        yName,
+        x: barX + barWidth + 10,
+        y: y - 20,
+        width,
+      });
+      return `
+        <g class="chart-hit" tabindex="0" focusable="true">
+          <title>${escapeHtml(`${xName}: ${item.label}\n${yName}: ${formatNumber(item.value)}`)}</title>
+          <text x="${left - 12}" y="${y + 15}" text-anchor="end" class="axis-label">${escapeHtml(shortLabel(item.label, 18))}</text>
+          <rect x="${barX.toFixed(1)}" y="${y}" width="${barWidth.toFixed(1)}" height="20" fill="${colors[index % colors.length]}" rx="4"></rect>
+          ${tooltip}
+        </g>
+      `;
+    })
+    .join("");
+  return `
+    <div class="chart-title">${escapeHtml(chart?.title || "自动图表")}</div>
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img">
+      ${grid}
+      <line x1="${zeroX.toFixed(1)}" y1="${top - 6}" x2="${zeroX.toFixed(1)}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left}" y1="${top + plotHeight}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
+      <text x="${left + plotWidth / 2}" y="${height - 16}" text-anchor="middle" class="axis-title">${escapeHtml(yName)}</text>
+      <text transform="translate(18 ${top + plotHeight / 2}) rotate(-90)" text-anchor="middle" class="axis-title">${escapeHtml(xName)}</text>
+      ${bars}
+    </svg>
+  `;
+}
+
+function renderLineChart(seriesValues, chart) {
+  const width = 820;
+  const height = 450;
+  const left = 112;
+  const right = seriesValues.length > 1 ? 160 : 44;
+  const top = 70;
+  const bottom = 86;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const displaySeries = seriesValues.slice(0, 8).map((series) => ({ ...series, points: series.points.slice(0, 30) }));
+  const allPoints = displaySeries.flatMap((series) => series.points);
+  const domain = chartNumberDomain(allPoints, displaySeries.length > 1);
+  const ticks = chartTicks(domain.min, domain.max, 5);
+  const { xName } = chartAxisMeta(chart);
+  const yName = resolveLineYAxisName(chart, displaySeries);
+  const colors = ["#2563eb", "#0ea5e9", "#14b8a6", "#f59e0b", "#4f46e5", "#64748b", "#22c55e", "#ef4444"];
+  const plottedSeries = displaySeries.map((series, seriesIndex) => ({
+    ...series,
+    color: colors[seriesIndex % colors.length],
+    points: series.points.map((item, index, list) => {
+      const x = left + (index / Math.max(list.length - 1, 1)) * plotWidth;
+      const y = chartScale(item.value, domain.min, domain.max, top + plotHeight, top);
+      return { x, y, label: item.label, value: item.value };
+    }),
+  }));
+  const grid = ticks
+    .map((tick) => {
+      const y = chartScale(tick, domain.min, domain.max, top + plotHeight, top);
+      return `
+        <line x1="${left}" y1="${y.toFixed(1)}" x2="${left + plotWidth}" y2="${y.toFixed(1)}" class="grid-line"></line>
+        <text x="${left - 14}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="axis-label">${formatAxisNumber(tick)}</text>
+      `;
+    })
+    .join("");
+  const xPoints = plottedSeries[0]?.points || [];
+  const step = Math.max(1, Math.ceil(xPoints.length / 6));
+  const xLabels = xPoints
+    .map((point, index) =>
+      index % step === 0 || index === xPoints.length - 1
+        ? `<text x="${point.x.toFixed(1)}" y="${top + plotHeight + 32}" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(point.label, 8))}</text>`
+        : "",
+    )
+    .join("");
+  const seriesMarkup = plottedSeries
+    .map((series) => {
+      const path = series.points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+      const points = series.points
+        .map(
+          (point) => `
+            <g class="chart-hit" tabindex="0" focusable="true">
+              <title>${escapeHtml(`${xName}: ${point.label}\n${series.name}: ${formatNumber(point.value)}`)}</title>
+              <line x1="${point.x.toFixed(1)}" y1="${top}" x2="${point.x.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
+              <circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="5" class="line-dot" style="stroke:${series.color}"></circle>
+              <circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="12" class="line-hit-area"></circle>
+              ${chartTooltip({
+                label: point.label,
+                value: point.value,
+                xName,
+                yName: series.name,
+                x: point.x - 86,
+                y: point.y - 78,
+                width,
+              })}
+            </g>
+          `,
+        )
+        .join("");
+      return `
+        <polyline points="${path}" class="line-path" style="stroke:${series.color}"></polyline>
+        ${points}
+      `;
+    })
+    .join("");
+  const legend = plottedSeries.length > 1
+    ? plottedSeries
+        .map((series, index) => {
+          const y = top + 10 + index * 28;
+          return `
+            <g class="chart-legend-item">
+              <line x1="${left + plotWidth + 24}" y1="${y}" x2="${left + plotWidth + 42}" y2="${y}" style="stroke:${series.color};stroke-width:1.8"></line>
+              <circle cx="${left + plotWidth + 33}" cy="${y}" r="3.5" fill="#fff" style="stroke:${series.color};stroke-width:1.6"></circle>
+              <text x="${left + plotWidth + 50}" y="${y + 4}" class="chart-legend-label">${escapeHtml(shortLabel(series.name, 10))}</text>
+            </g>
+          `;
+        })
+        .join("")
+    : "";
   return `
     <div class="chart-title">${escapeHtml(chart?.title || "趋势图")}</div>
     <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img">
-      <line x1="55" y1="190" x2="565" y2="190" class="axis-line"></line>
-      <polyline points="${points.map((point) => `${point.x},${point.y}`).join(" ")}" class="line-path"></polyline>
-      ${points
-        .map(
-          (point, index) => `
-            <circle cx="${point.x}" cy="${point.y}" r="4" class="line-dot"></circle>
-            ${index === 0 || index === points.length - 1 ? `<text x="${point.x}" y="${point.y - 10}" text-anchor="middle" class="value-label">${formatNumber(point.value)}</text>` : ""}
-          `,
-        )
-        .join("")}
+      ${grid}
+      <line x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left}" y1="${top + plotHeight}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
+      <text x="${left + plotWidth / 2}" y="${height - 20}" text-anchor="middle" class="axis-title">${escapeHtml(xName)}</text>
+      <text x="${left}" y="${top - 34}" text-anchor="start" class="axis-title">${escapeHtml(yName)}</text>
+      ${xLabels}
+      ${seriesMarkup}
+      ${legend}
     </svg>
   `;
+}
+
+function resolveLineYAxisName(chart, displaySeries) {
+  const text = `${chart?.title || ""} ${chart?.reason || ""}`.toLowerCase();
+  if (/分销金额|金额|销售额|收入|gmv|revenue|amount/.test(text)) return "分销金额";
+  if (/占比|比例|率|percent|percentage|rate|ratio/.test(text)) return "比例";
+  if (displaySeries.length > 1) return "数值";
+  return displaySeries[0]?.name || chartAxisMeta(chart).yName;
 }
 
 function renderPieChart(values, chart, type) {
   const colors = ["#2563eb", "#0ea5e9", "#4f46e5", "#14b8a6", "#f59e0b", "#64748b", "#7c3aed", "#22c55e"];
   const total = values.reduce((sum, item) => sum + Math.max(item.value, 0), 0) || 1;
-  let start = 0;
+  const width = 640;
+  const height = 260;
+  const cx = 130;
+  const cy = 126;
+  const radius = 88;
+  let start = -90;
   const slices = values.slice(0, 8).map((item, index) => {
     const pct = Math.max(item.value, 0) / total;
     const end = start + pct * 360;
-    const segment = `${colors[index % colors.length]} ${start}deg ${end}deg`;
+    const mid = start + (end - start) / 2;
+    const color = colors[index % colors.length];
+    const path = pieSlicePath(cx, cy, radius, start, end);
     start = end;
-    return { ...item, pct, color: colors[index % colors.length], segment };
+    return { ...item, pct, color, path, mid };
   });
   return `
     <div class="chart-title">${escapeHtml(chart?.title || "构成图")}</div>
     <div class="pie-layout">
-      <div class="pie-shape ${type === "donut" ? "donut" : ""}" style="background: conic-gradient(${slices.map((slice) => slice.segment).join(", ")});"></div>
+      <svg class="pie-svg" viewBox="0 0 ${width} ${height}" role="img">
+        ${slices
+          .map((slice) => {
+            const tooltipX = cx + Math.cos((slice.mid * Math.PI) / 180) * (radius + 18);
+            const tooltipY = cy + Math.sin((slice.mid * Math.PI) / 180) * (radius + 18);
+            return `
+              <g class="chart-hit pie-slice" tabindex="0" focusable="true">
+                <title>${escapeHtml(`${slice.label}: ${formatNumber(slice.value)} (${formatPercent(slice.pct * 100)})`)}</title>
+                <path d="${slice.path}" fill="${slice.color}"></path>
+                ${chartTooltip({
+                  label: slice.label,
+                  value: `${formatNumber(slice.value)} / ${formatPercent(slice.pct * 100)}`,
+                  xName: chart?.x || "分类",
+                  yName: chart?.y || "值",
+                  x: tooltipX,
+                  y: tooltipY - 28,
+                  width,
+                })}
+              </g>
+            `;
+          })
+          .join("")}
+        ${type === "donut" ? `<circle cx="${cx}" cy="${cy}" r="42" fill="#fff"></circle>` : ""}
+      </svg>
       <ul class="pie-legend">
         ${slices
-          .map((slice) => `<li><span style="background:${slice.color}"></span>${escapeHtml(shortLabel(slice.label, 16))} ${formatPercent(slice.pct * 100)}</li>`)
+          .map((slice) => `<li class="pie-legend-item" title="${escapeHtml(`${slice.label}: ${formatNumber(slice.value)}`)}"><span style="background:${slice.color}"></span>${escapeHtml(shortLabel(slice.label, 16))} ${formatPercent(slice.pct * 100)}</li>`)
           .join("")}
       </ul>
     </div>
   `;
 }
 
-function renderInsight(insight) {
+function chartAxisMeta(chart) {
+  return {
+    xName: String(chart?.x || chart?.encoding?.x || "X"),
+    yName: String(chart?.y || chart?.encoding?.y || "Y"),
+  };
+}
+
+function bindChartInteractions(panel) {
+  if (!panel) return;
+  const hits = [...panel.querySelectorAll(".chart-hit")];
+  const clearActive = (except = null) => {
+    hits.forEach((hit) => {
+      if (hit !== except) hit.classList.remove("is-active");
+    });
+  };
+  const activateFromEvent = (event) => {
+    const hit = event.target?.closest?.(".chart-hit");
+    if (!hit || !panel.contains(hit)) return;
+    clearActive(hit);
+    hit.classList.add("is-active");
+  };
+  panel.addEventListener("pointerover", activateFromEvent);
+  panel.addEventListener("click", activateFromEvent);
+  panel.addEventListener("focusin", activateFromEvent);
+  panel.addEventListener("pointerleave", () => clearActive());
+  hits.forEach((hit) => {
+    hit.addEventListener("pointerenter", () => {
+      clearActive(hit);
+      hit.classList.add("is-active");
+    });
+    hit.addEventListener("pointerleave", () => {
+      hit.classList.remove("is-active");
+    });
+    hit.addEventListener("focus", () => {
+      clearActive(hit);
+      hit.classList.add("is-active");
+    });
+    hit.addEventListener("blur", () => {
+      hit.classList.remove("is-active");
+    });
+    hit.addEventListener("click", () => {
+      clearActive(hit);
+      hit.classList.add("is-active");
+    });
+  });
+}
+
+function chartNumberDomain(values, includeZero) {
+  const numbers = values.map((item) => Number(item.value)).filter(Number.isFinite);
+  let min = Math.min(...numbers);
+  let max = Math.max(...numbers);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    min = 0;
+    max = 1;
+  }
+  if (includeZero) {
+    min = Math.min(0, min);
+    max = Math.max(0, max);
+  }
+  if (min === max) {
+    const pad = Math.max(Math.abs(max) * 0.2, 1);
+    min -= pad;
+    max += pad;
+  }
+  return { min, max, span: max - min };
+}
+
+function chartTicks(min, max, count) {
+  if (!Number.isFinite(min) || !Number.isFinite(max) || count <= 1) return [0];
+  return Array.from({ length: count }, (_, index) => min + ((max - min) * index) / (count - 1));
+}
+
+function chartScale(value, domainMin, domainMax, rangeMin, rangeMax) {
+  const span = Math.max(domainMax - domainMin, Number.EPSILON);
+  return rangeMin + ((Number(value) - domainMin) / span) * (rangeMax - rangeMin);
+}
+
+function chartTooltip({ label, value, xName, yName, x, y, width }) {
+  const tooltipWidth = 172;
+  const tooltipHeight = 54;
+  const safeX = Math.min(Math.max(4, x), width - tooltipWidth - 4);
+  const safeY = Math.max(4, y);
+  return `
+    <g class="chart-hover-card" transform="translate(${safeX.toFixed(1)} ${safeY.toFixed(1)})">
+      <rect class="chart-tooltip-bg" width="${tooltipWidth}" height="${tooltipHeight}" rx="8"></rect>
+      <text x="10" y="20" class="chart-tooltip-label">${escapeHtml(`${xName}: ${shortLabel(label, 18)}`)}</text>
+      <text x="10" y="39" class="chart-tooltip-value">${escapeHtml(`${yName}: ${formatNumber(value)}`)}</text>
+    </g>
+  `;
+}
+
+function formatAxisNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value ?? "-");
+  return number.toLocaleString("zh-CN", { maximumFractionDigits: Math.abs(number) >= 1000 ? 0 : 1 });
+}
+
+function pieSlicePath(cx, cy, radius, startDeg, endDeg) {
+  const start = polarPoint(cx, cy, radius, endDeg);
+  const end = polarPoint(cx, cy, radius, startDeg);
+  const largeArc = endDeg - startDeg <= 180 ? 0 : 1;
+  return [`M ${cx} ${cy}`, `L ${start.x.toFixed(2)} ${start.y.toFixed(2)}`, `A ${radius} ${radius} 0 ${largeArc} 0 ${end.x.toFixed(2)} ${end.y.toFixed(2)}`, "Z"].join(" ");
+}
+
+function polarPoint(cx, cy, radius, angleDeg) {
+  const angle = ((angleDeg - 90) * Math.PI) / 180;
+  return {
+    x: cx + radius * Math.cos(angle),
+    y: cy + radius * Math.sin(angle),
+  };
+}
+
+function renderInsight(insight, result = {}) {
+  const hasInsightPayload = Boolean(insight && typeof insight === "object");
   const suggestions = (insight?.business_suggestions || insight?.suggestions || []).filter(isUserFacingInsightText);
   const findings = [...(insight?.anomaly_findings || []), ...(insight?.volatility_findings || [])]
     .map((item) => item?.message)
     .filter(isUserFacingInsightText);
   const caveats = (insight?.caveats || []).filter(isUserFacingInsightText);
+  const nextQuestions = hasInsightPayload ? resolveInsightNextQuestions(insight?.next_questions || [], result).slice(0, 2) : [];
   const summary = cleanInsightSummary(insight?.summary || "");
-  const hasInsight = Boolean(summary || suggestions.length || findings.length || caveats.length);
+  const primaryAdvice = pickInsightAdvice(suggestions, findings, caveats);
+  const hasInsight = Boolean(summary || primaryAdvice || nextQuestions.length);
   el.insightPanel?.classList.toggle("hidden", !hasInsight);
   if (!hasInsight) {
     el.insightSummary.textContent = "";
     el.insightList.innerHTML = "";
     return;
   }
-  el.insightSummary.textContent = summary;
-  const items = [];
-  findings.slice(0, 2).forEach((text) => items.push({ label: "洞察", text }));
-  suggestions.slice(0, 3).forEach((text) => items.push({ label: "建议", text }));
-  caveats.slice(0, 2).forEach((text) => items.push({ label: "边界", text }));
-  el.insightList.innerHTML = items.length
-    ? items.map((item) => renderInsightCard(item)).join("")
-    : "";
+  el.insightSummary.innerHTML = renderInsightBody(summary, primaryAdvice, nextQuestions);
+  el.insightList.innerHTML = "";
 }
 
-function renderInsightCard(item) {
-  const parsed = parseInsightText(item.text);
-  return `
-    <li class="insight-card ${escapeHtml(item.label)}">
-      <strong>${escapeHtml(item.label)}</strong>
-      <p>${escapeHtml(parsed.observation)}</p>
-      ${parsed.evidence ? `<span>依据：${escapeHtml(parsed.evidence)}</span>` : ""}
-      ${parsed.action ? `<span>建议：${escapeHtml(parsed.action)}</span>` : ""}
-    </li>
-  `;
+function pickInsightAdvice(suggestions, findings, caveats) {
+  const candidates = [...suggestions, ...findings, ...caveats];
+  return candidates.find(isUserFacingInsightText) || "";
+}
+
+function resolveInsightNextQuestions(nextQuestions, result = {}) {
+  const cleaned = uniqueStrings((Array.isArray(nextQuestions) ? nextQuestions : []).filter(isUserFacingInsightText));
+  const contextual = buildContextualNextQuestions(result);
+  if (!cleaned.length) return contextual;
+  if (isGenericNextQuestionSet(cleaned)) return contextual;
+  return uniqueStrings([...cleaned, ...contextual]);
+}
+
+function isGenericNextQuestionSet(nextQuestions) {
+  const normalized = nextQuestions.map((item) => String(item || "").replace(/[?？。；;\s]/g, ""));
+  const genericPatterns = [
+    "异常值来自哪些明细记录",
+    "这个结果按时间趋势是否稳定",
+    "是否需要对Top结果继续下钻",
+    "把这个结论按关键维度下钻",
+    "检查是否存在异常值或质量问题影响结果",
+    "生成可复核的结果表和图表",
+    "是否需要按维度展开明细",
+  ];
+  return Boolean(normalized.length && normalized.every((item) => genericPatterns.some((pattern) => item.includes(pattern))));
+}
+
+function buildContextualNextQuestions(result = {}) {
+  const rows = resultRowsForSuggestions(result);
+  const columns = resultColumnsForSuggestions(result, rows);
+  const logic = result?.logic_form || {};
+  const parameters = logic.parameters && typeof logic.parameters === "object" ? logic.parameters : {};
+  const timeWindow = logic.time_window && typeof logic.time_window === "object" ? logic.time_window : {};
+  const question = String(result?.question || "");
+  const operation = [logic.operation, logic.task_type, result?.debug?.operation, result?.answer_type].filter(Boolean).join(" ").toLowerCase();
+  const metric = firstText(logic.metric, parameters.metric, result?.chart?.y, firstNumericColumn(rows, columns), "核心指标");
+  const dimension = firstText(logic.group_by, parameters.dimension, parameters.group_by, chartDimension(result?.chart), firstDimensionColumn(rows, columns), "关键维度");
+  const timeColumn = firstText(firstTimeColumn(columns), parameters.time_column, timeWindow.column, chartTimeColumn(result?.chart), "时间");
+  const hasTimeColumn = timeColumn !== "时间";
+  const text = `${question} ${operation}`.toLowerCase().replace(/\s+/g, "");
+  let candidates;
+  if (looksLikeCleaningOrQuality(text)) {
+    candidates = [
+      `列出影响${metric}的缺失、重复和异常记录？`,
+      `模拟清洗前后${metric}会差多少？`,
+      `按${dimension}看哪些分组受质量问题影响最大？`,
+    ];
+  } else if (looksLikeShareOrRateQuestion(text)) {
+    candidates = [
+      `按${dimension}拆分这个占比，找出贡献最大的分组？`,
+      `看这个比例在${timeColumn}上是否稳定？`,
+      "检查分子、分母口径是否有过滤条件或缺失值影响？",
+    ];
+  } else if (looksLikeTrendQuestion(text)) {
+    candidates = [
+      `把${metric}的峰值、低点和最大波动期标出来？`,
+      `按${dimension}拆分同一趋势，看看是谁拉动变化？`,
+      `检查最近一期${timeColumn}是否完整、是否影响趋势判断？`,
+    ];
+  } else if (looksLikeRankingQuestion(text)) {
+    candidates = [
+      `比较 Top 结果之间的${metric}差距有多大？`,
+      hasTimeColumn ? `把排名靠前的${dimension}按${timeColumn}继续下钻？` : `把排名靠前的${dimension}按其他维度继续下钻？`,
+      "看低排名对象是否受缺失值、异常值或样本量影响？",
+    ];
+  } else {
+    candidates = rows.length
+      ? [
+          `按${dimension}继续拆解${metric}的构成和集中度？`,
+          `按${timeColumn}看${metric}的趋势和波动？`,
+          `检查${metric}是否存在异常值或质量问题影响结论？`,
+        ]
+      : [`补充${metric}、${dimension}或${timeColumn}后重新计算？`, "需要先确认用哪张表和哪些字段作为口径？"];
+  }
+  return uniqueStrings(candidates.filter(isUserFacingInsightText));
+}
+
+function resultRowsForSuggestions(result = {}) {
+  const rows = result?.result?.rows;
+  if (Array.isArray(rows)) return rows.filter((row) => row && typeof row === "object");
+  const chartData = result?.chart?.data;
+  if (Array.isArray(chartData)) return chartData.filter((row) => row && typeof row === "object");
+  return [];
+}
+
+function resultColumnsForSuggestions(result = {}, rows = []) {
+  const columns = Array.isArray(result?.result?.columns) ? result.result.columns.map(String).filter(Boolean) : [];
+  if (columns.length) return columns;
+  if (rows[0]) return Object.keys(rows[0]);
+  return [result?.chart?.x, result?.chart?.y].map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function firstNumericColumn(rows, columns) {
+  return columns.find((column) => rows.some((row) => Number.isFinite(Number(row?.[column])))) || "";
+}
+
+function firstDimensionColumn(rows, columns) {
+  const numeric = new Set(columns.filter((column) => rows.some((row) => Number.isFinite(Number(row?.[column])))));
+  const timeColumn = firstTimeColumn(columns);
+  return columns.find((column) => column !== timeColumn && !numeric.has(column)) || "";
+}
+
+function firstTimeColumn(columns) {
+  return columns.find((column) => /date|day|month|year|week|time|日期|时间|月份|年份|周/i.test(column)) || "";
+}
+
+function chartDimension(chart = {}) {
+  const x = String(chart?.x || "").trim();
+  return x && !firstTimeColumn([x]) ? x : "";
+}
+
+function chartTimeColumn(chart = {}) {
+  const x = String(chart?.x || "").trim();
+  return x && firstTimeColumn([x]) ? x : "";
+}
+
+function looksLikeTrendQuestion(text) {
+  return /trend|mom|yoy|趋势|波动|环比|同比|增长|下降/.test(text);
+}
+
+function looksLikeRankingQuestion(text) {
+  return /ranking|topn|top|rank|排名|最高|最低|最大|最小|第一|前/.test(text);
+}
+
+function looksLikeShareOrRateQuestion(text) {
+  return /percent|percentage|rate|ratio|share|占比|比例|率/.test(text);
+}
+
+function looksLikeCleaningOrQuality(text) {
+  return /clean|quality|缺失|重复|异常|离群|质量|清洗|填充|删除/.test(text);
+}
+
+function renderInsightBody(summary, advice, nextQuestions) {
+  const paragraphs = [];
+  if (summary) paragraphs.push(escapeHtml(summary));
+  if (advice) {
+    const parsed = parseInsightText(advice);
+    const headline = parsed.action || parsed.observation || advice;
+    if (headline) paragraphs.push(`<strong>下一步：</strong>${escapeHtml(headline)}`);
+  }
+  if (nextQuestions.length) {
+    paragraphs.push(`<strong>可继续问：</strong>${nextQuestions.map((question) => escapeHtml(question)).join("；")}`);
+  }
+  return paragraphs.map((paragraph) => `<p>${paragraph}</p>`).join("");
 }
 
 function parseInsightText(text) {
   const raw = String(text || "").trim();
-  const observation = raw.match(/观察[:：]([^；;]+)/)?.[1]?.trim() || raw.split(/[；;]/)[0] || raw;
+  const observation = raw.match(/(?:观察|风险|边界)[:：]([^；;]+)/)?.[1]?.trim() || raw.split(/[；;]/)[0] || raw;
   const evidence = raw.match(/依据[:：]([^；;]+)/)?.[1]?.trim() || "";
-  const action = raw.match(/建议[:：]([^；;]+)/)?.[1]?.trim() || "";
+  const action = raw.match(/(?:建议|下一步)[:：]([^；;]+)/)?.[1]?.trim() || "";
   return { observation, evidence, action };
 }
 
@@ -1045,6 +3014,187 @@ function renderExecutionArtifacts(artifacts) {
   el.artifactPanel?.classList.add("hidden");
   if (!el.artifactList) return;
   el.artifactList.innerHTML = "";
+}
+
+function renderAnswerSources(result, message = el.resultMessage) {
+  const panel = message?.querySelector(".answer-source-panel") || el.sourcePanel;
+  const list = message?.querySelector(".answer-source-list") || el.sourceList;
+  const count = panel?.querySelector(".answer-source-count");
+  if (!panel || !list) return;
+  const sources = buildAnswerSourceRows(result);
+  if (!sources.length) {
+    panel.classList.add("hidden");
+    if ("open" in panel) panel.open = false;
+    if (count) count.textContent = "";
+    list.innerHTML = "";
+    return;
+  }
+  list.innerHTML = sources
+    .map(
+      (source) => {
+        const meta = answerSourceMeta(source);
+        return `
+        <li>
+          <span class="answer-source-icon ${escapeHtml(sourceFileIconClass(source.fileName || ""))}" aria-hidden="true">${sourceFileIcon(source.fileName || "")}</span>
+          <span class="answer-source-copy">
+            <strong title="${escapeHtml(source.fileName || "上传文件")}">${escapeHtml(source.fileName || "上传文件")}</strong>
+            ${meta ? `<span>${escapeHtml(meta)}</span>` : ""}
+          </span>
+        </li>
+      `;
+      },
+    )
+    .join("");
+  if (count) count.textContent = `${sources.length} 个文件`;
+  if ("open" in panel) panel.open = false;
+  panel.classList.remove("hidden");
+}
+
+function buildAnswerSourceRows(result) {
+  if (!result) return [];
+  const directSources = normalizeAnswerSourceReferences(result.source_references);
+  if (directSources.length) return directSources;
+  const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset" || result.debug?.agent_mode === "chat_with_dataset";
+  if (isChat) return [];
+  return deriveAnswerSourcesFromProfile(result, state.profile);
+}
+
+function normalizeAnswerSourceReferences(references) {
+  if (!Array.isArray(references)) return [];
+  return references
+    .map((reference) => {
+      const fileName = String(reference?.file_name || reference?.source_file || reference?.title || "").trim();
+      const tableItems = normalizeAnswerSourceTables(reference?.tables);
+      const rowCount = Number(reference?.row_count || tableItems.reduce((sum, table) => sum + Number(table.rowCount || 0), 0));
+      const columnCount = Number(reference?.column_count || (tableItems.length === 1 ? tableItems[0].columnCount : 0));
+      return {
+        fileName,
+        tableNames: uniqueStrings(tableItems.map((table) => table.tableName)),
+        tableCount: Number(reference?.table_count || tableItems.length || 0),
+        rowCount: Number.isFinite(rowCount) && rowCount > 0 ? rowCount : 0,
+        columnCount: Number.isFinite(columnCount) && columnCount > 0 ? columnCount : 0,
+      };
+    })
+    .filter((source) => source.fileName || source.tableNames.length);
+}
+
+function normalizeAnswerSourceTables(tables) {
+  if (!Array.isArray(tables)) return [];
+  return tables
+    .map((table) => {
+      if (typeof table === "string") {
+        return { tableName: table, rowCount: 0, columnCount: 0 };
+      }
+      return {
+        tableName: String(table?.table_name || table?.name || "").trim(),
+        rowCount: Number(table?.row_count || 0),
+        columnCount: Number(table?.column_count || 0),
+      };
+    })
+    .filter((table) => table.tableName);
+}
+
+function deriveAnswerSourcesFromProfile(result, profile) {
+  const tables = Array.isArray(profile?.tables) ? profile.tables : [];
+  if (!tables.length) return [];
+  const wanted = extractResultSourceTableNames(result);
+  let selected = wanted.length
+    ? tables.filter((table) => profileTableMatchesSources(table, wanted))
+    : [];
+  if (!selected.length && shouldUseAllProfileSources(result, tables, wanted)) {
+    selected = tables;
+  }
+  if (!selected.length) return [];
+  return normalizeAnswerSourceReferences(groupProfileTablesBySourceFile(selected, profile));
+}
+
+function extractResultSourceTableNames(result) {
+  const names = [];
+  appendSourceNames(names, result?.debug?.source_tables);
+  appendSourceNames(names, result?.logic_form?.source_tables);
+  appendSourceNames(names, result?.logic_form?.parameters?.source_tables);
+  appendSourceNames(names, result?.logic_form?.parameters?.tables);
+  appendSourceNames(names, result?.logic_form?.parameters?.table);
+  [result?.debug?.join_plan, result?.logic_form?.join_plan, result?.logic_form?.parameters?.join_plan].forEach((joinPlan) => {
+    appendSourceNames(names, joinPlan?.left_table);
+    appendSourceNames(names, joinPlan?.right_table);
+  });
+  return uniqueStrings(names.map((name) => String(name || "").trim()).filter(Boolean));
+}
+
+function appendSourceNames(names, value) {
+  if (!value) return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => appendSourceNames(names, item));
+    return;
+  }
+  if (typeof value === "string") {
+    names.push(value);
+  }
+}
+
+function shouldUseAllProfileSources(result, tables, wanted) {
+  if (wanted.length || result?.success === false || result?.answer_type === "chat") return false;
+  return tables.length === 1 || result?.answer_type === "overview" || result?.answer_type === "cleaning_simulation" || result?.debug?.operation === "multi_table_dataset_overview";
+}
+
+function profileTableMatchesSources(table, sourceNames) {
+  const sourceKeys = new Set(sourceNames.flatMap((name) => sourceMatchKeys(name)));
+  return sourceMatchKeys(table?.table_name)
+    .concat(sourceMatchKeys(table?.source_file), sourceMatchKeys(table?.file_name), sourceMatchKeys(table?.sheet))
+    .some((key) => sourceKeys.has(key));
+}
+
+function sourceMatchKeys(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return [];
+  const stem = text.replace(/\.[^.]+$/, "");
+  return stem && stem !== text ? [text, stem] : [text];
+}
+
+function groupProfileTablesBySourceFile(tables, profile) {
+  const grouped = new Map();
+  tables.forEach((table) => {
+    const fileName = String(table?.source_file || table?.file_name || profile?.file_name || table?.table_name || "上传文件").trim();
+    if (!grouped.has(fileName)) grouped.set(fileName, { file_name: fileName, tables: [] });
+    grouped.get(fileName).tables.push({
+      table_name: table?.table_name || fileName,
+      sheet: table?.sheet || "",
+      row_count: table?.row_count || 0,
+      column_count: table?.column_count || 0,
+    });
+  });
+  return [...grouped.values()].map((reference) => ({
+    ...reference,
+    table_count: reference.tables.length,
+    row_count: reference.tables.reduce((sum, table) => sum + Number(table.row_count || 0), 0),
+    column_count: reference.tables.length === 1 ? Number(reference.tables[0].column_count || 0) : 0,
+  }));
+}
+
+function answerSourceMeta(source) {
+  const shapePart = [source.rowCount ? `${formatNumber(source.rowCount)} 行` : "", source.columnCount ? `${formatNumber(source.columnCount)} 列` : ""]
+    .filter(Boolean)
+    .join(" / ");
+  return shapePart || (source.tableCount > 1 ? `${source.tableCount} 张表` : "");
+}
+
+function uniqueStrings(values) {
+  const result = [];
+  values.forEach((value) => {
+    const text = String(value || "").trim();
+    if (text && !result.includes(text)) result.push(text);
+  });
+  return result;
+}
+
+function refreshRenderedAnswerSources() {
+  const messages = [el.resultTemplate, ...el.chatMessages.querySelectorAll(".assistant-result-message")].filter(Boolean);
+  messages.forEach((message) => {
+    if (message.__vdsResult) {
+      renderAnswerSources(message.__vdsResult, message);
+    }
+  });
 }
 
 function renderArtifactCards(artifacts) {
@@ -1089,6 +3239,10 @@ function renderProgress(question, options = {}) {
   el.chartPanel.textContent = "";
   el.insightPanel?.classList.add("hidden");
   renderExecutionArtifacts([]);
+  renderAnswerSources(null);
+  setMessageTime(el.resultMessage, options.createdAt || new Date().toISOString());
+  startThinkingElapsed(el.resultMessage, options.startedAtMs);
+  updateCopyReplyButton(el.resultMessage, "");
   el.chatMessages.append(el.resultMessage);
   revealMessage(el.resultMessage);
 
@@ -1098,7 +3252,7 @@ function renderProgress(question, options = {}) {
       [{ title: "接收实时过程", summary: "我先确认问题类型和可用数据，然后等待后端安全事件。", status: "active" }],
       "我先确认问题类型和可用数据。",
       [],
-      { collapse: false },
+      { collapse: false, liveSummary: true, activityTrace: normalizeActivityTrace(state.liveActivityTrace) },
     );
     return;
   }
@@ -1111,7 +3265,7 @@ function renderProgress(question, options = {}) {
       })),
       currentStep?.summary || "正在整理回答。",
       [],
-      { collapse: false },
+      { collapse: false, liveSummary: true },
     );
     state.progressStep = Math.min(state.progressStep + 1, steps.length - 1);
   };
@@ -1124,6 +3278,10 @@ function stopProgress() {
   if (state.progressTimer) {
     window.clearInterval(state.progressTimer);
     state.progressTimer = null;
+  }
+  if (state.thinkingElapsedTimer) {
+    window.clearInterval(state.thinkingElapsedTimer);
+    state.thinkingElapsedTimer = null;
   }
 }
 
@@ -1157,6 +3315,13 @@ function handleActivityEvent(event) {
     return;
   }
   if (!payload || payload.monitor_run_id !== state.activeMonitorRunId) return;
+  const activityNode = activityNodeFromMonitorEvent(payload);
+  if (activityNode) {
+    mergeActivityTraceNode(activityNode);
+  }
+  if (Array.isArray(payload.payload?.activity_trace_v2) && payload.payload.activity_trace_v2.length) {
+    state.liveActivityTrace = normalizeActivityTrace(payload.payload.activity_trace_v2);
+  }
   const step = activityStepFromMonitorEvent(payload);
   if (!step) return;
   const duplicate = state.activityEvents.some((item) => item.eventId === step.eventId);
@@ -1170,7 +3335,10 @@ function handleActivityEvent(event) {
     summary: item.summary,
     status: index === state.activityEvents.length - 1 && item.status === "active" ? "active" : item.status === "failed" ? "failed" : "completed",
   }));
-  renderProcessItems(timelineSteps, latest?.summary || "正在处理。", [], { collapse: false });
+  renderProcessItems(timelineSteps, latest?.summary || "正在处理。", [], { collapse: false, liveSummary: true, activityTrace: normalizeActivityTrace(state.liveActivityTrace) });
+  if (el.activityDrawer && !el.activityDrawer.classList.contains("hidden")) {
+    renderActivityDrawer(state.latestActivityResult || {});
+  }
 }
 
 function activityStepFromMonitorEvent(event) {
@@ -1183,6 +3351,9 @@ function activityStepFromMonitorEvent(event) {
     workflow_started: "启动流程",
     agent_started: "执行步骤",
     agent_completed: "完成步骤",
+    agent_failed: "步骤失败",
+    correction_rerun_started: "修正重跑",
+    activity_trace_delta: "活动更新",
     workflow_completed: "完成流程",
     response_ready: "生成回答",
     analysis_failed: "处理失败",
@@ -1201,6 +3372,9 @@ function activityStepFromMonitorEvent(event) {
     workflow_started: "后端分析流程已开始，我只展示安全活动摘要。",
     agent_started: `${monitorRoleName(event.role)} 正在处理。`,
     agent_completed: `${monitorRoleName(event.role)} 已完成。`,
+    agent_failed: `${monitorRoleName(event.role)} 处理失败。`,
+    correction_rerun_started: cleanActivityText(event.summary) || "修正节点触发重跑执行路径。",
+    activity_trace_delta: cleanActivityText(event.summary) || "执行链路已更新。",
     workflow_completed: "后端流程已完成，正在合并最终结果。",
     response_ready: "最终结果已生成，我会以主回答和过程详情展示。",
     analysis_failed: "处理遇到问题，我会返回可读错误。",
@@ -1213,12 +3387,749 @@ function activityStepFromMonitorEvent(event) {
     answer_outline_ready: cleanActivityText(event.summary) || "正在整理最终回答结构。",
   };
   if (!titleByType[type]) return null;
+  const specificSummary = liveActivitySummaryFromEvent(event, type, status);
   return {
     eventId: event.event_id || `${type}_${state.activityEvents.length}`,
     title: titleByType[type],
-    summary: summaryByType[type] || cleanActivityText(event.summary) || "正在处理。",
+    summary: specificSummary || summaryByType[type] || cleanActivityText(event.summary) || "正在处理。",
     status,
   };
+}
+
+function liveActivitySummaryFromEvent(event, type, status) {
+  const payload = event.payload || {};
+  const role = String(event.role || payload.role || "");
+  const result = payload.result?.output_payload || payload.result || {};
+  const before = payload.state_before || {};
+  const after = payload.state_after || payload.state_after_correction || {};
+  const question = cleanActivityText(payload.question || before.question || "");
+  const dataset = cleanActivityText(payload.dataset_id || before.dataset_id || after.dataset_id || "");
+  if (type === "message_requested") {
+    return question ? `收到问题“${question}”，正在判断它是普通对话、数据概览，还是需要读取数据后计算。` : "";
+  }
+  if (type === "analysis_requested") {
+    return dataset ? `已锁定数据集 ${dataset}，开始读取表结构、字段名和样例值，避免拿错文件回答。` : "开始读取上传数据的表结构、字段名和样例值，准备选择正确的数据路径。";
+  }
+  if (type === "workflow_started") {
+    return "后端分析流程已开始：先理解问题和数据，再计算、校验，最后组织成用户可读的回答。";
+  }
+  if (type === "agent_started") {
+    return activityRoleStartSummary(role);
+  }
+  if (type === "agent_completed") {
+    return activityRoleCompletionSummary(role, result, before, after);
+  }
+  if (type === "agent_failed") {
+    return `${monitorRoleName(role)}遇到问题，正在保留可读错误并避免把不可靠结果直接当答案。`;
+  }
+  if (type === "workflow_completed") {
+    return "计算、校验和回答组装已经完成，正在把最终结果同步到聊天页面。";
+  }
+  if (type === "response_ready") {
+    const answer = cleanActivityText(payload.response?.answer || payload.answer || "");
+    return answer ? `最终回答已生成：${answer}` : "最终回答已生成，正在展示主答案、图表和处理过程。";
+  }
+  if (type === "activity_trace_delta" && event.payload?.node) {
+    const node = normalizeActivityNode(event.payload.node);
+    return activityNodePlainSummary(node) || "";
+  }
+  if (status === "failed") return cleanActivityText(event.summary) || "当前步骤失败，正在返回可读错误。";
+  return "";
+}
+
+function activityRoleStartSummary(role) {
+  const labels = {
+    planner: "计划节点开始把问题拆成分析口径：确认要用哪些表、看哪个指标、按什么维度或时间范围比较。",
+    data_engineer: "数据理解节点开始检查上传文件：看表、字段、样例值和数据质量，给后续计算做准备。",
+    pandas_executor: "Pandas 计算节点开始按计划执行主计算，先产出可用于回答的结构化结果。",
+    sql_executor: "SQL 复算节点开始判断是否能用只读 SQL 交叉核对，不能支持时会说明跳过原因。",
+    verifier: "校验节点开始核对结果是否成功、口径是否一致，避免错误结果直接进入回答。",
+    correction: "修正节点开始判断是否需要有边界地调整口径并重跑计算。",
+    insight: "洞察节点开始把已验证结果整理成普通用户能读懂的业务结论。",
+    visualization: "图表节点开始判断结果是否适合画图，并选择横轴、纵轴和图表类型。",
+    response_builder: "回答组装节点开始把结果、图表、来源和提示整理成最终页面回答。",
+  };
+  return labels[role] || `${monitorRoleName(role)}开始处理当前步骤。`;
+}
+
+function activityRoleCompletionSummary(role, result = {}, before = {}, after = {}) {
+  if (role === "planner") {
+    const logic = result.logic_form || after.logic_form || {};
+    const tables = normalizeStringList(logic.source_tables || after.source_tables);
+    const operation = activityOperationLabel(logic.operation || after.operation);
+    return `计划节点已确定分析口径：${operation}${tables.length ? `，使用 ${tables.join("、")}` : ""}，下一步交给计算节点。`;
+  }
+  if (role === "data_engineer") {
+    const tables = activityTableNames(result.tables || after.source_tables || before.source_tables);
+    return tables.length ? `数据理解节点已看完可用表和字段：重点使用 ${tables.slice(0, 3).join("、")}，并把字段画像交给后续节点。` : "数据理解节点已完成表结构和字段画像检查，后续节点会按这些信息选表和匹配字段。";
+  }
+  if (role === "pandas_executor") {
+    return activityExecutionSummary("Pandas", result || after.pandas || {});
+  }
+  if (role === "sql_executor") {
+    return activityExecutionSummary("SQL", result || after.sql || {});
+  }
+  if (role === "verifier") {
+    const verification = result.verification || after.verification || {};
+    if (verification.passed === false) return "校验节点发现结果还不能直接使用，正在把问题交给修正或错误处理。";
+    return "校验节点已确认计算结果可以用于回答，并检查了执行状态和一致性。";
+  }
+  if (role === "correction") {
+    return result.needs_correction ? "修正节点已给出调整方向，准备让执行节点按新口径重算。" : "修正节点确认本次不需要重跑，流程可以继续整理结论。";
+  }
+  if (role === "insight") {
+    const summary = cleanActivityText(result.insight?.summary || result.summary || after.insight?.summary || "");
+    return summary ? `洞察节点已提炼业务结论：${summary}` : "洞察节点已把验证后的结果整理成业务结论、建议和限制说明。";
+  }
+  if (role === "visualization") {
+    const chart = result.chart || after.chart || {};
+    return chart.chart_type ? `图表节点已选择 ${chart.chart_type} 展示，并确认要使用的横轴和指标。` : "图表节点已判断本次结果是否适合画图，并把展示方式交给前端。";
+  }
+  if (role === "response_builder") {
+    return "回答组装节点已把主答案、图表、来源和处理过程整理成页面可展示的结果。";
+  }
+  return cleanActivityText(result.summary || "");
+}
+
+function activityExecutionSummary(label, result = {}) {
+  if (result.skipped) {
+    const reason = cleanActivityText(result.reason || "");
+    return `${label} 路径已跳过${reason ? `：${reason}` : ""}，不会拿不适合的计算结果回答。`;
+  }
+  if (result.success === false) return `${label} 计算失败，后续会返回可读错误或触发修正。`;
+  const value = activityReadableValue(result.value ?? result.answer);
+  return value ? `${label} 已按计划完成计算，得到结果摘要：${value}，接下来进入校验。` : `${label} 已按计划完成计算，结构化结果会交给校验节点。`;
+}
+
+function activityNodeFromMonitorEvent(event) {
+  const type = String(event.event_type || "");
+  if (type === "activity_trace_delta" && event.payload?.node) {
+    return normalizeActivityNode(event.payload.node);
+  }
+  if (Array.isArray(event.payload?.activity_trace_v2) && event.payload.activity_trace_v2.length) {
+    return null;
+  }
+  if (["agent_started", "agent_completed", "agent_failed", "correction_rerun_started"].includes(type)) {
+    const role = String(event.role || event.stage || "activity");
+    const status = event.status === "failed" || type === "agent_failed" ? "failed" : event.status === "active" || type === "agent_started" || type === "correction_rerun_started" ? "active" : "completed";
+    const payload = event.payload || {};
+    const result = payload.result?.output_payload || {};
+    const stateAfter = payload.state_after || payload.state_after_correction || {};
+    return normalizeActivityNode({
+      id: `live_${role}`,
+      kind: role.includes("executor") ? "executor" : "agent",
+      role,
+      status,
+      title: monitorRoleName(role),
+      summary: cleanActivityText(event.summary) || `${monitorRoleName(role)} ${status === "active" ? "正在处理" : status === "failed" ? "处理失败" : "已完成"}。`,
+      actions: activityActionsFromPayload(role, result, stateAfter),
+      outputs_summary: result && Object.keys(result).length ? result : stateAfter,
+      tool_calls: payload.new_tool_calls || [],
+    });
+  }
+  if (type === "code_artifact_ready") {
+    return normalizeActivityNode({
+      id: "live_execution_artifacts",
+      kind: "artifact",
+      role: "code_artifact",
+      status: "completed",
+      title: "复现代码",
+      summary: cleanActivityText(event.summary) || "复现代码已准备好。",
+      outputs_summary: event.payload || {},
+    });
+  }
+  return null;
+}
+
+function activityActionsFromPayload(role, result = {}, stateAfter = {}) {
+  const actions = [];
+  if (role === "planner") {
+    const logic = result.logic_form || stateAfter.logic_form || {};
+    if (logic.operation) actions.push(`分析类型：${logic.operation}`);
+    if (logic.source_tables?.length) actions.push(`数据表：${logic.source_tables.join("、")}`);
+    if (logic.metric || logic.parameters?.metric) actions.push(`指标：${logic.metric || logic.parameters.metric}`);
+  } else if (role === "pandas_executor") {
+    actions.push(result.success === false ? "Pandas 执行失败" : "按计划执行 Pandas 计算");
+  } else if (role === "sql_executor") {
+    actions.push(result.skipped ? `SQL skipped：${result.reason || "当前问题未走 SQL"}` : result.success === false ? "SQL 执行失败" : "执行 SQL 复算");
+  } else if (role === "verifier") {
+    const verification = result.verification || stateAfter.verification || {};
+    if (verification.passed !== undefined) actions.push(`校验：${verification.passed ? "通过" : "未通过"}`);
+    if (verification.pandas_sql_consistent !== undefined) actions.push(`Pandas/SQL 一致：${verification.pandas_sql_consistent}`);
+  }
+  return actions.filter(Boolean);
+}
+
+function mergeActivityTraceNode(node) {
+  if (!node?.id) return;
+  const nodes = normalizeActivityTrace(state.liveActivityTrace);
+  const index = nodes.findIndex((item) => item.id === node.id);
+  if (index >= 0) {
+    nodes[index] = { ...nodes[index], ...node };
+  } else {
+    nodes.push(node);
+  }
+  state.liveActivityTrace = nodes.slice(-18);
+}
+
+function openActivityDrawer(result = {}, triggerSummary = null) {
+  state.drawerResult = result || state.latestActivityResult || {};
+  state.drawerTriggerSummary = triggerSummary || null;
+  state.activityDrawerAutoScroll = true;
+  el.activityDrawer?.classList.remove("hidden");
+  el.activityBackdrop?.classList.remove("hidden");
+  el.activityDrawer?.setAttribute("aria-hidden", "false");
+  document.body.classList.add("activity-drawer-open");
+  updateThinkingSummaryExpanded(true);
+  renderActivityDrawer(state.drawerResult, { scrollToLatest: true });
+}
+
+function closeActivityDrawer() {
+  el.activityDrawer?.classList.add("hidden");
+  el.activityBackdrop?.classList.add("hidden");
+  el.activityDrawer?.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("activity-drawer-open");
+  updateThinkingSummaryExpanded(false);
+  state.drawerTriggerSummary = null;
+  state.activityDrawerAutoScroll = true;
+}
+
+function handleThinkingSummaryClick(event) {
+  const summary = event.target.closest?.(".process-details summary");
+  if (!summary || !el.chatMessages?.contains(summary)) return;
+  event.preventDefault();
+  const message = summary.closest(".assistant-result-message, #result-message, .assistant-message");
+  const details = summary.closest(".process-details");
+  if (details) details.open = false;
+  openActivityDrawer(message?.__vdsResult || state.latestActivityResult || {}, summary);
+}
+
+function handleThinkingSummaryKeydown(event) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const summary = event.target.closest?.(".process-details summary");
+  if (!summary || !el.chatMessages?.contains(summary)) return;
+  event.preventDefault();
+  const message = summary.closest(".assistant-result-message, #result-message, .assistant-message");
+  const details = summary.closest(".process-details");
+  if (details) details.open = false;
+  openActivityDrawer(message?.__vdsResult || state.latestActivityResult || {}, summary);
+}
+
+function updateThinkingSummaryExpanded(expanded) {
+  el.chatMessages?.querySelectorAll(".process-details summary").forEach((summary) => {
+    summary.setAttribute("aria-expanded", String(expanded && summary === state.drawerTriggerSummary));
+  });
+}
+
+function renderActivityDrawer(result = {}, options = {}) {
+  if (!el.activityDrawerList) return;
+  const shouldScrollToLatest =
+    Boolean(options.scrollToLatest) || (isActivityDrawerVisible() && state.activityDrawerAutoScroll && isActivityDrawerNearLatest());
+  const sections = buildActivityDrawerSections(result);
+  const trace = sections.flatMap((section) => section.nodes);
+  if (el.activityDrawerTitle) el.activityDrawerTitle.textContent = "思考与执行链路";
+  if (el.activityDrawerSummary) el.activityDrawerSummary.textContent = drawerSummary(result, trace);
+  if (!sections.length) {
+    el.activityDrawerList.innerHTML = `<li class="activity-drawer-empty">暂无活动。</li>`;
+    if (shouldScrollToLatest) scrollActivityDrawerToLatest();
+    return;
+  }
+  el.activityDrawerList.innerHTML = sections.map(renderActivityDrawerSection).join("");
+  if (shouldScrollToLatest) scrollActivityDrawerToLatest();
+}
+
+function isActivityDrawerVisible() {
+  return Boolean(el.activityDrawer && !el.activityDrawer.classList.contains("hidden"));
+}
+
+function isActivityDrawerNearLatest() {
+  if (!el.activityDrawerList) return true;
+  const remaining = el.activityDrawerList.scrollHeight - el.activityDrawerList.clientHeight - el.activityDrawerList.scrollTop;
+  return remaining <= 96;
+}
+
+function scrollActivityDrawerToLatest() {
+  if (!el.activityDrawerList || !isActivityDrawerVisible()) return;
+  requestAnimationFrame(() => {
+    if (!el.activityDrawerList || !isActivityDrawerVisible()) return;
+    el.activityDrawerList.scrollTop = el.activityDrawerList.scrollHeight;
+    state.activityDrawerAutoScroll = true;
+  });
+}
+
+function handleActivityDrawerScroll() {
+  if (!isActivityDrawerVisible()) return;
+  state.activityDrawerAutoScroll = isActivityDrawerNearLatest();
+}
+
+function buildActivityDrawerSections(result = {}) {
+  const thoughtTrace = activityTraceFromProcessView(result);
+  const executionTrace = buildDrawerActivityTrace(result, { includeProcessFallback: false });
+  const sections = [];
+  if (thoughtTrace.length) {
+    sections.push({ title: "思考过程", nodes: thoughtTrace });
+  }
+  if (executionTrace.length) {
+    sections.push({ title: "执行链路", nodes: executionTrace });
+  }
+  if (!sections.length) {
+    const fallbackTrace = buildDrawerActivityTrace(result);
+    if (fallbackTrace.length) sections.push({ title: "执行链路", nodes: fallbackTrace });
+  }
+  return sections;
+}
+
+function buildDrawerActivityTrace(result = {}, options = {}) {
+  let trace = normalizeActivityTrace(result.activity_trace_v2);
+  if (!trace.length && options.includeLiveFallback !== false) trace = normalizeActivityTrace(state.liveActivityTrace);
+  if (!trace.length && options.includeProcessFallback !== false) trace = activityTraceFromProcessView(result);
+  const artifacts = normalizeActivityArtifacts(result.execution_artifacts);
+  const hasArtifactNode = trace.some((node) => node.artifacts?.length);
+  if (artifacts.length && !hasArtifactNode) {
+    trace.push(
+      normalizeActivityNode({
+        id: "execution_artifacts",
+        kind: "artifact",
+        role: "code_artifact",
+        status: "completed",
+        title: "Execution Artifacts",
+        summary: `生成 ${artifacts.length} 个安全复现代码片段。`,
+        artifacts,
+      }),
+    );
+  }
+  return trace;
+}
+
+function drawerSummary(result, trace) {
+  if (result?.question) {
+    return `围绕“${shortLabel(result.question, 36)}”展示思考过程、真实执行节点、工具调用和安全复现代码。`;
+  }
+  if (trace.some((node) => node.status === "active")) return "正在接收后端实时活动。";
+  return "发送问题后，这里会显示思考过程、真实执行节点、工具调用和安全复现代码。";
+}
+
+function activityTraceFromProcessView(result = {}) {
+  const steps = Array.isArray(result.process_view_v2?.steps) ? result.process_view_v2.steps : [];
+  return steps.map((step, index) =>
+    normalizeActivityNode({
+      id: `process_${index}`,
+      kind: "process",
+      role: step.source || "",
+      status: step.status || "completed",
+      title: step.title || `Step ${index + 1}`,
+      summary: step.summary || "",
+      actions: [...normalizeStringList(step.evidence), ...normalizeStringList(step.assumptions), ...normalizeStringList(step.caveats)],
+      outputs_summary: { mode: result.process_view_v2?.mode || "" },
+    }),
+  );
+}
+
+function renderActivityDrawerNode(node, index = 0, nodes = []) {
+  const actions = normalizeStringList(node.actions);
+  const toolCalls = Array.isArray(node.tool_calls) ? node.tool_calls : [];
+  const artifacts = normalizeActivityArtifacts(node.artifacts);
+  const digest = activityNodeDigest(node, index, nodes);
+  return `
+    <li class="activity-node ${escapeHtml(node.status || "completed")} ${escapeHtml(node.kind || "agent")}">
+      <div class="activity-node-marker" aria-hidden="true"></div>
+      <article>
+        <header class="activity-node-header">
+          <div>
+            <span>${escapeHtml(activityRoleLabel(node.role || node.kind))}</span>
+            <strong>${escapeHtml(node.title || node.role || "活动")}</strong>
+          </div>
+          <em>${escapeHtml(activityStatusLabel(node.status))}</em>
+        </header>
+        ${node.summary ? `<p class="activity-node-summary">${escapeHtml(node.summary)}</p>` : ""}
+        ${renderActivityNodeDigest(digest)}
+        ${actions.length ? `<ul class="activity-action-list">${actions.slice(0, 6).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+        ${toolCalls.length ? renderActivityToolCalls(toolCalls) : ""}
+        ${artifacts.length ? renderActivityArtifactCards(artifacts) : ""}
+        ${node.safety_note ? `<small>${escapeHtml(node.safety_note)}</small>` : ""}
+      </article>
+    </li>
+  `;
+}
+
+function renderActivityDrawerSection(section) {
+  const nodes = normalizeActivityTrace(section.nodes);
+  if (!nodes.length) return "";
+  return `
+    <li class="activity-drawer-section">
+      <h3>${escapeHtml(section.title || "执行链路")}</h3>
+      <ol class="activity-section-list">
+        ${nodes.map((node, index) => renderActivityDrawerNode(node, index, nodes)).join("")}
+      </ol>
+    </li>
+  `;
+}
+
+function renderActivityNodeDigest(digest) {
+  if (!digest || !digest.hasContent) return "";
+  return `
+    <div class="activity-node-transfer" aria-label="节点流转">
+      <span>上游：${escapeHtml(digest.upstream)}</span>
+      <span>当前：${escapeHtml(digest.current)}</span>
+      <span>下游：${escapeHtml(digest.downstream)}</span>
+    </div>
+    <div class="activity-node-columns">
+      ${renderActivityNodeBox("收到什么（输入）", digest.received)}
+      ${renderActivityNodeBox("干了什么（处理）", digest.did)}
+      ${renderActivityNodeBox("发出什么（输出）", digest.sent)}
+    </div>
+    ${digest.note ? `<p class="activity-node-note">${escapeHtml(digest.note)}</p>` : ""}
+  `;
+}
+
+function renderActivityNodeBox(title, lines) {
+  const items = normalizeStringList(lines).slice(0, 5);
+  return `
+    <section class="activity-node-box">
+      <h4>${escapeHtml(title)}</h4>
+      ${
+        items.length
+          ? `<ul>${items.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>`
+          : `<p>没有新的可读信息。</p>`
+      }
+    </section>
+  `;
+}
+
+function activityNodeDigest(node, index, nodes) {
+  const role = String(node.role || "");
+  const supportedRoles = new Set(["planner", "data_engineer", "pandas_executor", "sql_executor", "verifier", "correction", "insight", "visualization", "response_builder", "single_agent"]);
+  if (!supportedRoles.has(role)) {
+    return { hasContent: false };
+  }
+  const inputs = node.inputs_summary || {};
+  const outputs = node.outputs_summary || {};
+  const actions = normalizeStringList(node.actions);
+  const upstream = index === 0 ? "用户问题 / 上传数据" : activityNodeDisplayName(nodes[index - 1]);
+  const downstream = index === nodes.length - 1 ? "最终页面 / API" : activityNodeDisplayName(nodes[index + 1]);
+  const base = {
+    upstream,
+    current: activityNodeDisplayName(node),
+    downstream,
+    received: activityInputLines(inputs),
+    did: [activityNodePlainSummary(node), ...actions.slice(0, 3)],
+    sent: activityOutputLines(outputs),
+    note: "",
+  };
+
+  if (role === "planner") {
+    const tables = normalizeStringList(outputs.source_tables);
+    const joinLine = activityJoinPlanLine(outputs.join_plan);
+    base.received.push("用户问题、表结构、字段名、样例值和当前执行模式。");
+    base.did = [
+      outputs.operation ? `判断分析类型：${activityOperationLabel(outputs.operation)}` : activityNodePlainSummary(node),
+      tables.length ? `选择要用的数据表：${tables.join("、")}` : "",
+      joinLine || "把指标、维度和候选范围拆成后续节点能执行的口径。",
+    ];
+    base.sent = [
+      outputs.operation ? `分析口径：${activityOperationLabel(outputs.operation)}` : "",
+      tables.length ? `交给执行节点的数据表：${tables.join("、")}` : "",
+      joinLine,
+    ];
+    base.note = "计划节点决定后面按什么口径计算，但不直接产出最终答案。";
+  } else if (role === "data_engineer") {
+    const tables = activityTableNames(outputs.source_tables);
+    base.received.push("上传文件、表名、字段类型、样例值和数据质量摘要。");
+    base.did = [tables.length ? `检查可用表：${tables.join("、")}` : activityNodePlainSummary(node), activityQualityLine(outputs.quality)];
+    base.sent = [tables.length ? `可用数据表：${tables.join("、")}` : "", activityQualityLine(outputs.quality) || "把数据画像交给计划和计算节点。"];
+    base.note = "数据理解节点不回答问题，只说明数据长什么样、哪些字段能用。";
+  } else if (role === "pandas_executor" || role === "sql_executor") {
+    const label = role === "pandas_executor" ? "Pandas" : "SQL";
+    base.received.push("计划节点给出的表、指标、维度、筛选条件和排序方式。");
+    base.did = [
+      outputs.skipped ? `${label} 不适合本题或当前模式，已跳过。` : `用 ${label} 执行受控计算。`,
+      outputs.reason ? `原因：${cleanActivityText(outputs.reason)}` : "",
+      activityReadableValue(outputs.value ?? outputs.answer) ? `结果摘要：${activityReadableValue(outputs.value ?? outputs.answer)}` : "",
+    ];
+    base.sent = [
+      outputs.skipped ? `${label} 状态：跳过` : outputs.success === false ? `${label} 状态：失败` : `${label} 状态：完成`,
+      activityReadableValue(outputs.value ?? outputs.answer) ? `计算结果：${activityReadableValue(outputs.value ?? outputs.answer)}` : "",
+    ];
+    base.note = `${label} 节点只负责按计划计算，不单独决定业务结论。`;
+  } else if (role === "verifier") {
+    base.received = [
+      inputs.pandas ? `Pandas 结果：${inputs.pandas}` : "",
+      inputs.sql ? `SQL 结果：${inputs.sql}` : "",
+      "计划口径和执行结果。",
+    ];
+    base.did = [
+      outputs.passed === false ? "检查到结果还不能直接使用。" : "检查计算是否成功、是否一致、是否符合问题口径。",
+      outputs.pandas_sql_consistent !== undefined ? `Pandas/SQL 是否一致：${outputs.pandas_sql_consistent ? "一致" : "不一致"}` : "",
+    ];
+    base.sent = [
+      outputs.passed === false ? "校验结论：需要修正或提示错误。" : "校验结论：可以进入最终回答。",
+      Array.isArray(outputs.issues) && outputs.issues.length ? `问题：${outputs.issues.slice(0, 2).join("；")}` : "",
+    ];
+    base.note = "校验节点是防止错口径、错结果进入最终回答的关口。";
+  } else if (role === "correction") {
+    base.received.push("校验节点发现的问题和上一轮计划。");
+    base.did = [outputs.action ? `修正动作：${cleanActivityText(outputs.action)}` : activityNodePlainSummary(node), outputs.reasoning_summary || outputs.summary || ""];
+    base.sent = [outputs.correction_attempts ? `修正尝试：${activityReadableValue(outputs.correction_attempts)}` : "", "决定是否让执行节点按新口径重跑。"];
+    base.note = "修正节点只做有边界的口径调整，不访问标准答案。";
+  } else if (role === "insight") {
+    base.received.push("已经通过校验的结果和图表信息。");
+    base.did = [outputs.summary ? `提炼结论：${cleanActivityText(outputs.summary)}` : activityNodePlainSummary(node)];
+    base.sent = [outputs.summary ? "业务结论已交给最终回答节点。" : "", Array.isArray(outputs.suggestions) && outputs.suggestions.length ? `建议：${outputs.suggestions.slice(0, 2).join("；")}` : ""];
+    base.note = "洞察节点只解释已验证结果，不重新计算。";
+  } else if (role === "visualization") {
+    base.received.push("可展示的结果数据、指标字段和维度字段。");
+    base.did = [outputs.chart_type ? `选择图表：${outputs.chart_type}` : activityNodePlainSummary(node), outputs.title ? `图表标题：${cleanActivityText(outputs.title)}` : ""];
+    base.sent = [outputs.chart_type ? `图表配置：${outputs.chart_type}` : "没有生成图表配置。", outputs.reason || outputs.fallback_reason || ""];
+    base.note = "图表节点输出展示配置，前端负责真正渲染。";
+  } else if (role === "response_builder") {
+    base.received.push("已验证的计算结果、洞察、图表配置、来源和提示。");
+    base.did = ["把内部结果整理成稳定的页面回答和 API 响应。", ...actions.slice(0, 1)];
+    base.sent = [outputs.success === false ? "返回状态：需要继续确认" : "返回状态：已完成", outputs.answer_type ? `回答类型：${outputs.answer_type}` : ""];
+    base.note = "这是返回给聊天页和外部接口前的最后一道格式化节点。";
+  } else if (role === "single_agent") {
+    base.received.push("用户问题、上传数据上下文和可用工具。");
+    base.did = [activityNodePlainSummary(node), ...actions.slice(0, 2)];
+    base.sent = activityOutputLines(outputs);
+    base.note = "单 Agent 链路会在一个节点里完成理解、执行、校验和回答。";
+  }
+
+  base.received = normalizeStringList(base.received);
+  base.did = normalizeStringList(base.did);
+  base.sent = normalizeStringList(base.sent);
+  return { ...base, hasContent: Boolean(base.received.length || base.did.length || base.sent.length) };
+}
+
+function activityNodeDisplayName(node = {}) {
+  return monitorRoleName(node.role || node.kind || node.title);
+}
+
+function activityInputLines(inputs = {}) {
+  const lines = [];
+  if (inputs.question) lines.push(`用户问题：${cleanActivityText(inputs.question)}`);
+  if (inputs.dataset_id) lines.push(`数据集：${cleanActivityText(inputs.dataset_id)}`);
+  if (inputs.pandas) lines.push(`Pandas 结果：${cleanActivityText(inputs.pandas)}`);
+  if (inputs.sql) lines.push(`SQL 结果：${cleanActivityText(inputs.sql)}`);
+  return lines;
+}
+
+function activityTableNames(value) {
+  const items = Array.isArray(value) ? value : value ? [value] : [];
+  return items
+    .map((item) => (item && typeof item === "object" ? item.table_name || item.name || item.id || "" : item))
+    .map((item) => cleanActivityText(item))
+    .filter(Boolean);
+}
+
+function activityOutputLines(outputs = {}) {
+  const lines = [];
+  if (outputs.operation) lines.push(`分析类型：${activityOperationLabel(outputs.operation)}`);
+  if (Array.isArray(outputs.source_tables) && outputs.source_tables.length) lines.push(`数据表：${outputs.source_tables.join("、")}`);
+  if (outputs.success !== undefined) lines.push(`执行状态：${outputs.success ? "成功" : "失败"}`);
+  if (outputs.skipped) lines.push(`跳过原因：${cleanActivityText(outputs.reason || "当前问题不适合这个路径")}`);
+  const value = activityReadableValue(outputs.value ?? outputs.answer ?? outputs.candidate_table);
+  if (value) lines.push(`结果摘要：${value}`);
+  const joinLine = activityJoinPlanLine(outputs.join_plan);
+  if (joinLine) lines.push(joinLine);
+  return lines;
+}
+
+function activityNodePlainSummary(node = {}) {
+  return cleanActivityText(node.summary || "");
+}
+
+function activityJoinPlanLine(joinPlan = {}) {
+  if (!joinPlan || typeof joinPlan !== "object" || !joinPlan.trusted) return "";
+  const left = cleanActivityText(joinPlan.left_table || "左表");
+  const right = cleanActivityText(joinPlan.right_table || "右表");
+  const key = joinPlan.left_key && joinPlan.right_key && joinPlan.left_key === joinPlan.right_key ? joinPlan.left_key : `${joinPlan.left_key || "-"} / ${joinPlan.right_key || "-"}`;
+  return `需要关联：${left} 和 ${right} 按 ${cleanActivityText(key)} 对齐。`;
+}
+
+function activityQualityLine(quality = {}) {
+  if (!quality || typeof quality !== "object") return "";
+  if (quality.summary) return `数据质量：${cleanActivityText(quality.summary)}`;
+  if (quality.issue_count !== undefined) return `数据质量问题数：${quality.issue_count}`;
+  return "";
+}
+
+function activityReadableValue(value) {
+  if (value === undefined || value === null || value === "") return "";
+  if (Array.isArray(value)) {
+    return value.length ? `${value.length} 条结果，示例 ${activityCompactValue(value[0], 90)}` : "空结果";
+  }
+  if (typeof value === "object") {
+    if (value.answer) return cleanActivityText(value.answer);
+    if (Array.isArray(value.candidate_table)) return activityReadableValue(value.candidate_table);
+    return activityCompactValue(value, 120);
+  }
+  if (typeof value === "number") return formatNumber(value);
+  return cleanActivityText(value);
+}
+
+function activityCompactValue(value, limit = 120) {
+  let text = "";
+  try {
+    text = JSON.stringify(redactActivityObject(value), null, 0);
+  } catch {
+    text = String(value || "");
+  }
+  return shortLabel(text, limit);
+}
+
+function activityOperationLabel(operation) {
+  const raw = String(operation || "").trim();
+  if (!raw) return "-";
+  const labels = {
+    aggregation: "汇总计算",
+    boolean_percentage: "占比计算",
+    distinct_count: "去重计数",
+    field_lookup: "字段查询",
+    metric_per_distinct_entity: "按唯一实体计算指标",
+    rank_by_metric: "按指标排名",
+    ranking: "排名/最高最低",
+    row_count: "行数统计",
+    top_count: "出现次数最高/最常见",
+    trend: "趋势分析",
+    vds_current_filtered_metric_top: "按条件找当前最高指标",
+    vds_current_metric_top: "找当前最高指标",
+    vds_period_growth_count_share: "周期增长数量占比",
+    vds_period_rank_change: "周期排名变化",
+    vds_peer_anomaly: "同类异常对比",
+    vds_status_impact_top: "状态影响排名",
+  };
+  return labels[raw] ? `${labels[raw]} (${raw})` : raw.replaceAll("_", " ");
+}
+
+function renderActivityToolCalls(toolCalls) {
+  return `
+    <div class="activity-tool-list">
+      ${toolCalls
+    .slice(0, 6)
+    .map(
+      (tool) => `
+        <div class="activity-tool-row ${tool.success === false ? "failed" : "completed"}">
+          <strong>${escapeHtml(tool.tool_name || "tool_call")}</strong>
+          <span>${escapeHtml(tool.success === false ? "失败" : "成功")}${tool.latency_ms ? ` / ${formatNumber(tool.latency_ms)}ms` : ""}</span>
+          ${tool.arguments_summary ? `<p>参数：${escapeHtml(formatJsonPreview(tool.arguments_summary, 280))}</p>` : ""}
+          ${tool.result_summary ? `<p>结果：${escapeHtml(formatJsonPreview(tool.result_summary, 280))}</p>` : ""}
+        </div>
+      `,
+    )
+    .join("")}
+    </div>
+  `;
+}
+
+function renderActivityArtifactCards(artifacts) {
+  return `
+    <div class="activity-artifact-list">
+      ${artifacts
+    .slice(0, 4)
+    .map(
+      (artifact) => `
+        <article class="activity-artifact-card">
+          <div class="artifact-card-header">
+            <strong>${escapeHtml(artifact.title || artifact.language || "代码")}</strong>
+            <span>${escapeHtml((artifact.language || "").toUpperCase())}</span>
+          </div>
+          ${artifact.purpose ? `<p>${escapeHtml(artifact.purpose)}</p>` : ""}
+          <pre><code>${escapeHtml(artifact.code || "")}</code></pre>
+          ${artifact.output_summary ? `<small>${escapeHtml(artifact.output_summary)}</small>` : ""}
+        </article>
+      `,
+    )
+    .join("")}
+    </div>
+  `;
+}
+
+function normalizeActivityTrace(trace) {
+  return Array.isArray(trace) ? trace.map(normalizeActivityNode).filter((node) => node.title || node.summary || node.artifacts?.length) : [];
+}
+
+function normalizeActivityNode(node = {}) {
+  const safeNode = node && typeof node === "object" ? node : {};
+  return {
+    id: String(safeNode.id || safeNode.node_id || safeNode.role || `activity_${Date.now()}`).slice(0, 96),
+    kind: String(safeNode.kind || "agent").slice(0, 40),
+    role: String(safeNode.role || "").slice(0, 80),
+    status: ["active", "completed", "failed", "pending"].includes(String(safeNode.status)) ? String(safeNode.status) : "completed",
+    title: cleanActivityText(safeNode.title || safeNode.role || safeNode.kind || "活动"),
+    summary: cleanActivityText(safeNode.summary || ""),
+    inputs_summary: safeNode.inputs_summary && typeof safeNode.inputs_summary === "object" ? redactActivityObject(safeNode.inputs_summary) : {},
+    actions: normalizeStringList(safeNode.actions),
+    outputs_summary: safeNode.outputs_summary && typeof safeNode.outputs_summary === "object" ? safeNode.outputs_summary : {},
+    tool_calls: Array.isArray(safeNode.tool_calls) ? safeNode.tool_calls.map(normalizeActivityToolCall).filter(Boolean) : [],
+    artifacts: normalizeActivityArtifacts(safeNode.artifacts),
+    safety_note: cleanActivityText(safeNode.safety_note || ""),
+  };
+}
+
+function normalizeActivityToolCall(tool) {
+  if (!tool || typeof tool !== "object") return null;
+  return {
+    tool_name: cleanActivityText(tool.tool_name || ""),
+    requested_by: cleanActivityText(tool.requested_by || ""),
+    success: tool.success !== false,
+    latency_ms: Number(tool.latency_ms || 0),
+    arguments_summary: redactActivityObject(tool.arguments_summary || {}),
+    result_summary: redactActivityObject(tool.result_summary || {}),
+  };
+}
+
+function normalizeActivityArtifacts(artifacts) {
+  return Array.isArray(artifacts)
+    ? artifacts
+        .filter((artifact) => artifact && artifact.code)
+        .map((artifact) => ({
+          artifact_id: cleanActivityText(artifact.artifact_id || ""),
+          language: cleanActivityText(artifact.language || ""),
+          title: cleanActivityText(artifact.title || artifact.language || "代码"),
+          purpose: cleanActivityText(artifact.purpose || ""),
+          code: cleanActivityCode(artifact.code || ""),
+          output_summary: cleanActivityText(artifact.output_summary || ""),
+        }))
+    : [];
+}
+
+function normalizeStringList(values) {
+  return (Array.isArray(values) ? values : values ? [values] : [])
+    .map((value) => cleanActivityText(value))
+    .filter(Boolean);
+}
+
+function activityRoleLabel(role) {
+  return monitorRoleName(role) || "活动";
+}
+
+function activityStatusLabel(status) {
+  if (status === "active") return "进行中";
+  if (status === "failed") return "失败";
+  if (status === "pending") return "等待";
+  return "完成";
+}
+
+function redactActivityObject(value) {
+  try {
+    return JSON.parse(JSON.stringify(value || {}, (key, item) => (isBlockedActivityKey(key) ? undefined : typeof item === "string" ? cleanActivityText(item) : item)));
+  } catch {
+    return {};
+  }
+}
+
+function isBlockedActivityKey(key) {
+  const lowered = String(key || "").toLowerCase();
+  return ["chain_of_thought", "raw_prompt", "raw_reasoning", "reasoning_tokens", "api_key", "task_id", "standard_answer", "hidden_answer", "public_proxy", "scorer"].some((token) =>
+    lowered.includes(token),
+  );
+}
+
+function cleanActivityCode(code) {
+  let value = String(code || "");
+  ["chain_of_thought", "raw_prompt", "raw_reasoning", "reasoning_tokens", "api_key", "task_id", "standard_answer", "hidden_answer", "public_proxy", "scorer"].forEach((token) => {
+    value = value.replace(new RegExp(token, "gi"), "[redacted]");
+  });
+  return value.slice(0, 4000);
 }
 
 function cleanActivityText(text) {
@@ -1230,14 +4141,30 @@ function cleanActivityText(text) {
   return shortLabel(value.replace(/\s+/g, " "), 96);
 }
 
+function formatJsonPreview(value, limit = 600) {
+  let text = "";
+  try {
+    text = JSON.stringify(redactActivityObject(value), null, 2);
+  } catch {
+    text = String(value || "");
+  }
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
 function monitorRoleName(role) {
   const key = String(role || "").trim();
   const names = {
-    planner: "计划节点",
+    planner: "计划节点 (Planner)",
+    data_engineer: "数据理解节点",
+    pandas_executor: "Pandas 计算节点",
+    sql_executor: "SQL 复算节点",
     executor: "执行节点",
     verifier: "校验节点",
     correction: "修正节点",
+    insight: "洞察节点",
+    visualization: "图表节点",
     response_builder: "回答节点",
+    code_artifact: "复现代码",
     single_agent: "单 Agent",
   };
   return names[key] || key || "后端节点";
@@ -1271,7 +4198,12 @@ function renderProcess(processSource, result = {}) {
 }
 
 function renderProcessItems(steps, summary, artifacts = [], options = {}) {
-  el.processSummary.textContent = summary;
+  const liveSummary = options.liveSummary ? oneLineProcessSummary(summary) : "";
+  if (el.processSummary) {
+    el.processSummary.textContent = liveSummary;
+    el.processSummary.setAttribute("aria-hidden", liveSummary ? "false" : "true");
+  }
+  el.processDetails?.classList.toggle("has-live-summary", Boolean(liveSummary));
   if (options.collapse && el.processDetails) el.processDetails.open = false;
   const hasActiveStep = steps.some((step) => step.status === "active");
   const hasFailedStep = steps.some((step) => step.status === "failed");
@@ -1281,7 +4213,7 @@ function renderProcessItems(steps, summary, artifacts = [], options = {}) {
     el.processTimeline.innerHTML = `<li class="muted-cell">提问后显示分析过程。</li>`;
     return;
   }
-  el.processTimeline.innerHTML = steps
+  const processHtml = steps
     .map(
       (step) => `
         <li class="${escapeHtml(step.status || "completed")}">
@@ -1293,7 +4225,15 @@ function renderProcessItems(steps, summary, artifacts = [], options = {}) {
         </li>
       `,
     )
-    .join("") + renderArtifactCards(artifacts);
+    .join("");
+  el.processTimeline.innerHTML = processHtml + renderArtifactCards(artifacts);
+}
+
+function oneLineProcessSummary(summary) {
+  const text = String(summary || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  const firstSentence = text.match(/^(.{1,132}?[。！？!?])(?:\s|$)/)?.[1] || text.split(/[；;]/)[0] || text;
+  return shortLabel(firstSentence, 132);
 }
 
 function normalizeProcessList(value, limit) {
@@ -1442,7 +4382,7 @@ function friendlyJoinText(joinPlan) {
   return `已判断需要把 ${left} 和 ${right} 按 ${key} 关联后再回答。`;
 }
 
-function renderUserFacingError(title, message) {
+function renderUserFacingError(title, message, options = {}) {
   stopProgress();
   el.resultMessage.classList.remove("thinking-only");
   el.answer.textContent = title;
@@ -1453,7 +4393,11 @@ function renderUserFacingError(title, message) {
   el.chartPanel.textContent = "";
   renderInsight(null);
   renderExecutionArtifacts([]);
+  renderAnswerSources(null);
   renderProcessItems([{ title, summary: message || "请检查上传文件或稍后重试。", status: "failed" }], "处理没有完成。");
+  setMessageTime(el.resultMessage, options.createdAt || new Date().toISOString());
+  setThinkingElapsed(el.resultMessage, options.thinkingElapsedMs);
+  updateCopyReplyButton(el.resultMessage, title);
   revealMessage(el.resultMessage);
 }
 
@@ -1474,17 +4418,29 @@ function pushHistory(result) {
     unread: true,
     updatedAt: conversation.updated_at || new Date().toISOString(),
     messageCount: conversation.message_count || 0,
-    projectId: conversation.project_id || state.projectId || "",
+    projectId: conversation.project_id || currentMessageProjectId(),
+    pinned: Boolean(conversation.pinned),
+    pinnedAt: conversation.pinned_at || "",
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== conversationId && (!state.activeHistoryRunId || entry.runId !== state.activeHistoryRunId));
   state.activeHistoryRunId = "";
+  if (item.projectId) {
+    renderHistory();
+    return;
+  }
   state.runHistory.unshift(item);
-  state.runHistory = state.runHistory.slice(0, 8);
+  state.runHistory = sortHistoryItems(state.runHistory).slice(0, 8);
   renderHistory();
 }
 
-function markHistoryRunning(question, fallbackRunId) {
+function markHistoryRunning(question, fallbackRunId, projectId = currentMessageProjectId()) {
   const runId = state.conversationId || fallbackRunId || `pending_${Date.now()}`;
+  if (projectId) {
+    state.activeHistoryRunId = "";
+    state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
+    renderHistory();
+    return;
+  }
   state.activeHistoryRunId = runId;
   const existing = state.runHistory.find((entry) => entry.runId === runId);
   const item = {
@@ -1497,16 +4453,24 @@ function markHistoryRunning(question, fallbackRunId) {
     unread: true,
     updatedAt: new Date().toISOString(),
     messageCount: existing?.messageCount || 0,
-    projectId: state.projectId || "",
+    projectId: currentMessageProjectId(),
+    pinned: Boolean(existing?.pinned),
+    pinnedAt: existing?.pinnedAt || "",
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
   state.runHistory.unshift(item);
-  state.runHistory = state.runHistory.slice(0, 8);
+  state.runHistory = sortHistoryItems(state.runHistory).slice(0, 8);
   renderHistory();
 }
 
-function markHistoryFailed(question, message) {
+function markHistoryFailed(question, message, projectId = currentMessageProjectId()) {
   const runId = state.activeHistoryRunId || state.conversationId || `failed_${Date.now()}`;
+  if (projectId) {
+    state.activeHistoryRunId = "";
+    state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
+    renderHistory();
+    return;
+  }
   const existing = state.runHistory.find((entry) => entry.runId === runId);
   const item = {
     runId,
@@ -1518,19 +4482,33 @@ function markHistoryFailed(question, message) {
     unread: true,
     updatedAt: new Date().toISOString(),
     messageCount: existing?.messageCount || 0,
-    projectId: state.projectId || "",
+    projectId: currentMessageProjectId(),
+    pinned: Boolean(existing?.pinned),
+    pinnedAt: existing?.pinnedAt || "",
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
   state.runHistory.unshift(item);
-  state.runHistory = state.runHistory.slice(0, 8);
+  state.runHistory = sortHistoryItems(state.runHistory).slice(0, 8);
   state.activeHistoryRunId = "";
   renderHistory();
+}
+
+function sortHistoryItems(items) {
+  return [...items].sort((left, right) => {
+    if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+      return left.pinned ? -1 : 1;
+    }
+    const leftTime = String(left.pinnedAt || left.updatedAt || "");
+    const rightTime = String(right.pinnedAt || right.updatedAt || "");
+    return rightTime.localeCompare(leftTime);
+  });
 }
 
 function renderHistory() {
   el.historyCount.textContent = String(state.runHistory.length);
   if (!state.runHistory.length) {
     el.runHistory.innerHTML = `<li class="history-empty">上传数据并提问后，这里会显示最近的分析记录。</li>`;
+    if (isChatSearchOpen()) renderChatSearchResults();
     return;
   }
   el.runHistory.innerHTML = state.runHistory
@@ -1539,33 +4517,27 @@ function renderHistory() {
         const title = item.title || item.question || "未命名对话";
         const stateClass = item.mode === "running" ? "running" : item.success === false ? "failed" : "complete";
         return `
-        <li class="history-item ${escapeHtml(stateClass)}${item.runId === state.conversationId ? " active" : ""}" data-run-id="${escapeHtml(item.runId || "")}">
+        <li class="history-item ${escapeHtml(stateClass)}${item.runId === state.conversationId ? " active" : ""}${item.pinned ? " pinned" : ""}" data-run-id="${escapeHtml(item.runId || "")}">
           <div class="history-item-text">
-            <strong class="history-title" title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
+            <div class="history-title-row">
+              ${item.pinned ? `<span class="pin-indicator" title="已置顶">${pinIcon()}</span>` : ""}
+              <strong class="history-title" title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
+            </div>
             <input class="history-rename-input hidden" type="text" maxlength="80" value="${escapeHtml(title)}" aria-label="重命名历史对话" />
           </div>
-          <button class="history-rename-button" type="button" title="重命名" aria-label="重命名历史对话">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 20 8-8-4-4-8 8-2 6 6-2Z"></path><path d="m14 6 4 4"></path></svg>
-          </button>
-          <button class="history-project-button" type="button" title="放入 Project" aria-label="放入 Project">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path><path d="M12 12v5M9.5 14.5h5"></path></svg>
-          </button>
-          <button class="history-delete-button" type="button" title="删除" aria-label="删除历史对话">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 15h10l1-15"></path><path d="M10 11v6M14 11v6"></path></svg>
+          <button class="history-menu-button" type="button" title="对话选项" aria-label="对话选项">
+            ${ellipsisIcon()}
           </button>
         </li>
       `;
       },
     )
     .join("");
-  el.runHistory.querySelectorAll(".history-rename-button").forEach((button) => {
-    button.addEventListener("click", () => startHistoryRename(button.closest(".history-item")?.dataset.runId || ""));
-  });
-  el.runHistory.querySelectorAll(".history-project-button").forEach((button) => {
-    button.addEventListener("click", () => assignHistoryToProject(button.closest(".history-item")?.dataset.runId || ""));
-  });
-  el.runHistory.querySelectorAll(".history-delete-button").forEach((button) => {
-    button.addEventListener("click", () => deleteHistoryConversation(button.closest(".history-item")?.dataset.runId || ""));
+  el.runHistory.querySelectorAll(".history-menu-button").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openHistoryMenu(button, button.closest(".history-item")?.dataset.runId || "");
+    });
   });
   el.runHistory.querySelectorAll(".history-item").forEach((item) => {
     item.addEventListener("click", (event) => {
@@ -1584,6 +4556,7 @@ function renderHistory() {
       commitHistoryRename(input.closest(".history-item")?.dataset.runId || "", input.value);
     });
   });
+  if (isChatSearchOpen()) renderChatSearchResults();
 }
 
 function acknowledgeHistoryItem(runId) {
@@ -1649,15 +4622,128 @@ async function commitHistoryRename(runId, rawTitle) {
   }
 }
 
-async function assignHistoryToProject(runId) {
+async function renameConversationFromPrompt(runId) {
   if (!runId || !runId.startsWith("conv_")) return;
-  const targetProjectId = await chooseProjectForHistory();
-  if (!targetProjectId) return;
+  const item = state.runHistory.find((entry) => entry.runId === runId)
+    || state.projectConversations.find((entry) => entry.runId === runId);
+  const rawTitle = await openTextDialog({
+    title: "重命名对话",
+    label: "对话名称",
+    value: item?.title || item?.question || "未命名对话",
+    confirmText: "保存",
+  });
+  const title = String(rawTitle || "").trim();
+  if (!title) return;
   try {
     const response = await fetch(`/api/data-agent/conversations/${encodeURIComponent(runId)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: targetProjectId }),
+      body: JSON.stringify({ title }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    const conversation = payload.conversation || {};
+    updateConversationTitleState(runId, conversation.title || title, conversation.updated_at || "");
+    await loadConversations();
+    if (state.projectId) {
+      await loadProjectWorkspace(state.projectId);
+    }
+    setApiStatus("ready", "对话已重命名");
+  } catch (error) {
+    setApiStatus("error", `重命名失败：${String(error.message || error)}`);
+  }
+}
+
+function updateConversationTitleState(runId, title, updatedAt) {
+  const apply = (item) => {
+    item.title = title || item.title;
+    item.updatedAt = updatedAt || item.updatedAt;
+    return item;
+  };
+  state.runHistory = state.runHistory.map((item) => (item.runId === runId ? apply(item) : item));
+  state.projectConversations = state.projectConversations.map((item) => (item.runId === runId ? apply(item) : item));
+  renderHistory();
+  renderProjectHome();
+}
+
+async function toggleHistoryPinned(runId, pinned) {
+  if (!runId || !runId.startsWith("conv_")) return;
+  const existing = state.runHistory.find((entry) => entry.runId === runId);
+  if (existing) {
+    existing.pinned = Boolean(pinned);
+    existing.pinnedAt = pinned ? new Date().toISOString() : "";
+    state.runHistory = sortHistoryItems(state.runHistory);
+    renderHistory();
+  }
+  try {
+    const response = await fetch(`/api/data-agent/conversations/${encodeURIComponent(runId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinned: Boolean(pinned) }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    const conversation = payload.conversation || {};
+    updateConversationPinState(runId, Boolean(conversation.pinned), conversation.pinned_at || "");
+    await loadConversations();
+    if (state.projectId) {
+      await loadProjectWorkspace(state.projectId);
+    }
+    setApiStatus("ready", conversation.pinned ? "对话已置顶" : "对话已取消置顶");
+  } catch (error) {
+    setApiStatus("error", `置顶失败：${String(error.message || error)}`);
+    await loadConversations();
+    if (state.projectId) {
+      await loadProjectWorkspace(state.projectId);
+    }
+  }
+}
+
+function updateConversationPinState(runId, pinned, pinnedAt) {
+  const apply = (item) => {
+    item.pinned = Boolean(pinned);
+    item.pinnedAt = pinnedAt || "";
+    return item;
+  };
+  state.runHistory = sortHistoryItems(state.runHistory.map((item) => (item.runId === runId ? apply(item) : item)));
+  state.projectConversations = sortHistoryItems(state.projectConversations.map((item) => (item.runId === runId ? apply(item) : item)));
+  renderHistory();
+  renderProjectHome();
+}
+
+async function createProjectForHistory(runId) {
+  if (!runId || !runId.startsWith("conv_")) return;
+  try {
+    const response = await fetch("/api/data-agent/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "新项目" }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    const projectId = payload.project?.project_id || "";
+    await loadProjects();
+    await assignHistoryToProject(runId, projectId);
+  } catch (error) {
+    setApiStatus("error", `Project 创建失败：${String(error.message || error)}`);
+  }
+}
+
+async function assignHistoryToProject(runId, targetProjectId) {
+  if (!runId || !runId.startsWith("conv_")) return;
+  const safeProjectId = String(targetProjectId || "").trim();
+  if (!safeProjectId) return;
+  try {
+    const response = await fetch(`/api/data-agent/conversations/${encodeURIComponent(runId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: safeProjectId }),
     });
     const payload = await response.json();
     if (!response.ok || !payload.success) {
@@ -1666,11 +4752,17 @@ async function assignHistoryToProject(runId) {
     const conversation = payload.conversation || {};
     const item = state.runHistory.find((entry) => entry.runId === runId);
     if (item) {
-      item.projectId = conversation.project_id || targetProjectId;
+      item.projectId = conversation.project_id || safeProjectId;
       item.updatedAt = conversation.updated_at || item.updatedAt;
+      item.pinned = Boolean(conversation.pinned);
+      item.pinnedAt = conversation.pinned_at || item.pinnedAt || "";
     }
-    state.projectId = conversation.project_id || targetProjectId;
-    await loadProjects();
+    const shouldRefreshProjectHome = state.projectId === (conversation.project_id || safeProjectId);
+    if (shouldRefreshProjectHome) {
+      await loadProjectWorkspace(conversation.project_id || safeProjectId);
+    } else {
+      await loadProjects();
+    }
     await loadConversations();
     setApiStatus("ready", "对话已放入 Project");
   } catch (error) {
@@ -1678,44 +4770,17 @@ async function assignHistoryToProject(runId) {
   }
 }
 
-async function chooseProjectForHistory() {
-  if (!state.projects.length) {
-    await loadProjects();
-  }
-  if (state.projectId && state.projects.some((project) => project.project_id === state.projectId)) {
-    return state.projectId;
-  }
-  if (!state.projects.length) {
-    setApiStatus("error", "请先新建 Project");
-    return "";
-  }
-  if (state.projects.length === 1) {
-    return state.projects[0].project_id || "";
-  }
-  const projectList = state.projects
-    .map((project, index) => `${index + 1}. ${project.name || "未命名 Project"} (${project.project_id})`)
-    .join("\n");
-  const rawTarget = window.prompt(`输入 Project 名称或 ID：\n${projectList}`, state.projects[0]?.name || "");
-  const target = String(rawTarget || "").trim();
-  if (!target) return "";
-  const matched = state.projects.find(
-    (project) => project.project_id === target || String(project.name || "").trim() === target,
-  );
-  if (!matched) {
-    setApiStatus("error", "没有找到这个 Project");
-    return "";
-  }
-  return matched.project_id || "";
-}
-
 async function deleteHistoryConversation(runId) {
   if (!runId) return;
   const item = state.runHistory.find((entry) => entry.runId === runId);
-  const title = item?.title || item?.question || "未命名对话";
+  const projectItem = state.projectConversations.find((entry) => entry.runId === runId);
+  const title = item?.title || item?.question || projectItem?.title || "未命名对话";
   if (!window.confirm(`删除对话「${title}」？`)) return;
   if (!runId.startsWith("conv_")) {
     state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
+    state.projectConversations = state.projectConversations.filter((entry) => entry.runId !== runId);
     renderHistory();
+    renderProjectHome();
     return;
   }
   try {
@@ -1730,7 +4795,11 @@ async function deleteHistoryConversation(runId) {
     if (state.conversationId === runId) {
       resetConversation();
     }
+    state.projectConversations = state.projectConversations.filter((entry) => entry.runId !== runId);
     await loadProjects();
+    if (state.projectId) {
+      await loadProjectWorkspace(state.projectId);
+    }
     await loadConversations();
     setApiStatus("ready", "对话已删除");
   } catch (error) {
@@ -1741,32 +4810,35 @@ async function deleteHistoryConversation(runId) {
 async function loadConversations() {
   try {
     const query = new URLSearchParams({ limit: "30" });
-    if (state.projectId) query.set("project_id", state.projectId);
     const response = await fetch(`/api/data-agent/conversations?${query.toString()}`);
     const payload = await response.json();
     if (!response.ok || !payload.success) {
       throw new Error(errorText(payload) || `HTTP ${response.status}`);
     }
     const existingById = new Map(state.runHistory.map((item) => [item.runId, item]));
-    const loadedHistory = (payload.conversations || []).map((item) => {
-      const existing = existingById.get(item.conversation_id);
-      return {
-        runId: item.conversation_id,
-        success: true,
-        answer: item.last_message || "",
-        question: item.last_message || "",
-        title: item.title || "未命名对话",
-        mode: item.last_answer_type === "chat" ? "chat" : "analysis",
-        unread: existing?.unread === true,
-        updatedAt: item.updated_at,
-        messageCount: item.message_count || 0,
-        datasetId: item.dataset_id || "",
-        projectId: item.project_id || "",
-      };
-    });
+    const loadedHistory = (payload.conversations || [])
+      .filter((item) => !item.project_id)
+      .map((item) => {
+        const existing = existingById.get(item.conversation_id);
+        return {
+          runId: item.conversation_id,
+          success: true,
+          answer: item.last_message || "",
+          question: item.last_message || "",
+          title: item.title || "未命名对话",
+          mode: item.last_answer_type === "chat" ? "chat" : "analysis",
+          unread: existing?.unread === true,
+          updatedAt: item.updated_at,
+          pinned: Boolean(item.pinned),
+          pinnedAt: item.pinned_at || "",
+          messageCount: item.message_count || 0,
+          datasetId: item.dataset_id || "",
+          projectId: "",
+        };
+      });
     const loadedIds = new Set(loadedHistory.map((item) => item.runId));
-    const localUnreadHistory = state.runHistory.filter((item) => item.unread === true && !loadedIds.has(item.runId));
-    state.runHistory = [...localUnreadHistory, ...loadedHistory].slice(0, 30);
+    const localUnreadHistory = state.runHistory.filter((item) => item.unread === true && !item.projectId && !loadedIds.has(item.runId));
+    state.runHistory = sortHistoryItems([...localUnreadHistory, ...loadedHistory]).slice(0, 30);
     renderHistory();
   } catch {
     renderHistory();
@@ -1790,7 +4862,10 @@ async function loadConversation(conversationId) {
 
 async function restoreConversation(conversation) {
   state.conversationId = conversation.conversation_id || "";
-  state.projectId = conversation.project_id || state.projectId || "";
+  state.projectId = conversation.project_id || "";
+  state.projectDetails = null;
+  state.projectConversations = [];
+  state.projectDraftActive = false;
   state.datasetId = conversation.dataset_id || "";
   state.profile = null;
   state.selectedTable = "";
@@ -1807,17 +4882,21 @@ async function restoreConversation(conversation) {
   [...el.chatMessages.querySelectorAll(".user-message, .assistant-result-message")].forEach((message) => message.remove());
   bindResultMessage(el.resultTemplate);
   el.resultMessage.classList.add("hidden");
+  el.projectHome?.classList.add("hidden");
   const messages = conversation.messages || [];
+  if (state.projectId) {
+    await loadProjectWorkspace(state.projectId);
+  }
   renderProjects();
-  el.welcomeMessage?.classList.toggle("hidden", Boolean(messages.length));
+  el.welcomeMessage?.classList.toggle("hidden", Boolean(messages.length) || Boolean(state.projectId));
   for (const message of messages) {
     if (message.role === "user") {
-      appendUserMessage(message.content || "");
+      appendUserMessage(message.content || "", { createdAt: message.created_at });
     } else if (message.payload) {
       const assistantMessage = createAssistantResultMessage();
       bindResultMessage(assistantMessage);
       el.chatMessages.append(el.resultMessage);
-      renderResult(message.payload, { updateHistory: false });
+      renderResult(message.payload, { updateHistory: false, createdAt: message.created_at });
     }
   }
   if (state.datasetId) {
@@ -1825,9 +4904,10 @@ async function restoreConversation(conversation) {
   } else {
     renderProfile();
     el.datasetChip.textContent = "未上传数据";
-    el.datasetStatus.textContent = "等待上传数据集";
+    clearDatasetHeaderStatus();
   }
   renderHistory();
+  renderProjectHome();
   scrollToLatest();
 }
 
@@ -1845,13 +4925,14 @@ async function restoreDatasetProfile(datasetId) {
     state.selectedTable = profile.tables?.[0]?.table_name || "";
     renderProfile();
     applyRestoredFileRecords(profile);
+    refreshRenderedAnswerSources();
     setApiStatus("ready", "数据集已就绪");
   } catch {
     state.profile = null;
     clearRestoredFileRecords();
     renderProfile();
     el.datasetChip.textContent = state.datasetId ? "数据记录已关联" : "未上传数据";
-    el.datasetStatus.textContent = state.datasetId ? `${state.datasetId} / 需重新上传后继续分析` : "等待上传数据集";
+    clearDatasetHeaderStatus();
   }
 }
 
@@ -1866,18 +4947,30 @@ function clearResult() {
   el.chartPanel.className = "chart-panel empty-state";
   el.chartPanel.classList.remove("hidden");
   el.chartPanel.textContent = "分析完成后会生成适合的图表或重点结果。";
+  setMessageTime(el.resultMessage, "");
+  setThinkingElapsed(el.resultMessage, null);
+  updateCopyReplyButton(el.resultMessage, "");
+  renderAnswerSources(null);
+  if (el.resultMessage) el.resultMessage.__vdsResult = null;
   renderInsight(null);
   renderProcess([]);
 }
 
-function appendUserMessage(question) {
+function appendUserMessage(question, options = {}) {
+  if (state.projectId) {
+    state.projectDraftActive = true;
+    updateShellMode(false);
+  }
+  const createdAt = options.createdAt || new Date().toISOString();
   el.welcomeMessage?.classList.add("hidden");
+  el.projectHome?.classList.add("hidden");
   const message = document.createElement("article");
   message.className = "message user-message";
   message.innerHTML = `
     <div class="avatar" aria-hidden="true">你</div>
     <div class="message-content">
       <p>${escapeHtml(question)}</p>
+      <time class="message-meta" datetime="${escapeHtml(createdAt)}">${escapeHtml(formatMessageTime(createdAt))}</time>
     </div>
   `;
   el.chatMessages.append(message);
@@ -1925,12 +5018,12 @@ function resetConversation() {
   if (el.ruleModeToggle) el.ruleModeToggle.checked = false;
   if (el.ruleFileInput) el.ruleFileInput.value = "";
   if (el.benchmarkRuleInput) el.benchmarkRuleInput.value = "";
-  if (el.ruleFileStatus) el.ruleFileStatus.textContent = "未上传用户分析规则";
+  setRuleFileStatus(RULE_FILE_EMPTY_HINT);
   if (el.benchmarkStatus) el.benchmarkStatus.textContent = "内部 Benchmark 入口";
   el.ruleUploadPanel?.classList.add("hidden");
   [...el.chatMessages.querySelectorAll(".user-message, .assistant-result-message")].forEach((message) => message.remove());
   bindResultMessage(el.resultTemplate);
-  el.welcomeMessage?.classList.remove("hidden");
+  el.welcomeMessage?.classList.toggle("hidden", Boolean(state.projectId));
   el.profileMessage.classList.add("hidden");
   el.resultMessage.classList.add("hidden");
   updateFileSummary();
@@ -1938,9 +5031,10 @@ function resetConversation() {
   clearResult();
   setApiStatus("idle", "准备就绪");
   el.datasetChip.textContent = "未上传数据";
-  el.datasetStatus.textContent = "等待上传数据集";
+  clearDatasetHeaderStatus();
   setQuestionText("");
   updateRunButton();
+  renderProjectHome();
   scrollToLatest();
 }
 
@@ -1965,10 +5059,19 @@ function bindResultMessage(message) {
   el.insightSummary = message.querySelector(".insight-summary");
   el.insightList = message.querySelector(".compact-list");
   el.processPanel = message.querySelector(".process-panel");
-  el.processSummary = message.querySelector(".process-line p");
+  el.processDetails = message.querySelector(".process-details");
+  el.processSummary = message.querySelector(".process-summary-text, #process-summary");
+  el.thinkingElapsed = message.querySelector(".thinking-elapsed");
   el.processTimeline = message.querySelector(".process-timeline");
   el.artifactPanel = message.querySelector(".artifact-panel");
   el.artifactList = message.querySelector(".artifact-list");
+  el.sourcePanel = message.querySelector(".answer-source-panel");
+  el.sourceList = message.querySelector(".answer-source-list");
+  el.messageMeta = message.querySelector(".message-meta");
+  el.copyReplyButton = message.querySelector(".copy-reply-button");
+  if (el.copyReplyButton) {
+    el.copyReplyButton.onclick = () => copyReplyFromMessage(message);
+  }
 }
 
 function startMonitorRun(question) {

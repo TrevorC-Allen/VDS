@@ -1,0 +1,56 @@
+- generic [ref=e2]:
+  - complementary "历史 Chat" [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: V
+      - generic [ref=e6]:
+        - strong [ref=e7]: Virtual Data Scientist
+        - generic [ref=e8]: Data analysis chat
+    - button "新分析" [ref=e9] [cursor=pointer]:
+      - img [ref=e10]
+      - text: 新分析
+    - region "历史 Chat" [ref=e12]:
+      - generic [ref=e13]:
+        - heading "历史 Chat" [level=2] [ref=e14]
+        - generic [ref=e15]: "1"
+      - list [ref=e16]:
+        - listitem [ref=e52]:
+          - generic [ref=e53]:
+            - strong [ref=e54]: 已回复
+            - generic "同步保留历史测试" [ref=e55]
+          - button "重命名历史对话" [ref=e56] [cursor=pointer]:
+            - img [ref=e57]
+  - main [ref=e18]:
+    - generic [ref=e19]:
+      - generic [ref=e20]:
+        - heading "VDS" [level=1] [ref=e21]
+        - paragraph [ref=e22]: "DABstep context package: payments.csv, merchant_category_codes.csv, acquirer_countries.csv, fees.json, merchant_data.json, manual.md / 数据已就绪"
+      - generic [ref=e23]:
+        - link "监看页" [ref=e24] [cursor=pointer]:
+          - /url: /workbench-monitor
+          - img [ref=e25]
+          - generic [ref=e28]: 监看页
+        - generic [ref=e29]: 处理中
+        - generic [ref=e30]: 数据已上传
+    - generic [ref=e31]:
+      - article [ref=e60]:
+        - paragraph [ref=e62]: What are the possible values for the field account_type?
+      - article [ref=e63]:
+        - generic [ref=e64]: V
+        - region "正在做什么" [ref=e66]:
+          - heading "正在做什么" [level=2] [ref=e67]
+          - paragraph [ref=e70]: 用户提到了“What are the possible values …”，我会先判断这是普通对话、数据概览，还是需要正式分析。
+          - group [ref=e71]:
+            - generic "查看处理过程" [ref=e72] [cursor=pointer]
+    - region "对话输入" [ref=e37]:
+      - generic [ref=e38]:
+        - textbox "向 VDS 提问，例如：哪个城市订单金额最高？" [active] [ref=e39]
+        - generic [ref=e40]:
+          - generic "文件上传" [ref=e41]:
+            - button "选择文件" [ref=e42]
+            - generic "选择文件" [ref=e43] [cursor=pointer]:
+              - img [ref=e44]
+            - generic [ref=e46]:
+              - strong [ref=e47]: 6 个文件已就绪
+              - generic [ref=e48]: 已准备好，直接提问即可
+          - button [disabled] [ref=e49]:
+            - img [ref=e50]

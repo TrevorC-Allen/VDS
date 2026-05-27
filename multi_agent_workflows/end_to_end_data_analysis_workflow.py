@@ -23,6 +23,7 @@ from data_agent_core.core.data_quality import build_data_quality_report, report_
 from data_agent_core.core.file_parser import load_dabstep_context
 from data_agent_core.core.schema_profiler import profile_tables
 from data_agent_core.llm.client import LLMClient
+from data_agent_core.output.activity_trace import activity_delta_from_role_event, build_activity_trace_v2
 from data_agent_core.output.process_narrative import build_process_view_v2
 from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
 from data_agent_core.tracing.live_monitor import emit_monitor_event
@@ -217,6 +218,27 @@ class DataAnalysisMultiAgentWorkflow:
                     "state_after": _monitor_state_summary(state),
                 },
             )
+            emit_monitor_event(
+                monitor_run_id,
+                "activity_trace_delta",
+                title=f"{role.value} 活动更新",
+                summary=_agent_result_summary(result),
+                role=role.value,
+                stage=role.value,
+                status="completed" if result.success else "failed",
+                payload={
+                    "node": activity_delta_from_role_event(
+                        role=role.value,
+                        status="completed" if result.success else "failed",
+                        summary=_agent_result_summary(result),
+                        payload={
+                            "result": _monitor_result_summary(result),
+                            "new_tool_calls": _compact_tool_calls(new_tool_calls),
+                            "state_after": _monitor_state_summary(state),
+                        },
+                    )
+                },
+            )
             return result
 
         planner_result = run_role(AgentRole.PLANNER, lambda task: self.runtime.run_planner(task, state, guidelines=guidelines))
@@ -241,6 +263,23 @@ class DataAnalysisMultiAgentWorkflow:
                 stage=AgentRole.CORRECTION.value,
                 status="active",
                 payload={"corrected_logic_form": _compact_logic_form(corrected_logic_form), "state_after_correction": _monitor_state_summary(state)},
+            )
+            emit_monitor_event(
+                monitor_run_id,
+                "activity_trace_delta",
+                title="correction 活动更新",
+                summary="Correction Agent 产出了可执行修正，正在重跑执行节点。",
+                role=AgentRole.CORRECTION.value,
+                stage=AgentRole.CORRECTION.value,
+                status="active",
+                payload={
+                    "node": activity_delta_from_role_event(
+                        role=AgentRole.CORRECTION.value,
+                        status="active",
+                        summary="Correction Agent 产出了可执行修正，正在重跑执行节点。",
+                        payload={"state_after": _monitor_state_summary(state)},
+                    )
+                },
             )
             task_results.append(run_role(AgentRole.PANDAS_EXECUTOR, lambda task: self.runtime.run_pandas_executor(task, state)))
             task_results.append(run_role(AgentRole.SQL_EXECUTOR, lambda task: self.runtime.run_sql_executor(task, state, execution_mode=execution_mode)))
@@ -310,6 +349,7 @@ class DataAnalysisMultiAgentWorkflow:
         response.reasoning_trace_view = trace.reasoning_trace_view
         trace.process_view_v2 = build_process_view_v2(trace, response)
         response.process_view_v2 = trace.process_view_v2
+        response.activity_trace_v2 = build_activity_trace_v2(trace, response)
         state.final_response = response.to_dict()
         state.trace = trace.to_dict()
         emit_monitor_event(

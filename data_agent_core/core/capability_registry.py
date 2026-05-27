@@ -106,6 +106,10 @@ CHINESE_RETAIL_OPERATIONS = frozenset(
         "retail_target_lookup",
         "retail_target_entity_count",
         "retail_target_achievement_rate",
+        "retail_target_achievement_monthly",
+        "retail_target_actual_monthly_comparison",
+        "retail_distribution_monthly_mom",
+        "retail_distribution_topn_chart",
         "retail_route_store_count",
         "retail_route_history_category_top",
         "retail_display_item_top",
@@ -119,6 +123,8 @@ CHINESE_RETAIL_OPERATIONS = frozenset(
         "retail_visit_success_count",
         "retail_visit_success_rate",
         "retail_daily_progress_rate",
+        "retail_daily_progress_worst_employee",
+        "retail_manager_daily_gap_contribution",
         "retail_route_history_sum",
         "retail_route_contract_product_quantity",
         "retail_fiscal_product_quantity",
@@ -134,6 +140,9 @@ CHINESE_RETAIL_OPERATIONS = frozenset(
         "retail_customer_feature_count",
         "retail_visit_record_count",
         "retail_history_field_values",
+        "retail_manager_target_monthly_trend",
+        "retail_top_employee_visit_success_rate_trend",
+        "retail_category_distribution_monthly_trend",
     }
 )
 

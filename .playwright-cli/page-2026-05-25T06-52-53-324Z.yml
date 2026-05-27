@@ -1,0 +1,216 @@
+- generic [ref=e2]:
+  - complementary "历史 Chat" [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: V
+      - generic [ref=e6]:
+        - strong [ref=e7]: Virtual Data Scientist
+        - generic [ref=e8]: Data analysis chat
+    - button "新分析" [ref=e9] [cursor=pointer]:
+      - img [ref=e10]
+      - text: 新分析
+    - region "历史 Chat" [ref=e12]:
+      - generic [ref=e13]:
+        - heading "历史 Chat" [level=2] [ref=e14]
+        - generic [ref=e15]: "8"
+      - list [ref=e16]:
+        - listitem [ref=e264]:
+          - strong [ref=e266]: 总结一下这个表
+          - button "重命名历史对话" [ref=e267] [cursor=pointer]:
+            - img [ref=e268]
+        - listitem [ref=e271]:
+          - strong [ref=e273]: Imagine the merchant Belles_cookbook_sto
+          - button "重命名历史对话" [ref=e274] [cursor=pointer]:
+            - img [ref=e275]
+        - listitem [ref=e278]:
+          - strong [ref=e280]: 蒯利保在2025年1月的历史分销金额中，水溶C100占比是多少？
+          - button "重命名历史对话" [ref=e281] [cursor=pointer]:
+            - img [ref=e282]
+        - listitem [ref=e285]:
+          - strong [ref=e287]: 蒯利保在2025年1月的历史分销金额中，水溶C100占比是多少？
+          - button "重命名历史对话" [ref=e288] [cursor=pointer]:
+            - img [ref=e289]
+        - listitem [ref=e292]:
+          - strong [ref=e294]: 总结一下这几张表，以及表单含义
+          - button "重命名历史对话" [ref=e295] [cursor=pointer]:
+            - img [ref=e296]
+        - listitem [ref=e299]:
+          - strong [ref=e301]: 蒯利保在2025年1月的历史分销金额中，水溶C100占比是多少？
+          - button "重命名历史对话" [ref=e302] [cursor=pointer]:
+            - img [ref=e303]
+        - listitem [ref=e306]:
+          - strong [ref=e308]: 你好，先确认你是谁
+          - button "重命名历史对话" [ref=e309] [cursor=pointer]:
+            - img [ref=e310]
+        - listitem [ref=e313]:
+          - strong [ref=e315]: 蒯利保在2025年1月的历史分销金额中，水溶C100占比是多少？
+          - button "重命名历史对话" [ref=e316] [cursor=pointer]:
+            - img [ref=e317]
+  - main [ref=e18]:
+    - generic [ref=e19]:
+      - generic [ref=e20]:
+        - heading "VDS" [level=1] [ref=e21]
+        - paragraph [ref=e22]: vds_phase12_subscription.csv / 数据已就绪
+      - generic [ref=e23]:
+        - link "监看页" [ref=e24] [cursor=pointer]:
+          - /url: /monitor
+          - img [ref=e25]
+          - generic [ref=e28]: 监看页
+        - generic [ref=e29]: 分析完成
+        - generic [ref=e30]: 数据已上传
+    - generic [ref=e31]:
+      - article [ref=e320]:
+        - paragraph [ref=e322]: 总结一下这个表
+      - article [ref=e323]:
+        - generic [ref=e324]: V
+        - generic [ref=e325]:
+          - region "分析结果" [ref=e326]:
+            - generic [ref=e328]:
+              - heading "分析结果" [level=2] [ref=e329]
+              - paragraph [ref=e330]: 已完成
+            - generic [ref=e331]: 这个表更像是一张业务销售 / 收入明细表，不是只需要返回一个数字的表单。 1. 表整体情况 - 行列规模：3 行、5 列 - 行数：3 条记录 - 列数：5 个字段 - 关键金额/数值字段：revenue - revenue合计：2,000 - 平均 / 中位数：666.67 / 700 - 最小 / 最大：300 / 1,000 - 时间字段：month 2. 主要字段含义 - city：地理或区域维度，可用于分布和对比。 - month：时间字段，可用于筛选或趋势分析；单独年份/小时不应作为金额指标。 - plan：分类或文本字段，可用于分组、筛选或明细识别。 - revenue：金额或收入类数值指标，适合汇总、平均、排名和趋势分析。 - churned：布尔状态字段，可统计 true/false 占比和风险状态。 3. 主要分布 - city：Shanghai 2，Beijing 1 - month：2026-01 2，2026-02 1 - plan：Pro 2，Basic 1 4. 风险 / 状态字段 - churned：true 1 条，占 33.33% 5. 这个表适合继续问 - 按 city 看 revenue 的 Top 排名。 - 按 city 拆分 revenue 的构成和集中度。 - 按 month 看 revenue 的趋势和波动。 - 分析 churned 的占比以及由哪些维度驱动。 - 检查缺失值、重复值、离群值和可疑记录。
+            - table [ref=e333]:
+              - rowgroup [ref=e334]:
+                - row "指标 数值" [ref=e335]:
+                  - columnheader "指标" [ref=e336]
+                  - columnheader "数值" [ref=e337]
+              - rowgroup [ref=e338]:
+                - row [ref=e339]:
+                  - cell [ref=e340]
+                  - cell [ref=e341]
+                - row [ref=e342]:
+                  - cell [ref=e343]
+                  - cell [ref=e344]
+                - row [ref=e345]:
+                  - cell [ref=e346]
+                  - cell [ref=e347]
+                - row [ref=e348]:
+                  - cell [ref=e349]
+                  - cell [ref=e350]
+                - row [ref=e351]:
+                  - cell [ref=e352]
+                  - cell [ref=e353]
+                - row [ref=e354]:
+                  - cell [ref=e355]
+                  - cell [ref=e356]
+                - row [ref=e357]:
+                  - cell [ref=e358]
+                  - cell [ref=e359]
+                - row [ref=e360]:
+                  - cell [ref=e361]
+                  - cell [ref=e362]
+                - row [ref=e363]:
+                  - cell [ref=e364]
+                  - cell [ref=e365]
+                - row [ref=e366]:
+                  - cell [ref=e367]
+                  - cell [ref=e368]
+                - row [ref=e369]:
+                  - cell [ref=e370]
+                  - cell [ref=e371]
+                - row [ref=e372]:
+                  - cell [ref=e373]
+                  - cell [ref=e374]
+                - row [ref=e375]:
+                  - cell [ref=e376]
+                  - cell [ref=e377]
+                - row [ref=e378]:
+                  - cell [ref=e379]
+                  - cell [ref=e380]
+                - row [ref=e381]:
+                  - cell [ref=e382]
+                  - cell [ref=e383]
+                - row [ref=e384]:
+                  - cell [ref=e385]
+                  - cell [ref=e386]
+                - row [ref=e387]:
+                  - cell [ref=e388]
+                  - cell [ref=e389]
+                - row [ref=e390]:
+                  - cell [ref=e391]
+                  - cell [ref=e392]
+                - row [ref=e393]:
+                  - cell [ref=e394]
+                  - cell [ref=e395]
+                - row [ref=e396]:
+                  - cell [ref=e397]
+                  - cell [ref=e398]
+                - row [ref=e399]:
+                  - cell [ref=e400]
+                  - cell [ref=e401]
+                - row [ref=e402]:
+                  - cell [ref=e403]
+                  - cell [ref=e404]
+          - region "简要结论" [ref=e405]:
+            - heading "简要结论" [level=2] [ref=e407]
+            - generic [ref=e408]: 这份数据已整理为 overview report：3 行、5 列。
+            - list [ref=e409]:
+              - listitem [ref=e410]:
+                - strong [ref=e411]: 建议
+                - text: 观察：city 中 Shanghai 记录最多（2 条）；依据：字段分布统计；建议：优先按该维度下钻金额、风险或转化。
+              - listitem [ref=e412]:
+                - strong [ref=e413]: 建议
+                - text: 观察：revenue 的最高记录为 Shanghai / 2026-01：1,000；依据：数值字段最大值；建议：复核是否为真实业务高点或需要拆分来源。
+              - listitem [ref=e414]:
+                - strong [ref=e415]: 建议
+                - text: 观察：churned 的 true 占比为 33.33%；依据：布尔字段计数；建议：结合商户、渠道或国家维度查看驱动因素。
+          - region "正在做什么" [ref=e416]:
+            - heading "正在做什么" [level=2] [ref=e417]
+            - paragraph [ref=e419]: 已按数据概览请求生成表画像和关键指标摘要。
+            - group [ref=e420]:
+              - generic "查看处理过程" [active] [ref=e421] [cursor=pointer]
+              - list [ref=e435]:
+                - listitem [ref=e436]:
+                  - generic [ref=e437]:
+                    - strong [ref=e438]: 识别概览请求
+                    - paragraph [ref=e439]: 这类问题先看表规模、关键字段和可追问方向，而不是直接返回原始明细。
+                    - generic "过程依据" [ref=e440]:
+                      - generic [ref=e441]: answer_type=overview
+                - listitem [ref=e442]:
+                  - generic [ref=e443]:
+                    - strong [ref=e444]: 读取主表画像
+                    - paragraph [ref=e445]: 已从上传数据中选择主表并统计行列规模。
+                    - generic "过程依据" [ref=e446]:
+                      - generic [ref=e447]: 主表：vds_phase12_subscription
+                      - generic [ref=e448]: 规模：3 行，5 列
+                      - generic [ref=e449]: 关键数值字段：revenue
+                      - generic [ref=e450]: 可下钻维度：city
+                - listitem [ref=e451]:
+                  - generic [ref=e452]:
+                    - strong [ref=e453]: 识别表类型和字段
+                    - paragraph [ref=e454]: 已推断字段含义、数值指标、分类维度和布尔状态字段。
+                    - generic "过程依据" [ref=e455]:
+                      - generic [ref=e456]: 字段含义和分布由后端生成。
+                - listitem [ref=e457]:
+                  - generic [ref=e458]:
+                    - strong [ref=e459]: 执行概览代码
+                    - paragraph [ref=e460]: 已生成安全 Python artifact，用于解释概览统计如何复现。
+                    - generic "过程依据" [ref=e461]:
+                      - generic [ref=e462]: 代码卡片只展示安全片段，不开放浏览器执行。
+                - listitem [ref=e463]:
+                  - generic [ref=e464]:
+                    - strong [ref=e465]: 生成概览报告
+                    - paragraph [ref=e466]: 已整理为结构化 overview report、字段含义、分布、洞察和可追问方向。
+                    - generic "过程依据" [ref=e467]:
+                      - generic [ref=e468]: 前端只渲染后端报告契约。
+          - region "代码" [ref=e422]:
+            - heading "代码" [level=2] [ref=e424]
+            - article [ref=e426]:
+              - generic [ref=e427]:
+                - strong [ref=e428]: 概览生成代码
+                - generic [ref=e429]: PYTHON
+              - paragraph [ref=e430]: 展示概览报告如何由后端从上传表生成，不包含隐藏推理。
+              - code [ref=e432]: "import pandas as pd df = tables[\"vds_phase12_subscription\"] shape = {'rows': 3, 'columns': 5} column_profile = df.dtypes.astype(str).to_dict() series = pd.to_numeric(df[\"revenue\"], errors=\"coerce\") metric_summary = { 'total': series.sum(), 'average': series.mean(), 'min': series.min(), 'max': series.max(), } top_groups = df.groupby(\"city\")[\"revenue\"].sum().sort_values(ascending=False).head(5)"
+              - generic [ref=e433]: 读取 3 行、5 列，并生成表规模、字段画像、分布和可追问方向。
+    - region "对话输入" [ref=e37]:
+      - generic [ref=e38]:
+        - textbox "向 VDS 提问，例如：哪个城市订单金额最高？" [ref=e39]
+        - generic [ref=e40]:
+          - generic "文件上传" [ref=e41]:
+            - button "选择文件" [ref=e42]
+            - generic "选择文件" [ref=e43] [cursor=pointer]:
+              - img [ref=e44]
+            - generic [ref=e47]:
+              - button "2 个文件已就绪" [ref=e434] [cursor=pointer]
+              - generic [ref=e49]: 点击查看文件
+          - button [disabled] [ref=e50]:
+            - img [ref=e51]

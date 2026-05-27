@@ -95,7 +95,7 @@ def create_conversation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def conversations_payload(limit: int = 50, project_id: str | None = None) -> dict[str, Any]:
+def conversations_payload(limit: int = 50, project_id: str | None = "") -> dict[str, Any]:
     """Non-FastAPI helper mirroring GET /api/data-agent/conversations."""
 
     return service.list_conversations(limit=limit, project_id=project_id)
@@ -114,6 +114,7 @@ def rename_conversation_payload(conversation_id: str, payload: dict[str, Any]) -
         conversation_id,
         title=str(payload.get("title")) if payload.get("title") is not None else None,
         project_id=str(payload.get("project_id")) if payload.get("project_id") is not None else None,
+        pinned=bool(payload.get("pinned")) if payload.get("pinned") is not None else None,
     )
 
 
@@ -212,6 +213,7 @@ try:
     class UpdateConversationPayload(BaseModel):
         title: str | None = None
         project_id: str | None = None
+        pinned: bool | None = None
 
     class CreateProjectPayload(BaseModel):
         name: str = ""
@@ -366,7 +368,7 @@ try:
         )
 
     @router.get("/conversations")
-    def conversations(limit: int = 50, project_id: str | None = None) -> dict[str, Any]:
+    def conversations(limit: int = 50, project_id: str | None = "") -> dict[str, Any]:
         return service.list_conversations(limit=limit, project_id=project_id)
 
     @router.get("/conversations/{conversation_id}")
@@ -379,6 +381,7 @@ try:
             conversation_id,
             title=payload.title,
             project_id=payload.project_id,
+            pinned=payload.pinned,
         )
 
     @router.delete("/conversations/{conversation_id}")

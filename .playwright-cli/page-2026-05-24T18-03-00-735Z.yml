@@ -1,0 +1,47 @@
+- generic [ref=e2]:
+  - complementary "历史 Chat" [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: V
+      - generic [ref=e6]:
+        - strong [ref=e7]: Virtual Data Scientist
+        - generic [ref=e8]: Data analysis chat
+    - button "新分析" [ref=e9] [cursor=pointer]:
+      - img [ref=e10]
+      - text: 新分析
+    - region "历史 Chat" [ref=e12]:
+      - generic [ref=e13]:
+        - heading "历史 Chat" [level=2] [ref=e14]
+        - generic [ref=e15]: "1"
+      - list [ref=e16]:
+        - listitem [ref=e17]:
+          - generic [ref=e18]:
+            - strong [ref=e19]: 已完成分析
+            - generic "系统改进 smoke" [ref=e20]
+          - button "重命名历史对话" [ref=e21] [cursor=pointer]:
+            - img [ref=e22]
+  - main [ref=e25]:
+    - generic [ref=e26]:
+      - generic [ref=e27]:
+        - heading "VDS" [level=1] [ref=e28]
+        - paragraph [ref=e29]: 等待上传数据集
+      - generic [ref=e30]:
+        - generic [ref=e31]: 准备就绪
+        - generic [ref=e32]: 未上传数据
+    - article [ref=e34]:
+      - generic [ref=e35]: V
+      - generic [ref=e36]:
+        - heading "今天要分析什么数据？" [level=2] [ref=e37]
+        - paragraph [ref=e38]: 上传 CSV 或 Excel，然后直接提问。我会像对话一样展示理解、选择数据、分析和回答的过程。
+    - region "对话输入" [ref=e39]:
+      - generic [ref=e40]:
+        - textbox "向 VDS 提问，例如：哪个城市订单金额最高？" [ref=e41]
+        - generic [ref=e42]:
+          - generic "文件上传" [ref=e43]:
+            - button "选择文件" [ref=e44]
+            - generic "选择文件" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+            - generic [ref=e48]:
+              - strong [ref=e49]: 选择文件
+              - generic [ref=e50]: CSV / Excel 支持多选
+          - button [disabled] [ref=e51]:
+            - img [ref=e52]

@@ -124,6 +124,28 @@ class OpenAICompatibleChatClientTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 1)
 
+    def test_omits_temperature_for_gpt5_family_models(self) -> None:
+        payloads: list[dict[str, object]] = []
+
+        def fake_urlopen(request: object, timeout: int) -> _FakeChatResponse:
+            payloads.append(json.loads(request.data.decode("utf-8")))  # type: ignore[attr-defined]
+            return _FakeChatResponse()
+
+        client = OpenAICompatibleChatClient(
+            LLMConfig(
+                provider="openai",
+                api_key="test-key",
+                model="gpt-5.5",
+                base_url="https://example.test/v1",
+            )
+        )
+
+        with patch("data_agent_core.llm.client.urllib.request.urlopen", side_effect=fake_urlopen):
+            result = client.complete_json([{"role": "user", "content": "{}"}], temperature=0.2)
+
+        self.assertEqual(result, {"operation": "ok"})
+        self.assertNotIn("temperature", payloads[0])
+
 
 if __name__ == "__main__":
     unittest.main()

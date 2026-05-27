@@ -13,6 +13,7 @@ from data_agent_core.contracts.analysis_contracts import LogicForm
 
 PERIOD_COLUMN = "是否本周/上周"
 UNRESOLVED_PLACEHOLDER = "__UNRESOLVED_PLACEHOLDER__"
+NO_MATCHING_RECORDS = "没有匹配记录"
 
 VDS_BI_OPERATIONS = {
     "vds_period_rank_change",
@@ -367,7 +368,7 @@ def _group_top_entities(df: pd.DataFrame, params: dict[str, Any]) -> dict[str, A
         parts.append(f"{group_value}：" + ", ".join(names))
         for _, row in top.iterrows():
             rows.append({group_by: group_value, entity: row[entity], "current_value": float(row["value"])})
-    return {"answer": "；".join(parts) if parts else "Not Applicable", "candidate_table": rows}
+    return {"answer": "；".join(parts) if parts else NO_MATCHING_RECORDS, "candidate_table": rows}
 
 
 def _status_impact_top(df: pd.DataFrame, params: dict[str, Any]) -> dict[str, Any]:
@@ -443,7 +444,7 @@ def _three_period_top(df: pd.DataFrame, params: dict[str, Any]) -> dict[str, Any
             table.append({"period": label, entity: name, "current_value": float(value)})
         if pieces:
             sections.append(f"{label}：" + ", ".join(pieces))
-    return {"answer": "；".join(sections) if sections else "Not Applicable", "candidate_table": table}
+    return {"answer": "；".join(sections) if sections else NO_MATCHING_RECORDS, "candidate_table": table}
 
 
 def _comparison_frame(df: pd.DataFrame, params: dict[str, Any], group_by: str) -> pd.DataFrame:
@@ -790,7 +791,7 @@ def _current_records(values: pd.Series, entity: str, metric: str) -> list[dict[s
 
 
 def _answer_payload(rows: list[dict[str, Any]], *, separator: str = "；") -> dict[str, Any]:
-    answer = separator.join(str(row.get("answer")) for row in rows if row.get("answer")) if rows else "Not Applicable"
+    answer = separator.join(str(row.get("answer")) for row in rows if row.get("answer")) if rows else NO_MATCHING_RECORDS
     return {"answer": answer, "candidate_table": rows}
 
 

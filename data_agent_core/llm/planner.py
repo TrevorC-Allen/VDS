@@ -96,6 +96,7 @@ def complete_stage_with_llm(
     context_summary: dict[str, Any],
     payload: dict[str, Any],
     required_output: dict[str, Any],
+    temperature: float = 0.0,
 ) -> LLMStageResult:
     """Run one named LLM stage and return a trace-safe summary."""
 
@@ -124,7 +125,7 @@ def complete_stage_with_llm(
             ),
         },
     ]
-    raw = llm_client.complete_json(messages, temperature=0.0)
+    raw = llm_client.complete_json(messages, temperature=temperature)
     return LLMStageResult(
         stage_name=stage_name,
         raw=_safe_stage_raw(raw),

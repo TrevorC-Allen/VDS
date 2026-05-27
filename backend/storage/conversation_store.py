@@ -45,6 +45,8 @@ class ConversationStore:
             "owner_id": str(owner_id or ""),
             "tenant_id": str(tenant_id or ""),
             "owner_context": to_json_ready(owner_context or {}),
+            "pinned": False,
+            "pinned_at": "",
             "created_at": now,
             "updated_at": now,
             "messages": [],
@@ -138,7 +140,14 @@ class ConversationStore:
             if project_id is not None and str(record.get("project_id") or "") != str(safe_project_id or ""):
                 continue
             records.append(_conversation_summary(record))
-        records.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        records.sort(
+            key=lambda item: (
+                bool(item.get("pinned")),
+                str(item.get("pinned_at") or item.get("updated_at") or ""),
+                str(item.get("updated_at") or ""),
+            ),
+            reverse=True,
+        )
         return records[: max(1, min(int(limit or 50), 200))]
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
@@ -154,6 +163,12 @@ class ConversationStore:
             return self._read(path)
         except (OSError, json.JSONDecodeError):
             return None
+
+    def save_conversation(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Persist a full conversation record after service-level repairs."""
+
+        self._write(record)
+        return deepcopy(record)
 
     def rename_conversation(self, conversation_id: str, title: str) -> dict[str, Any] | None:
         """Persist a user-provided conversation title."""
@@ -174,6 +189,7 @@ class ConversationStore:
         *,
         title: str | None = None,
         project_id: str | None = None,
+        pinned: bool | None = None,
     ) -> dict[str, Any] | None:
         """Update editable conversation metadata."""
 
@@ -187,6 +203,9 @@ class ConversationStore:
                 record["user_title"] = True
         if project_id is not None:
             record["project_id"] = _safe_project_id(project_id)
+        if pinned is not None:
+            record["pinned"] = bool(pinned)
+            record["pinned_at"] = _now_iso() if pinned else ""
         record["updated_at"] = _now_iso()
         self._write(record)
         return deepcopy(record)
@@ -227,6 +246,8 @@ def _conversation_summary(record: dict[str, Any]) -> dict[str, Any]:
         "title": record.get("title") or "新对话",
         "dataset_id": record.get("dataset_id") or "",
         "project_id": record.get("project_id") or "",
+        "pinned": bool(record.get("pinned")),
+        "pinned_at": record.get("pinned_at") or "",
         "created_at": record.get("created_at"),
         "updated_at": record.get("updated_at"),
         "message_count": len(messages),

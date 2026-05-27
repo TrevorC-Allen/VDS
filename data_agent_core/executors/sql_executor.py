@@ -17,6 +17,9 @@ from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import SQL_EXECUTION_ERROR
 
 
+NO_MATCHING_RECORDS = "没有匹配记录"
+
+
 def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult:
     """Execute SQL-compatible operations using sqlite fallback."""
 
@@ -129,7 +132,7 @@ def _top_count_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> Any:
     sql = f"SELECT {q_group_by}, COUNT(*) AS n FROM analysis_table{where_sql} GROUP BY {q_group_by} ORDER BY n DESC LIMIT 1"
     row = conn.execute(sql, values).fetchone()
     if row is None:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     top_value = str(row[0])
     options = params.get("options") or {}
     for letter, option_value in options.items():
@@ -177,7 +180,8 @@ def _aggregation_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> Any:
     if aggregation == "count" or metric is None:
         return int(conn.execute("SELECT COUNT(*) FROM analysis_table").fetchone()[0])
     sql_func = _sql_agg_func(aggregation)
-    return conn.execute(f"SELECT {sql_func}({_quote_identifier(str(metric))}) FROM analysis_table").fetchone()[0]
+    value = conn.execute(f"SELECT {sql_func}({_quote_identifier(str(metric))}) FROM analysis_table").fetchone()[0]
+    return 0.0 if value is None else value
 
 
 def _ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> list[dict[str, Any]]:
@@ -250,7 +254,7 @@ def _rank_by_metric_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> dict[st
             for row in rows
         ]
     if not candidate_table:
-        return {"answer": "Not Applicable", "candidate_table": [], "metric": metric}
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": [], "metric": metric}
     selected = candidate_table[0]
     selected_value = str(selected[group_by])
     selected_option = None
@@ -315,7 +319,7 @@ def _metric_per_distinct_entity_sql(conn: sqlite3.Connection, plan: AnalysisPlan
             f"FROM analysis_table{filtered_sql} GROUP BY {q_entity})",
             values,
         ).fetchone()
-        return "Not Applicable" if row[0] is None else float(row[0])
+        return 0.0 if row[0] is None else float(row[0])
     numerator_sql = "COUNT(*)" if metric in {"__row_count__", "row_count", "transaction_count"} or aggregation == "count" else f"SUM(CAST({_quote_identifier(metric)} AS REAL))"
     row = conn.execute(
         f"SELECT {numerator_sql}, "
@@ -324,7 +328,7 @@ def _metric_per_distinct_entity_sql(conn: sqlite3.Connection, plan: AnalysisPlan
     ).fetchone()
     entity_count = int(row[1] or 0)
     if entity_count == 0:
-        return "Not Applicable"
+        return 0.0
     return float(row[0] or 0.0) / entity_count
 
 
@@ -440,7 +444,7 @@ def _null_check_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> int | float
     if mode == "max_field":
         columns = [row[1] for row in conn.execute("PRAGMA table_info(analysis_table)").fetchall()]
         if not columns:
-            return "Not Applicable"
+            return NO_MATCHING_RECORDS
         counts: list[tuple[str, int]] = []
         for column in columns:
             null_expr = f"({_quote_identifier(column)} IS NULL OR TRIM(LOWER(CAST({_quote_identifier(column)} AS TEXT))) IN ('', 'nan', 'none', 'null'))"
@@ -513,7 +517,7 @@ def _boolean_count_ratio_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> fl
     ).fetchone()
     right_count = int(rows[1] or 0)
     if right_count == 0:
-        return "Not Applicable"
+        return 0.0
     return float(rows[0] or 0) / right_count
 
 
