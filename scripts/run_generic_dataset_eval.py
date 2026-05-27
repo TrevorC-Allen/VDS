@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -60,6 +61,11 @@ def main() -> None:
         action="store_true",
         help="Upload the files into DataAgentService, ask every case, and use those replies as candidate answers.",
     )
+    parser.add_argument(
+        "--quick-vds-answers",
+        action="store_true",
+        help="Reuse representative overview/cleaning answers for fast smoke comparisons on large files.",
+    )
     parser.add_argument("--print-summary", action="store_true")
     args = parser.parse_args()
 
@@ -82,7 +88,8 @@ def main() -> None:
     candidate_score = None
     candidate_answers: dict[str, str] = {}
     if args.generate_vds_answers:
-        candidate_answers = generate_vds_answers(cases, files, output_dir)
+        quick_vds = args.quick_vds_answers or os.environ.get("VDS_GENERIC_EVAL_QUICK") == "1"
+        candidate_answers = generate_vds_answers(cases, files, output_dir, quick=quick_vds)
         candidate_score = score_candidate_answers(cases, candidate_answers, config["thresholds"], output_dir / "vds_answers.jsonl")
     elif args.candidate_answers:
         candidate_path = _resolve_path(args.candidate_answers)
@@ -958,9 +965,57 @@ def score_candidate_answers(
         missing_terms = [term for term in case["required_terms"] if term not in text]
         number_checks = [candidate_contains_number(text, check, thresholds.get("numeric_tolerance", 0.01)) for check in case["expected_numbers"]]
         passed = bool(text) and not missing_terms and all(item["passed"] for item in number_checks)
-        details.append({"case_id": case["case_id"], "category": case["category"], "passed": passed, "missing_terms": missing_terms, "number_checks": number_checks})
+        gpt_like_checks = gpt_like_style_checks(case, text)
+        gpt_like_passed = all(item["passed"] for item in gpt_like_checks)
+        details.append(
+            {
+                "case_id": case["case_id"],
+                "category": case["category"],
+                "passed": passed,
+                "gpt_like_passed": gpt_like_passed,
+                "missing_terms": missing_terms,
+                "number_checks": number_checks,
+                "gpt_like_checks": gpt_like_checks,
+            }
+        )
     passed_count = sum(1 for item in details if item["passed"])
-    return {"candidate_path": str(candidate_path), "total": len(details), "passed": passed_count, "pass_rate": _safe_div(passed_count, len(details)), "details": details}
+    gpt_like_count = sum(1 for item in details if item["gpt_like_passed"])
+    return {
+        "candidate_path": str(candidate_path),
+        "total": len(details),
+        "passed": passed_count,
+        "pass_rate": _safe_div(passed_count, len(details)),
+        "gpt_like_passed": gpt_like_count,
+        "gpt_like_pass_rate": _safe_div(gpt_like_count, len(details)),
+        "details": details,
+    }
+
+
+def gpt_like_style_checks(case: dict[str, Any], text: str) -> list[dict[str, Any]]:
+    stripped = str(text or "").strip()
+    max_len = 2200 if case.get("expected_route") in {"dataset_overview", "cleaning_simulation"} else 1400
+    is_artifact_guardrail_case = str(case.get("case_id") or "") == "generic_tech_001" or "raw prompt" in str(case.get("question") or "").lower()
+    internal_marker_ok = not any(marker in stripped.lower() for marker in ("reasoning_trace", "trace.json", "scorer", "standard_answer"))
+    if is_artifact_guardrail_case:
+        internal_marker_ok = any(token in stripped for token in ("不会展示", "不能展示", "只给用户可读", "不能把", "需要外部维表"))
+    checks = [
+        {"name": "non_empty", "passed": bool(stripped)},
+        {"name": "not_raw_detail_dump", "passed": not _looks_like_detail_dump(stripped)},
+        {"name": "concise_main_answer", "passed": len(stripped) <= max_len},
+        {"name": "no_internal_artifact_markers", "passed": internal_marker_ok},
+    ]
+    route = str(case.get("expected_route") or "")
+    if route == "dataset_overview":
+        checks.append({"name": "overview_has_direct_answer", "passed": any(token in stripped for token in ("已读取", "这个表", "这组数据", "主要讲", "缺失", "字段", "不会", "不能"))})
+        next_step_ok = any(token in stripped for token in ("建议", "下一步", "需要", "可以", "不能"))
+        if is_artifact_guardrail_case:
+            next_step_ok = next_step_ok or any(token in stripped for token in ("不会展示", "不能展示", "只给用户可读", "计算口径", "结果边界"))
+        checks.append({"name": "overview_has_next_step", "passed": next_step_ok})
+    elif route == "cleaning_simulation":
+        checks.append({"name": "cleaning_is_simulation_safe", "passed": any(token in stripped for token in ("不能覆盖原始文件", "用户确认", "需要确认"))})
+    elif route == "chat_without_dataset":
+        checks.append({"name": "chat_no_file_boundary", "passed": any(token in stripped for token in ("没有上传文件", "上传文件后", "上传数据后", "没有数据", "支持多文件"))})
+    return checks
 
 
 def build_comparison_rows(
@@ -980,6 +1035,8 @@ def build_comparison_rows(
             status = "not_scored_no_candidate_answer"
         elif score.get("passed") is True:
             status = "passed"
+        elif score.get("gpt_like_passed") is True:
+            status = "gpt_like_passed_exact_failed"
         else:
             status = "failed"
         rows.append(
@@ -994,12 +1051,13 @@ def build_comparison_rows(
                 "comparison_status": status,
                 "missing_terms": score.get("missing_terms", []),
                 "number_checks": score.get("number_checks", []),
+                "gpt_like_checks": score.get("gpt_like_checks", []),
             }
         )
     return rows
 
 
-def generate_vds_answers(cases: list[dict[str, Any]], files: list[Path], output_dir: Path) -> dict[str, str]:
+def generate_vds_answers(cases: list[dict[str, Any]], files: list[Path], output_dir: Path, *, quick: bool = False) -> dict[str, str]:
     """Ask the local VDS service for every case and persist raw replies."""
 
     from backend.services.data_agent_service import DataAgentService
@@ -1010,14 +1068,17 @@ def generate_vds_answers(cases: list[dict[str, Any]], files: list[Path], output_
         file_store=TempFileStore(output_dir / "vds_storage"),
         llm_client=MockLLMClient(),
     )
-    upload = service.upload_datasets(files, original_filenames=[path.name for path in files])
+    vds_files = _prepare_quick_vds_files(files, output_dir) if quick else files
+    upload = service.upload_datasets(vds_files, original_filenames=_vds_original_filenames(files, vds_files, quick=quick))
     dataset_id = str(upload.get("dataset_id") or "")
     upload_success = bool(upload.get("success"))
     rows = []
     answers: dict[str, str] = {}
+    quick_response_cache: dict[str, dict[str, Any]] = {}
     for case in cases:
         case_id = case["case_id"]
         question = case["question"]
+        quick_reused = False
         if case["ae_group"] == "A_no_file_general":
             response = service.respond_to_message(question=question)
         elif not upload_success:
@@ -1027,12 +1088,20 @@ def generate_vds_answers(cases: list[dict[str, Any]], files: list[Path], output_
                 "errors": upload.get("errors", [{"error_message": "Dataset upload failed before VDS question run."}]),
             }
         else:
-            response = service.respond_to_message(
-                dataset_id=dataset_id,
-                question=question,
-                execution_mode="dual",
-                agent_mode="multi_agent",
-            )
+            quick_key = _quick_vds_cache_key(case)
+            if quick and quick_key and quick_key in quick_response_cache:
+                response = dict(quick_response_cache[quick_key])
+                response["question"] = question
+                quick_reused = True
+            else:
+                response = service.respond_to_message(
+                    dataset_id=dataset_id,
+                    question=question,
+                    execution_mode="dual",
+                    agent_mode="multi_agent",
+                )
+                if quick and quick_key and response.get("success"):
+                    quick_response_cache[quick_key] = dict(response)
         answer_text = _response_answer_text(response)
         answers[case_id] = answer_text
         rows.append(
@@ -1048,11 +1117,66 @@ def generate_vds_answers(cases: list[dict[str, Any]], files: list[Path], output_
                 "errors": response.get("errors", []),
                 "warnings": response.get("warnings", []),
                 "debug": _safe_debug(response.get("debug", {})),
+                "quick_reused": quick_reused,
             }
         )
     write_jsonl(output_dir / "vds_answers.jsonl", rows)
-    write_json(output_dir / "vds_answers.json", {"upload": upload, "answers": rows})
+    write_json(
+        output_dir / "vds_answers.json",
+        {
+            "upload": upload,
+            "answers": rows,
+            "quick_vds_answers": quick,
+            "quick_vds_files": [str(path) for path in vds_files] if quick else [],
+        },
+    )
     return answers
+
+
+def _prepare_quick_vds_files(files: list[Path], output_dir: Path) -> list[Path]:
+    sample_rows = max(1000, int(os.environ.get("VDS_GENERIC_EVAL_SAMPLE_ROWS") or "50000"))
+    sample_dir = output_dir / "vds_quick_samples"
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    quick_files: list[Path] = []
+    for index, path in enumerate(files):
+        suffix = path.suffix.lower()
+        if suffix == ".parquet":
+            sample_path = sample_dir / f"{index:02d}_{path.stem}.sample.csv"
+            _write_parquet_sample_csv(path, sample_path, sample_rows)
+            quick_files.append(sample_path)
+        else:
+            quick_files.append(path)
+    return quick_files
+
+
+def _vds_original_filenames(files: list[Path], vds_files: list[Path], *, quick: bool) -> list[str]:
+    names: list[str] = []
+    for source, vds_file in zip(files, vds_files, strict=True):
+        if quick and source != vds_file:
+            names.append(vds_file.name)
+        else:
+            names.append(source.name)
+    return names
+
+
+def _write_parquet_sample_csv(source: Path, target: Path, sample_rows: int) -> None:
+    import duckdb
+
+    with duckdb.connect(database=":memory:") as con:
+        con.execute(
+            f"COPY (SELECT * FROM read_parquet({_sql_literal(str(source))}) LIMIT {int(sample_rows)}) "
+            f"TO {_sql_literal(str(target))} (FORMAT CSV, HEADER, DELIMITER ',')"
+        )
+
+
+def _quick_vds_cache_key(case: dict[str, Any]) -> str:
+    expected_route = str(case.get("expected_route") or "")
+    if expected_route == "cleaning_simulation":
+        return "cleaning_simulation"
+    question = str(case.get("question") or "")
+    if any(token in question for token in ("数据质量", "异常", "缺失", "极端值", "无法解析")):
+        return "cleaning_simulation"
+    return ""
 
 
 def _response_answer_text(response: dict[str, Any]) -> str:
@@ -1201,7 +1325,16 @@ def summary_markdown(run: dict[str, Any]) -> str:
         lines.append(f"- {group}: {ae_counts.get(group, 0)} cases")
     if run.get("candidate_score"):
         score = run["candidate_score"]
-        lines.extend(["", "## Candidate Score", f"- Passed: {score['passed']} / {score['total']}", f"- Pass rate: {_pct(score['pass_rate'])}"])
+        lines.extend(
+            [
+                "",
+                "## Candidate Score",
+                f"- Exact term/number passed: {score['passed']} / {score['total']}",
+                f"- Exact pass rate: {_pct(score['pass_rate'])}",
+                f"- GPT-like style passed: {score.get('gpt_like_passed', 0)} / {score['total']}",
+                f"- GPT-like pass rate: {_pct(score.get('gpt_like_pass_rate', 0))}",
+            ]
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -1225,7 +1358,8 @@ def comparison_markdown(run: dict[str, Any]) -> str:
         lines.append("当前未提供 VDS 实际回答，所以只列出我的标准回复；后续传入 `--candidate-answers` 后会自动填充对比结果。")
     else:
         score = run["candidate_score"]
-        lines.append(f"VDS candidate score: {score['passed']} / {score['total']} ({_pct(score['pass_rate'])})")
+        lines.append(f"VDS exact score: {score['passed']} / {score['total']} ({_pct(score['pass_rate'])})")
+        lines.append(f"VDS GPT-like style gate: {score.get('gpt_like_passed', 0)} / {score['total']} ({_pct(score.get('gpt_like_pass_rate', 0))})")
     current_group = ""
     for row in run["comparison"]:
         if row["ae_group"] != current_group:
@@ -1241,11 +1375,11 @@ def comparison_markdown(run: dict[str, Any]) -> str:
                 "",
                 "**我的标准回复**",
                 "",
-                row["standard_answer"],
+                _comparison_answer_excerpt(row.get("standard_answer") or "", limit=1200, full_target="standard_answers.jsonl"),
                 "",
                 "**VDS 实际回复**",
                 "",
-                row["candidate_answer"] or "未提供 VDS 实际回答。",
+                _comparison_answer_excerpt(row.get("candidate_answer") or "", full_target="vds_answers.jsonl"),
                 "",
             ]
         )
@@ -1256,10 +1390,58 @@ def comparison_markdown(run: dict[str, Any]) -> str:
                     "",
                     f"- Missing terms: {', '.join(row.get('missing_terms') or []) or 'none'}",
                     f"- Number checks: {json.dumps(row.get('number_checks') or [], ensure_ascii=False)}",
+                    f"- GPT-like checks: {json.dumps(row.get('gpt_like_checks') or [], ensure_ascii=False)}",
                     "",
                 ]
             )
     return "\n".join(lines)
+
+
+def _comparison_answer_excerpt(answer: str, *, limit: int = 1600, full_target: str = "vds_answers.jsonl") -> str:
+    text = str(answer or "").strip()
+    if not text:
+        return "未提供 VDS 实际回答。"
+    raw_like = _looks_like_detail_dump(text)
+    if raw_like or len(text) > limit:
+        excerpt = text[:limit].rstrip()
+        reason = "疑似明细长文本" if raw_like else "回复较长"
+        return f"{excerpt}\n\n（已截断：{reason}；完整内容见同目录 {full_target}。）"
+    return text
+
+
+def _looks_like_detail_dump(text: str) -> bool:
+    if _looks_like_compact_value_sequence(text):
+        return True
+    if len(text) < 600:
+        return False
+    comma_dense = text.count(",") >= 80 and len(text.split()) <= max(1, text.count(",") * 4)
+    repeated_rowish_lines = sum(1 for line in text.splitlines() if line.count(",") >= 5) >= 8
+    return comma_dense or repeated_rowish_lines
+
+
+def _looks_like_compact_value_sequence(text: str) -> bool:
+    parts = [part.strip() for part in re.split(r"[,，]", str(text or "")) if part.strip()]
+    if len(parts) < 8:
+        return False
+    if len(re.findall(r"[。！？；;]", text)) > 1:
+        return False
+    if any(marker in text for marker in ("建议", "字段", "行", "列", "表", "文件", "数据", "不能", "不会", "可以", "需要", "结果")):
+        return False
+    structured_parts = sum(1 for part in parts if _looks_like_scalar_value(part))
+    return structured_parts >= max(6, int(len(parts) * 0.6))
+
+
+def _looks_like_scalar_value(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?%?", text):
+        return True
+    if re.fullmatch(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[ tT]\d{1,2}:\d{2}(?::\d{2})?)?", text):
+        return True
+    if re.fullmatch(r"[A-Za-z]*\d[A-Za-z0-9_.-]*", text) and len(text) <= 32:
+        return True
+    return False
 
 
 def write_json(path: Path, value: Any) -> None:

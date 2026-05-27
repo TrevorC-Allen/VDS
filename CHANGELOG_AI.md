@@ -7099,3 +7099,268 @@ YYYY-MM-DD HH:MM TZ
 ### 是否已同步 README
 
 是。README 已同步 Phase 12.1 的当前状态、Workbench 展示契约、generic eval 证据和真实浏览器 smoke 结果。
+
+2026-05-26 09:15 CST
+
+### 本次目标
+
+给 Workbench / Project 的历史对话补齐 GPT-like 置顶功能：置顶必须由后端 conversation store 持久化，左侧全局历史和 Project home 内聊天列表都按置顶优先展示。
+
+### 修改文件
+
+- backend/storage/conversation_store.py
+- backend/services/data_agent_service.py
+- backend/routers/data_agent.py
+- frontend/app.js
+- frontend/styles.css
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- README.md
+- frontend/README.md
+- docs/API_CONTRACT.md
+- docs/ARCHITECTURE.md
+- docs/FEATURE_BACKLOG.md
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- Conversation Store 新增 `pinned` / `pinned_at` 字段，`list_conversations` 按置顶优先、再按时间排序。
+- `PATCH /api/data-agent/conversations/{conversation_id}` 支持 `pinned=true/false`，并保留 title / project_id 更新能力。
+- `/message` 返回的 `conversation` metadata 携带置顶状态。
+- Workbench 历史菜单新增“置顶聊天 / 取消置顶”，通过后端 PATCH 持久化，不写 localStorage 假状态。
+- 左侧历史和 Project home 聊天列表渲染置顶图钉标记，并按后端置顶排序。
+- Project home 内对话菜单使用同一弹窗重命名路径，避免调用只适用于左侧历史行的 inline rename。
+- 文档和红线补充：置顶不能由前端本地排序冒充持久化，必须来自后端 conversation contract。
+
+### 测试方式
+
+- `node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service.DataAgentServiceTest.test_conversation_pin_persists_and_sorts_first tests.backend.test_workbench_static_assets.WorkbenchStaticAssetsTest.test_workbench_history_items_can_be_renamed tests.backend.test_workbench_static_assets.WorkbenchStaticAssetsTest.test_workbench_loads_persistent_conversations tests.backend.test_workbench_static_assets.WorkbenchStaticAssetsTest.test_workbench_has_project_workspace_controls -v`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets tests.backend.test_data_agent_service.DataAgentServiceTest.test_conversation_pin_persists_and_sorts_first -v`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- Browser smoke：`http://127.0.0.1:8001/workbench?qa=project-pin-20260526013145`，打开 Project home，对 Project 内对话菜单执行置顶，刷新后重新进入 Project 验证置顶持久化。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- Focused tests 通过：Ran 4 tests，OK。
+- Static + pin persistence tests 通过：Ran 19 tests，OK。
+- `git diff --check` 通过。
+- Runtime 已同步到 `~/.vds-workbench-runtime/VDS` 并重启，`GET /workbench` 返回 200，HTML / JS 均加载 `20260525-project-gpt-layout` 版本。
+- Browser smoke 通过：Project home 保持左侧项目和历史可见；Project 内对话菜单显示“置顶聊天 / 重命名 / 删除”；点击置顶后刷新再进入同一 Project 仍显示“已置顶”；console error / warn 为空。截图保存到 `/tmp/vds-project-pin-menu.png`、`/tmp/vds-project-pin-after-click.png`、`/tmp/vds-project-pin-after-reload.png`。
+
+### 遗留问题
+
+- 无已知置顶功能遗留问题；本轮浏览器验证使用的 QA Project / Conversation 已通过 API 删除，避免污染本地历史。
+
+### 是否影响主流程
+
+否。仅新增 conversation metadata 和历史菜单展示，不改变分析、文件解析、join、评分或响应生成主链路。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。置顶位于 backend conversation shell，不进入 agent_runtime、ToolDispatcher 或多 Agent 核心链路。
+
+### 是否修改核心数据契约
+
+否。DatasetProfile、DataFrame、LogicForm、ResultSchema 不变。
+
+### 是否修改 API 契约
+
+是。Conversation PATCH 和 list / response metadata 新增 `pinned` / `pinned_at`。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+是。README、frontend/README、API_CONTRACT、ARCHITECTURE、FEATURE_BACKLOG 和 MAIN_GOAL 已同步置顶契约与红线。
+
+2026-05-26 09:52 CST
+
+### 本次目标
+
+修复 Phase 12.1 Workbench 主回答不够 GPT-like 的复发问题：说明型问题不得把原始明细、短值串或代码直接铺给用户；“思考过程”默认只显示一行，完整过程和复现代码只能在展开区；Insight 必须拆成可读的洞察 / 边界卡片。
+
+### 修改文件
+
+- data_agent_core/core/message_intent.py
+- data_agent_core/output/dataset_overview.py
+- data_agent_core/output/cleaning_guidance.py
+- data_agent_core/core/file_parser.py
+- backend/services/data_agent_service.py
+- frontend/app.js
+- frontend/styles.css
+- scripts/run_generic_dataset_eval.py
+- scripts/score_comparison_answers.py
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_file_parser.py
+- tests/benchmark/test_generic_dataset_eval_runner.py
+- tests/benchmark/test_score_comparison_answers.py
+
+### 修改内容
+
+- 把“每个文件分别有多少行、多少列 / 行列规模”这类问题提升为 dataset overview intent，避免被“多少”误判成明细/聚合分析。
+- 为单表和多表行列问题生成专用 GPT-like 主回答：只答行列规模和下一步，不展开原始行。
+- 后端 raw detail guard 新增短日期/数字串识别，能拦截 `2025-01-01, 89, ...` 这类紧凑值列表。
+- Overview 和 cleaning 主回答继续压缩为自然语言；完整字段、规则、表格和代码保留在 `result` / process detail / artifact。
+- Generic eval 新增 GPT-like style gate，并修正 technical guardrail 问法的评分口径：用户要求“不要展示 raw prompt / trace / SQL / 标准答案”时，回答可以命名这些禁止项，但必须以“不会展示 / 只给用户可读依据”的方式出现。
+- Workbench Insight 卡片根据内容显示“洞察 / 边界”，不再把观察型建议全部标成“建议”。
+- Comparison artifact 保持长答案截断，另新增 comparison answer scorer，用于人工判断标准回复和 VDS 实际回复的语义质量差异。
+
+### 测试方式
+
+- `node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.backend.test_workbench_static_assets tests.core.test_file_parser tests.benchmark.test_generic_dataset_eval_runner tests.benchmark.test_score_comparison_answers -v`
+- `RUN_ID=phase12_1_finalcheck3_20260526_092141_uk GENERATE_VDS=1 VDS_GENERIC_EVAL_QUICK=1 bash scripts/test_dataset_uk_retail.sh`
+- `RUN_ID=phase12_1_finalcheck3_20260526_092141_ms GENERATE_VDS=1 VDS_GENERIC_EVAL_QUICK=1 bash scripts/test_dataset_microsoft_anonymized.sh`
+- `RUN_ID=phase12_1_finalcheck3_20260526_092141_nyc GENERATE_VDS=1 VDS_GENERIC_EVAL_QUICK=1 RUN_DOMAIN=0 bash scripts/test_dataset_nyc_taxi.sh`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- Browser smoke：`http://127.0.0.1:8001/workbench` 上传两个 Microsoft 脱敏小表并询问“每个文件分别有多少行、多少列？”
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- Focused unittest 通过：Ran 64 tests，OK。
+- UK retail quick：Exact `12/35`，GPT-like `35/35`，输出目录 `outputs/eval_gate/phase12_1_finalcheck3_20260526_092141_uk-uk_retail_generic`。
+- Microsoft anonymized quick：Exact `10/35`，GPT-like `35/35`，输出目录 `outputs/eval_gate/phase12_1_finalcheck3_20260526_092141_ms-microsoft_anonymized_generic`。
+- NYC Taxi quick：Exact `10/35`，GPT-like `35/35`，输出目录 `outputs/eval_gate/phase12_1_finalcheck3_20260526_092141_nyc-nyc_taxi_generic`。
+- Browser smoke 通过：主回答为“这组数据共有 2 张表/文件，总计 64 行、30 个字段...”，无原始明细；结果表单独展示行列清单；“正在做什么”默认一行，点击展开后才出现完整步骤和复现代码；Insight 卡片显示“洞察 / 边界”。
+
+### 遗留问题
+
+- NYC 全量 domain 评测未在本轮阻塞执行；按用户要求，大文件慢步骤保留为后续后台/分 agent 任务。
+- `comparison.md` 仍会展示标准答案摘要，部分标准答案本身较长；用户可见 Workbench 主回答已经由 intent、answer builder、frontend rendering 和 final guard 多层拦截。
+
+### 是否影响主流程
+
+是。影响 Workbench message intent、dataset overview 输出、raw detail guard、前端 Insight / process 渲染和 generic eval gate；不改变核心 planner / executor / verifier 的计算语义。
+
+### 是否涉及 Benchmark
+
+是。新增 generic eval GPT-like style gate 和 comparison answer scorer；标准答案仍只用于离线评测，不进入 Agent workflow。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。修复位于 message intent、response shaping、Workbench rendering 和 evaluation gate；不改变 ToolDispatcher 或多 Agent 角色边界。
+
+### 是否修改核心数据契约
+
+否。DatasetProfile、DataFrame、LogicForm 和 ResultSchema 不变；`overview_report` / `process_view_v2` / `execution_artifacts` 继续作为安全展示契约。
+
+### 是否修改 API 契约
+
+否。本轮没有新增 endpoint；仅强化现有 `/message` / analyze 响应的用户可见内容约束。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+是。Workbench 展开详情中的过程步骤继续使用 `process_view_v2`，代码 artifact 只在过程详情里展示，不在主答案区独立铺开。
+
+### 是否已同步 README
+
+是。Phase 12.1 / Phase 13 相关 README、MAIN_GOAL、API_CONTRACT、ARCHITECTURE、FEATURE_BACKLOG 和 frontend README 已同步。
+
+2026-05-26 09:53 CST
+
+### 本次目标
+
+把 Workbench 历史对话的“移至项目”从浏览器 prompt 改成 GPT-like 右侧二级菜单，避免要求用户输入 Project 序号、名称或 ID。
+
+### 修改文件
+
+- frontend/app.js
+- frontend/styles.css
+- frontend/index.html
+- tests/backend/test_workbench_static_assets.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 历史对话菜单的“移至项目”改为带右箭头的 submenu，hover / click 后在右侧直接列出“新项目”和现有 Project。
+- 点击 Project 直接调用 `PATCH /api/data-agent/conversations/{conversation_id}` 写入 `project_id`，不再弹出“选择要移入的 Project”的浏览器 prompt。
+- 保留“新项目”入口；点击后直接创建默认“新项目”并把对话移入，不再使用浏览器 prompt。
+- 新增 context submenu 样式：右侧弹层、Project 名称省略、视口边界左翻、列表滚动。
+- Workbench asset version 升级到 `20260526-project-move-default`，避免浏览器继续加载旧 JS。
+
+### 测试方式
+
+- `node --check frontend/app.js`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_workbench_static_assets -v`
+- `git diff --check`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- Browser smoke：`http://127.0.0.1:8001/workbench?qa=project-move-menu-20260526095240`，打开历史对话菜单，点击“移至项目”，验证右侧 Project submenu，并点击 `222` 完成移动。
+
+### 测试结果
+
+- `node --check frontend/app.js` 通过。
+- Static workbench tests 通过：Ran 18 tests，OK。
+- `git diff --check` 通过。
+- Runtime 已同步并重启，`GET /workbench` 返回 `app.js?v=20260526-project-move-default` 和 `styles.css?v=20260526-project-move-default`。
+- Browser smoke 通过：菜单显示 GPT-like 二级 Project 列表；未出现 `127.0.0.1 says` prompt；点击 `222` 后页面状态显示“对话已放入 Project”；console error / warn 为空。截图保存到 `/tmp/vds-project-move-submenu.png`。
+
+### 遗留问题
+
+- 本轮验证用 QA Conversation 已通过 API 删除，刷新后不再显示。
+
+### 是否影响主流程
+
+否。只影响 Workbench 历史菜单的项目移动交互，不改变数据分析、文件解析、join、评分或响应生成主链路。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。变更在前端菜单和既有 conversation API 使用层，不进入 agent_runtime / ToolDispatcher / multi_agent_workflows。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。继续使用现有 conversation PATCH 的 `project_id`。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮是即时 UI 修正，未改变公开产品契约；已同步 CHANGELOG_AI。

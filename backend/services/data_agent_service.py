@@ -849,8 +849,9 @@ class DataAgentService:
         *,
         title: str | None = None,
         project_id: str | None = None,
+        pinned: bool | None = None,
     ) -> dict[str, Any]:
-        """Update conversation title or project assignment."""
+        """Update conversation title, project assignment, or pinned state."""
 
         current = self.conversation_store.get_conversation(conversation_id)
         if current is None:
@@ -872,6 +873,7 @@ class DataAgentService:
             conversation_id,
             title=title,
             project_id=project_id,
+            pinned=pinned,
         )
         if record is None:
             return error_response(
@@ -1283,6 +1285,8 @@ class DataAgentService:
             "title": record.get("title") or "",
             "dataset_id": record.get("dataset_id") or "",
             "project_id": record.get("project_id") or "",
+            "pinned": bool(record.get("pinned")),
+            "pinned_at": record.get("pinned_at") or "",
             "updated_at": record.get("updated_at"),
             "message_count": len(record.get("messages") or []),
         }
@@ -1971,17 +1975,23 @@ def _chat_answer(question: str, *, has_dataset: bool) -> str:
     if any(token in question for token in ("你好", "您好")) or lowered in {"hello", "hi", "hey"} or lowered.startswith(("hello ", "hi ", "hey ")):
         if has_dataset:
             return "你好，我是 VDS。当前数据已就绪，你可以直接问具体分析问题，也可以让我先做数据概览。"
-        return "你好，我是 VDS。你可以直接和我讨论分析思路、指标口径、字段设计，也可以上传 CSV 或 Excel 后让我基于数据给出结论。"
+        return "你好，我是 VDS。当前没有上传文件，所以不能给出具体数据结论；你可以先和我讨论分析思路、指标口径、字段设计，上传文件后我再基于真实数据分析。"
     if any(token in question for token in ("你是什么模型", "你是哪个模型", "底层模型", "什么模型", "你是谁", "介绍一下你")):
         return "我是 VDS 数据分析助手，运行在当前 VDS 后端和可配置 LLM provider 之上。我的职责是理解数据问题、调用受控分析链路，并把结果整理成可核对的回答。"
     if any(token in compact for token in ("能做什么", "怎么用", "功能", "帮助")) or "help" in lowered:
         if has_dataset:
             return "当前数据已经上传。你可以问概览、排序、汇总、趋势、对比、多文件命中文件或多表关联问题；如果只是聊天或讨论口径，我也会直接回复。"
-        return "我可以先帮你梳理分析目标、确认需要的字段和指标口径；上传数据后，我可以做聚合、排序、趋势、对比、多文件命中和多表关联分析。"
+        return "上传文件后（上传数据后），我可以做通用数据概览、多文件字段对比、字段角色识别、数据质量扫描、异常规则说明、可分析性建议和清洗影响模拟；领域专项问题需要对应字段或配置支持。"
+    if any(token in question for token in ("多文件", "多个文件", "多张表", "多表")) and any(token in question for token in ("对比", "支持", "join", "关联")):
+        return "支持多文件对比。多文件场景必须分别读取每个文件的行列、字段、缺失和角色，再判断是否可以做对比或 join；不能默认只分析第一个文件。"
+    if any(token in question for token in ("没有数据", "分析建议", "先给我建议")):
+        return "没有数据时只能给方法建议：先上传文件，再确认行列、字段含义、时间字段、指标字段、维度字段、缺失和异常；不能编造任何真实数值。"
     if any(token in question for token in ("字段", "口径", "指标", "维度", "关联", "数据表")) or "join" in lowered:
-        return "可以先不用上传文件。你把字段名、表结构或想看的指标告诉我，我可以帮你整理分析口径、推荐维度、判断是否需要多表关联。"
+        if any(token in question for token in ("多文件", "多个文件", "多张表", "多表", "对比")) or "join" in lowered:
+            return "支持多文件对比。多文件场景必须分别读取每个文件的行列、字段、缺失和角色，再判断是否可以做对比或 join；不能默认只分析第一个文件。"
+        return "没有数据时只能给方法建议：你把字段名、表结构或想看的指标告诉我，我可以帮你整理分析口径、推荐维度、判断是否需要多表关联；不能编造任何真实数值。"
     if any(token in lowered for token in ("sales", "revenue", "overall", "summary")) or any(token in question for token in ("销售", "收入", "整体", "概览", "情况")):
-        return "可以，我先理解为你想做数据概览。真实结论需要上传相关销售或收入数据；上传后我会优先返回汇总指标、趋势和关键下钻方向，而不是直接展开明细行。"
+        return "没有数据时只能给方法建议，不能编造真实数值。真实结论需要上传相关销售或收入数据；上传后我会优先返回汇总指标、趋势和关键下钻方向，而不是直接展开明细行。"
     return "可以继续聊。当前还没有上传数据，所以我不会编造业务结论；你可以描述分析目标、数据字段或上传文件后让我基于真实数据分析。"
 
 
@@ -2027,6 +2037,8 @@ def _suppress_raw_detail_answer(
 
 def _looks_like_raw_detail_dump(answer: str) -> bool:
     text = " ".join(str(answer or "").split())
+    if _looks_like_compact_value_sequence(text):
+        return True
     if len(text) < 500:
         return False
     comma_count = text.count(",")
@@ -2035,6 +2047,31 @@ def _looks_like_raw_detail_dump(answer: str) -> bool:
     token_count = len(re.findall(r"[A-Za-z0-9\u4e00-\u9fff_.-]+", text))
     sentence_count = len(re.findall(r"[。！？；;]", text))
     return token_count >= 60 and sentence_count <= 6
+
+
+def _looks_like_compact_value_sequence(text: str) -> bool:
+    parts = [part.strip() for part in re.split(r"[,，]", str(text or "")) if part.strip()]
+    if len(parts) < 8:
+        return False
+    if len(re.findall(r"[。！？；;]", text)) > 1:
+        return False
+    if any(marker in text for marker in ("建议", "字段", "行", "列", "表", "文件", "数据", "不能", "不会", "可以", "需要", "结果")):
+        return False
+    structured_parts = sum(1 for part in parts if _looks_like_scalar_value(part))
+    return structured_parts >= max(6, int(len(parts) * 0.6))
+
+
+def _looks_like_scalar_value(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?%?", text):
+        return True
+    if re.fullmatch(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[ tT]\d{1,2}:\d{2}(?::\d{2})?)?", text):
+        return True
+    if re.fullmatch(r"[A-Za-z]*\d[A-Za-z0-9_.-]*", text) and len(text) <= 32:
+        return True
+    return False
 
 
 def _allows_detail_answer(question: str) -> bool:

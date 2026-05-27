@@ -24,9 +24,11 @@
 
 2026-05-22 更新：ToolDispatcher 已对 timeout_seconds 增加本地 POSIX timeout 执行边界；架构测试新增 tracked-file secret scan，并把 Benchmark 硬编码扫描扩大到 agent_runtime、backend、ms_agent_framework_adapter 和 multi_agent_workflows 的核心源码范围。
 
-2026-05-25 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已完成首个轻量架构落点。`backend/storage/conversation_store.py` 提供本地 JSON conversation store；DataAgentService 的 `/message` 路径负责追加 user / assistant turn；Workbench 左侧历史 Chat 从后端 conversation endpoints 载入并持久化重命名。该层只保存会话和响应快照，不承载核心分析逻辑。
+2026-05-25 更新：Phase 11 会话隔离、历史续聊和 GPT-like 安静过程展示已完成首个轻量架构落点。`backend/storage/conversation_store.py` 提供本地 JSON conversation store；DataAgentService 的 `/message` 路径负责追加 user / assistant turn；Workbench 左侧历史 Chat 从后端 conversation endpoints 载入并持久化重命名。
 
-2026-05-25 更新：Phase 13 Project Workspace 已完成首个架构落点。`backend/storage/project_store.py` 提供本地 JSON Project Store，记录 project metadata、project sources、project-only memories 和 conversation_ids；DataAgentService 负责把 `project_id` 贯穿 `/message`、conversation create/list/record、Project CRUD、source upload 和 memory CRUD。Project source 中的数据/规则文件继续复用 TempFileStore、upload-batch、rule file 和 dataset store；`.md/.txt/.yaml/.yml` 项目说明文件只保存为 project source，不进入 DatasetProfile / DataFrame。Workbench 只渲染 Project 契约和传递 `project_id`，不实现检索、join、聚合、评分或数据清洗。
+2026-05-26 更新：Conversation Store 已新增后端持久化置顶 metadata：`pinned` 和 `pinned_at`。全局 conversation list 和 project-scoped conversation list 均按置顶优先、再按时间排序；Workbench 只能通过 conversation PATCH 切换置顶并渲染后端返回结果，不允许用前端本地状态冒充持久化。该层只保存会话和响应快照，不承载核心分析逻辑。
+
+2026-05-25 更新：Phase 13 Project Workspace 已完成首个架构落点。`backend/storage/project_store.py` 提供本地 JSON Project Store，记录 project metadata、project sources、project-only memories 和 conversation_ids；DataAgentService 负责把 `project_id` 贯穿 `/message`、conversation create/list/record、Project CRUD、source upload 和 memory CRUD。Project source 中的数据/规则文件继续复用 TempFileStore、upload-batch、rule file 和 dataset store；`.md/.txt/.yaml/.yml` 项目说明文件只保存为 project source，不进入 DatasetProfile / DataFrame。Workbench 只渲染 Project 契约和传递 `project_id`，不实现检索、join、聚合、评分或数据清洗；Project UI 必须是 ChatGPT-like sidebar + main Project home，左侧全局最近历史不按 project 过滤。
 
 2026-05-25 更新：Workbench 上传链路已支持完整 DAB context 包。`TempFileStore` 负责识别和保存 `payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md`，并把 dataset 标记为 `dabstep_context`；`DataAgentService` 仍只选择上下文并调用既有 single-agent / multi-agent 分析链路，DAB 规则解析和费用计算继续位于 `data_agent_core`。
 
@@ -59,6 +61,7 @@
 10. API key 只从环境变量读取，不进入 Git、trace、文档或 CHANGELOG。
 11. 中文问题理解、中文字段名、中文业务术语和中文输出格式是核心主路径；英文问题、英文字段和英文 Benchmark 必须兼容，但不能替代中文验收。
 12. Project memory 必须保持 project-only；任何 `/message`、conversation、source 或 memory 检索不得跨 `project_id` 读取，也不得把前端 localStorage 冒充共享项目存储。
+13. Workbench Project UX 是展示层边界：左侧全局最近历史、Project 列表和全局新 Chat 必须始终可见；项目内 chats / sources / memories 只能在主区域 Project home 用后端契约渲染，不得把全局 history API 改造成 Project filter。
 
 ## 核心链路
 

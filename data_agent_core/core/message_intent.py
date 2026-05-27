@@ -79,6 +79,8 @@ def is_dataset_overview_question(question: str) -> bool:
     compact = text.replace(" ", "")
     if any(phrase in compact for phrase in _CAPABILITY_OVERVIEW_PHRASES):
         return True
+    if any(phrase in compact for phrase in _SHAPE_OVERVIEW_PHRASES):
+        return True
     if any(phrase in compact for phrase in _SCHEMA_OVERVIEW_PHRASES) and not any(token in compact for token in _STRONG_SPECIFIC_ANALYSIS_TOKENS):
         return True
     if any(phrase in compact for phrase in _GENERIC_OVERVIEW_PHRASES) and not any(token in compact for token in _STRONG_SPECIFIC_ANALYSIS_TOKENS):
@@ -114,6 +116,8 @@ def is_cleaning_guidance_question(question: str) -> bool:
         "清洗",
         "删除异常",
         "异常行",
+        "异常规则",
+        "样例说明",
         "缺失字段",
         "有缺失",
         "缺失值",
@@ -121,16 +125,18 @@ def is_cleaning_guidance_question(question: str) -> bool:
         "保留",
         "影响行数",
         "影响比例",
+        "数量占比",
         "明显异常",
         "数据质量",
         "范围异常",
         "无法解析",
-        "哪里有问题",
         "极端值",
         "离群",
         "winsorize",
     )
-    return any(signal in compact for signal in boundary_signals) or any(signal in compact for signal in cleaning_signals)
+    if any(signal in compact for signal in boundary_signals) or any(signal in compact for signal in cleaning_signals):
+        return True
+    return "异常" in compact and any(token in compact for token in ("规则", "样例", "数量", "占比", "比例"))
 
 
 def _normalize(question: str) -> str:
@@ -203,7 +209,6 @@ _GENERIC_OVERVIEW_PHRASES = (
     "主要的分组",
     "主要分组",
     "主要类别",
-    "核心指标",
     "用于对比",
     "用于join",
     "这几个表什么意思",
@@ -218,8 +223,40 @@ _GENERIC_OVERVIEW_PHRASES = (
     "这个数据怎么样",
     "这个表怎么样",
     "这个文件怎么样",
+    "哪里有问题",
+    "看看哪里有问题",
     "数据概览",
     "数据总览",
+)
+
+_SHAPE_OVERVIEW_PHRASES = (
+    "每个文件分别有多少行、多少列",
+    "每个文件分别有多少行，多少列",
+    "每个文件分别有多少行多少列",
+    "每个文件有多少行、多少列",
+    "每个文件有多少行，多少列",
+    "每个文件有多少行多少列",
+    "各个文件有多少行、多少列",
+    "各个文件有多少行，多少列",
+    "各个文件有多少行多少列",
+    "每张表分别有多少行、多少列",
+    "每张表分别有多少行，多少列",
+    "每张表分别有多少行多少列",
+    "每个表分别有多少行、多少列",
+    "每个表分别有多少行，多少列",
+    "每个表分别有多少行多少列",
+    "各个表有多少行、多少列",
+    "各个表有多少行，多少列",
+    "各个表有多少行多少列",
+    "多少行、多少列",
+    "多少行，多少列",
+    "多少行多少列",
+    "行数、列数",
+    "行数，列数",
+    "行数列数",
+    "行列规模",
+    "表规模",
+    "文件规模",
 )
 
 _SCHEMA_OVERVIEW_PHRASES = (
@@ -258,7 +295,6 @@ _SCHEMA_OVERVIEW_PHRASES = (
     "主要的分组",
     "主要分组",
     "主要类别",
-    "核心指标",
     "用于对比",
     "用于join",
     "表什么意思",
