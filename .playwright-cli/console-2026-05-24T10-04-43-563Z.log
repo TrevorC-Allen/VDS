@@ -1,0 +1,2 @@
+[   97660ms] [ERROR] Access to CSS stylesheet at 'http://127.0.0.1:8001/frontend/styles.css?v=20260524-chart-size' from origin 'null' has been blocked by CORS policy: The request client is not a secure context and the resource is in more-private address space `loopback`. @ about:blank:0
+[   97661ms] [ERROR] Failed to load resource: net::ERR_FAILED @ http://127.0.0.1:8001/frontend/styles.css?v=20260524-chart-size:0

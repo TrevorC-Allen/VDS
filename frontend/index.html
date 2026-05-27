@@ -5,10 +5,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Virtual Data Scientist Workbench</title>
     <link rel="icon" href="/frontend/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/frontend/styles.css?v=20260526-project-move-default" />
+    <link rel="stylesheet" href="/frontend/styles.css?v=20260527-thinking-drawer-v1" />
   </head>
   <body>
     <div id="context-menu" class="context-menu hidden" role="menu" aria-label="操作菜单"></div>
+    <div id="activity-backdrop" class="activity-backdrop hidden" aria-hidden="true"></div>
+    <div id="text-dialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="text-dialog-title">
+      <form class="text-dialog-card">
+        <h2 id="text-dialog-title">名称</h2>
+        <label id="text-dialog-label" for="text-dialog-input">名称</label>
+        <input id="text-dialog-input" type="text" autocomplete="off" />
+        <div class="dialog-actions">
+          <button id="text-dialog-cancel" type="button">取消</button>
+          <button id="text-dialog-confirm" type="submit">确认</button>
+        </div>
+      </form>
+    </div>
+    <div id="chat-search-dialog" class="chat-search-dialog hidden" role="dialog" aria-modal="true" aria-label="搜索聊天">
+      <section class="chat-search-card">
+        <div class="chat-search-field">
+          <label class="visually-hidden" for="chat-search-input">搜索聊天</label>
+          <input id="chat-search-input" type="search" placeholder="搜索聊天..." autocomplete="off" spellcheck="false" />
+          <button id="chat-search-close-button" class="chat-search-close-button" type="button" aria-label="关闭搜索">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
+          </button>
+        </div>
+        <div id="chat-search-results" class="chat-search-results" role="list" aria-label="聊天搜索结果"></div>
+      </section>
+    </div>
     <div class="app-shell">
       <aside class="sidebar" aria-label="历史 Chat">
         <div class="brand">
@@ -19,24 +43,31 @@
           </div>
         </div>
 
-        <button id="new-chat-button" class="new-chat-button" type="button" aria-label="新分析">
+        <button id="new-chat-button" class="new-chat-button" type="button" aria-label="新聊天">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-          新分析
+          新聊天
+        </button>
+        <button id="chat-search-button" class="new-chat-button chat-search-button" type="button" aria-haspopup="dialog" aria-controls="chat-search-dialog">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m16 16 4 4"></path></svg>
+          搜索聊天
         </button>
 
         <section class="project-panel" aria-labelledby="project-title">
-          <div class="project-header">
-            <h2 id="project-title">项目</h2>
-            <span id="project-count">0</span>
-          </div>
-          <button id="new-project-button" class="project-nav-button" type="button">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path><path d="M12 12v5M9.5 14.5h5"></path></svg>
-            <span>新项目</span>
+          <button id="project-collapse-button" class="project-header-button" type="button" aria-expanded="true" aria-controls="project-section-body">
+            <span id="project-title">项目</span>
+            <svg class="project-collapse-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
           </button>
-          <ol id="project-list" class="project-list" aria-label="项目列表">
-            <li class="project-empty">暂无 Project</li>
-          </ol>
-          <p id="project-summary" class="project-summary">project-only memory</p>
+          <span id="project-count" class="project-count hidden" aria-hidden="true">0</span>
+          <div id="project-section-body" class="project-section-body">
+            <button id="new-project-button" class="project-nav-button" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path><path d="M12 12v5M9.5 14.5h5"></path></svg>
+              <span>新项目</span>
+            </button>
+            <ol id="project-list" class="project-list" aria-label="项目列表">
+              <li class="project-empty">暂无 Project</li>
+            </ol>
+            <p id="project-summary" class="project-summary">project-only memory</p>
+          </div>
         </section>
 
         <section class="history-panel" aria-labelledby="history-title">
@@ -54,7 +85,7 @@
         <header class="chat-topbar">
           <div>
             <h1>VDS</h1>
-            <p id="dataset-status">等待上传数据集</p>
+            <p id="dataset-status" class="hidden" aria-hidden="true"></p>
           </div>
           <div class="status-strip" aria-live="polite">
             <a class="monitor-link" href="/monitor" target="_blank" rel="noreferrer" title="打开监看页">
@@ -87,8 +118,18 @@
                 </ol>
               </section>
               <section id="project-sources-panel" class="project-tab-panel hidden" role="tabpanel" aria-labelledby="project-tab-sources">
+                <input id="project-source-upload-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md,.txt,.yaml,.yml,.doc,.docx,.docm,.rtf,.odt,.pdf,.pages,.html,.htm" />
+                <button id="project-source-upload-dropzone" class="project-source-upload-dropzone" type="button">
+                  <span class="project-source-upload-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>
+                  </span>
+                  <span class="project-source-upload-copy">
+                    <strong>添加源</strong>
+                    <span>上传本地文件或拖拽到这里</span>
+                  </span>
+                </button>
+                <p id="project-source-upload-status" class="project-source-upload-status hidden" aria-live="polite"></p>
                 <div class="project-source-group">
-                  <h3>文件和来源</h3>
                   <ol id="project-source-list" class="project-source-list">
                     <li class="project-home-empty">上传共享文件后会显示在这里。</li>
                   </ol>
@@ -166,14 +207,16 @@
               <section class="analysis-block process-panel" aria-labelledby="process-title">
                 <h2 id="process-title" class="visually-hidden">正在做什么</h2>
                 <div class="process-line">
-                  <p id="process-summary">提问后，我会用一行摘要说明当前正在处理什么。</p>
+                  <details id="process-details" class="process-details">
+                    <summary aria-controls="activity-drawer" aria-haspopup="dialog" aria-expanded="false">
+                      <span class="thinking-elapsed">查看处理过程</span>
+                      <span id="process-summary" class="process-summary-text" aria-hidden="true"></span>
+                    </summary>
+                    <ol id="process-timeline" class="process-timeline" aria-live="polite">
+                      <li class="muted-cell">提问后显示分析过程。</li>
+                    </ol>
+                  </details>
                 </div>
-                <details id="process-details" class="process-details">
-                  <summary>查看处理过程</summary>
-                  <ol id="process-timeline" class="process-timeline" aria-live="polite">
-                    <li class="muted-cell">提问后显示分析过程。</li>
-                  </ol>
-                </details>
               </section>
 
               <section class="analysis-block artifact-panel hidden" aria-labelledby="artifact-title">
@@ -182,6 +225,20 @@
                 </div>
                 <div class="artifact-list"></div>
               </section>
+
+              <details class="answer-source-panel hidden" aria-label="回答来源">
+                <summary class="answer-source-title">
+                  <span>来源</span>
+                  <span class="answer-source-count"></span>
+                </summary>
+                <ol class="answer-source-list"></ol>
+              </details>
+              <div class="message-actions" aria-label="回复操作">
+                <button class="copy-reply-button hidden" type="button" title="复制回复" aria-label="复制回复" data-tooltip="复制回复">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2"></path><path d="M6 8h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z"></path></svg>
+                </button>
+              </div>
+              <time class="message-meta" datetime=""></time>
             </div>
           </article>
         </section>
@@ -207,7 +264,7 @@
             ></div>
             <div class="composer-actions">
               <div class="upload-controls" aria-label="文件上传">
-                <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md,.txt,.yaml,.yml" />
+                <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md,.txt,.yaml,.yml,.doc,.docx,.docm,.rtf,.odt,.pdf,.pages,.html,.htm" />
                 <label class="icon-button upload-pick-button" for="file-input" title="选择文件" aria-label="选择文件">
                   <svg viewBox="0 0 24 24"><path d="m21.4 11.6-8.5 8.5a5 5 0 0 1-7.1-7.1l9-9a3.2 3.2 0 0 1 4.5 4.5l-9.1 9.1a1.5 1.5 0 0 1-2.1-2.1l8.3-8.3" /></svg>
                 </label>
@@ -251,8 +308,24 @@
             </div>
           </div>
         </section>
+
+        <aside id="activity-drawer" class="activity-drawer hidden" aria-hidden="true" aria-labelledby="activity-drawer-title">
+          <div class="activity-drawer-header">
+            <div>
+              <span id="activity-drawer-kicker">已思考</span>
+              <h2 id="activity-drawer-title">思考与执行链路</h2>
+            </div>
+            <button id="activity-drawer-close" class="icon-button" type="button" title="关闭活动详情" aria-label="关闭活动详情">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
+            </button>
+          </div>
+          <p id="activity-drawer-summary" class="activity-drawer-summary">点击已思考后，这里显示本次思考过程、执行链路、工具调用和安全复现代码。</p>
+          <ol id="activity-drawer-list" class="activity-drawer-list">
+            <li class="activity-drawer-empty">暂无活动。</li>
+          </ol>
+        </aside>
       </main>
     </div>
-    <script src="/frontend/app.js?v=20260526-project-move-default" type="module"></script>
+    <script src="/frontend/app.js?v=20260527-thinking-drawer-v1" type="module"></script>
   </body>
 </html>

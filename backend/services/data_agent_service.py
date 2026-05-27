@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -25,17 +27,26 @@ from backend.schemas.data_agent_schema import (
 )
 from backend.storage.conversation_store import ConversationStore
 from backend.storage.project_store import ProjectStore, build_project_context
-from backend.storage.temp_file_store import StoredRuleFile, TempFileStore
+from backend.storage.temp_file_store import StoredRuleFile, TempFileStore, _read_source_text
 from data_agent_core.agent.single_agent import DataAnalysisAgent, UploadedDatasetAgent
 from data_agent_core.benchmark.evaluator import question_scorer
-from data_agent_core.core.message_intent import classify_workbench_message, is_cleaning_guidance_question, is_dataset_overview_question
+from data_agent_core.core.message_intent import (
+    classify_workbench_message,
+    is_cleaning_guidance_question,
+    is_dataset_overview_question,
+    is_dataset_source_question,
+)
 from data_agent_core.core.file_parser import parse_dataset_file
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import FILE_PARSE_ERROR, LOGIC_FORM_ERROR
-from data_agent_core.llm.client import LLMClient
+from data_agent_core.llm.client import LLMClient, MissingLLMConfigError, load_llm_client_from_env
+from data_agent_core.llm.planner import complete_stage_with_llm
+from data_agent_core.output.activity_trace import build_activity_trace_v2
 from data_agent_core.output.cleaning_guidance import build_cleaning_guidance_response
 from data_agent_core.output.dataset_overview import build_dataset_overview_response
 from data_agent_core.output.process_narrative import build_chat_process_view, process_view_monitor_payload
+from data_agent_core.output.source_overview import build_dataset_source_overview_response
+from data_agent_core.output.text_answer_framework import apply_text_answer_framework
 from data_agent_core.tracing.live_monitor import emit_monitor_event
 from multi_agent_workflows.end_to_end_data_analysis_workflow import DataAnalysisMultiAgentWorkflow
 
@@ -77,6 +88,15 @@ class DataAgentService:
                     dataset_id=bind_dataset_id,
                 )
                 return _rule_file_response(record)
+            if _is_source_only_upload([file_path], [original_filename]):
+                stored = self.file_store.save_source_only_files(
+                    [file_path],
+                    original_filenames=[original_filename],
+                )
+                response = dataset_profile_response(stored.profile)
+                response["dataset_kind"] = stored.dataset_kind
+                response["source_file_count"] = 1
+                return to_json_ready(response)
             _validate_dataset_upload(file_path, original_filename=original_filename, rule_scope=rule_scope)
             parsed = parse_dataset_file(file_path, source_name=original_filename)
             self.file_store.save_parsed_dataset(file_path, parsed)
@@ -118,6 +138,15 @@ class DataAgentService:
                 return _rule_files_response(records)
             if rule_scope:
                 raise ValueError("dataset uploads must not include rule_scope.")
+            if _is_source_only_upload(file_paths, original_filenames):
+                stored = self.file_store.save_source_only_files(
+                    file_paths,
+                    original_filenames=original_filenames,
+                )
+                response = dataset_profile_response(stored.profile)
+                response["dataset_kind"] = stored.dataset_kind
+                response["source_file_count"] = len(file_paths)
+                return to_json_ready(response)
             _raise_if_rule_only_dabstep_partial(file_paths, original_filenames)
             dataset_paths, dataset_names, rule_paths, rule_names = _split_dataset_and_auto_rule_files(
                 file_paths,
@@ -274,6 +303,7 @@ class DataAgentService:
             profile = self.file_store.get_profile(dataset_id)
             dataset_kind = self.file_store.get_dataset_kind(dataset_id)
             analysis_context = self.file_store.get_analysis_context(dataset_id)
+            source_manifest = self.file_store.get_dataset_sources(dataset_id)
             emit_monitor_event(
                 monitor_run_id,
                 "data_scan_note",
@@ -283,7 +313,53 @@ class DataAgentService:
                 status="completed",
                 payload={"dataset_id": dataset_id, "table_count": len(tables)},
             )
-            if is_cleaning_guidance_question(question):
+            semantic_route = self._route_dataset_message(
+                question=question,
+                profile=profile,
+                dataset_kind=dataset_kind,
+                source_manifest=source_manifest,
+            )
+            if semantic_route["route"] == "dataset_source_overview":
+                response = to_json_ready(
+                    build_dataset_source_overview_response(
+                        run_id=run_id,
+                        dataset_id=dataset_id,
+                        question=question.strip(),
+                        source_manifest=source_manifest,
+                        tables=tables,
+                        agent_mode=agent_mode,
+                    )
+                )
+                response.setdefault("debug", {})
+                response["debug"]["semantic_route"] = semantic_route
+                response = self._apply_fast_path_llm_presentation(
+                    response,
+                    question=question.strip(),
+                    route="dataset_source_overview",
+                    table_count=len(tables),
+                )
+                response = _apply_gpt_like_text_framework(response, question=question.strip())
+                _ensure_activity_trace_v2(response)
+                emit_monitor_event(
+                    monitor_run_id,
+                    "answer_outline_ready",
+                    title="来源文件说明已整理",
+                    summary="已读取上传来源清单，并区分表格、说明、规则和知识文件。",
+                    stage="dataset_source_overview",
+                    status="completed",
+                    payload={"run_id": run_id, "dataset_id": dataset_id, "answer_type": response.get("answer_type")},
+                )
+                emit_monitor_event(
+                    monitor_run_id,
+                    "workflow_completed",
+                    title="来源文件概览完成",
+                    summary="本次问题命中来源文件概览路径，未进入完整 multi-agent 执行链。",
+                    stage="dataset_source_overview",
+                    status="completed",
+                    payload=process_view_monitor_payload(response),
+                )
+                return response
+            if semantic_route["route"] == "cleaning_guidance":
                 response = to_json_ready(
                     build_cleaning_guidance_response(
                         run_id=run_id,
@@ -293,6 +369,17 @@ class DataAgentService:
                         agent_mode=agent_mode,
                     )
                 )
+                response.setdefault("debug", {})
+                response["debug"]["semantic_route"] = semantic_route
+                response = self._apply_fast_path_llm_presentation(
+                    response,
+                    question=question.strip(),
+                    route="cleaning_guidance",
+                    table_count=len(tables),
+                )
+                _attach_source_references(response, profile=profile)
+                response = _apply_gpt_like_text_framework(response, question=question.strip())
+                _ensure_activity_trace_v2(response)
                 emit_monitor_event(
                     monitor_run_id,
                     "answer_outline_ready",
@@ -312,7 +399,7 @@ class DataAgentService:
                     payload=process_view_monitor_payload(response),
                 )
                 return response
-            if is_dataset_overview_question(question):
+            if semantic_route["route"] == "dataset_overview":
                 response = to_json_ready(
                     build_dataset_overview_response(
                         run_id=run_id,
@@ -323,6 +410,17 @@ class DataAgentService:
                         agent_mode=agent_mode,
                     )
                 )
+                response.setdefault("debug", {})
+                response["debug"]["semantic_route"] = semantic_route
+                response = self._apply_fast_path_llm_presentation(
+                    response,
+                    question=question.strip(),
+                    route="dataset_overview",
+                    table_count=len(tables),
+                )
+                _attach_source_references(response, profile=profile)
+                response = _apply_gpt_like_text_framework(response, question=question.strip())
+                _ensure_activity_trace_v2(response)
                 if response.get("execution_artifacts"):
                     emit_monitor_event(
                         monitor_run_id,
@@ -436,6 +534,17 @@ class DataAgentService:
                 profile=profile,
                 agent_mode=agent_mode,
             )
+            payload = self._rescue_unexpected_not_applicable(
+                payload,
+                question=question,
+                tables=tables,
+                profile=profile,
+                source_manifest=source_manifest,
+                agent_mode=agent_mode,
+            )
+            _attach_source_references(payload, profile=profile)
+            payload = _apply_gpt_like_text_framework(payload, question=question)
+            _ensure_activity_trace_v2(payload)
             if payload.get("execution_artifacts"):
                 emit_monitor_event(
                     monitor_run_id,
@@ -487,6 +596,360 @@ class DataAgentService:
                 ),
             )
 
+    def _route_dataset_message(
+        self,
+        *,
+        question: str,
+        profile: Any,
+        dataset_kind: str,
+        source_manifest: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Choose fast-path route using semantic intent, not exact phrase patches."""
+
+        deterministic_route = _semantic_dataset_route(question, source_manifest=source_manifest)
+        llm_route = self._try_llm_route_dataset_message(
+            question=question,
+            profile=profile,
+            dataset_kind=dataset_kind,
+            source_manifest=source_manifest,
+        )
+        route = deterministic_route
+        if llm_route.get("route") in {"chat", "cleaning_guidance", "dataset_overview", "dataset_source_overview", "analysis"}:
+            llm_confidence = float(llm_route.get("confidence") or 0.0)
+            if llm_confidence >= 0.55:
+                route = str(llm_route["route"])
+        if route == "analysis":
+            legacy_route = classify_workbench_message(question, has_dataset=True)
+            if legacy_route in {"cleaning_guidance", "dataset_overview"}:
+                route = legacy_route
+            elif legacy_route == "dataset_source_overview":
+                route = "dataset_source_overview"
+        return {
+            "route": route,
+            "deterministic_route": deterministic_route,
+            "llm_route": llm_route,
+            "strategy": "semantic_router_with_not_applicable_rescue",
+        }
+
+    def _try_llm_route_dataset_message(
+        self,
+        *,
+        question: str,
+        profile: Any,
+        dataset_kind: str,
+        source_manifest: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Use the configured LLM as a semantic router when available."""
+
+        client = self.llm_client
+        if client is None:
+            try:
+                client = load_llm_client_from_env()
+                self.llm_client = client
+            except MissingLLMConfigError as exc:
+                return {"used": False, "skipped_reason": str(exc)}
+        try:
+            stage = complete_stage_with_llm(
+                llm_client=client,
+                stage_name="workbench_semantic_router",
+                stage_goal=(
+                    "Classify the user message for a dataset-grounded data analysis product. "
+                    "Choose chat for ordinary conversation, dataset_source_overview for questions asking what uploaded files, forms, manuals, rules, docs, JSON, or source materials contain or are used for, "
+                    "dataset_overview for broad questions asking what the data/tables contain, mean, summarize, or can be used for, "
+                    "cleaning_guidance for data-quality/cleaning-policy questions, and analysis only for concrete calculations, rankings, trends, filters, comparisons, charts, joins, or metric answers."
+                ),
+                question=question,
+                guidelines=(
+                    "Prefer overview/source_overview over analysis when the user asks a broad browse/explain question. "
+                    "Do not send understandable broad content questions to Not Applicable."
+                ),
+                context_summary={
+                    "dataset_kind": dataset_kind,
+                    "dataset": _chat_dataset_context_for_llm(profile),
+                    "source_counts": _source_counts_for_llm(source_manifest),
+                },
+                payload={
+                    "source_preview": _source_preview_for_llm(source_manifest),
+                },
+                required_output={
+                    "route": "one of chat, dataset_source_overview, dataset_overview, cleaning_guidance, analysis",
+                    "confidence": "number between 0 and 1",
+                    "reasoning_summary": "short safe explanation, not chain of thought",
+                },
+                temperature=0.0,
+            )
+        except Exception as exc:  # noqa: BLE001 - router must never block deterministic path.
+            return {"used": False, "skipped_reason": f"{type(exc).__name__}: {str(exc)[:160]}"}
+        raw = stage.raw if isinstance(stage.raw, dict) else {}
+        route = str(raw.get("route") or raw.get("intent") or "").strip()
+        return {
+            "used": True,
+            "route": route,
+            "confidence": stage.confidence,
+            "reasoning_summary": _llm_text(stage.reasoning_summary),
+        }
+
+    def _rescue_unexpected_not_applicable(
+        self,
+        payload: dict[str, Any],
+        *,
+        question: str,
+        tables: dict[str, Any],
+        profile: Any,
+        source_manifest: dict[str, Any],
+        agent_mode: str,
+    ) -> dict[str, Any]:
+        """Replace broad browse-question N/A with a grounded overview response."""
+
+        if not _is_not_applicable_payload(payload):
+            return payload
+        route = _semantic_dataset_route(question, source_manifest=source_manifest, allow_rescue=True)
+        if route not in {"dataset_source_overview", "dataset_overview"}:
+            return payload
+        try:
+            if route == "dataset_source_overview":
+                replacement = build_dataset_source_overview_response(
+                    run_id=str(payload.get("run_id") or "run_not_applicable_rescue"),
+                    dataset_id=str(payload.get("dataset_id") or ""),
+                    question=question.strip(),
+                    source_manifest=source_manifest,
+                    tables=tables,
+                    agent_mode=agent_mode,
+                )
+            else:
+                replacement = build_dataset_overview_response(
+                    run_id=str(payload.get("run_id") or "run_not_applicable_rescue"),
+                    dataset_id=str(payload.get("dataset_id") or ""),
+                    question=question.strip(),
+                    tables=tables,
+                    profile=profile,
+                    agent_mode=agent_mode,
+                )
+            replacement.setdefault("debug", {})
+            replacement["debug"]["not_applicable_rescue"] = {
+                "applied": True,
+                "route": route,
+                "reason": "broad_browse_question_must_not_surface_not_applicable",
+                "original_operation": (payload.get("debug") or {}).get("operation")
+                if isinstance(payload.get("debug"), dict)
+                else "",
+            }
+            return to_json_ready(replacement)
+        except Exception:
+            return payload
+
+    def _apply_fast_path_llm_presentation(
+        self,
+        response: dict[str, Any],
+        *,
+        question: str,
+        route: str,
+        table_count: int,
+    ) -> dict[str, Any]:
+        """Let an LLM shape fast deterministic answers without changing calculations."""
+
+        debug = response.setdefault("debug", {})
+        meta: dict[str, Any] = {
+            "stage": "fast_path_presentation",
+            "route": route,
+            "used": False,
+            "skipped_reason": "",
+        }
+        client = self.llm_client
+        if client is None:
+            try:
+                client = load_llm_client_from_env()
+                self.llm_client = client
+            except MissingLLMConfigError as exc:
+                meta["skipped_reason"] = str(exc)
+                debug["llm_presentation"] = meta
+                return response
+        started = time.perf_counter()
+        try:
+            stage = complete_stage_with_llm(
+                llm_client=client,
+                stage_name="fast_path_presentation",
+                stage_goal=(
+                    "Act as the user-facing AI presentation layer for a verified deterministic data result. "
+                    "Do not recalculate data, do not add new numbers, and do not change the answer. "
+                    "Produce a concise display answer, one insight summary, one high-value next step, and up to two follow-up questions. "
+                    "The display answer may rephrase and tailor the verified answer to the user's wording, but it must not change facts."
+                ),
+                question=question,
+                guidelines=(
+                    "Keep Chinese concise and GPT-like. Be specific to the uploaded tables and verified result. "
+                    "Avoid numbered bullets in display_answer so it reads natural and does not introduce unverified numbers."
+                ),
+                context_summary={
+                    "route": route,
+                    "answer_type": response.get("answer_type"),
+                    "operation": (response.get("debug") or {}).get("operation"),
+                    "table_count": table_count,
+                    "result_columns": (response.get("result") or {}).get("columns") if isinstance(response.get("result"), dict) else [],
+                    "existing_insight_summary": (response.get("insight") or {}).get("summary") if isinstance(response.get("insight"), dict) else "",
+                },
+                payload={
+                    "verified_answer_excerpt": _truncate_for_llm(response.get("answer"), 1200),
+                    "result_preview": _result_preview_for_llm(response.get("result")),
+                    "current_insight": _safe_dict_for_llm(response.get("insight"), limit=1200),
+                    "overview_shape": _overview_shape_for_llm(response.get("overview_report")),
+                    "quality_summary": _quality_summary_for_llm(response.get("quality_report")),
+                },
+                required_output={
+                    "display_answer": "one concise user-facing answer grounded only in verified_answer_excerpt and result_preview; no new numbers",
+                    "summary": "one concise user-facing insight sentence grounded in the verified answer",
+                    "next_step": "one concrete next analysis step; no generic advice",
+                    "next_questions": "array of up to two useful follow-up questions",
+                    "confidence": "number between 0 and 1",
+                    "reasoning_summary": "short summary, not chain of thought",
+                },
+                temperature=0.35,
+            )
+        except Exception as exc:  # noqa: BLE001 - LLM presentation must never break verified answers.
+            meta["skipped_reason"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+            debug["llm_presentation"] = meta
+            return response
+
+        elapsed_ms = max(0, int(round((time.perf_counter() - started) * 1000)))
+        raw = stage.raw if isinstance(stage.raw, dict) else {}
+        display_answer = _llm_text(raw.get("display_answer"), 1600)
+        summary = _llm_text(raw.get("summary") or raw.get("display_summary"))
+        next_step = _llm_text(raw.get("next_step") or raw.get("recommendation"))
+        next_questions = _llm_text_list(raw.get("next_questions"), limit=2)
+        answer_updated = False
+        answer_update_source = ""
+        if _is_safe_llm_display_answer(display_answer, response):
+            response["answer"] = display_answer
+            answer_updated = True
+            answer_update_source = "display_answer"
+        elif summary:
+            summary_prefaced_answer = _compose_summary_prefaced_answer(response.get("answer"), summary)
+            if _is_safe_llm_display_answer(summary_prefaced_answer, response):
+                response["answer"] = summary_prefaced_answer
+                answer_updated = True
+                answer_update_source = "summary_preface"
+        if summary or next_step or next_questions:
+            insight = response.setdefault("insight", {})
+            if isinstance(insight, dict):
+                if summary:
+                    insight["summary"] = summary
+                if next_step:
+                    insight["business_suggestions"] = [
+                        f"观察：{summary or 'AI 已基于已验证结果复核表达'}；依据：后端已验证结果、表画像和当前问题；建议：{next_step}"
+                    ]
+                    insight["suggestions"] = list(insight["business_suggestions"])
+                if next_questions:
+                    insight["next_questions"] = next_questions
+                insight["confidence"] = max(float(insight.get("confidence") or 0.0), stage.confidence)
+        meta.update(
+            {
+                "used": True,
+                "confidence": stage.confidence,
+                "elapsed_ms": elapsed_ms,
+                "reasoning_summary": _llm_text(stage.reasoning_summary),
+                "updated_answer": answer_updated,
+                "answer_update_source": answer_update_source,
+                "updated_summary": bool(summary),
+                "updated_next_step": bool(next_step),
+                "next_question_count": len(next_questions),
+            }
+        )
+        debug["llm_presentation"] = meta
+        _attach_llm_presentation_process_step(response, meta)
+        return response
+
+    def _apply_direct_llm_chat(
+        self,
+        response: dict[str, Any],
+        *,
+        question: str,
+        has_dataset: bool,
+        dataset_id: str = "",
+    ) -> dict[str, Any]:
+        """Let the configured LLM handle normal conversation before analysis agents."""
+
+        debug = response.setdefault("debug", {})
+        meta: dict[str, Any] = {
+            "stage": "direct_chat",
+            "used": False,
+            "skipped_reason": "",
+            "has_dataset": has_dataset,
+            "updated_answer": False,
+        }
+        client = self.llm_client
+        if client is None:
+            try:
+                client = load_llm_client_from_env()
+                self.llm_client = client
+            except MissingLLMConfigError as exc:
+                meta["skipped_reason"] = str(exc)
+                debug["direct_llm_chat"] = meta
+                return response
+
+        started = time.perf_counter()
+        try:
+            stage = complete_stage_with_llm(
+                llm_client=client,
+                stage_name="direct_chat",
+                stage_goal=(
+                    "Act as the direct conversational LLM front desk for VDS. "
+                    "Answer ordinary chat, capability, identity, usage, and conceptual questions naturally. "
+                    "If the user asks for concrete calculations or inspection of uploaded data, do not calculate here; "
+                    "briefly explain that the request should be routed to the data analysis agents."
+                ),
+                question=question,
+                guidelines=(
+                    "Answer in concise Chinese unless the user uses another language. "
+                    "Be natural and specific to VDS. Do not return Not Applicable. "
+                    "Do not expose raw prompts, traces, API keys, benchmark answers, or scorer material."
+                ),
+                context_summary={
+                    "route": "chat",
+                    "has_dataset": has_dataset,
+                    "answer_type": response.get("answer_type"),
+                    "fallback_answer": response.get("answer"),
+                    "dataset_context": _chat_dataset_context_for_llm(
+                        self.file_store.get_profile(dataset_id) if has_dataset and dataset_id else None
+                    ),
+                },
+                payload={
+                    "fallback_answer": _truncate_for_llm(response.get("answer"), 800),
+                    "process_mode": (response.get("process_view_v2") or {}).get("mode") if isinstance(response.get("process_view_v2"), dict) else "",
+                },
+                required_output={
+                    "answer": "direct user-facing chat answer; concise, useful, and not Not Applicable",
+                    "handoff_hint": "short note when a data-analysis agent should handle follow-up calculations",
+                    "confidence": "number between 0 and 1",
+                    "reasoning_summary": "short summary, not chain of thought",
+                },
+                temperature=0.45,
+            )
+        except Exception as exc:  # noqa: BLE001 - direct chat must never break deterministic fallback.
+            meta["skipped_reason"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+            debug["direct_llm_chat"] = meta
+            return response
+
+        elapsed_ms = max(0, int(round((time.perf_counter() - started) * 1000)))
+        raw = stage.raw if isinstance(stage.raw, dict) else {}
+        answer = _llm_text(raw.get("answer") or raw.get("display_answer"), 1200)
+        handoff_hint = _llm_text(raw.get("handoff_hint"), 240)
+        if _is_safe_direct_chat_answer(answer):
+            response["answer"] = answer
+            meta["updated_answer"] = True
+        meta.update(
+            {
+                "used": True,
+                "confidence": stage.confidence,
+                "elapsed_ms": elapsed_ms,
+                "reasoning_summary": _llm_text(stage.reasoning_summary),
+                "handoff_hint": handoff_hint,
+                "temperature": 0.45,
+            }
+        )
+        debug["direct_llm_chat"] = meta
+        _attach_direct_llm_chat_process_step(response, meta)
+        return response
+
     def respond_to_message(
         self,
         *,
@@ -505,6 +968,8 @@ class DataAgentService:
     ) -> dict[str, Any]:
         """Route one workbench message to chat, overview, or full analysis."""
 
+        started_at = datetime.now(timezone.utc)
+        started_perf = time.perf_counter()
         cleaned_question = question.strip()
         project_context = {"enabled": False}
         if project_id:
@@ -545,7 +1010,9 @@ class DataAgentService:
         )
         if not dataset_id:
             response = self.chat_without_dataset(question=cleaned_question, agent_mode=agent_mode, monitor_run_id=monitor_run_id)
+            _ensure_activity_trace_v2(response)
             _attach_project_metadata(response, project_context)
+            _attach_message_timing(response, started_at=started_at, started_perf=started_perf)
             return self._record_conversation_turn(
                 response,
                 conversation_id=conversation_id,
@@ -584,7 +1051,9 @@ class DataAgentService:
                 user_rule_file_id=user_rule_file_id,
                 monitor_run_id=monitor_run_id,
             )
+        _ensure_activity_trace_v2(response)
         _attach_project_metadata(response, project_context)
+        _attach_message_timing(response, started_at=started_at, started_perf=started_perf)
         return self._record_conversation_turn(
             response,
             conversation_id=conversation_id,
@@ -800,7 +1269,7 @@ class DataAgentService:
         limit: int = 50,
         owner_id: str = "",
         tenant_id: str = "",
-        project_id: str | None = None,
+        project_id: str | None = "",
     ) -> dict[str, Any]:
         """Return recent persistent workbench conversations."""
 
@@ -833,7 +1302,93 @@ class DataAgentService:
                     suggested_fix="Start a new conversation or choose another history item.",
                 )
             )
+        record = self._repair_stored_not_applicable_messages(record)
         return _conversation_response(record)
+
+    def _repair_stored_not_applicable_messages(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Repair previously persisted broad-overview N/A answers on history load."""
+
+        messages = record.get("messages") or []
+        dataset_id = str(record.get("dataset_id") or "")
+        if not dataset_id or not messages:
+            return record
+        try:
+            tables = self.file_store.get_tables(dataset_id) or {}
+            profile = self.file_store.get_profile(dataset_id)
+            source_manifest = self.file_store.get_dataset_sources(dataset_id)
+        except Exception:  # noqa: BLE001 - history loading must stay available.
+            return record
+        if not tables and not (source_manifest.get("sources") if isinstance(source_manifest, dict) else None):
+            return record
+
+        changed = False
+        for index, message in enumerate(messages):
+            if str(message.get("role") or "") != "assistant":
+                continue
+            payload = message.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            needs_repair = _is_not_applicable_payload(payload) or _is_stale_stored_overview_repair(payload)
+            if not needs_repair:
+                continue
+            previous_user = next(
+                (
+                    candidate
+                    for candidate in reversed(messages[:index])
+                    if str(candidate.get("role") or "") == "user" and str(candidate.get("content") or "").strip()
+                ),
+                {},
+            )
+            question = str(previous_user.get("content") or payload.get("question") or "").strip()
+            if not question:
+                continue
+            route = _semantic_dataset_route(question, source_manifest=source_manifest, allow_rescue=True)
+            if route not in {"dataset_source_overview", "dataset_overview"}:
+                continue
+            try:
+                payload_debug = payload.get("debug") if isinstance(payload.get("debug"), dict) else {}
+                if route == "dataset_source_overview":
+                    replacement = build_dataset_source_overview_response(
+                        run_id=str(payload.get("run_id") or message.get("run_id") or "run_stored_not_applicable_repair"),
+                        dataset_id=dataset_id,
+                        question=question,
+                        source_manifest=source_manifest,
+                        tables=tables,
+                        agent_mode=str(payload_debug.get("agent_mode") or "multi_agent"),
+                    )
+                else:
+                    replacement = build_dataset_overview_response(
+                        run_id=str(payload.get("run_id") or message.get("run_id") or "run_stored_not_applicable_repair"),
+                        dataset_id=dataset_id,
+                        question=question,
+                        tables=tables,
+                        profile=profile,
+                        agent_mode=str(payload_debug.get("agent_mode") or "multi_agent"),
+                    )
+                replacement.setdefault("debug", {})
+                replacement["debug"]["stored_not_applicable_repair"] = {
+                    "applied": True,
+                    "route": route,
+                    "reason": "stored_broad_overview_answer_rebuilt_on_history_load",
+                    "original_operation": payload_debug.get("operation") or "",
+                }
+                _attach_source_references(replacement, profile=profile)
+                _ensure_activity_trace_v2(replacement)
+            except Exception:  # noqa: BLE001 - keep original history if repair fails.
+                continue
+            message["payload"] = to_json_ready(replacement)
+            message["content"] = str(replacement.get("answer") or "")
+            message["answer_type"] = replacement.get("answer_type")
+            message["success"] = bool(replacement.get("success"))
+            message["run_id"] = replacement.get("run_id")
+            changed = True
+        if not changed:
+            return record
+        record["stored_not_applicable_repaired_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            return self.conversation_store.save_conversation(record)
+        except Exception:  # noqa: BLE001 - repaired response can still be returned without persistence.
+            return record
 
     def rename_conversation(self, conversation_id: str, title: str) -> dict[str, Any]:
         """Rename one persistent workbench conversation."""
@@ -1326,7 +1881,6 @@ class DataAgentService:
                 ),
             )
 
-        answer = _chat_answer(cleaned_question, has_dataset=False)
         response = to_json_ready(
             {
                 "response_version": RESPONSE_VERSION,
@@ -1336,7 +1890,7 @@ class DataAgentService:
                 "question": cleaned_question,
                 "answer_type": "chat",
                 "execution_mode": "chat",
-                "answer": answer,
+                "answer": _chat_answer(cleaned_question, has_dataset=False),
                 "logic_form": None,
                 "result": {"columns": [], "rows": [], "value": None},
                 "verification": {"passed": True, "confidence": 1.0, "notes": ["No dataset was required for this chat reply."]},
@@ -1363,6 +1917,12 @@ class DataAgentService:
                 "debug": {"agent_mode": "chat_without_dataset", "requires_dataset": False},
             }
         )
+        response = self._apply_direct_llm_chat(
+            response,
+            question=cleaned_question,
+            has_dataset=False,
+        )
+        _ensure_activity_trace_v2(response)
         emit_monitor_event(
             monitor_run_id,
             "workflow_completed",
@@ -1423,7 +1983,6 @@ class DataAgentService:
                 ),
             )
 
-        answer = _chat_answer(cleaned_question, has_dataset=True)
         response = to_json_ready(
             {
                 "response_version": RESPONSE_VERSION,
@@ -1433,7 +1992,7 @@ class DataAgentService:
                 "question": cleaned_question,
                 "answer_type": "chat",
                 "execution_mode": "chat",
-                "answer": answer,
+                "answer": _chat_answer(cleaned_question, has_dataset=True),
                 "logic_form": None,
                 "result": {"columns": [], "rows": [], "value": None},
                 "verification": {"passed": True, "confidence": 1.0, "notes": ["No data analysis was required for this chat reply."]},
@@ -1460,6 +2019,13 @@ class DataAgentService:
                 "debug": {"agent_mode": "chat_with_dataset", "requires_dataset": False, "message_intent": "chat"},
             }
         )
+        response = self._apply_direct_llm_chat(
+            response,
+            question=cleaned_question,
+            has_dataset=True,
+            dataset_id=dataset_id,
+        )
+        _ensure_activity_trace_v2(response)
         emit_monitor_event(
             monitor_run_id,
             "workflow_completed",
@@ -1689,7 +2255,7 @@ def _looks_like_auto_user_rule_file(file_path: str | Path, original_filename: st
     name = Path(str(original_filename or Path(file_path).name)).name
     lowered = name.lower()
     suffix = Path(name).suffix.lower() or Path(file_path).suffix.lower()
-    if suffix in {".md", ".txt", ".yaml", ".yml"}:
+    if suffix in (RULE_FILE_EXTENSIONS - {".json"}):
         return True
     if suffix == ".json":
         return any(
@@ -1716,6 +2282,21 @@ def _looks_like_auto_user_rule_file(file_path: str | Path, original_filename: st
     return False
 
 
+def _is_source_only_upload(file_paths: list[str | Path], original_filenames: list[str | None] | None) -> bool:
+    """Return true when every uploaded file is a standalone readable source file."""
+
+    if not file_paths:
+        return False
+    if original_filenames is not None and len(original_filenames) != len(file_paths):
+        return False
+    for index, file_path in enumerate(file_paths):
+        original_name = None if original_filenames is None else original_filenames[index]
+        suffix = Path(str(original_name or Path(file_path).name)).suffix.lower() or Path(file_path).suffix.lower()
+        if suffix not in RULE_FILE_EXTENSIONS or suffix in DATASET_FILE_EXTENSIONS:
+            return False
+    return True
+
+
 def _is_project_text_source_upload(file_paths: list[str | Path], original_filenames: list[str | None] | None) -> bool:
     """Return true for project shared text files that should not enter DataFrame parsing."""
 
@@ -1723,7 +2304,7 @@ def _is_project_text_source_upload(file_paths: list[str | Path], original_filena
         return False
     if original_filenames is not None and len(original_filenames) != len(file_paths):
         return False
-    text_source_suffixes = {".md", ".txt", ".yaml", ".yml"}
+    text_source_suffixes = RULE_FILE_EXTENSIONS - {".json"}
     for index, file_path in enumerate(file_paths):
         original_name = None if original_filenames is None else original_filenames[index]
         suffix = Path(str(original_name or Path(file_path).name)).suffix.lower() or Path(file_path).suffix.lower()
@@ -1734,13 +2315,10 @@ def _is_project_text_source_upload(file_paths: list[str | Path], original_filena
 
 def _read_project_text_source(file_path: str | Path) -> str:
     path = Path(file_path)
-    last_error: Exception | None = None
-    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
-        try:
-            return path.read_text(encoding=encoding)
-        except UnicodeDecodeError as exc:
-            last_error = exc
-    raise ValueError(f"Project source file is not valid text: {last_error}") from last_error
+    text = _read_source_text(path, suffix=path.suffix.lower())
+    if text.strip():
+        return text
+    raise ValueError("Project source file content could not be extracted as text.")
 
 
 def _rule_file_response(record: StoredRuleFile) -> dict[str, Any]:
@@ -1893,6 +2471,579 @@ def _attach_project_metadata(response: dict[str, Any], project_context: dict[str
     response["debug"]["project_context"] = project
 
 
+def _truncate_for_llm(value: Any, limit: int = 1000) -> str:
+    text = value if isinstance(value, str) else json.dumps(to_json_ready(value), ensure_ascii=False, default=str)
+    text = str(text or "").strip()
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _result_preview_for_llm(result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    rows = result.get("rows")
+    if not isinstance(rows, list):
+        rows = []
+    return {
+        "columns": list(result.get("columns") or [])[:12],
+        "rows": rows[:5],
+        "value": result.get("value") if not rows else None,
+    }
+
+
+def _safe_dict_for_llm(value: Any, *, limit: int = 1000) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    safe = to_json_ready(value)
+    text = json.dumps(safe, ensure_ascii=False, default=str)
+    if len(text) <= limit:
+        return safe
+    return {"summary": _truncate_for_llm(value.get("summary") or text, limit)}
+
+
+def _semantic_dataset_route(
+    question: str,
+    *,
+    source_manifest: dict[str, Any],
+    allow_rescue: bool = False,
+) -> str:
+    """Semantic fallback router for broad dataset/source browse questions."""
+
+    text = str(question or "").strip().lower()
+    if not text:
+        return "chat"
+    compact = re.sub(r"\s+", "", text)
+    semantics = _question_semantics(compact)
+    has_sources = _source_manifest_has_knowledge(source_manifest)
+    has_table_sources = any(
+        isinstance(item, dict) and str(item.get("source_type") or "") == "table"
+        for item in source_manifest.get("sources") or []
+    )
+    if is_cleaning_guidance_question(question):
+        return "cleaning_guidance"
+    if semantics["quality_diagnostic"]:
+        return "analysis"
+    if is_dataset_source_question(question):
+        return "dataset_source_overview"
+    if has_sources and not has_table_sources and not semantics["calculation"] and (semantics["dataset_subject"] or semantics["source_subject"]):
+        return "dataset_source_overview"
+    if is_dataset_overview_question(question):
+        if has_sources and semantics["content_or_purpose"] and semantics["dataset_subject"]:
+            return "dataset_source_overview"
+        return "dataset_overview"
+    if semantics["calculation"]:
+        return "analysis"
+    if semantics["broad_browse"] and semantics["source_subject"]:
+        return "dataset_source_overview"
+    if semantics["broad_browse"] and semantics["dataset_subject"]:
+        return "dataset_source_overview" if has_sources and semantics["content_or_purpose"] else "dataset_overview"
+    if allow_rescue and semantics["broad_browse"]:
+        return "dataset_source_overview" if has_sources else "dataset_overview"
+    return "analysis"
+
+
+def _question_semantics(compact: str) -> dict[str, bool]:
+    """Return coarse semantics; this is a backstop, not a phrase router."""
+
+    dataset_subject = bool(
+        re.search(r"(数据|资料|表单?|文件|材料|dataset|table|file|form)", compact)
+        or re.search(r"(这里面|这里边|这批|这份|当前上传|上传内容|这些里面|这个里面)", compact)
+    )
+    source_subject = bool(
+        re.search(
+            r"(文件|材料|文档|说明|规则|手册|口径|manual|readme|word|docx?|docm|rtf|odt|pdf|pages|html?|json|txt|md)",
+            compact,
+        )
+    )
+    browse_action = bool(re.search(r"(看|读|讲|介绍|总结|概览|解释|说明|浏览|overview|summary|summar)", compact))
+    content_or_purpose = bool(
+        re.search(
+            r"(内容|含|包含|里面|里边|有什么|都有什|都有啥|装了啥|讲什么|是什么|是啥|什么文件|啥文件|干什么|做什么|用途|用处|作用|meaning|contain|include|purpose|about)",
+            compact,
+        )
+    )
+    quality_diagnostic = bool(re.search(r"(有什么问题|哪里有问题|质量问题|数据质量|异常|缺失|重复|坏数据|脏数据|problem|quality|anomal)", compact))
+    calculation = bool(
+        re.search(
+            r"(计算|求|多少|几(?!个文件|张表|个表)|最高|最低|最大|最小|排名|top|占比|比例|趋势|环比|同比|增长|下降|筛选|过滤|按.+分组|生成图|图表|预测|关联分析|join)",
+            compact,
+        )
+    )
+    return {
+        "dataset_subject": dataset_subject,
+        "source_subject": source_subject,
+        "browse_action": browse_action,
+        "content_or_purpose": content_or_purpose,
+        "quality_diagnostic": quality_diagnostic,
+        "calculation": calculation,
+        "broad_browse": (dataset_subject or source_subject) and (browse_action or content_or_purpose),
+    }
+
+
+def _source_manifest_has_knowledge(source_manifest: dict[str, Any]) -> bool:
+    for item in source_manifest.get("sources") or []:
+        if isinstance(item, dict) and str(item.get("source_type") or "") != "table":
+            return True
+    return False
+
+
+def _source_counts_for_llm(source_manifest: dict[str, Any]) -> dict[str, int]:
+    sources = [item for item in source_manifest.get("sources") or [] if isinstance(item, dict)]
+    return {
+        "source_count": len(sources),
+        "table_count": sum(1 for item in sources if str(item.get("source_type") or "") == "table"),
+        "knowledge_count": sum(1 for item in sources if str(item.get("source_type") or "") != "table"),
+    }
+
+
+def _source_preview_for_llm(source_manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    preview: list[dict[str, Any]] = []
+    for item in source_manifest.get("sources") or []:
+        if not isinstance(item, dict):
+            continue
+        preview.append(
+            {
+                "file_name": item.get("file_name"),
+                "source_type": item.get("source_type"),
+                "source_role": item.get("source_role"),
+                "purpose": item.get("purpose"),
+            }
+        )
+        if len(preview) >= 10:
+            break
+    return preview
+
+
+def _is_not_applicable_payload(payload: dict[str, Any]) -> bool:
+    answer = str(payload.get("answer") or "").strip().lower()
+    if answer == "not applicable":
+        return True
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    value = str(result.get("value") or "").strip().lower()
+    if value == "not applicable":
+        return True
+    rows = result.get("rows") if isinstance(result, dict) else []
+    return bool(rows) and all(
+        isinstance(row, dict) and str(row.get("answer") or "").strip().lower() == "not applicable"
+        for row in rows[:3]
+    )
+
+
+def _is_stale_stored_overview_repair(payload: dict[str, Any]) -> bool:
+    """Return True for old repaired history payloads that still expose bad UX wording."""
+
+    debug = payload.get("debug") if isinstance(payload.get("debug"), dict) else {}
+    repair = debug.get("stored_not_applicable_repair") if isinstance(debug.get("stored_not_applicable_repair"), dict) else {}
+    if not repair.get("applied"):
+        return False
+    answer = str(payload.get("answer") or "")
+    return "刚才 N/A" in answer or "N/A 的问题" in answer or "Not Applicable" in answer
+
+
+def _overview_shape_for_llm(report: Any) -> dict[str, Any]:
+    if not isinstance(report, dict):
+        return {}
+    tables = report.get("tables_summary")
+    if isinstance(tables, list):
+        return {
+            "scope": report.get("overview_scope") or "multi_table",
+            "table_count": report.get("table_count"),
+            "tables": [
+                {
+                    "table": item.get("table"),
+                    "rows": item.get("row_count"),
+                    "columns": item.get("column_count"),
+                    "meaning": item.get("likely_meaning"),
+                    "key_fields": list(item.get("key_fields") or [])[:6],
+                }
+                for item in tables[:6]
+                if isinstance(item, dict)
+            ],
+        }
+    return {
+        "scope": "single_table",
+        "table": report.get("table"),
+        "rows": report.get("row_count"),
+        "columns": report.get("column_count"),
+        "metric_column": report.get("metric_column"),
+        "dimension_column": report.get("dimension_column"),
+        "period_column": report.get("period_column"),
+    }
+
+
+def _quality_summary_for_llm(report: Any) -> dict[str, Any]:
+    if not isinstance(report, dict):
+        return {}
+    return {
+        "status": report.get("status"),
+        "issue_count": report.get("issue_count"),
+        "summary": report.get("summary"),
+    }
+
+
+def _chat_dataset_context_for_llm(profile: Any) -> dict[str, Any]:
+    if not profile:
+        return {"dataset_present": False}
+    payload = to_json_ready(profile)
+    if not isinstance(payload, dict):
+        return {"dataset_present": True}
+    tables = payload.get("tables") if isinstance(payload.get("tables"), list) else []
+    return {
+        "dataset_present": True,
+        "dataset_id": payload.get("dataset_id"),
+        "file_name": payload.get("file_name"),
+        "table_count": len(tables),
+        "tables": [
+            {
+                "table_name": table.get("table_name"),
+                "source_file": table.get("source_file"),
+                "row_count": table.get("row_count"),
+                "column_count": table.get("column_count"),
+            }
+            for table in tables[:8]
+            if isinstance(table, dict)
+        ],
+    }
+
+
+def _llm_text(value: Any, limit: int = 240) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    blocked = ("chain_of_thought", "raw_prompt", "standard_answer", "hidden_answer", "task_id", "scorer")
+    if any(token in text.lower() for token in blocked):
+        return ""
+    return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+
+def _is_safe_direct_chat_answer(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    blocked = (
+        "not applicable",
+        "chain_of_thought",
+        "chain of thought",
+        "raw_prompt",
+        "raw prompt",
+        "raw trace",
+        "trace json",
+        "standard_answer",
+        "standard answer",
+        "hidden_answer",
+        "task_id",
+        "scorer",
+        "api_key",
+        "后端审计",
+        "标准答案",
+        "评分器",
+    )
+    if any(token in lowered for token in blocked):
+        return False
+    if any(token in lowered for token in ("```", "|---", "| ---", "select ", " from ", " where ", "group by", "order by")):
+        return False
+    return True
+
+
+def _is_safe_llm_display_answer(text: str, response: dict[str, Any]) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    blocked = (
+        "chain_of_thought",
+        "raw_prompt",
+        "raw prompt",
+        "standard_answer",
+        "standard answer",
+        "hidden_answer",
+        "task_id",
+        "scorer",
+        "benchmark",
+        "api_key",
+        "trace json",
+        "后端审计",
+        "标准答案",
+        "评分器",
+    )
+    if any(token in lowered for token in blocked):
+        return False
+    if "not applicable" in lowered and str(response.get("answer") or "").strip() != "Not Applicable":
+        return False
+    if any(token in lowered for token in ("```", "|---", "| ---", "select ", " from ", " where ", "group by", "order by")):
+        return False
+    if _looks_like_raw_detail_dump(text):
+        return False
+    return _display_answer_numbers_are_grounded(text, response)
+
+
+def _compose_summary_prefaced_answer(original_answer: Any, summary: str) -> str:
+    original = str(original_answer or "").strip()
+    preface = _llm_text(summary, 260)
+    if not original or not preface or preface in original:
+        return ""
+    return f"{preface}\n\n{original}"
+
+
+def _display_answer_numbers_are_grounded(text: str, response: dict[str, Any]) -> bool:
+    display_numbers = _normalized_numbers(text)
+    if not display_numbers:
+        return True
+    grounded_source = " ".join(
+        [
+            str(response.get("answer") or ""),
+            json.dumps(to_json_ready(response.get("result") or {}), ensure_ascii=False, default=str),
+            json.dumps(to_json_ready(response.get("overview_report") or {}), ensure_ascii=False, default=str),
+        ]
+    )
+    grounded_numbers = _normalized_numbers(grounded_source)
+    return display_numbers.issubset(grounded_numbers)
+
+
+def _normalized_numbers(text: str) -> set[str]:
+    result: set[str] = set()
+    for raw in re.findall(r"(?<![\w.-])-?\d[\d,]*(?:\.\d+)?%?", str(text or "")):
+        normalized = raw.replace(",", "").rstrip("%")
+        if normalized:
+            result.add(normalized)
+    return result
+
+
+def _llm_text_list(value: Any, *, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        text = _llm_text(item, 120)
+        if text and text not in result:
+            result.append(text)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _attach_llm_presentation_process_step(response: dict[str, Any], meta: dict[str, Any]) -> None:
+    process = response.get("process_view_v2")
+    if not isinstance(process, dict) or not meta.get("used"):
+        return
+    process["summary"] = _append_once_to_summary(str(process.get("summary") or ""), "调用LLM整理表达")
+    steps = process.setdefault("steps", [])
+    if not isinstance(steps, list):
+        return
+    steps.append(
+        {
+            "title": "LLM 表达整理",
+            "summary": "已调用 LLM 基于已验证结果整理主回答、简要结论和下一步建议；LLM 不重新计算数据，也不改变表格结果。",
+            "status": "completed",
+            "evidence": [
+                f"stage={meta.get('stage')}",
+                f"confidence={meta.get('confidence')}",
+                f"elapsed_ms={meta.get('elapsed_ms')}",
+                f"updated_answer={meta.get('updated_answer')}",
+                f"answer_update_source={meta.get('answer_update_source')}",
+            ],
+            "source": "llm_summary",
+            "confidence": meta.get("confidence"),
+        }
+    )
+
+
+def _attach_direct_llm_chat_process_step(response: dict[str, Any], meta: dict[str, Any]) -> None:
+    process = response.get("process_view_v2")
+    if not isinstance(process, dict) or not meta.get("used"):
+        return
+    process["summary"] = _append_once_to_summary(str(process.get("summary") or ""), "调用LLM直接对话")
+    steps = process.setdefault("steps", [])
+    if not isinstance(steps, list):
+        return
+    steps.append(
+        {
+            "title": "LLM 直接对话",
+            "summary": "已把普通聊天、能力说明或概念问题交给直连 LLM 回复；具体数据计算仍保留给分析 agent 链路。",
+            "status": "completed",
+            "evidence": [
+                f"stage={meta.get('stage')}",
+                f"confidence={meta.get('confidence')}",
+                f"elapsed_ms={meta.get('elapsed_ms')}",
+                f"updated_answer={meta.get('updated_answer')}",
+                f"has_dataset={meta.get('has_dataset')}",
+            ],
+            "source": "llm_chat",
+            "confidence": meta.get("confidence"),
+        }
+    )
+
+
+def _ensure_activity_trace_v2(response: dict[str, Any]) -> None:
+    """Attach GPT-like activity trace rows when a fast path skipped agents."""
+
+    if not isinstance(response, dict) or response.get("activity_trace_v2"):
+        return
+    try:
+        response["activity_trace_v2"] = build_activity_trace_v2(response_like=response)
+    except Exception:
+        response["activity_trace_v2"] = []
+
+
+def _append_once_to_summary(summary: str, phrase: str) -> str:
+    if not summary or phrase in summary:
+        return summary
+    if "输出用户回答" in summary:
+        return summary.replace("输出用户回答", f"{phrase}、输出用户回答")
+    return f"{summary} {phrase}。"
+
+
+def _apply_gpt_like_text_framework(response: dict[str, Any], *, question: str) -> dict[str, Any]:
+    """Normalize data-answer wording without risking the verified payload."""
+
+    try:
+        return apply_text_answer_framework(response, question=question)
+    except Exception as exc:  # noqa: BLE001 - presentation shaping must never break an answer.
+        response.setdefault("debug", {})
+        if isinstance(response["debug"], dict):
+            response["debug"]["text_answer_framework"] = {
+                "applied": False,
+                "reason": f"{type(exc).__name__}: {str(exc)[:200]}",
+                "version": "gpt_like_text_frame_v1",
+            }
+        return response
+
+
+def _attach_message_timing(response: dict[str, Any], *, started_at: datetime, started_perf: float) -> None:
+    """Attach user-visible response timing before conversation persistence."""
+
+    response.setdefault("started_at", started_at.isoformat())
+    response["responded_at"] = datetime.now(timezone.utc).isoformat()
+    response["thinking_elapsed_ms"] = max(0, int(round((time.perf_counter() - started_perf) * 1000)))
+
+
+def _attach_source_references(response: dict[str, Any], *, profile: Any) -> None:
+    """Attach user-facing uploaded-file references for the answer footer."""
+
+    references = _build_source_references(response, profile)
+    if references:
+        response["source_references"] = references
+
+
+def _build_source_references(response: dict[str, Any], profile: Any) -> list[dict[str, Any]]:
+    data = to_json_ready(profile) if profile is not None else {}
+    tables = data.get("tables") if isinstance(data, dict) else []
+    if not isinstance(tables, list) or not tables:
+        return []
+    wanted = _response_source_table_names(response)
+    selected = [
+        table
+        for table in tables
+        if isinstance(table, dict) and (not wanted or _profile_table_matches_any_source(table, wanted))
+    ]
+    if wanted and not selected:
+        return []
+    if not selected and _should_reference_all_profile_tables(response, tables, wanted):
+        selected = [table for table in tables if isinstance(table, dict)]
+    if not selected:
+        return []
+
+    grouped: dict[str, dict[str, Any]] = {}
+    fallback_file_name = str(data.get("file_name") or "").strip() if isinstance(data, dict) else ""
+    for table in selected:
+        table_name = str(table.get("table_name") or table.get("name") or "").strip()
+        file_name = str(table.get("source_file") or table.get("file_name") or fallback_file_name or table_name or "uploaded dataset").strip()
+        reference = grouped.setdefault(file_name, {"file_name": file_name, "tables": []})
+        row_count = _safe_int(table.get("row_count"))
+        column_count = _safe_int(table.get("column_count"))
+        table_ref: dict[str, Any] = {
+            "table_name": table_name or file_name,
+            "sheet": str(table.get("sheet") or "").strip(),
+        }
+        if row_count is not None:
+            table_ref["row_count"] = row_count
+        if column_count is not None:
+            table_ref["column_count"] = column_count
+        reference["tables"].append(table_ref)
+
+    references: list[dict[str, Any]] = []
+    for reference in grouped.values():
+        tables_for_file = reference["tables"]
+        reference["table_count"] = len(tables_for_file)
+        row_total = sum(int(table.get("row_count") or 0) for table in tables_for_file if table.get("row_count") is not None)
+        if row_total:
+            reference["row_count"] = row_total
+        if len(tables_for_file) == 1 and tables_for_file[0].get("column_count") is not None:
+            reference["column_count"] = int(tables_for_file[0]["column_count"])
+        references.append(reference)
+    return to_json_ready(references)
+
+
+def _response_source_table_names(response: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    debug = response.get("debug") if isinstance(response.get("debug"), dict) else {}
+    logic_form = response.get("logic_form") if isinstance(response.get("logic_form"), dict) else {}
+    parameters = logic_form.get("parameters") if isinstance(logic_form.get("parameters"), dict) else {}
+
+    _append_source_names(names, debug.get("source_tables"))
+    _append_source_names(names, logic_form.get("source_tables"))
+    _append_source_names(names, parameters.get("source_tables"))
+    _append_source_names(names, parameters.get("tables"))
+    _append_source_names(names, parameters.get("table"))
+    for join_plan in (
+        debug.get("join_plan"),
+        logic_form.get("join_plan"),
+        parameters.get("join_plan"),
+    ):
+        if isinstance(join_plan, dict):
+            _append_source_names(names, join_plan.get("left_table"))
+            _append_source_names(names, join_plan.get("right_table"))
+    deduped: list[str] = []
+    for name in names:
+        text = str(name or "").strip()
+        if text and text not in deduped:
+            deduped.append(text)
+    return deduped
+
+
+def _append_source_names(names: list[str], value: Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, str):
+        names.append(value)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            _append_source_names(names, item)
+
+
+def _profile_table_matches_any_source(table: dict[str, Any], source_names: list[str]) -> bool:
+    source_keys = {_source_key(name) for name in source_names if _source_key(name)}
+    if not source_keys:
+        return False
+    table_keys: set[str] = set()
+    for key in ("table_name", "source_file", "file_name", "sheet"):
+        value = str(table.get(key) or "").strip()
+        if value:
+            table_keys.add(_source_key(value))
+            table_keys.add(_source_key(Path(value).stem))
+    return bool(source_keys & table_keys)
+
+
+def _source_key(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _should_reference_all_profile_tables(response: dict[str, Any], tables: list[Any], wanted: list[str]) -> bool:
+    if wanted or response.get("success") is False or response.get("answer_type") == "chat":
+        return False
+    if len(tables) == 1:
+        return True
+    debug = response.get("debug") if isinstance(response.get("debug"), dict) else {}
+    return response.get("answer_type") in {"overview", "cleaning_simulation"} or debug.get("operation") == "multi_table_dataset_overview"
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
 def _project_response(record: dict[str, Any] | None) -> dict[str, Any]:
     """Build a stable project API response."""
 
@@ -1978,7 +3129,27 @@ def _chat_answer(question: str, *, has_dataset: bool) -> str:
         return "你好，我是 VDS。当前没有上传文件，所以不能给出具体数据结论；你可以先和我讨论分析思路、指标口径、字段设计，上传文件后我再基于真实数据分析。"
     if any(token in question for token in ("你是什么模型", "你是哪个模型", "底层模型", "什么模型", "你是谁", "介绍一下你")):
         return "我是 VDS 数据分析助手，运行在当前 VDS 后端和可配置 LLM provider 之上。我的职责是理解数据问题、调用受控分析链路，并把结果整理成可核对的回答。"
-    if any(token in compact for token in ("能做什么", "怎么用", "功能", "帮助")) or "help" in lowered:
+    if any(
+        token in compact
+        for token in (
+            "能做什么",
+            "你能干什么",
+            "你可以干什么",
+            "你能帮我做什么",
+            "你能帮我干什么",
+            "你可以帮我做什么",
+            "我能干什么",
+            "我可以干什么",
+            "我能问什么",
+            "我可以问什么",
+            "我该问什么",
+            "我能让你做什么",
+            "我可以让你做什么",
+            "怎么用",
+            "功能",
+            "帮助",
+        )
+    ) or "help" in lowered:
         if has_dataset:
             return "当前数据已经上传。你可以问概览、排序、汇总、趋势、对比、多文件命中文件或多表关联问题；如果只是聊天或讨论口径，我也会直接回复。"
         return "上传文件后（上传数据后），我可以做通用数据概览、多文件字段对比、字段角色识别、数据质量扫描、异常规则说明、可分析性建议和清洗影响模拟；领域专项问题需要对应字段或配置支持。"
@@ -1992,7 +3163,17 @@ def _chat_answer(question: str, *, has_dataset: bool) -> str:
         return "没有数据时只能给方法建议：你把字段名、表结构或想看的指标告诉我，我可以帮你整理分析口径、推荐维度、判断是否需要多表关联；不能编造任何真实数值。"
     if any(token in lowered for token in ("sales", "revenue", "overall", "summary")) or any(token in question for token in ("销售", "收入", "整体", "概览", "情况")):
         return "没有数据时只能给方法建议，不能编造真实数值。真实结论需要上传相关销售或收入数据；上传后我会优先返回汇总指标、趋势和关键下钻方向，而不是直接展开明细行。"
+    if has_dataset:
+        return "可以继续聊。当前数据已就绪；你可以直接问概览、汇总、排序、趋势、对比、字段口径、数据质量或多表关联，我会按问题选择合适的分析链路。"
     return "可以继续聊。当前还没有上传数据，所以我不会编造业务结论；你可以描述分析目标、数据字段或上传文件后让我基于真实数据分析。"
+
+
+def _ensure_activity_trace_v2(response: dict[str, Any]) -> dict[str, Any]:
+    """Attach a safe activity trace for Workbench surfaces when missing."""
+
+    if isinstance(response, dict) and not response.get("activity_trace_v2"):
+        response["activity_trace_v2"] = build_activity_trace_v2(None, response)
+    return response
 
 
 def _suppress_raw_detail_answer(

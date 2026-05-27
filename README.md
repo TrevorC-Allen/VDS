@@ -20,7 +20,9 @@
 - Phase 10 已完成首版结果体验增强：后端生成 `chart`、`insight`、`quality_report`、`reasoning_trace_view` 和 `process_view_v2` 稳定字段；`process_view_v2` 会按 chat、概览、指标、TopN、趋势、多表、诊断和需澄清场景生成差异化安全过程叙事，并在占比等问题中展示安全的筛选口径、表选择、分子/分母依据，不展示完整 Chain of Thought、raw reasoning tokens、raw prompt、API key、task_id、标准答案或 proxy / scorer 信息。
 - Workbench 已支持统一 `POST /api/data-agent/message`：无文件时直接进入辅助聊天；有文件时由后端判断普通聊天、数据概览或正式分析，避免“你好 / 你是什么模型”被误送进分析链路。
 - Phase 12.1 已纳入当前体验修复：针对“看一下这个表单 / 总结一下这个表 / 这个数据主要讲什么 / 这几个表什么意思，有什么字段 / 每个文件分别有多少行、多少列 / 这个数据适合做哪些分析 / introduce this dataset”这类 general 问法，后端返回单表或多表 `overview_report`，不展开原始明细；清洗策略、影响行数/比例和是否修改原始数据等问题走 simulation-only cleaning guidance；正式分析出口增加 raw detail guard，最终答案如果像 CSV、明细行拼接或短日期/数值串会被改写成安全 overview 或澄清；Workbench 主页面消费 monitor SSE 默认显示一行过程，代码 artifact 收进过程详情，Insight 卡片化展示。`phase12_1_finalcheck3_20260526_092141` 三组 quick gate 均达到 GPT-like `35/35`；真实 `127.0.0.1:8001/workbench` smoke 已确认主回答无 raw dump、过程默认一行且展开后才显示完整过程和复现代码。
+- Activity Trace v2 已作为 Workbench 真实执行链路契约落地：`FinalResponse` / `/message` payload 返回安全 `activity_trace_v2`，SSE 可增量发布 `activity_trace_delta`，前端点击“活动详情”打开右侧抽屉，展示 Planner、Pandas、SQL、Verifier、代码 artifact 和校验摘要；仍禁止 raw Chain of Thought、raw prompt、reasoning tokens、API key、task_id、标准答案、proxy 和 scorer 泄漏。
 - 新增 GPT-like parity redline：凡是改文件解析、字段画像、回答结构、Insight、图表/表格、过程流、代码 artifact、Workbench 排版样式或用户可见文案，验收时必须对照 GPT / ChatGPT Data Analysis 同类结果或冻结标准 GPT 参考结果；差距很大直接打回重写，不能只用单测或 smoke 通过替代。
+- 新增 GPT-like 自动化测试门禁：`scripts/run_vds_llm_quality_gate.sh` 可用真实 LLM 跑 Workbench GPT-like 用例或 changelog 审计；每次正式测试都必须生成 `docs/test-runs/*.md` 测试文档，否则不能视为验收完成。
 - VDS 中文 BI 已恢复并扩展标准答案所需的通用能力族：周期排名变化、TopN 增减、增长数量占比、阈值计数、同圈层异常、分组环比、当前期过滤指标 TopN、各区域 Top 实体、状态影响和三周期 TopN 都在 `data_agent_core` 内按 schema / 实体 / `_row` 指标执行，不再退回为默认 `区域/订阅收入` 排名。
 - 当前分支已新增桌面 VDS 标准答案离线 scorer / runner；标准答案只在 response 生成后评分，不进入 Agent workflow、prompt、Planner、Executor、Verifier、Correction 或 trace。最新 mock 验证为 `outputs/vds_standard_answer_recheck_20260525_core_fix_v2/report.json`，桌面 VDS 五域 `95/95` 正确、`success_count=95/95`。
 - Phase 11 已启动首个落点：Workbench `/message` 会自动写入本地 JSON conversation store，历史 Chat 可通过 `conversation_id` 载入旧消息并持久化重命名 / 置顶；API 已预留 `owner_id / tenant_id / owner_context`，但当前仍是本地匿名存储，不代表已经具备真实登录、鉴权或多租户权限隔离。
@@ -44,7 +46,7 @@
 
 README 是 GitHub 默认首页的状态摘要。以后任何阶段、状态、主目标、项目规则、API、Benchmark 口径或用户可见能力变更，都必须同步检查并更新根 `README.md`；如果本轮确认 README 不需要修改，必须在 `CHANGELOG_AI.md` 记录原因。
 
-当前仍不做登录权限、数据库持久化、异步队列、微服务、旧 BigCat / VDS 主流程重构，且不在前端实现核心分析逻辑、指标公式、join 或数据计算。Microsoft Agent Framework 只作为可选 adapter 承载层，轻量依赖入口在 `requirements-ms-agent.txt`，核心算法不依赖它。
+当前仍不做登录权限、数据库持久化、异步队列、微服务、旧 BigCat / VDS 主流程重构，且不在前端实现核心分析逻辑、指标公式、join 或数据计算。Microsoft Agent Framework 只作为可选 adapter 承载层，轻量依赖入口在 `requirements-ms-agent.txt`，核心算法不依赖它。可视化后端导出 / renderer 的可选 Python 依赖入口为 `requirements-visualization.txt`，当前包含 `matplotlib`；Workbench 主图表仍优先用前端交互 SVG 渲染，以保留 hover 数据提示和 x/y 轴。
 
 当前默认多 Agent 链路：
 
@@ -95,7 +97,7 @@ API key 只允许通过环境变量提供，不写入仓库、文档、trace 或
 }
 ```
 
-响应继续沿用 analyze 契约，包含 `response_version`、`run_id`、`dataset_id`、`answer`、`result`、`verification`、`insight`、`chart`、`quality_report`、`reasoning_trace_view`、`process_view_v2`、`warnings`、`errors` 和 `debug`。`request_id` 会原样返回，便于外部系统对账。
+响应继续沿用 analyze 契约，包含 `response_version`、`run_id`、`dataset_id`、`answer`、`result`、`verification`、`insight`、`chart`、`quality_report`、`reasoning_trace_view`、`process_view_v2`、`activity_trace_v2`、`execution_artifacts`、`warnings`、`errors` 和 `debug`。`request_id` 会原样返回，便于外部系统对账。
 
 该接口不改变 Benchmark、Microsoft adapter、Provider-native tool loop 或核心算法边界；文件上传复用场景仍使用 `/api/data-agent/upload` + `/api/data-agent/analyze`，多文件一次性上传使用 `/api/data-agent/upload-batch`。
 
@@ -108,7 +110,7 @@ Phase 9 首版 workbench 由 backend 挂载：
 /frontend/
 ```
 
-它只调用稳定后端 API，不在浏览器中实现核心分析逻辑。多文件上传使用 `/api/data-agent/upload-batch`；该接口现在也能在网页端识别完整 DAB context 包：`payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md`。用户也可以把 `.md/.txt/.yaml/.yml` 说明文件或规则型 `.json` 和 dataset 一起上传，后端会自动绑定为本 dataset 的 user analysis knowledge；规则解析和费用计算仍由后端完成。用户发送问题时，前端会先调用上传接口取得 dataset，再统一提交到 `/api/data-agent/message`，由后端决定普通聊天、数据概览、清洗策略或正式分析。Project home 只是项目主页；只有项目内新聊天、项目内会话续聊或显式“移至项目”会传递 / 写入 `project_id`，左侧历史记录始终是全局最近历史，不用 Project 过滤，项目内 conversations / sources / memories 由右侧 Project home 单独通过后端 Project / conversation API 渲染；对话置顶通过后端 `PATCH /conversations/{id}` 写入 `pinned`，前端只渲染置顶标记和后端排序。共享文件记录到 Project Source，project memory 只在同一 project 内注入。主界面已去除高级选项，内部 Benchmark 仍只通过独立 API 使用，不进入普通 Chat。用户选择文件后只显示底部附件状态，不在消息区生成上传结果、profile 或错误面板。主界面展示最终答案、紧凑结果表、自动图表、卡片化洞察建议、后端 `process_view_v2` 生成的用户可读分析过程和历史记录；`execution_artifacts` 安全代码只放在“查看处理过程”详情中，不作为主答案区独立代码面板。主页面可消费 monitor SSE 安全事件并默认只显示一行 activity summary；展开过程时可显示后端已脱敏的步骤、evidence / assumptions / caveats chips 和安全代码片段。每一轮用户消息都会创建独立 assistant 回复，不复用上一轮结果容器。左侧历史记录来自后端 conversation store，支持载入旧 user / assistant 消息并持久化重命名、置顶，Enter 保存、Escape 取消、失焦保存。Agent 监看面板只消费 `monitor_run_id` 对应的 SSE 安全摘要事件，不展示完整 Chain of Thought，也不接收完整 response / trace payload。后端审计字段如完整 `source_tables`、`table_selection_reason`、`join_plan`、`join_execution_summary`、verification、warnings、errors 和 `quality_report` 不在主界面直接暴露。
+它只调用稳定后端 API，不在浏览器中实现核心分析逻辑。多文件上传使用 `/api/data-agent/upload-batch`；该接口现在也能在网页端识别完整 DAB context 包：`payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md`。用户也可以把 `.md/.txt/.yaml/.yml` 说明文件或规则型 `.json` 和 dataset 一起上传，后端会自动绑定为本 dataset 的 user analysis knowledge；规则解析和费用计算仍由后端完成。用户发送问题时，前端会先调用上传接口取得 dataset，再统一提交到 `/api/data-agent/message`，由后端决定普通聊天、数据概览、清洗策略或正式分析。Project home 只是项目主页；只有项目内新聊天、项目内会话续聊或显式“移至项目”会传递 / 写入 `project_id`，左侧历史记录始终是全局最近历史，不用 Project 过滤，项目内 conversations / sources / memories 由右侧 Project home 单独通过后端 Project / conversation API 渲染；对话置顶通过后端 `PATCH /conversations/{id}` 写入 `pinned`，前端只渲染置顶标记和后端排序。共享文件记录到 Project Source，project memory 只在同一 project 内注入。主界面已去除高级选项，内部 Benchmark 仍只通过独立 API 使用，不进入普通 Chat。用户选择文件后只显示底部附件状态，不在消息区生成上传结果、profile 或错误面板。主界面展示最终答案、紧凑结果表、自动图表、卡片化洞察建议、后端 `process_view_v2` 生成的用户可读分析过程和历史记录；`execution_artifacts` 安全代码只放在“查看处理过程”详情中，不作为主答案区独立代码面板。主页面可消费 monitor SSE 安全事件并默认只显示一行 activity summary；展开过程时可显示后端已脱敏的步骤、evidence / assumptions / caveats chips 和安全代码片段。Activity Trace v2 会驱动右侧活动抽屉，用户点击活动入口后可看到真实 Planner、Pandas、SQL、Verifier、artifact 和校验摘要。每一轮用户消息都会创建独立 assistant 回复，不复用上一轮结果容器。左侧历史记录来自后端 conversation store，支持载入旧 user / assistant 消息并持久化重命名、置顶，Enter 保存、Escape 取消、失焦保存。Agent 监看面板只消费 `monitor_run_id` 对应的 SSE 安全摘要事件，不展示完整 Chain of Thought，也不接收完整 response / trace payload。后端审计字段如完整 `source_tables`、`table_selection_reason`、`join_plan`、`join_execution_summary`、verification、warnings、errors 和 `quality_report` 不在主界面直接暴露。
 
 Phase 11 已启动可恢复会话式体验：`/api/data-agent/message` 返回并延续 `conversation_id`，左侧历史 Chat 来自后端会话列表。当前仍未完成 URL `/workbench?conversation_id=...` 自动定位、多窗口实时同步、跨进程 DataFrame 恢复、真实登录鉴权和多租户隔离。
 

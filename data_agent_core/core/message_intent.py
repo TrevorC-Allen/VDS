@@ -18,6 +18,8 @@ def classify_workbench_message(question: str, *, has_dataset: bool) -> str:
         return "chat"
     if is_cleaning_guidance_question(question):
         return "cleaning_guidance"
+    if is_dataset_source_question(question):
+        return "dataset_source_overview"
     if is_dataset_overview_question(question):
         return "dataset_overview"
     return "analysis"
@@ -55,6 +57,18 @@ def is_casual_or_meta_chat(question: str) -> bool:
             "什么大模型",
             "底层模型",
             "你能做什么",
+            "你能干什么",
+            "你可以干什么",
+            "你能帮我做什么",
+            "你能帮我干什么",
+            "你可以帮我做什么",
+            "我能干什么",
+            "我可以干什么",
+            "我能问什么",
+            "我可以问什么",
+            "我该问什么",
+            "我能让你做什么",
+            "我可以让你做什么",
             "怎么用",
             "如何使用",
             "使用说明",
@@ -81,6 +95,8 @@ def is_dataset_overview_question(question: str) -> bool:
         return True
     if any(phrase in compact for phrase in _SHAPE_OVERVIEW_PHRASES):
         return True
+    if _looks_like_multi_table_overview_question(compact):
+        return True
     if any(phrase in compact for phrase in _SCHEMA_OVERVIEW_PHRASES) and not any(token in compact for token in _STRONG_SPECIFIC_ANALYSIS_TOKENS):
         return True
     if any(phrase in compact for phrase in _GENERIC_OVERVIEW_PHRASES) and not any(token in compact for token in _STRONG_SPECIFIC_ANALYSIS_TOKENS):
@@ -96,6 +112,35 @@ def is_dataset_overview_question(question: str) -> bool:
     return has_overview_signal and has_data_subject
 
 
+def is_dataset_source_question(question: str) -> bool:
+    """Return True for questions about uploaded non-tabular/source files."""
+
+    text = _normalize(question)
+    if not text:
+        return False
+    compact = text.replace(" ", "")
+    source_subject = any(token in compact for token in _SOURCE_FILE_SUBJECT_TOKENS) or any(
+        token in text for token in _EN_SOURCE_FILE_TOKENS
+    )
+    source_action = any(token in compact for token in _SOURCE_FILE_ACTION_TOKENS) or any(
+        token in text for token in _EN_SOURCE_ACTION_TOKENS
+    )
+    if source_subject and source_action:
+        return True
+    return any(phrase in compact for phrase in _SOURCE_FILE_PHRASES)
+
+
+def _looks_like_multi_table_overview_question(compact: str) -> bool:
+    """Catch broad multi-file/table browse questions before detail lookup."""
+
+    has_multi_subject = any(token in compact for token in _MULTI_TABLE_SUBJECT_TOKENS)
+    if not has_multi_subject:
+        return False
+    has_overview_action = any(token in compact for token in _MULTI_TABLE_OVERVIEW_ACTION_TOKENS)
+    has_specific_analysis = any(token in compact for token in _STRONG_SPECIFIC_ANALYSIS_TOKENS) or any(token in compact for token in _SPECIFIC_ANALYSIS_TOKENS)
+    return has_overview_action and not has_specific_analysis
+
+
 def is_cleaning_guidance_question(question: str) -> bool:
     """Return True for cleaning-policy or cleaning-simulation questions."""
 
@@ -103,6 +148,8 @@ def is_cleaning_guidance_question(question: str) -> bool:
     if not text:
         return False
     compact = text.replace(" ", "")
+    if _looks_like_schema_consistency_question(compact):
+        return False
     boundary_signals = (
         "直接修改原始数据",
         "修改原始数据",
@@ -139,6 +186,12 @@ def is_cleaning_guidance_question(question: str) -> bool:
     return "异常" in compact and any(token in compact for token in ("规则", "样例", "数量", "占比", "比例"))
 
 
+def _looks_like_schema_consistency_question(compact: str) -> bool:
+    if "字段是否一致" in compact:
+        return True
+    return "字段" in compact and any(token in compact for token in ("新增", "类型变化", "字段一致", "字段差异"))
+
+
 def _normalize(question: str) -> str:
     return str(question or "").strip().lower()
 
@@ -156,6 +209,21 @@ _GENERIC_OVERVIEW_PHRASES = (
     "看一下这个表单",
     "看下这个表单",
     "看看这个表单",
+    "看一下这几张表",
+    "看下这几张表",
+    "看看这几张表",
+    "看一下这几个表",
+    "看下这几个表",
+    "看看这几个表",
+    "看一下这些表",
+    "看下这些表",
+    "看看这些表",
+    "看一下这几个文件",
+    "看下这几个文件",
+    "看看这几个文件",
+    "看一下这些文件",
+    "看下这些文件",
+    "看看这些文件",
     "看一下这个数据集",
     "看下这个数据集",
     "看看这个数据集",
@@ -266,6 +334,10 @@ _SCHEMA_OVERVIEW_PHRASES = (
     "字段含义",
     "主要讲什么",
     "主要内容",
+    "有什么内容",
+    "有哪些内容",
+    "包含什么内容",
+    "里面有什么内容",
     "数据讲什么",
     "是什么数据",
     "这个数据是做什么",
@@ -300,9 +372,160 @@ _SCHEMA_OVERVIEW_PHRASES = (
     "表什么意思",
     "表单什么意思",
     "文件什么意思",
+    "表有什么内容",
+    "表单有什么内容",
+    "文件有什么内容",
+    "数据有什么内容",
     "这几个表什么意思",
     "这几张表什么意思",
     "这些表什么意思",
+    "这几个表单什么意思",
+    "这些表单什么意思",
+    "这几个表有什么内容",
+    "这几张表有什么内容",
+    "这些表有什么内容",
+    "这几个表单有什么内容",
+    "这些表单有什么内容",
+    "这几个文件有什么内容",
+    "这些文件有什么内容",
+    "这几个表讲的什么",
+    "这几张表讲的什么",
+    "这些表讲的什么",
+    "这几个文件讲的什么",
+    "这些文件讲的什么",
+    "这些表有什么区别",
+    "这几个表有什么区别",
+    "这几张表有什么区别",
+    "这些文件有什么区别",
+    "这几个文件有什么区别",
+)
+
+_MULTI_TABLE_SUBJECT_TOKENS = (
+    "这几个表",
+    "这几张表",
+    "这些表",
+    "这几个表单",
+    "这些表单",
+    "多个表",
+    "多张表",
+    "所有表",
+    "全部表",
+    "这几个文件",
+    "这些文件",
+    "多个文件",
+    "所有文件",
+    "全部文件",
+)
+
+_MULTI_TABLE_OVERVIEW_ACTION_TOKENS = (
+    "看一下",
+    "看下",
+    "看看",
+    "讲什么",
+    "讲的什么",
+    "什么意思",
+    "含义",
+    "字段",
+    "区别",
+    "差异",
+    "不同",
+    "介绍",
+    "总结",
+    "概览",
+    "总览",
+    "主要",
+    "内容",
+    "有什么内容",
+    "有哪些内容",
+    "包含什么",
+    "里面有什么",
+)
+
+_SOURCE_FILE_PHRASES = (
+    "还有几个文件是干什么用的",
+    "还有几个文件干什么用",
+    "还有几个文件是做什么的",
+    "其他几个文件是干什么用的",
+    "其他几个文件干什么用",
+    "其他几个文件是做什么的",
+    "说明文件是干什么用的",
+    "规则文件是干什么用的",
+    "知识文件是干什么用的",
+    "manual.md是干什么",
+    "fees.json是干什么",
+    "merchant_data.json是干什么",
+)
+
+_SOURCE_FILE_SUBJECT_TOKENS = (
+    "说明文件",
+    "规则文件",
+    "知识文件",
+    "文档",
+    "手册",
+    "manual",
+    "fees",
+    "merchant_data",
+    "md文件",
+    "txt文件",
+    "json文件",
+    "word",
+    "doc文件",
+    "doc文档",
+    "docx",
+    "docm",
+    "rtf",
+    "odt",
+    "pdf",
+    "pages",
+    "html",
+    "还有几个文件",
+    "其他几个文件",
+    "非表格文件",
+    "非数据文件",
+)
+
+_SOURCE_FILE_ACTION_TOKENS = (
+    "干什么",
+    "做什么",
+    "用来",
+    "用途",
+    "用处",
+    "讲什么",
+    "主要内容",
+    "有什么内容",
+    "有哪些内容",
+    "包含什么",
+    "里面有什么",
+    "读到",
+    "读取",
+    "识别",
+    "解释",
+    "说明",
+)
+
+_EN_SOURCE_FILE_TOKENS = (
+    "manual",
+    "readme",
+    "doc",
+    "docx",
+    "docm",
+    "rtf",
+    "odt",
+    "pdf",
+    "pages",
+    "html",
+    "source file",
+    "knowledge file",
+    "rule file",
+)
+
+_EN_SOURCE_ACTION_TOKENS = (
+    "what is",
+    "what are",
+    "purpose",
+    "used for",
+    "read",
+    "explain",
 )
 
 _CAPABILITY_OVERVIEW_PHRASES = (

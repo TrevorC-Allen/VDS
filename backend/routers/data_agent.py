@@ -95,7 +95,7 @@ def create_conversation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def conversations_payload(limit: int = 50, project_id: str | None = None) -> dict[str, Any]:
+def conversations_payload(limit: int = 50, project_id: str | None = "") -> dict[str, Any]:
     """Non-FastAPI helper mirroring GET /api/data-agent/conversations."""
 
     return service.list_conversations(limit=limit, project_id=project_id)
@@ -368,7 +368,7 @@ try:
         )
 
     @router.get("/conversations")
-    def conversations(limit: int = 50, project_id: str | None = None) -> dict[str, Any]:
+    def conversations(limit: int = 50, project_id: str | None = "") -> dict[str, Any]:
         return service.list_conversations(limit=limit, project_id=project_id)
 
     @router.get("/conversations/{conversation_id}")

@@ -18,6 +18,7 @@ from data_agent_core.core.intent_parser import parse_generic_table_question, par
 from data_agent_core.executors import pandas_executor, sql_executor
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMStageResult, complete_stage_with_llm, plan_with_llm
+from data_agent_core.output.activity_trace import build_activity_trace_v2
 from data_agent_core.output.chart_planner import build_chart_spec
 from data_agent_core.output.chart_renderer import attach_rendered_chart
 from data_agent_core.output.insight_generator import generate_insight
@@ -239,6 +240,7 @@ class DataAnalysisAgent:
         response.reasoning_trace_view = trace.reasoning_trace_view
         trace.process_view_v2 = build_process_view_v2(trace, response)
         response.process_view_v2 = trace.process_view_v2
+        response.activity_trace_v2 = build_activity_trace_v2(trace, response)
         return response, trace
 
     def _context_summary(self) -> dict[str, Any]:
@@ -525,8 +527,8 @@ class DataAnalysisAgent:
             key_numbers=base.key_numbers,
             anomaly_findings=base.anomaly_findings,
             volatility_findings=base.volatility_findings,
-            suggestions=base.suggestions if base.suggestions else suggestions,
-            business_suggestions=base.business_suggestions if base.business_suggestions else suggestions,
+            suggestions=(base.suggestions if base.suggestions else suggestions)[:1],
+            business_suggestions=(base.business_suggestions if base.business_suggestions else suggestions)[:1],
             caveats=existing_caveats,
             next_questions=base.next_questions,
             evidence_rows=base.evidence_rows,
@@ -779,6 +781,7 @@ class UploadedDatasetAgent(DataAnalysisAgent):
         response.reasoning_trace_view = trace.reasoning_trace_view
         trace.process_view_v2 = build_process_view_v2(trace, response)
         response.process_view_v2 = trace.process_view_v2
+        response.activity_trace_v2 = build_activity_trace_v2(trace, response)
         return response, trace
 
     def _context_summary(self) -> dict[str, Any]:

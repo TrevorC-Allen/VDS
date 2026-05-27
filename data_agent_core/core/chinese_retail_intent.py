@@ -49,6 +49,56 @@ def parse_chinese_retail_question(
     product = _extract_product(question, tables)
     start_ym, end_ym = _extract_year_month_range(question)
 
+    if "主任" in question and "日目标缺口" in question and ("下属" in question or "贡献" in question):
+        return make_logic_form(
+            task_type="attribution",
+            operation="retail_manager_daily_gap_contribution",
+            parameters={"date": _date_text(business_date), "ym": ym},
+            source_tables=[
+                "v_trd_dist_ord_dtl_1d_rt",
+                "ads_trd_dist_ord_target_emp_1m_df",
+                "ads_trd_dist_ord_target_mgr_1m_df",
+                "ads_trd_time_prg_df",
+            ],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "日目标" in question and "分销进度" in question and ("最落后" in question or "最低" in question or "哪位业代" in question):
+        return make_logic_form(
+            task_type="ranking",
+            operation="retail_daily_progress_worst_employee",
+            parameters={"date": _date_text(business_date), "ym": ym},
+            source_tables=["v_trd_dist_ord_dtl_1d_rt", "ads_trd_dist_ord_target_emp_1m_df", "ads_trd_time_prg_df"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if start_ym and end_ym and "历史分销" in question and "环比" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_distribution_monthly_mom",
+            parameters={"start_ym": start_ym, "end_ym": end_ym},
+            source_tables=["v_trd_dist_ord_dtl"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if start_ym and end_ym and "分销目标" in question and "实际分销金额" in question and "对比" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_target_actual_monthly_comparison",
+            parameters={"person": person, "start_ym": start_ym, "end_ym": end_ym, "role": _person_role(question, person, tables)},
+            source_tables=["v_trd_dist_ord_dtl", "ads_trd_dist_ord_target_emp_1m_df", "ads_trd_dist_ord_target_mgr_1m_df"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if start_ym and end_ym and "分销目标达成率" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_target_achievement_monthly",
+            parameters={"person": person, "start_ym": start_ym, "end_ym": end_ym, "role": _person_role(question, person, tables)},
+            source_tables=["v_trd_dist_ord_dtl", "ads_trd_dist_ord_target_emp_1m_df", "ads_trd_dist_ord_target_mgr_1m_df"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
     if _asks_for_chart(question) and "分销目标" in question and "主任" in question and ("趋势" in question or "月度" in question):
         return make_logic_form(
             task_type="trend",
@@ -72,6 +122,15 @@ def parse_chinese_retail_question(
             task_type="trend",
             operation="retail_category_distribution_monthly_trend",
             parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym, "limit": _extract_limit(question, default=5)},
+            source_tables=["v_trd_dist_ord_dtl"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if _asks_for_chart(question) and "历史分销金额" in question and ("SKU" in question or "sku" in question.lower()) and _is_ranking_question(question):
+        return make_logic_form(
+            task_type="ranking",
+            operation="retail_distribution_topn_chart",
+            parameters={"ym": ym, "dimension": "sku_name", "metric": "sign_amt", "limit": _extract_limit(question, default=10)},
             source_tables=["v_trd_dist_ord_dtl"],
             output_format=output_format | {"answer_type": "text"},
         )

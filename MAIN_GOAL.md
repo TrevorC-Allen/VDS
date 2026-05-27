@@ -131,6 +131,7 @@
 55. Workbench 安全过程叙事 v2 已落地：`single_agent`、`multi_agent`、无数据聊天、有数据普通聊天和 dataset overview 都返回 `process_view_v2`；该字段按 chat、overview、metric、TopN、trend、multi-table、diagnostic、clarification/not_applicable 等模式生成不同步骤。占比类问题会安全展示对象、月份、产品、表选择和分子/分母摘要。Monitor SSE 最终事件只携带 run 状态和 `process_view_v2` 摘要，不再向前端监看面板发送完整 response / trace payload。
 56. Phase 12 首轮代码已落地：general / overview 问法命中 `overview_report`，主回答按表整体情况、字段含义、主要分布、风险/状态字段、可继续提问和边界组织；Insight 建议带 observation / evidence / recommended action；响应新增安全 `execution_artifacts` 代码卡片；`process_view_v2` 的 dataset overview 活动流包含读取表画像、识别表类型和执行概览代码；图表规划避免把 ID / reference / bin / year / hour / minute / day_of_year 当作指标；Workbench 主界面去除高级选项并支持数据文件与说明/规则文件一起上传后自动绑定。
 57. Phase 13 首轮代码已落地：新增 `backend/storage/project_store.py` 本地 JSON Project Store；DataAgentService 和 router 暴露 Project CRUD、project source upload、project memory CRUD，并让 `/message`、conversation create/list/record 支持可选 `project_id`；Workbench 新增 GPT-like Project sidebar 列表和主区域 Project home，当前 Project 下上传文件会写入 project sources，发送消息会带 project_id。左侧最近历史是全局历史，不得按 project 过滤；项目内 conversations / sources / memories 只能在右侧 Project home 中按当前 `project_id` 展示。当前仍是本地匿名 Project，不代表真实登录、多人协作或多租户权限已完成。
+58. Activity Trace v2 已落地：后端从 RunTrace、tool call trace、Pandas / SQL result 和 `execution_artifacts` 生成安全 `activity_trace_v2`，并通过最终 API payload 与 SSE `activity_trace_delta` 供 Workbench 渲染；前端新增 ChatGPT-like 右侧活动抽屉，展示 Planner、Pandas、SQL、Verifier、artifact 和校验摘要，但不展示 raw CoT、raw prompt、reasoning tokens、API key、task_id、标准答案、proxy 或 scorer。
 
 ## 架构原则
 
@@ -168,6 +169,7 @@
 32. 多语言能力必须通过稳定契约表达，不能靠在 prompt 或 executor 中散落的临时中英文关键词补丁冒充泛化。
 33. README.md 是 GitHub 默认首页状态摘要；任何阶段、主目标、项目规则、API、Benchmark 口径、验证状态或用户可见能力变化，都必须同步检查并更新根 README.md。如果本轮确认 README 不需要修改，必须在 CHANGELOG_AI.md 写明原因。
 34. GPT-like parity redline：任何影响文件解析、字段画像、general 回答、Insight、图表/表格、过程流、代码 artifact、Workbench 排版样式或用户可见文案的修改，验收时都必须拿 GPT / ChatGPT Data Analysis 的同类结果或已冻结的标准 GPT 参考结果逐项对比，明确回答“GPT 会这样解析吗、会这样排版吗、会这样回答吗”。语义、结构、可读性、视觉层级或交互形态差距很大时，不能标记完成，必须打回重写；单测通过只能证明没有回归，不能替代 GPT-like 对比。
+35. 每次正式测试都必须写测试文档：API smoke、浏览器 smoke、benchmark 回归、LLM GPT-like gate、changelog audit 和修复后复测都必须产出或更新 `docs/test-runs/*.md`，记录测试目标、环境、数据、问题、预期、实际结果、证据、GPT-like 判定、Not Applicable 归因、能力族归因和后续动作；没有测试文档不能视为验收完成。
 
 ## Microsoft Agent Framework 策略
 
@@ -1184,3 +1186,4 @@ Phase 9 禁止：
 30. Phase 13 不允许让前端实现检索、join、聚合、排序、评分、图表选择或数据清洗；这些能力必须继续由后端和 data_agent_core 受控链路负责。
 31. Phase 13 不允许把 Project 当成左侧历史过滤器；进入 Project 后必须保持左侧全局导航、Project 列表和最近历史可见，项目内聊天 / 来源列表只能在主区域 Project home 中呈现。
 32. Phase 13 不允许用与 ChatGPT Project 明显不相似的排版、入口命名或回答结构冒充 GPT-like；Project UX 和项目内回答必须对照 ChatGPT 截图、冻结参考或标准 GPT answer，差距大时打回重写。
+33. 每次测试必须写文档；任何被用于验收结论的测试都必须留下 `docs/test-runs/*.md` 证据，不能只存在于终端输出、对话说明、截图或 CHANGELOG_AI.md。

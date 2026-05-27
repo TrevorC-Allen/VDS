@@ -20,7 +20,22 @@ USER_ANALYSIS_RULE_SCOPE = "user_analysis"
 BENCHMARK_RULE_SCOPE = "benchmark"
 VALID_RULE_SCOPES = {USER_ANALYSIS_RULE_SCOPE, BENCHMARK_RULE_SCOPE}
 DATASET_FILE_EXTENSIONS = {".csv", ".xlsx", ".xls", ".json", ".parquet", ".arrow", ".feather"}
-RULE_FILE_EXTENSIONS = {".yaml", ".yml", ".json", ".txt", ".md"}
+RULE_FILE_EXTENSIONS = {
+    ".yaml",
+    ".yml",
+    ".json",
+    ".txt",
+    ".md",
+    ".doc",
+    ".docx",
+    ".docm",
+    ".rtf",
+    ".odt",
+    ".pdf",
+    ".pages",
+    ".html",
+    ".htm",
+}
 
 
 @dataclass

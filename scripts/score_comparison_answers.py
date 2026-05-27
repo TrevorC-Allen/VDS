@@ -27,11 +27,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 WEIGHTS = {
-    "semantic_similarity": 0.25,
-    "factuality": 0.25,
-    "instruction_following": 0.20,
-    "truthfulness": 0.20,
+    "semantic_similarity": 0.20,
+    "factuality": 0.22,
+    "instruction_following": 0.18,
+    "truthfulness": 0.18,
     "completeness": 0.10,
+    "text_framework_alignment": 0.12,
 }
 
 ANSWER_LABELS = {
@@ -374,8 +375,9 @@ def score_row(row: dict[str, Any], *, min_acceptable: float) -> dict[str, Any]:
 def score_row_with_llm(row: dict[str, Any], llm_client: Any, *, min_acceptable: float) -> dict[str, Any]:
     response = llm_client.complete_json(llm_judge_messages(row), temperature=0.0)
     pair_similarity = clamp10(float(response.get("pair_similarity", 0.0)))
-    standard_score = llm_answer_score(response.get("standard", {}), min_acceptable=min_acceptable)
-    candidate_score = llm_answer_score(response.get("candidate", {}), min_acceptable=min_acceptable)
+    expected_route = str(row.get("expected_route", ""))
+    standard_score = llm_answer_score(response.get("standard", {}), min_acceptable=min_acceptable, expected_route=expected_route)
+    candidate_score = llm_answer_score(response.get("candidate", {}), min_acceptable=min_acceptable, expected_route=expected_route)
     verdict = pair_verdict(standard_score, candidate_score)
     llm_verdict = response.get("verdict", {})
     if isinstance(llm_verdict, dict):
@@ -403,7 +405,7 @@ def score_row_with_llm(row: dict[str, Any], llm_client: Any, *, min_acceptable: 
     }
 
 
-def llm_answer_score(payload: Any, *, min_acceptable: float) -> AnswerScore:
+def llm_answer_score(payload: Any, *, min_acceptable: float, expected_route: str = "") -> AnswerScore:
     if not isinstance(payload, dict):
         payload = {}
     dimensions = {
@@ -418,6 +420,7 @@ def llm_answer_score(payload: Any, *, min_acceptable: float) -> AnswerScore:
         and dimensions["factuality"] >= 6.5
         and dimensions["instruction_following"] >= 6.0
         and dimensions["truthfulness"] >= 7.0
+        and (not requires_text_framework(expected_route) or dimensions["text_framework_alignment"] >= 6.0)
     )
     return AnswerScore(total_score=total, dimensions=dimensions, issues=issues, notes=notes, acceptable=acceptable)
 
@@ -450,17 +453,18 @@ def llm_judge_messages(row: dict[str, Any]) -> list[dict[str, str]]:
         "只返回 JSON，不要返回 Markdown。"
     )
     user = (
-        "按以下 5 个维度给 0-10 分：\n"
+        "按以下 6 个维度给 0-10 分：\n"
         "- semantic_similarity: 两个回答在核心语义和结论上的相似度。不同措辞可接受。\n"
         "- factuality: 是否包含可由题目/上下文支持的事实、数字和口径；明显乱报数字要低分。\n"
         "- instruction_following: 是否回答了原问题，并符合 expected_route。\n"
         "- truthfulness: 是否避免编造、过度确定、泄露 raw prompt/trace/scorer/标准答案等内部物。\n"
         "- completeness: 对用户复核是否足够完整，但不要奖励无关长篇。\n\n"
+        "- text_framework_alignment: 对数据类回答，是否有 GPT-like 文字层级：核心结论、简要结论、口径说明、下一步；没有这些模块不能高分。\n\n"
         "返回格式必须是：\n"
         "{\n"
         '  "pair_similarity": 0-10,\n'
-        '  "standard": {"semantic_similarity": 0-10, "factuality": 0-10, "instruction_following": 0-10, "truthfulness": 0-10, "completeness": 0-10, "issues": [], "notes": []},\n'
-        '  "candidate": {"semantic_similarity": 0-10, "factuality": 0-10, "instruction_following": 0-10, "truthfulness": 0-10, "completeness": 0-10, "issues": [], "notes": []},\n'
+        '  "standard": {"semantic_similarity": 0-10, "factuality": 0-10, "instruction_following": 0-10, "truthfulness": 0-10, "completeness": 0-10, "text_framework_alignment": 0-10, "issues": [], "notes": []},\n'
+        '  "candidate": {"semantic_similarity": 0-10, "factuality": 0-10, "instruction_following": 0-10, "truthfulness": 0-10, "completeness": 0-10, "text_framework_alignment": 0-10, "issues": [], "notes": []},\n'
         '  "verdict": {"reason": "一句中文理由"}\n'
         "}\n\n"
         "待评估内容：\n"
@@ -495,6 +499,7 @@ def score_answer(
         "instruction_following": instruction_following_score(text, question, expected_route),
         "truthfulness": truthfulness_score(text, question, expected_route),
         "completeness": completeness_score(text, other_answer, question, expected_route),
+        "text_framework_alignment": text_framework_alignment_score(text, expected_route),
     }
     issues = answer_issues(text, question, expected_route, dimensions)
     notes = answer_notes(role, text, other_answer, row, dimensions)
@@ -504,6 +509,7 @@ def score_answer(
         and dimensions["factuality"] >= 6.5
         and dimensions["instruction_following"] >= 6.0
         and dimensions["truthfulness"] >= 7.0
+        and (not requires_text_framework(expected_route) or dimensions["text_framework_alignment"] >= 6.0)
     )
     return AnswerScore(total_score=total, dimensions=dimensions, issues=issues, notes=notes, acceptable=acceptable)
 
@@ -628,6 +634,39 @@ def completeness_score(text: str, reference: str, question: str, expected_route:
     return clamp10(score)
 
 
+def text_framework_alignment_score(text: str, expected_route: str) -> float:
+    if not text.strip():
+        return 0.0
+    if not requires_text_framework(expected_route):
+        return 8.0 if len(text) >= 20 else 5.0
+
+    score = 0.0
+    if any(term in text for term in ("核心结论是", "核心结论", "直接结论", "结论是")):
+        score += 2.0
+    if "简要结论" in text:
+        score += 2.0
+    if "口径说明" in text or ("口径" in text and any(term in text for term in ("数据范围", "指标口径", "筛选条件"))):
+        score += 2.0
+    if any(term in text for term in ("下一步", "继续看", "继续问", "如果你愿意")):
+        score += 1.5
+    if re.search(r"(?m)^-\s+", text) or re.search(r"(?m)^\d+[.、]\s*", text):
+        score += 1.0
+    if any(term in text for term in ("数据范围", "指标口径", "注意事项", "筛选条件", "聚合", "排序", "目标", "实际")):
+        score += 1.0
+    if expected_route == "cleaning_simulation" and any(term in text for term in ("不会直接修改原始数据", "用户确认", "需要确认")):
+        score += 0.5
+    return clamp10(score)
+
+
+def requires_text_framework(expected_route: str) -> bool:
+    route = str(expected_route or "").lower()
+    if route_is_no_file(route) or route.startswith("chat"):
+        return False
+    return route in {"dataset_overview", "analysis", "cleaning_simulation"} or any(
+        token in route for token in ("overview", "analysis", "cleaning", "dataset")
+    )
+
+
 def answer_issues(text: str, question: str, expected_route: str, dimensions: dict[str, float]) -> list[str]:
     issues: list[str] = []
     if not text.strip():
@@ -646,6 +685,8 @@ def answer_issues(text: str, question: str, expected_route: str, dimensions: dic
         issues.append("internal_artifact_marker")
     if route_is_no_file(expected_route) and has_concrete_dataset_claim(text) and not has_no_file_boundary(text):
         issues.append("no_file_route_has_dataset_claim")
+    if requires_text_framework(expected_route) and dimensions.get("text_framework_alignment", 0.0) < 6.0:
+        issues.append("text_framework_alignment_risk")
     return sorted(set(issues))
 
 

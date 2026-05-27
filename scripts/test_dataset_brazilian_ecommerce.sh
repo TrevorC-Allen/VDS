@@ -33,3 +33,5 @@ VDS_LLM_PROVIDER=mock "${PY}" scripts/run_generic_dataset_eval.py \
 
 echo "Brazilian e-commerce comparison: ${OUT_DIR}/comparison.md"
 echo "Brazilian e-commerce VDS answers: ${OUT_DIR}/vds_answers.jsonl"
+COMPARISON_JUDGE="${COMPARISON_JUDGE:-heuristic}" "${PY}" scripts/score_comparison_answers.py "${OUT_DIR}/comparison.md" --judge "${COMPARISON_JUDGE:-heuristic}" --print-summary
+echo "Brazilian e-commerce scored comparison: ${OUT_DIR}/comparison_scored.md"

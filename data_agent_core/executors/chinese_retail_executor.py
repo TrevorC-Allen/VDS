@@ -24,6 +24,10 @@ CHINESE_RETAIL_OPERATIONS = {
     "retail_target_lookup",
     "retail_target_entity_count",
     "retail_target_achievement_rate",
+    "retail_target_achievement_monthly",
+    "retail_target_actual_monthly_comparison",
+    "retail_distribution_monthly_mom",
+    "retail_distribution_topn_chart",
     "retail_route_store_count",
     "retail_route_history_category_top",
     "retail_display_item_top",
@@ -37,6 +41,8 @@ CHINESE_RETAIL_OPERATIONS = {
     "retail_visit_success_count",
     "retail_visit_success_rate",
     "retail_daily_progress_rate",
+    "retail_daily_progress_worst_employee",
+    "retail_manager_daily_gap_contribution",
     "retail_route_history_sum",
     "retail_route_contract_product_quantity",
     "retail_fiscal_product_quantity",
@@ -88,6 +94,14 @@ def execute_chinese_retail_operation(logic: LogicForm, context: dict[str, Any]) 
         return _retail_target_entity_count(tables, params)
     if op == "retail_target_achievement_rate":
         return _retail_target_achievement_rate(tables, params)
+    if op == "retail_target_achievement_monthly":
+        return _retail_target_achievement_monthly(tables, params)
+    if op == "retail_target_actual_monthly_comparison":
+        return _retail_target_actual_monthly_comparison(tables, params)
+    if op == "retail_distribution_monthly_mom":
+        return _retail_distribution_monthly_mom(tables, params)
+    if op == "retail_distribution_topn_chart":
+        return _retail_distribution_topn_chart(tables, params)
     if op == "retail_route_store_count":
         return _retail_route_store_count(tables, params)
     if op == "retail_route_history_category_top":
@@ -114,6 +128,10 @@ def execute_chinese_retail_operation(logic: LogicForm, context: dict[str, Any]) 
         return _retail_visit_success_rate(tables, params)
     if op == "retail_daily_progress_rate":
         return _retail_daily_progress_rate(tables, params)
+    if op == "retail_daily_progress_worst_employee":
+        return _retail_daily_progress_worst_employee(tables, params)
+    if op == "retail_manager_daily_gap_contribution":
+        return _retail_manager_daily_gap_contribution(tables, params)
     if op == "retail_route_history_sum":
         return _retail_route_history_sum(tables, params)
     if op == "retail_route_contract_product_quantity":
@@ -277,6 +295,89 @@ def _retail_target_achievement_rate(tables: dict[str, pd.DataFrame], params: dic
     return actual / float(target) * 100
 
 
+def _retail_target_achievement_monthly(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    monthly = _target_actual_monthly_rows(tables, params)
+    if not monthly:
+        return "Not Applicable"
+    achieved = [row["月份"] for row in monthly if float(row["达成率"]) >= 100.0]
+    person = str(params.get("person") or "")
+    answer = (
+        f"{person}在{monthly[0]['月份']}至{monthly[-1]['月份']}的分销目标达成率："
+        + "；".join(f"{row['月份']} { _format_decimal(float(row['达成率']), 2)}%" for row in monthly)
+        + f"。达到或超过100%的月份：{', '.join(achieved) if achieved else '无'}。"
+    )
+    return {"answer": answer, "candidate_table": monthly, "x": "月份", "metric": "达成率"}
+
+
+def _retail_target_actual_monthly_comparison(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    monthly = _target_actual_monthly_rows(tables, params)
+    if not monthly:
+        return "Not Applicable"
+    person = str(params.get("person") or "")
+    best = max(monthly, key=lambda row: float(row["达成率"]))
+    answer = (
+        f"已生成{person}{monthly[0]['月份']}至{monthly[-1]['月份']}分销目标与实际分销金额对比；"
+        f"达成率最高月份为{best['月份']}（{_format_decimal(float(best['达成率']), 2)}%）。"
+    )
+    return {"answer": answer, "candidate_table": monthly, "x": "月份", "metric": "实际分销金额"}
+
+
+def _retail_distribution_monthly_mom(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    hist = _history_table(tables)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return "Not Applicable"
+    data = _filter_date_month_range(hist, "sign_time", months)
+    if data.empty or "sign_amt" not in data.columns:
+        return "Not Applicable"
+    data = data.copy()
+    data["month"] = pd.to_datetime(data["sign_time"], errors="coerce").dt.strftime("%Y%m").astype(int)
+    totals = data.groupby("month", dropna=True)["sign_amt"].sum().reindex(months, fill_value=0.0)
+    rows: list[dict[str, Any]] = []
+    previous: float | None = None
+    changes: list[tuple[int, float]] = []
+    for month, amount in totals.items():
+        amount_f = float(amount)
+        if previous is None or previous == 0:
+            mom: float | None = None
+        else:
+            mom = (amount_f - previous) / previous * 100
+            changes.append((int(month), mom))
+        rows.append({"月份": _ym_label(int(month)), "分销金额": amount_f, "环比": None if mom is None else mom})
+        previous = amount_f
+    if not rows:
+        return "Not Applicable"
+    growth = max(changes, key=lambda item: item[1]) if changes else None
+    decline = min(changes, key=lambda item: item[1]) if changes else None
+    answer = "；".join(
+        f"{row['月份']} 分销金额{_format_decimal(float(row['分销金额']), 2)}，环比"
+        f"{'Not Applicable' if row['环比'] is None else _format_decimal(float(row['环比']), 2) + '%'}"
+        for row in rows
+    )
+    if growth and decline:
+        answer += (
+            f"。最高增长月份：{_ym_label(growth[0])}（{_format_decimal(growth[1], 2)}%）；"
+            f"最大下滑月份：{_ym_label(decline[0])}（{_format_decimal(decline[1], 2)}%）。"
+        )
+    return {"answer": answer, "candidate_table": rows, "x": "月份", "metric": "分销金额"}
+
+
+def _retail_distribution_topn_chart(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    hist = _filter_ym(_history_table(tables), "sign_time", params.get("ym"))
+    dimension = _first_existing_column(hist, str(params.get("dimension") or "sku_name"), ("cmdt_name", "cmdt_sname", "sku_code"))
+    metric = str(params.get("metric") or "sign_amt")
+    if hist.empty or dimension not in hist.columns or metric not in hist.columns:
+        return "Not Applicable"
+    ranking = _numeric(hist[metric]).groupby(hist[dimension]).sum().sort_values(ascending=False)
+    ranking = ranking[ranking > 0]
+    if ranking.empty:
+        return "Not Applicable"
+    limit = int(params.get("limit") or 10)
+    rows = [{_dimension_label(dimension): str(name), _metric_label(metric): float(value)} for name, value in ranking.head(limit).items()]
+    answer = "；".join(f"{row[_dimension_label(dimension)]}:{_format_decimal(float(row[_metric_label(metric)]), 2)}" for row in rows)
+    return {"answer": answer, "candidate_table": rows, "x": _dimension_label(dimension), "metric": _metric_label(metric)}
+
+
 def _retail_route_store_count(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> int:
     route = _route_rows(tables, params)
     return int(route["cust_code"].dropna().astype(str).nunique())
@@ -404,6 +505,58 @@ def _retail_daily_progress_rate(tables: dict[str, pd.DataFrame], params: dict[st
     month_target = float(pd.to_numeric(target_rows["target"], errors="coerce").sum())
     day_count = float(pd.to_numeric(day_rows["dist_day_cnt"], errors="coerce").dropna().max())
     return 0.0 if month_target == 0 or day_count == 0 else amount / (month_target / day_count) * 100
+
+
+def _retail_daily_progress_worst_employee(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    rows = _employee_daily_progress_rows(tables, params)
+    rows = [row for row in rows if float(row["当日分销额"]) > 0]
+    if not rows:
+        return "Not Applicable"
+    selected = min(rows, key=lambda row: float(row["进度"]))
+    answer = f"{selected['业代']}:{_format_decimal(float(selected['进度']), 2)}%,{_format_decimal(float(selected['差距']), 2)}%"
+    return {"answer": answer, "candidate_table": rows, "x": "业代", "metric": "进度"}
+
+
+def _retail_manager_daily_gap_contribution(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    ym = params.get("ym")
+    date_text = params.get("date")
+    if not ym or not date_text:
+        return "Not Applicable"
+    day_count = _distribution_day_count(tables, ym)
+    if not day_count:
+        return "Not Applicable"
+    today = _filter_date(_today_table(tables), "sign_time", date_text)
+    mgr_target = _table_with_columns(tables, {"stat_month", "mgr_name", "target_amt"})
+    mgr_target = mgr_target[pd.to_numeric(mgr_target["stat_month"], errors="coerce").fillna(0).astype(int) == int(ym)]
+    if mgr_target.empty:
+        return "Not Applicable"
+    emp_progress = _employee_daily_progress_rows(tables, params, include_zero_actual=True)
+    rows: list[dict[str, Any]] = []
+    for _, target_row in mgr_target.iterrows():
+        manager = str(target_row["mgr_name"])
+        manager_actual = _sum(today[today.get("mgr_name", pd.Series(index=today.index, dtype=object)).astype(str) == manager], "sign_amt") if "mgr_name" in today.columns else 0.0
+        manager_daily_target = float(pd.to_numeric(pd.Series([target_row["target_amt"]]), errors="coerce").fillna(0).iloc[0]) / day_count
+        manager_gap = max(manager_daily_target - manager_actual, 0.0)
+        sub_rows = [row for row in emp_progress if str(row.get("主任")) == manager]
+        sub_gap_total = sum(float(row["缺口金额"]) for row in sub_rows)
+        top_sub = max(sub_rows, key=lambda row: float(row["缺口金额"])) if sub_rows else None
+        rows.append(
+            {
+                "主任": manager,
+                "主任日目标缺口": manager_gap,
+                "主要贡献业代": "" if top_sub is None else top_sub["业代"],
+                "下属缺口贡献占比": 0.0 if not top_sub or sub_gap_total == 0 else float(top_sub["缺口金额"]) / sub_gap_total * 100,
+            }
+        )
+    rows = [row for row in rows if float(row["主任日目标缺口"]) > 0]
+    if not rows:
+        return "Not Applicable"
+    selected = max(rows, key=lambda row: float(row["主任日目标缺口"]))
+    answer = (
+        f"{selected['主任']}:{_format_decimal(float(selected['主任日目标缺口']), 2)};"
+        f"{selected['主要贡献业代']}:{_format_decimal(float(selected['下属缺口贡献占比']), 2)}%"
+    )
+    return {"answer": answer, "candidate_table": rows, "x": "主任", "metric": "主任日目标缺口"}
 
 
 def _retail_route_history_sum(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> float | str:
@@ -714,6 +867,130 @@ def _retail_category_distribution_monthly_trend(tables: dict[str, pd.DataFrame],
         "x": "月份",
         "metric": "sign_amt",
     }
+
+
+def _target_actual_monthly_rows(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> list[dict[str, Any]]:
+    person = params.get("person")
+    if not person:
+        return []
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return []
+    role = params.get("role")
+    hist = _filter_date_month_range(_history_table(tables), "sign_time", months)
+    hist = _filter_person(hist, person, role)
+    if hist.empty and role != "manager":
+        actual_by_month = pd.Series(dtype=float)
+    else:
+        hist = hist.copy()
+        hist["month"] = pd.to_datetime(hist["sign_time"], errors="coerce").dt.strftime("%Y%m")
+        hist = hist[pd.to_numeric(hist["month"], errors="coerce").notna()]
+        hist["month"] = hist["month"].astype(int)
+        hist["sign_amt_n"] = _numeric(hist["sign_amt"])
+        actual_by_month = hist.groupby("month")["sign_amt_n"].sum()
+
+    if role == "manager":
+        target = _table_with_columns(tables, {"stat_month", "mgr_name", "target_amt"})
+        target = target[target["mgr_name"].astype(str) == str(person)].copy()
+        target_column = "target_amt"
+    else:
+        target = _table_with_columns(tables, {"stat_month", "emp_name", "target"})
+        target = target[target["emp_name"].astype(str) == str(person)].copy()
+        target_column = "target"
+    if target.empty:
+        return []
+    target = target[pd.to_numeric(target["stat_month"], errors="coerce").isin(months)].copy()
+    if target.empty:
+        return []
+    target["stat_month_n"] = pd.to_numeric(target["stat_month"], errors="coerce").astype(int)
+    target["target_n"] = _numeric(target[target_column])
+    target_by_month = target.groupby("stat_month_n")["target_n"].sum()
+    rows: list[dict[str, Any]] = []
+    for month in months:
+        actual = float(actual_by_month.get(month, 0.0))
+        target_value = float(target_by_month.get(month, 0.0))
+        achievement = 0.0 if target_value == 0 else actual / target_value * 100
+        rows.append(
+            {
+                "月份": _ym_label(month),
+                "实际分销金额": actual,
+                "目标金额": target_value,
+                "达成率": achievement,
+            }
+        )
+    return rows
+
+
+def _employee_daily_progress_rows(
+    tables: dict[str, pd.DataFrame],
+    params: dict[str, Any],
+    *,
+    include_zero_actual: bool = False,
+) -> list[dict[str, Any]]:
+    ym = params.get("ym")
+    date_text = params.get("date")
+    if not ym or not date_text:
+        return []
+    day_count = _distribution_day_count(tables, ym)
+    if not day_count:
+        return []
+    target = _table_with_columns(tables, {"stat_month", "emp_name", "target"})
+    target = target[pd.to_numeric(target["stat_month"], errors="coerce").fillna(0).astype(int) == int(ym)]
+    if target.empty:
+        return []
+    today = _filter_date(_today_table(tables), "sign_time", date_text)
+    actual_by_employee = _numeric(today["sign_amt"]).groupby(today["emp_name"].astype(str)).sum() if not today.empty and "emp_name" in today.columns else pd.Series(dtype=float)
+    rows: list[dict[str, Any]] = []
+    for _, row in target.iterrows():
+        employee = str(row["emp_name"])
+        target_value = float(pd.to_numeric(pd.Series([row["target"]]), errors="coerce").fillna(0).iloc[0])
+        if target_value <= 0:
+            continue
+        actual = float(actual_by_employee.get(employee, 0.0))
+        if actual <= 0 and not include_zero_actual:
+            continue
+        daily_target = target_value / day_count
+        progress = 0.0 if daily_target == 0 else actual / daily_target * 100
+        gap_percent = max(100.0 - progress, 0.0)
+        rows.append(
+            {
+                "业代": employee,
+                "主任": str(row["p_emp_name"]) if "p_emp_name" in target.columns else "",
+                "日目标": daily_target,
+                "当日分销额": actual,
+                "进度": progress,
+                "差距": gap_percent,
+                "缺口金额": max(daily_target - actual, 0.0),
+            }
+        )
+    return rows
+
+
+def _distribution_day_count(tables: dict[str, pd.DataFrame], ym: Any) -> float | None:
+    calendar = _table_with_columns(tables, {"month_id", "dist_day_cnt"})
+    rows = calendar[pd.to_numeric(calendar["month_id"], errors="coerce").fillna(0).astype(int) == int(ym)]
+    if rows.empty:
+        return None
+    value = float(pd.to_numeric(rows["dist_day_cnt"], errors="coerce").dropna().max())
+    return value if value > 0 else None
+
+
+def _dimension_label(dimension: str) -> str:
+    return {
+        "sku_name": "SKU",
+        "ctg_name": "品类",
+        "emp_name": "业代",
+        "p_emp_name": "主任",
+    }.get(dimension, dimension)
+
+
+def _metric_label(metric: str) -> str:
+    return {
+        "sign_amt": "分销金额",
+        "sign_box_cnt": "分销数量",
+        "target": "目标金额",
+        "target_amt": "目标金额",
+    }.get(metric, metric)
 
 
 def _route_customer_codes(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> set[str]:

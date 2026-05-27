@@ -1,0 +1,46 @@
+- generic [ref=e2]:
+  - complementary "历史 Chat" [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: V
+      - generic [ref=e6]:
+        - strong [ref=e7]: Virtual Data Scientist
+        - generic [ref=e8]: Data analysis chat
+    - button "新分析" [ref=e9] [cursor=pointer]:
+      - img [ref=e10]
+      - text: 新分析
+    - region "历史 Chat" [ref=e12]:
+      - generic [ref=e13]:
+        - heading "历史 Chat" [level=2] [ref=e14]
+        - generic [ref=e15]: "0"
+      - list [ref=e16]:
+        - listitem [ref=e17]: 上传数据并提问后，这里会显示最近的分析记录。
+  - main [ref=e18]:
+    - generic [ref=e19]:
+      - generic [ref=e20]:
+        - heading "VDS" [level=1] [ref=e21]
+        - paragraph [ref=e22]: 等待上传数据集
+      - generic [ref=e23]:
+        - link "监看页" [ref=e24] [cursor=pointer]:
+          - /url: /workbench-monitor
+          - img [ref=e25]
+          - generic [ref=e28]: 监看页
+        - generic [ref=e29]: 准备就绪
+        - generic [ref=e30]: 未上传数据
+    - article [ref=e32]:
+      - generic [ref=e33]: V
+      - generic [ref=e34]:
+        - heading "今天要分析什么数据？" [level=2] [ref=e35]
+        - paragraph [ref=e36]: 上传 CSV、Excel，或 DAB 规则包，然后直接提问。我会像对话一样展示理解、选择数据、分析和回答的过程。
+    - region "对话输入" [ref=e37]:
+      - generic [ref=e38]:
+        - textbox "向 VDS 提问，例如：哪个城市订单金额最高？" [ref=e39]
+        - generic [ref=e40]:
+          - generic "文件上传" [ref=e41]:
+            - button "选择文件" [ref=e42]
+            - generic "选择文件" [ref=e43] [cursor=pointer]:
+              - img [ref=e44]
+            - generic [ref=e46]:
+              - strong [ref=e47]: 选择文件
+              - generic [ref=e48]: CSV / Excel / DAB 规则包支持多选
+          - button [disabled] [ref=e49]:
+            - img [ref=e50]

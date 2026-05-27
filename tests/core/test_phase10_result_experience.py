@@ -15,6 +15,7 @@ from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.contracts.response_contracts import ChartSpec
 from data_agent_core.core.data_quality import build_data_quality_report
 from data_agent_core.llm.client import MockLLMClient
+from data_agent_core.output.activity_trace import build_activity_trace_v2
 from data_agent_core.output.chart_planner import build_chart_spec
 from data_agent_core.output.chart_renderer import attach_rendered_chart
 from data_agent_core.output.execution_artifacts import build_execution_artifacts
@@ -22,6 +23,7 @@ from data_agent_core.output.insight_generator import generate_insight
 from data_agent_core.output.process_narrative import build_process_view_v2, process_view_monitor_payload
 from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
 from data_agent_core.tracing.live_monitor import sanitize_monitor_payload
+from data_agent_core.tracing.run_trace import RunTrace
 
 
 class Phase10ResultExperienceTest(unittest.TestCase):
@@ -118,6 +120,62 @@ class Phase10ResultExperienceTest(unittest.TestCase):
         self.assertNotIn("raw_prompt", payload)
         self.assertNotIn("chain_of_thought", payload)
 
+    def test_activity_trace_v2_exposes_real_execution_without_raw_cot(self) -> None:
+        trace = RunTrace(
+            run_id="run_trace",
+            dataset_id="dataset_1",
+            question="哪个城市销售额最高？",
+            logic_form={
+                "operation": "ranking",
+                "metric": "sales",
+                "group_by": "city",
+                "source_tables": ["orders"],
+                "parameters": {"metric": "sales", "dimension": "city"},
+            },
+            source_tables=["orders"],
+            pandas_result_summary={"success": True, "backend": "pandas", "value": [{"city": "上海", "sales": 300}]},
+            sql_result_summary={"skipped": True, "reason": "Current native SQL path does not cover this capability family."},
+            verification_result={"passed": True, "pandas_sql_consistent": None, "chain_of_thought": "hidden"},
+            tool_call_summary=[
+                {
+                    "requested_by": "pandas_executor",
+                    "tool_name": "execute_pandas_plan",
+                    "success": True,
+                    "arguments_summary": {"analysis_plan": "ranking", "task_id": "secret"},
+                    "result_summary": {"rows": 1},
+                }
+            ],
+            final_response={"answer": "上海", "success": True, "output_contract_passed": True},
+        )
+        response = {
+            "success": True,
+            "answer_type": "text",
+            "verification": {"passed": True},
+            "execution_artifacts": [
+                {
+                    "language": "python",
+                    "title": "Python / Pandas 复现片段",
+                    "code": "import pandas as pd\n# task_id raw_prompt",
+                    "purpose": "安全复现",
+                }
+            ],
+        }
+
+        activity = build_activity_trace_v2(trace, response)
+        payload = str(activity).lower()
+
+        self.assertTrue(any(item["role"] == "pandas_executor" for item in activity))
+        self.assertTrue(any(item["role"] == "sql_executor" and "skipped" in " ".join(item["actions"]).lower() for item in activity))
+        self.assertTrue(any(item["role"] == "verifier" for item in activity))
+        self.assertTrue(any(item.get("artifacts") for item in activity))
+        artifact_code = next(node["artifacts"][0]["code"] for node in activity if node.get("artifacts"))
+        self.assertIn("\n", artifact_code)
+        self.assertIn("[redacted]", artifact_code)
+        self.assertIn("execute_pandas_plan", payload)
+        self.assertNotIn("chain_of_thought", payload)
+        self.assertNotIn("raw_prompt", payload)
+        self.assertNotIn("task_id", payload)
+
     def test_backend_chart_renderer_attaches_svg_image_data_uri(self) -> None:
         chart = build_chart_spec(
             plan=AnalysisPlan(plan_id="plan_rank", logic_form=LogicForm(task_type="ranking", operation="ranking")),
@@ -179,6 +237,8 @@ class Phase10ResultExperienceTest(unittest.TestCase):
 
         self.assertTrue(insight.anomaly_findings)
         self.assertTrue(insight.business_suggestions)
+        self.assertLessEqual(len(insight.business_suggestions), 1)
+        self.assertIn("下一步", insight.business_suggestions[0])
         self.assertGreater(insight.confidence, 0)
 
     def test_data_quality_report_scans_missing_duplicates_and_outliers(self) -> None:

@@ -1,0 +1,657 @@
+- generic [ref=e2]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - heading "Spaces Hugging Face's logo adyen / DABstep like 95 Agents Running on CPU Upgrade" [level=1] [ref=e7]:
+        - generic [ref=e8]:
+          - link "Spaces" [ref=e9] [cursor=pointer]:
+            - /url: /spaces
+          - link "Hugging Face's logo" [ref=e10] [cursor=pointer]:
+            - /url: /
+            - img "Hugging Face's logo" [ref=e11]
+        - separator [ref=e12]
+        - generic [ref=e13]:
+          - link [ref=e18] [cursor=pointer]:
+            - /url: /adyen
+          - link "adyen" [ref=e22] [cursor=pointer]:
+            - /url: /adyen
+          - generic [ref=e23]: /
+        - generic [ref=e24]:
+          - link "DABstep" [ref=e25] [cursor=pointer]:
+            - /url: /spaces/adyen/DABstep
+          - button "Copy space name to clipboard" [ref=e26] [cursor=pointer]:
+            - img [ref=e27]
+        - generic [ref=e31]:
+          - button "like" [ref=e34] [cursor=pointer]:
+            - img [ref=e35]
+            - generic [ref=e37]: like
+          - button "95" [ref=e38] [cursor=pointer]
+        - generic [ref=e41] [cursor=pointer]:
+          - img [ref=e42]
+          - text: Agents
+        - generic [ref=e50] [cursor=pointer]:
+          - text: Running
+          - generic [ref=e52]: "on"
+          - generic [ref=e53]: CPU Upgrade
+      - generic [ref=e54]:
+        - generic [ref=e55]:
+          - link "App" [ref=e56] [cursor=pointer]:
+            - /url: /spaces/adyen/DABstep
+            - img [ref=e57]
+            - text: App
+          - link "Files" [ref=e61] [cursor=pointer]:
+            - /url: /spaces/adyen/DABstep/tree/main
+            - img [ref=e62]
+            - generic [ref=e65]: Files
+        - button [ref=e68] [cursor=pointer]:
+          - img [ref=e69]
+          - img [ref=e73]
+  - main [ref=e75]:
+    - iframe [active] [ref=e77]:
+      - generic [ref=f3e5]:
+        - main [ref=f3e6]:
+          - generic [ref=f3e7]:
+            - heading "🏅 DABStep Leaderboard" [level=1] [ref=f3e12]
+            - generic [ref=f3e16]:
+              - paragraph [ref=f3e17]:
+                - text: The
+                - link "Data Agent Benchmark for Multi-step Reasoning (DABStep)" [ref=f3e18] [cursor=pointer]:
+                  - /url: https://huggingface.co/blog/dabstep
+                - text: is looking to measure and push the state-of-the-art in Data Analysis by LLMs. The benchmark is composed of ~450 data analysis questions (
+                - link "Dataset Link" [ref=f3e19] [cursor=pointer]:
+                  - /url: https://huggingface.co/datasets/adyen/data-agents-benchmark
+                - text: ) centered around 1 or more documents that agents will have to understand and cross reference in order to answer correctly.
+              - paragraph [ref=f3e20]:
+                - text: "We have set up a notebook to quickly get an agent baseline using the free Huggingface Inference API:"
+                - link "Colab Notebook" [ref=f3e21] [cursor=pointer]:
+                  - /url: https://colab.research.google.com/drive/1pXi5ffBFNJQ5nn1111SnIfjfKCOlunxu
+              - paragraph [ref=f3e22]:
+                - text: "Check out the official technical reports here:"
+                - link "Adyen Report" [ref=f3e23] [cursor=pointer]:
+                  - /url: https://www.adyen.com/knowledge-hub/data-agent-benchmark-for-multi-step-reasoning-dabstep
+                - link "Hugging Face Report" [ref=f3e24] [cursor=pointer]:
+                  - /url: https://huggingface.co/blog/dabstep
+              - paragraph [ref=f3e25]:
+                - text: Join the discussion on the
+                - link "discord server!" [ref=f3e26] [cursor=pointer]:
+                  - /url: https://discord.gg/8cCbjmCH4d
+              - paragraph [ref=f3e27]:
+                - text: Reproduce the baseline results with the agent code we open sourced
+                - link "here" [ref=f3e28] [cursor=pointer]:
+                  - /url: https://huggingface.co/spaces/adyen/DABstep/tree/main/baseline
+            - generic [ref=f3e29]:
+              - generic [ref=f3e30]:
+                - generic [ref=f3e31]:
+                  - button [ref=f3e32] [cursor=pointer]: Validated
+                  - button [ref=f3e33] [cursor=pointer]: Unvalidated
+                - tablist [ref=f3e34]:
+                  - tab "Validated" [ref=f3e35] [cursor=pointer]
+                  - tab "Unvalidated" [active] [selected] [ref=f3e36] [cursor=pointer]
+              - tabpanel [ref=f3e952]:
+                - generic [ref=f3e953]:
+                  - generic [ref=f3e955]:
+                    - generic:
+                      - generic: processing | 1.1s
+                      - generic:
+                        - img
+                    - grid [ref=f3e957]:
+                      - table [ref=f3e958]:
+                        - rowgroup [ref=f3e959]:
+                          - row [ref=f3e960]:
+                            - columnheader [ref=f3e961]:
+                              - button [ref=f3e964] [cursor=pointer]:
+                                - button [ref=f3e965]: Agent
+                            - columnheader [ref=f3e966]:
+                              - button [ref=f3e969] [cursor=pointer]:
+                                - button [ref=f3e970]: Easy Level Accuracy (%)
+                            - columnheader [ref=f3e971]:
+                              - button [ref=f3e974] [cursor=pointer]:
+                                - button [ref=f3e975]: Hard Level Accuracy (%)
+                            - columnheader [ref=f3e976]:
+                              - button [ref=f3e979] [cursor=pointer]:
+                                - button [ref=f3e980]: Organization
+                            - columnheader [ref=f3e981]:
+                              - button [ref=f3e984] [cursor=pointer]:
+                                - button [ref=f3e985]: Repo URL
+                            - columnheader [ref=f3e986]:
+                              - button [ref=f3e989] [cursor=pointer]:
+                                - button [ref=f3e990]: Model Family
+                            - columnheader [ref=f3e991]:
+                              - button [ref=f3e994] [cursor=pointer]:
+                                - button [ref=f3e995]: Date
+                        - rowgroup [ref=f3e996]:
+                          - row [ref=f3e997]:
+                            - cell [ref=f3e998]:
+                              - button [ref=f3e1000]:
+                                - paragraph [ref=f3e1002]:
+                                  - strong [ref=f3e1003]: nl2bigframes_agent_dabsteps_QP_DC_RAG_True_judge_False_picker_self_consistency
+                            - cell [ref=f3e1004]:
+                              - button [ref=f3e1006]: "95.83"
+                            - cell [ref=f3e1007]:
+                              - button [ref=f3e1009]: "99.21"
+                            - cell [ref=f3e1010]:
+                              - button [ref=f3e1012]: qq da test ci agent sft0601-16 new pipeline | user ricklovelisa
+                            - cell [ref=f3e1013]:
+                              - button [ref=f3e1015]:
+                                - paragraph [ref=f3e1017]:
+                                  - link [ref=f3e1018] [cursor=pointer]:
+                                    - /url: https://huggingface.co/spaces/adyen/DABstep/blob/main/baseline/run.py
+                                    - text: Link
+                            - cell [ref=f3e1019]:
+                              - button [ref=f3e1021]:
+                                - paragraph [ref=f3e1023]: qq da test ci agent sft0601-16 new pipeline
+                            - cell [ref=f3e1024]:
+                              - button [ref=f3e1026]: 12-12-2025
+                      - button "Drop CSV or TSV files here to import data into dataframe" [ref=f3e1027]:
+                        - table [ref=f3e1031]:
+                          - rowgroup [ref=f3e1032]:
+                            - row "Agent Easy Level Accuracy (%) Hard Level Accuracy (%) Organization Repo URL Model Family Date" [ref=f3e1033]:
+                              - columnheader "Agent" [ref=f3e1034]:
+                                - button "Agent" [ref=f3e1037] [cursor=pointer]:
+                                  - button "Agent" [ref=f3e1038]
+                              - columnheader "Easy Level Accuracy (%)" [ref=f3e1039]:
+                                - button "Easy Level Accuracy (%)" [ref=f3e1042] [cursor=pointer]:
+                                  - button "Easy Level Accuracy (%)" [ref=f3e1043]
+                              - columnheader "Hard Level Accuracy (%)" [ref=f3e1044]:
+                                - button "Hard Level Accuracy (%)" [ref=f3e1047] [cursor=pointer]:
+                                  - button "Hard Level Accuracy (%)" [ref=f3e1048]
+                              - columnheader "Organization" [ref=f3e1049]:
+                                - button "Organization" [ref=f3e1052] [cursor=pointer]:
+                                  - button "Organization" [ref=f3e1053]
+                              - columnheader "Repo URL" [ref=f3e1054]:
+                                - button "Repo URL" [ref=f3e1057] [cursor=pointer]:
+                                  - button "Repo URL" [ref=f3e1058]
+                              - columnheader "Model Family" [ref=f3e1059]:
+                                - button "Model Family" [ref=f3e1062] [cursor=pointer]:
+                                  - button "Model Family" [ref=f3e1063]
+                              - columnheader "Date" [ref=f3e1064]:
+                                - button "Date" [ref=f3e1067] [cursor=pointer]:
+                                  - button "Date" [ref=f3e1068]
+                            - iframe [ref=f3e1069]:
+                              
+                          - rowgroup [ref=f3e1070]:
+                            - row "Genesis Data Agent 100 100 Genesis Computing | user jaymiller96734 gpt5-2 12-12-2025" [ref=f3e1071]:
+                              - cell "Genesis Data Agent" [ref=f3e1072]:
+                                - button "Genesis Data Agent" [ref=f3e1074]:
+                                  - paragraph [ref=f3e1076]:
+                                    - strong [ref=f3e1077]: Genesis Data Agent
+                              - cell "100" [ref=f3e1078]:
+                                - button "100" [ref=f3e1080]
+                              - cell "100" [ref=f3e1081]:
+                                - button "100" [ref=f3e1083]
+                              - cell "Genesis Computing | user jaymiller96734" [ref=f3e1084]:
+                                - button "Genesis Computing | user jaymiller96734" [ref=f3e1086]
+                              - cell [ref=f3e1087]:
+                                - generic [ref=f3e1088]:
+                                  - button
+                              - cell "gpt5-2" [ref=f3e1089]:
+                                - button "gpt5-2" [ref=f3e1091]:
+                                  - paragraph [ref=f3e1093]: gpt5-2
+                              - cell "12-12-2025" [ref=f3e1094]:
+                                - button "12-12-2025" [ref=f3e1096]
+                            - row "DataPilot 100 100 OceanBase | user ConfuseG Link Qwen3 12-01-2026" [ref=f3e1097]:
+                              - cell "DataPilot" [ref=f3e1098]:
+                                - button "DataPilot" [ref=f3e1100]:
+                                  - paragraph [ref=f3e1102]:
+                                    - strong [ref=f3e1103]: DataPilot
+                              - cell "100" [ref=f3e1104]:
+                                - button "100" [ref=f3e1106]
+                              - cell "100" [ref=f3e1107]:
+                                - button "100" [ref=f3e1109]
+                              - cell "OceanBase | user ConfuseG" [ref=f3e1110]:
+                                - button "OceanBase | user ConfuseG" [ref=f3e1112]
+                              - cell "Link" [ref=f3e1113]:
+                                - button "Link" [ref=f3e1115]:
+                                  - paragraph [ref=f3e1117]:
+                                    - link "Link" [ref=f3e1118] [cursor=pointer]:
+                                      - /url: https://en.oceanbase.com/blog/24781555459
+                              - cell "Qwen3" [ref=f3e1119]:
+                                - button "Qwen3" [ref=f3e1121]:
+                                  - paragraph [ref=f3e1123]: Qwen3
+                              - cell "12-01-2026" [ref=f3e1124]:
+                                - button "12-01-2026" [ref=f3e1126]
+                            - row "ThinkEvolve Spoofer 100 99.21 Think Evolve Labs LLC | user skylord Link MiniMax Agent 10-12-2025" [ref=f3e1127]:
+                              - cell "ThinkEvolve Spoofer" [ref=f3e1128]:
+                                - button "ThinkEvolve Spoofer" [ref=f3e1130]:
+                                  - paragraph [ref=f3e1132]:
+                                    - strong [ref=f3e1133]: ThinkEvolve Spoofer
+                              - cell "100" [ref=f3e1134]:
+                                - button "100" [ref=f3e1136]
+                              - cell "99.21" [ref=f3e1137]:
+                                - button "99.21" [ref=f3e1139]
+                              - cell "Think Evolve Labs LLC | user skylord" [ref=f3e1140]:
+                                - button "Think Evolve Labs LLC | user skylord" [ref=f3e1142]
+                              - cell "Link" [ref=f3e1143]:
+                                - button "Link" [ref=f3e1145]:
+                                  - paragraph [ref=f3e1147]:
+                                    - link "Link" [ref=f3e1148] [cursor=pointer]:
+                                      - /url: https://www.thinkevolveconsulting.com/query-your-data/
+                              - cell "MiniMax Agent" [ref=f3e1149]:
+                                - button "MiniMax Agent" [ref=f3e1151]:
+                                  - paragraph [ref=f3e1153]: MiniMax Agent
+                              - cell "10-12-2025" [ref=f3e1154]:
+                                - button "10-12-2025" [ref=f3e1156]
+                            - row "q_test_da_pass8_simple 100 99.21 personal | user consultantQ qwen3 11-12-2025" [ref=f3e1157]:
+                              - cell "q_test_da_pass8_simple" [ref=f3e1158]:
+                                - button "q_test_da_pass8_simple" [ref=f3e1160]:
+                                  - paragraph [ref=f3e1162]:
+                                    - strong [ref=f3e1163]: q_test_da_pass8_simple
+                              - cell "100" [ref=f3e1164]:
+                                - button "100" [ref=f3e1166]
+                              - cell "99.21" [ref=f3e1167]:
+                                - button "99.21" [ref=f3e1169]
+                              - cell "personal | user consultantQ" [ref=f3e1170]:
+                                - button "personal | user consultantQ" [ref=f3e1172]
+                              - cell [ref=f3e1173]:
+                                - generic [ref=f3e1174]:
+                                  - button
+                              - cell "qwen3" [ref=f3e1175]:
+                                - button "qwen3" [ref=f3e1177]:
+                                  - paragraph [ref=f3e1179]: qwen3
+                              - cell "11-12-2025" [ref=f3e1180]:
+                                - button "11-12-2025" [ref=f3e1182]
+                            - row "Clalude code and gemini 100 98.94 personal | user EthanYX Claude Opus 4.5 04-12-2025" [ref=f3e1183]:
+                              - cell "Clalude code and gemini" [ref=f3e1184]:
+                                - button "Clalude code and gemini" [ref=f3e1186]:
+                                  - paragraph [ref=f3e1188]:
+                                    - strong [ref=f3e1189]: Clalude code and gemini
+                              - cell "100" [ref=f3e1190]:
+                                - button "100" [ref=f3e1192]
+                              - cell "98.94" [ref=f3e1193]:
+                                - button "98.94" [ref=f3e1195]
+                              - cell "personal | user EthanYX" [ref=f3e1196]:
+                                - button "personal | user EthanYX" [ref=f3e1198]
+                              - cell [ref=f3e1199]:
+                                - generic [ref=f3e1200]:
+                                  - button
+                              - cell "Claude Opus 4.5" [ref=f3e1201]:
+                                - button "Claude Opus 4.5" [ref=f3e1203]:
+                                  - paragraph [ref=f3e1205]: Claude Opus 4.5
+                              - cell "04-12-2025" [ref=f3e1206]:
+                                - button "04-12-2025" [ref=f3e1208]
+                            - row "Claude code and Gemini 100 98.94 personal | user EthanYX gemini-2.5-pro and claude 4.5 04-12-2025" [ref=f3e1209]:
+                              - cell "Claude code and Gemini" [ref=f3e1210]:
+                                - button "Claude code and Gemini" [ref=f3e1212]:
+                                  - paragraph [ref=f3e1214]:
+                                    - strong [ref=f3e1215]: Claude code and Gemini
+                              - cell "100" [ref=f3e1216]:
+                                - button "100" [ref=f3e1218]
+                              - cell "98.94" [ref=f3e1219]:
+                                - button "98.94" [ref=f3e1221]
+                              - cell "personal | user EthanYX" [ref=f3e1222]:
+                                - button "personal | user EthanYX" [ref=f3e1224]
+                              - cell [ref=f3e1225]:
+                                - generic [ref=f3e1226]:
+                                  - button
+                              - cell "gemini-2.5-pro and claude 4.5" [ref=f3e1227]:
+                                - button "gemini-2.5-pro and claude 4.5" [ref=f3e1229]:
+                                  - paragraph [ref=f3e1231]: gemini-2.5-pro and claude 4.5
+                              - cell "04-12-2025" [ref=f3e1232]:
+                                - button "04-12-2025" [ref=f3e1234]
+                            - row "Dipeak 95.83 98.94 Dipeak | user speta Qwen3.5-27B 15-05-2026" [ref=f3e1235]:
+                              - cell "Dipeak" [ref=f3e1236]:
+                                - button "Dipeak" [ref=f3e1238]:
+                                  - paragraph [ref=f3e1240]:
+                                    - strong [ref=f3e1241]: Dipeak
+                              - cell "95.83" [ref=f3e1242]:
+                                - button "95.83" [ref=f3e1244]
+                              - cell "98.94" [ref=f3e1245]:
+                                - button "98.94" [ref=f3e1247]
+                              - cell "Dipeak | user speta" [ref=f3e1248]:
+                                - button "Dipeak | user speta" [ref=f3e1250]
+                              - cell [ref=f3e1251]:
+                                - generic [ref=f3e1252]:
+                                  - button
+                              - cell "Qwen3.5-27B" [ref=f3e1253]:
+                                - button "Qwen3.5-27B" [ref=f3e1255]:
+                                  - paragraph [ref=f3e1257]: Qwen3.5-27B
+                              - cell "15-05-2026" [ref=f3e1258]:
+                                - button "15-05-2026" [ref=f3e1260]
+                            - row "sp-final 95.83 98.94 speta | user speta qwen 15-05-2026" [ref=f3e1261]:
+                              - cell "sp-final" [ref=f3e1262]:
+                                - button "sp-final" [ref=f3e1264]:
+                                  - paragraph [ref=f3e1266]:
+                                    - strong [ref=f3e1267]: sp-final
+                              - cell "95.83" [ref=f3e1268]:
+                                - button "95.83" [ref=f3e1270]
+                              - cell "98.94" [ref=f3e1271]:
+                                - button "98.94" [ref=f3e1273]
+                              - cell "speta | user speta" [ref=f3e1274]:
+                                - button "speta | user speta" [ref=f3e1276]
+                              - cell [ref=f3e1277]:
+                                - generic [ref=f3e1278]:
+                                  - button
+                              - cell "qwen" [ref=f3e1279]:
+                                - button "qwen" [ref=f3e1281]:
+                                  - paragraph [ref=f3e1283]: qwen
+                              - cell "15-05-2026" [ref=f3e1284]:
+                                - button "15-05-2026" [ref=f3e1286]
+                            - row "ConfuseAgent 100 98.68 personal | user ConfuseG qwen 17-12-2025" [ref=f3e1287]:
+                              - cell "ConfuseAgent" [ref=f3e1288]:
+                                - button "ConfuseAgent" [ref=f3e1290]:
+                                  - paragraph [ref=f3e1292]:
+                                    - strong [ref=f3e1293]: ConfuseAgent
+                              - cell "100" [ref=f3e1294]:
+                                - button "100" [ref=f3e1296]
+                              - cell "98.68" [ref=f3e1297]:
+                                - button "98.68" [ref=f3e1299]
+                              - cell "personal | user ConfuseG" [ref=f3e1300]:
+                                - button "personal | user ConfuseG" [ref=f3e1302]
+                              - cell [ref=f3e1303]:
+                                - generic [ref=f3e1304]:
+                                  - button
+                              - cell "qwen" [ref=f3e1305]:
+                                - button "qwen" [ref=f3e1307]:
+                                  - paragraph [ref=f3e1309]: qwen
+                              - cell "17-12-2025" [ref=f3e1310]:
+                                - button "17-12-2025" [ref=f3e1312]
+                            - row "speta-try3 95.83 98.15 speta | user speta qwen 15-05-2026" [ref=f3e1313]:
+                              - cell "speta-try3" [ref=f3e1314]:
+                                - button "speta-try3" [ref=f3e1316]:
+                                  - paragraph [ref=f3e1318]:
+                                    - strong [ref=f3e1319]: speta-try3
+                              - cell "95.83" [ref=f3e1320]:
+                                - button "95.83" [ref=f3e1322]
+                              - cell "98.15" [ref=f3e1323]:
+                                - button "98.15" [ref=f3e1325]
+                              - cell "speta | user speta" [ref=f3e1326]:
+                                - button "speta | user speta" [ref=f3e1328]
+                              - cell [ref=f3e1329]:
+                                - generic [ref=f3e1330]:
+                                  - button
+                              - cell "qwen" [ref=f3e1331]:
+                                - button "qwen" [ref=f3e1333]:
+                                  - paragraph [ref=f3e1335]: qwen
+                              - cell "15-05-2026" [ref=f3e1336]:
+                                - button "15-05-2026" [ref=f3e1338]
+                            - row "speta-try2 95.83 98.15 speta-try2 | user speta qwen 14-05-2026" [ref=f3e1339]:
+                              - cell "speta-try2" [ref=f3e1340]:
+                                - button "speta-try2" [ref=f3e1342]:
+                                  - paragraph [ref=f3e1344]:
+                                    - strong [ref=f3e1345]: speta-try2
+                              - cell "95.83" [ref=f3e1346]:
+                                - button "95.83" [ref=f3e1348]
+                              - cell "98.15" [ref=f3e1349]:
+                                - button "98.15" [ref=f3e1351]
+                              - cell "speta-try2 | user speta" [ref=f3e1352]:
+                                - button "speta-try2 | user speta" [ref=f3e1354]
+                              - cell [ref=f3e1355]:
+                                - generic [ref=f3e1356]:
+                                  - button
+                              - cell "qwen" [ref=f3e1357]:
+                                - button "qwen" [ref=f3e1359]:
+                                  - paragraph [ref=f3e1361]: qwen
+                              - cell "14-05-2026" [ref=f3e1362]:
+                                - button "14-05-2026" [ref=f3e1364]
+                            - row "b agent - v1.0 95.83 96.03 bd | user sys7 db 19-05-2026" [ref=f3e1365]:
+                              - cell "b agent - v1.0" [ref=f3e1366]:
+                                - button "b agent - v1.0" [ref=f3e1368]:
+                                  - paragraph [ref=f3e1370]:
+                                    - strong [ref=f3e1371]: b agent - v1.0
+                              - cell "95.83" [ref=f3e1372]:
+                                - button "95.83" [ref=f3e1374]
+                              - cell "96.03" [ref=f3e1375]:
+                                - button "96.03" [ref=f3e1377]
+                              - cell "bd | user sys7" [ref=f3e1378]:
+                                - button "bd | user sys7" [ref=f3e1380]
+                              - cell [ref=f3e1381]:
+                                - generic [ref=f3e1382]:
+                                  - button
+                              - cell "db" [ref=f3e1383]:
+                                - button "db" [ref=f3e1385]:
+                                  - paragraph [ref=f3e1387]: db
+                              - cell "19-05-2026" [ref=f3e1388]:
+                                - button "19-05-2026" [ref=f3e1390]
+                            - row "da_1775991891_rnd 97.22 95.77 aa | user fatihozturk aaa 12-04-2026" [ref=f3e1391]:
+                              - cell "da_1775991891_rnd" [ref=f3e1392]:
+                                - button "da_1775991891_rnd" [ref=f3e1394]:
+                                  - paragraph [ref=f3e1396]:
+                                    - strong [ref=f3e1397]: da_1775991891_rnd
+                              - cell "97.22" [ref=f3e1398]:
+                                - button "97.22" [ref=f3e1400]
+                              - cell "95.77" [ref=f3e1401]:
+                                - button "95.77" [ref=f3e1403]
+                              - cell "aa | user fatihozturk" [ref=f3e1404]:
+                                - button "aa | user fatihozturk" [ref=f3e1406]
+                              - cell [ref=f3e1407]:
+                                - generic [ref=f3e1408]:
+                                  - button
+                              - cell "aaa" [ref=f3e1409]:
+                                - button "aaa" [ref=f3e1411]:
+                                  - paragraph [ref=f3e1413]: aaa
+                              - cell "12-04-2026" [ref=f3e1414]:
+                                - button "12-04-2026" [ref=f3e1416]
+                            - row "DataPilot 98.61 95.5 OceanBase AntGroup | user ConfuseG Qwen3 08-01-2026" [ref=f3e1417]:
+                              - cell "DataPilot" [ref=f3e1418]:
+                                - button "DataPilot" [ref=f3e1420]:
+                                  - paragraph [ref=f3e1422]:
+                                    - strong [ref=f3e1423]: DataPilot
+                              - cell "98.61" [ref=f3e1424]:
+                                - button "98.61" [ref=f3e1426]
+                              - cell "95.5" [ref=f3e1427]:
+                                - button "95.5" [ref=f3e1429]
+                              - cell "OceanBase AntGroup | user ConfuseG" [ref=f3e1430]:
+                                - button "OceanBase AntGroup | user ConfuseG" [ref=f3e1432]
+                              - cell [ref=f3e1433]:
+                                - generic [ref=f3e1434]:
+                                  - button
+                              - cell "Qwen3" [ref=f3e1435]:
+                                - button "Qwen3" [ref=f3e1437]:
+                                  - paragraph [ref=f3e1439]: Qwen3
+                              - cell "08-01-2026" [ref=f3e1440]:
+                                - button "08-01-2026" [ref=f3e1442]
+                            - row "Actioneer v0.5 Agent 90.28 94.44 Glitchcraft Inc | user Navgameramp Claude Opus 4.6 12-04-2026" [ref=f3e1443]:
+                              - cell "Actioneer v0.5 Agent" [ref=f3e1444]:
+                                - button "Actioneer v0.5 Agent" [ref=f3e1446]:
+                                  - paragraph [ref=f3e1448]:
+                                    - strong [ref=f3e1449]: Actioneer v0.5 Agent
+                              - cell "90.28" [ref=f3e1450]:
+                                - button "90.28" [ref=f3e1452]
+                              - cell "94.44" [ref=f3e1453]:
+                                - button "94.44" [ref=f3e1455]
+                              - cell "Glitchcraft Inc | user Navgameramp" [ref=f3e1456]:
+                                - button "Glitchcraft Inc | user Navgameramp" [ref=f3e1458]
+                              - cell [ref=f3e1459]:
+                                - generic [ref=f3e1460]:
+                                  - button
+                              - cell "Claude Opus 4.6" [ref=f3e1461]:
+                                - button "Claude Opus 4.6" [ref=f3e1463]:
+                                  - paragraph [ref=f3e1465]: Claude Opus 4.6
+                              - cell "12-04-2026" [ref=f3e1466]:
+                                - button "12-04-2026" [ref=f3e1468]
+                            - row "llmtech-data-explorer-2-19-pp 86.11 94.18 llmtech | user daxiongshu claude haiku 4.5 19-02-2026" [ref=f3e1469]:
+                              - cell "llmtech-data-explorer-2-19-pp" [ref=f3e1470]:
+                                - button "llmtech-data-explorer-2-19-pp" [ref=f3e1472]:
+                                  - paragraph [ref=f3e1474]:
+                                    - strong [ref=f3e1475]: llmtech-data-explorer-2-19-pp
+                              - cell "86.11" [ref=f3e1476]:
+                                - button "86.11" [ref=f3e1478]
+                              - cell "94.18" [ref=f3e1479]:
+                                - button "94.18" [ref=f3e1481]
+                              - cell "llmtech | user daxiongshu" [ref=f3e1482]:
+                                - button "llmtech | user daxiongshu" [ref=f3e1484]
+                              - cell [ref=f3e1485]:
+                                - generic [ref=f3e1486]:
+                                  - button
+                              - cell "claude haiku 4.5" [ref=f3e1487]:
+                                - button "claude haiku 4.5" [ref=f3e1489]:
+                                  - paragraph [ref=f3e1491]: claude haiku 4.5
+                              - cell "19-02-2026" [ref=f3e1492]:
+                                - button "19-02-2026" [ref=f3e1494]
+                            - row "sp 95.83 93.92 sp | user speta qwen 15-05-2026" [ref=f3e1495]:
+                              - cell "sp" [ref=f3e1496]:
+                                - button "sp" [ref=f3e1498]:
+                                  - paragraph [ref=f3e1500]:
+                                    - strong [ref=f3e1501]: sp
+                              - cell "95.83" [ref=f3e1502]:
+                                - button "95.83" [ref=f3e1504]
+                              - cell "93.92" [ref=f3e1505]:
+                                - button "93.92" [ref=f3e1507]
+                              - cell "sp | user speta" [ref=f3e1508]:
+                                - button "sp | user speta" [ref=f3e1510]
+                              - cell [ref=f3e1511]:
+                                - generic [ref=f3e1512]:
+                                  - button
+                              - cell "qwen" [ref=f3e1513]:
+                                - button "qwen" [ref=f3e1515]:
+                                  - paragraph [ref=f3e1517]: qwen
+                              - cell "15-05-2026" [ref=f3e1518]:
+                                - button "15-05-2026" [ref=f3e1520]
+                            - row "112 94.44 93.92 113 | user speta qwen 14-05-2026" [ref=f3e1521]:
+                              - cell "112" [ref=f3e1522]:
+                                - button "112" [ref=f3e1524]:
+                                  - paragraph [ref=f3e1526]:
+                                    - strong [ref=f3e1527]: "112"
+                              - cell "94.44" [ref=f3e1528]:
+                                - button "94.44" [ref=f3e1530]
+                              - cell "93.92" [ref=f3e1531]:
+                                - button "93.92" [ref=f3e1533]
+                              - cell "113 | user speta" [ref=f3e1534]:
+                                - button "113 | user speta" [ref=f3e1536]
+                              - cell [ref=f3e1537]:
+                                - generic [ref=f3e1538]:
+                                  - button
+                              - cell "qwen" [ref=f3e1539]:
+                                - button "qwen" [ref=f3e1541]:
+                                  - paragraph [ref=f3e1543]: qwen
+                              - cell "14-05-2026" [ref=f3e1544]:
+                                - button "14-05-2026" [ref=f3e1546]
+                            - row "111 86.11 93.39 111 | user speta qwen 14-05-2026" [ref=f3e1547]:
+                              - cell "111" [ref=f3e1548]:
+                                - button "111" [ref=f3e1550]:
+                                  - paragraph [ref=f3e1552]:
+                                    - strong [ref=f3e1553]: "111"
+                              - cell "86.11" [ref=f3e1554]:
+                                - button "86.11" [ref=f3e1556]
+                              - cell "93.39" [ref=f3e1557]:
+                                - button "93.39" [ref=f3e1559]
+                              - cell "111 | user speta" [ref=f3e1560]:
+                                - button "111 | user speta" [ref=f3e1562]
+                              - cell [ref=f3e1563]:
+                                - generic [ref=f3e1564]:
+                                  - button
+                              - cell "qwen" [ref=f3e1565]:
+                                - button "qwen" [ref=f3e1567]:
+                                  - paragraph [ref=f3e1569]: qwen
+                              - cell "14-05-2026" [ref=f3e1570]:
+                                - button "14-05-2026" [ref=f3e1572]
+                          - rowgroup
+                  - button "Download Leaderboard" [ref=f3e1573] [cursor=pointer]
+            - button "Refresh" [ref=f3e40] [cursor=pointer]
+            - generic [ref=f3e44]:
+              - heading "Benchmark Validation Standards" [level=2] [ref=f3e45]
+              - paragraph [ref=f3e46]:
+                - text: All submissions are initially added to the
+                - strong [ref=f3e47]: Unvalidated Leaderboard
+                - text: . The Adyen/Hugging Face team will attempt, with the participation of the respective submission team, to validate any entries that rank within the top 10.
+              - paragraph [ref=f3e48]:
+                - strong [ref=f3e49]: Validation
+                - text: "confirms that a submission's results were achieved using a novel approach involving data analysis agents. To support validation, participants must provide clear evidence of their methodology. This can be done in one of the following ways:"
+              - list [ref=f3e50]:
+                - listitem [ref=f3e51]:
+                  - strong [ref=f3e52]: "Preferred:"
+                  - text: Share a research paper or blog post along with the source code to enable full reproducibility.
+                - listitem [ref=f3e53]:
+                  - text: Submit a complete dataset that includes
+                  - strong [ref=f3e54]: reasoning traces
+                  - text: demonstrating how the results were produced.
+                - listitem [ref=f3e55]:
+                  - text: Provide access to an
+                  - strong [ref=f3e56]: API
+                  - text: that the Adyen/Hugging Face team can use to independently validate and reproduce results.
+              - paragraph [ref=f3e57]:
+                - text: Our goal with
+                - strong [ref=f3e58]: DABStep
+                - text: is to foster rapid progress and collaboration in the open research community. We strongly encourage participants to share their work and open-source their code whenever possible.
+              - paragraph [ref=f3e59]:
+                - text: Once validated, submissions will be featured and showcased on the
+                - strong [ref=f3e60]: Validated Leaderboard
+                - text: ", including annotations indicating the validation method used (e.g.,"
+                - code [ref=f3e61]: traces
+                - text: ","
+                - code [ref=f3e62]: code
+                - text: ","
+                - code [ref=f3e63]: API
+                - text: ).
+            - button "📙 Citation ▼" [ref=f3e66] [cursor=pointer]:
+              - generic [ref=f3e67]: 📙 Citation
+              - generic [ref=f3e68]: ▼
+            - generic [ref=f3e69]:
+              - button "Submit new agent answers for evaluation ▼" [ref=f3e70] [cursor=pointer]:
+                - generic [ref=f3e71]: Submit new agent answers for evaluation
+                - generic [ref=f3e72]: ▼
+              - generic [ref=f3e74]:
+                - generic [ref=f3e79]:
+                  - heading "Submissions" [level=2] [ref=f3e80]
+                  - paragraph [ref=f3e81]: Scores are expressed as the percentage of correct answers.
+                  - paragraph [ref=f3e82]: Each question calls for an answer that is either a string (one or a few words), a number, or a comma separated list of strings or floats, unless specified otherwise. There is only one correct answer. Hence, evaluation is done via quasi exact match between a model’s answer and the ground truth (up to some normalization that is tied to the “type” of the ground truth).
+                  - paragraph [ref=f3e83]:
+                    - text: "We expect submissions to be json-line files with the following format. Mandatory fields are:"
+                    - code [ref=f3e84]: task_id
+                    - text: and
+                    - code [ref=f3e85]: agent_answer
+                    - text: . However,
+                    - code [ref=f3e86]: reasoning_trace
+                    - text: "is optional:"
+                  - code [ref=f3e89]: "{\"task_id\": \"task_id_1\", \"agent_answer\": \"Answer 1 from your agent\", \"reasoning_trace\": \"The different steps by which your model reached answer 1\"} {\"task_id\": \"task_id_2\", \"agent_answer\": \"Answer 2 from your agent\", \"reasoning_trace\": \"The different steps by which your model reached answer 2\"}"
+                  - paragraph [ref=f3e90]:
+                    - text: Our scoring function can be found
+                    - link "here" [ref=f3e91] [cursor=pointer]:
+                      - /url: https://huggingface.co/spaces/adyen/data-agents-benchmark/blob/main/dabstep_benchmark/evaluation/scorer.py
+                    - text: .
+                - generic [ref=f3e92]:
+                  - generic [ref=f3e94]:
+                    - generic [ref=f3e96]:
+                      - generic [ref=f3e97]: Agent name
+                      - textbox "Agent name" [ref=f3e944]:
+                        - /placeholder: ""
+                    - generic [ref=f3e101]:
+                      - generic [ref=f3e102]: Model family
+                      - textbox "Model family" [ref=f3e945]:
+                        - /placeholder: ""
+                    - generic [ref=f3e106]:
+                      - generic [ref=f3e107]: System prompt example
+                      - textbox "System prompt example" [ref=f3e946]:
+                        - /placeholder: ""
+                    - generic [ref=f3e111]:
+                      - generic [ref=f3e112]: Repo URL with agent code
+                      - textbox "Repo URL with agent code" [ref=f3e947]:
+                        - /placeholder: ""
+                  - generic [ref=f3e115]:
+                    - generic [ref=f3e116]:
+                      - generic [ref=f3e118]:
+                        - generic [ref=f3e119]: Organisation
+                        - textbox "Organisation" [ref=f3e948]:
+                          - /placeholder: ""
+                      - generic [ref=f3e123]:
+                        - generic [ref=f3e124]: Contact email (will be stored privately, & used if there is an issue with your submission)
+                        - textbox "Contact email (will be stored privately, & used if there is an issue with your submission)" [ref=f3e949]:
+                          - /placeholder: ""
+                    - generic [ref=f3e127]:
+                      - generic:
+                        - generic:
+                          - img
+                        - text: File
+                      - button "Click to upload or drop files" [ref=f3e128] [cursor=pointer]:
+                        - generic [ref=f3e129]:
+                          - img [ref=f3e131]
+                          - text: Drop File Here
+                          - generic [ref=f3e134]: "- or -"
+                          - text: Click to Upload
+                - generic [ref=f3e135]:
+                  - button "Sign in with Hugging Face icon Sign in with Hugging Face" [ref=f3e136] [cursor=pointer]:
+                    - img "Sign in with Hugging Face icon" [ref=f3e950]
+                    - text: Sign in with Hugging Face
+                  - button "Submit answers" [ref=f3e137] [cursor=pointer]
+        - contentinfo "Gradio footer navigation" [ref=f3e138]:
+          - button "Use via API logo" [ref=f3e139] [cursor=pointer]:
+            - text: Use via API
+            - img "logo" [ref=f3e140]
+          - generic [ref=f3e141]: ·
+          - link "Built with Gradio logo" [ref=f3e142] [cursor=pointer]:
+            - /url: https://gradio.app
+            - text: Built with Gradio
+            - img "logo" [ref=f3e143]
+          - generic [ref=f3e144]: ·
+          - button "Settings Settings" [ref=f3e145] [cursor=pointer]:
+            - text: Settings
+            - img "Settings" [ref=f3e146]

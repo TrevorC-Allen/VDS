@@ -164,6 +164,12 @@ class ConversationStore:
         except (OSError, json.JSONDecodeError):
             return None
 
+    def save_conversation(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Persist a full conversation record after service-level repairs."""
+
+        self._write(record)
+        return deepcopy(record)
+
     def rename_conversation(self, conversation_id: str, title: str) -> dict[str, Any] | None:
         """Persist a user-provided conversation title."""
 

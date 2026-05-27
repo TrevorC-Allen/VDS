@@ -27,6 +27,8 @@ VDS_LLM_PROVIDER=mock "${PY}" scripts/run_generic_dataset_eval.py \
 
 echo "NYC taxi generic comparison: ${GENERIC_OUT_DIR}/comparison.md"
 echo "NYC taxi generic VDS answers: ${GENERIC_OUT_DIR}/vds_answers.jsonl"
+COMPARISON_JUDGE="${COMPARISON_JUDGE:-heuristic}" "${PY}" scripts/score_comparison_answers.py "${GENERIC_OUT_DIR}/comparison.md" --judge "${COMPARISON_JUDGE:-heuristic}" --print-summary
+echo "NYC taxi generic scored comparison: ${GENERIC_OUT_DIR}/comparison_scored.md"
 
 if [[ "${RUN_DOMAIN}" != "0" ]]; then
   VDS_LLM_PROVIDER=mock "${PY}" scripts/run_taxi_dual_year_eval.py \

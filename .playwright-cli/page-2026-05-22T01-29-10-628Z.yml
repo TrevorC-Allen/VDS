@@ -1,0 +1,774 @@
+- generic [ref=e2]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - heading "Spaces Hugging Face's logo adyen / DABstep like 95 Agents Running on CPU Upgrade" [level=1] [ref=e7]:
+        - generic [ref=e8]:
+          - link "Spaces" [ref=e9] [cursor=pointer]:
+            - /url: /spaces
+          - link "Hugging Face's logo" [ref=e10] [cursor=pointer]:
+            - /url: /
+            - img "Hugging Face's logo" [ref=e11]
+        - separator [ref=e12]
+        - generic [ref=e13]:
+          - link [ref=e18] [cursor=pointer]:
+            - /url: /adyen
+          - link "adyen" [ref=e22] [cursor=pointer]:
+            - /url: /adyen
+          - generic [ref=e23]: /
+        - generic [ref=e24]:
+          - link "DABstep" [ref=e25] [cursor=pointer]:
+            - /url: /spaces/adyen/DABstep
+          - button "Copy space name to clipboard" [ref=e26] [cursor=pointer]:
+            - img [ref=e27]
+        - generic [ref=e31]:
+          - button "like" [ref=e34] [cursor=pointer]:
+            - img [ref=e35]
+            - generic [ref=e37]: like
+          - button "95" [ref=e38] [cursor=pointer]
+        - generic [ref=e41] [cursor=pointer]:
+          - img [ref=e42]
+          - text: Agents
+        - generic [ref=e50] [cursor=pointer]:
+          - text: Running
+          - generic [ref=e52]: "on"
+          - generic [ref=e53]: CPU Upgrade
+      - generic [ref=e54]:
+        - generic [ref=e55]:
+          - link "App" [ref=e56] [cursor=pointer]:
+            - /url: /spaces/adyen/DABstep
+            - img [ref=e57]
+            - text: App
+          - link "Files" [ref=e61] [cursor=pointer]:
+            - /url: /spaces/adyen/DABstep/tree/main
+            - img [ref=e62]
+            - generic [ref=e65]: Files
+        - button [ref=e68] [cursor=pointer]:
+          - img [ref=e69]
+          - img [ref=e73]
+  - main [ref=e75]:
+    - iframe [active] [ref=e77]:
+      - generic [ref=f3e5]:
+        - main [ref=f3e6]:
+          - generic [ref=f3e7]:
+            - heading "🏅 DABStep Leaderboard" [level=1] [ref=f3e12]
+            - generic [ref=f3e16]:
+              - paragraph [ref=f3e17]:
+                - text: The
+                - link "Data Agent Benchmark for Multi-step Reasoning (DABStep)" [ref=f3e18] [cursor=pointer]:
+                  - /url: https://huggingface.co/blog/dabstep
+                - text: is looking to measure and push the state-of-the-art in Data Analysis by LLMs. The benchmark is composed of ~450 data analysis questions (
+                - link "Dataset Link" [ref=f3e19] [cursor=pointer]:
+                  - /url: https://huggingface.co/datasets/adyen/data-agents-benchmark
+                - text: ) centered around 1 or more documents that agents will have to understand and cross reference in order to answer correctly.
+              - paragraph [ref=f3e20]:
+                - text: "We have set up a notebook to quickly get an agent baseline using the free Huggingface Inference API:"
+                - link "Colab Notebook" [ref=f3e21] [cursor=pointer]:
+                  - /url: https://colab.research.google.com/drive/1pXi5ffBFNJQ5nn1111SnIfjfKCOlunxu
+              - paragraph [ref=f3e22]:
+                - text: "Check out the official technical reports here:"
+                - link "Adyen Report" [ref=f3e23] [cursor=pointer]:
+                  - /url: https://www.adyen.com/knowledge-hub/data-agent-benchmark-for-multi-step-reasoning-dabstep
+                - link "Hugging Face Report" [ref=f3e24] [cursor=pointer]:
+                  - /url: https://huggingface.co/blog/dabstep
+              - paragraph [ref=f3e25]:
+                - text: Join the discussion on the
+                - link "discord server!" [ref=f3e26] [cursor=pointer]:
+                  - /url: https://discord.gg/8cCbjmCH4d
+              - paragraph [ref=f3e27]:
+                - text: Reproduce the baseline results with the agent code we open sourced
+                - link "here" [ref=f3e28] [cursor=pointer]:
+                  - /url: https://huggingface.co/spaces/adyen/DABstep/tree/main/baseline
+            - generic [ref=f3e29]:
+              - generic [ref=f3e30]:
+                - generic [ref=f3e31]:
+                  - button [ref=f3e32] [cursor=pointer]: Validated
+                  - button [ref=f3e33] [cursor=pointer]: Unvalidated
+                - tablist [ref=f3e34]:
+                  - tab "Validated" [selected] [ref=f3e35] [cursor=pointer]
+                  - tab "Unvalidated" [ref=f3e36] [cursor=pointer]
+              - tabpanel [ref=f3e37]:
+                - generic [ref=f3e38]:
+                  - generic [ref=f3e148]:
+                    - generic:
+                      - generic: 10.2s
+                      - generic:
+                        - img
+                    - grid [ref=f3e150]:
+                      - table [ref=f3e151]:
+                        - rowgroup [ref=f3e152]:
+                          - row [ref=f3e153]:
+                            - columnheader [ref=f3e154]:
+                              - button [ref=f3e157] [cursor=pointer]:
+                                - button [ref=f3e158]: Agent
+                            - columnheader [ref=f3e159]:
+                              - button [ref=f3e162] [cursor=pointer]:
+                                - button [ref=f3e163]: Easy Level Accuracy (%)
+                            - columnheader [ref=f3e164]:
+                              - button [ref=f3e167] [cursor=pointer]:
+                                - button [ref=f3e168]: Hard Level Accuracy (%)
+                            - columnheader [ref=f3e169]:
+                              - button [ref=f3e172] [cursor=pointer]:
+                                - button [ref=f3e173]: Organization
+                            - columnheader [ref=f3e174]:
+                              - button [ref=f3e177] [cursor=pointer]:
+                                - button [ref=f3e178]: Repo URL
+                            - columnheader [ref=f3e179]:
+                              - button [ref=f3e182] [cursor=pointer]:
+                                - button [ref=f3e183]: Model Family
+                            - columnheader [ref=f3e184]:
+                              - button [ref=f3e187] [cursor=pointer]:
+                                - button [ref=f3e188]: Date
+                        - rowgroup [ref=f3e189]:
+                          - row [ref=f3e190]:
+                            - cell [ref=f3e191]:
+                              - button [ref=f3e193]:
+                                - paragraph [ref=f3e195]:
+                                  - strong [ref=f3e196]: NVIDIA KGMON (NeMo Agent Toolkit) Data Explorer
+                            - cell [ref=f3e197]:
+                              - button [ref=f3e199]: "86.11"
+                            - cell [ref=f3e200]:
+                              - button [ref=f3e202]: "89.95"
+                            - cell [ref=f3e203]:
+                              - button [ref=f3e205]: Amity Solutions Thailand | user aongwachi
+                            - cell [ref=f3e206]:
+                              - button [ref=f3e208]:
+                                - paragraph [ref=f3e210]:
+                                  - link [ref=f3e211] [cursor=pointer]:
+                                    - /url: https://huggingface.co/blog/nvidia/nemo-agent-toolkit-data-explorer-dabstep-1st-place
+                                    - text: Link
+                            - cell [ref=f3e212]:
+                              - button [ref=f3e214]:
+                                - paragraph [ref=f3e216]:
+                                  - link [ref=f3e217] [cursor=pointer]:
+                                    - /url: https://artificialanalysis.ai/models/doubao-seed-code
+                                    - text: Doubao
+                            - cell [ref=f3e218]:
+                              - button [ref=f3e220]: 22-02-2026
+                      - button "Drop CSV or TSV files here to import data into dataframe" [ref=f3e221]:
+                        - table [ref=f3e225]:
+                          - rowgroup [ref=f3e226]:
+                            - row "Agent Easy Level Accuracy (%) Hard Level Accuracy (%) Organization Repo URL Model Family Date" [ref=f3e227]:
+                              - columnheader "Agent" [ref=f3e228]:
+                                - button "Agent" [ref=f3e231] [cursor=pointer]:
+                                  - button "Agent" [ref=f3e232]
+                              - columnheader "Easy Level Accuracy (%)" [ref=f3e233]:
+                                - button "Easy Level Accuracy (%)" [ref=f3e236] [cursor=pointer]:
+                                  - button "Easy Level Accuracy (%)" [ref=f3e237]
+                              - columnheader "Hard Level Accuracy (%)" [ref=f3e238]:
+                                - button "Hard Level Accuracy (%)" [ref=f3e241] [cursor=pointer]:
+                                  - button "Hard Level Accuracy (%)" [ref=f3e242]
+                              - columnheader "Organization" [ref=f3e243]:
+                                - button "Organization" [ref=f3e246] [cursor=pointer]:
+                                  - button "Organization" [ref=f3e247]
+                              - columnheader "Repo URL" [ref=f3e248]:
+                                - button "Repo URL" [ref=f3e251] [cursor=pointer]:
+                                  - button "Repo URL" [ref=f3e252]
+                              - columnheader "Model Family" [ref=f3e253]:
+                                - button "Model Family" [ref=f3e256] [cursor=pointer]:
+                                  - button "Model Family" [ref=f3e257]
+                              - columnheader "Date" [ref=f3e258]:
+                                - button "Date" [ref=f3e261] [cursor=pointer]:
+                                  - button "Date" [ref=f3e262]
+                            - iframe [ref=f3e263]:
+                              
+                          - rowgroup [ref=f3e264]:
+                            - row "NVIDIA KGMON (NeMo Agent Toolkit) Data Explorer 87.5 89.95 NVIDIA LLM-tech Agent Research Link claude haiku 4.5 22-02-2026" [ref=f3e265]:
+                              - cell "NVIDIA KGMON (NeMo Agent Toolkit) Data Explorer" [ref=f3e266]:
+                                - button "NVIDIA KGMON (NeMo Agent Toolkit) Data Explorer" [ref=f3e268]:
+                                  - paragraph [ref=f3e270]:
+                                    - strong [ref=f3e271]: NVIDIA KGMON (NeMo Agent Toolkit) Data Explorer
+                              - cell "87.5" [ref=f3e272]:
+                                - button "87.5" [ref=f3e274]
+                              - cell "89.95" [ref=f3e275]:
+                                - button "89.95" [ref=f3e277]
+                              - cell "NVIDIA LLM-tech Agent Research" [ref=f3e278]:
+                                - button "NVIDIA LLM-tech Agent Research" [ref=f3e280]
+                              - cell "Link" [ref=f3e281]:
+                                - button "Link" [ref=f3e283]:
+                                  - paragraph [ref=f3e285]:
+                                    - link "Link" [ref=f3e286] [cursor=pointer]:
+                                      - /url: https://huggingface.co/blog/nvidia/nemo-agent-toolkit-data-explorer-dabstep-1st-place
+                              - cell "claude haiku 4.5" [ref=f3e287]:
+                                - button "claude haiku 4.5" [ref=f3e289]:
+                                  - paragraph [ref=f3e291]: claude haiku 4.5
+                              - cell "22-02-2026" [ref=f3e292]:
+                                - button "22-02-2026" [ref=f3e294]
+                            - row "DataPilot 86.11 87.57 OceanBase AntGroup | user ConfuseG Link Qwen3 09-12-2025" [ref=f3e295]:
+                              - cell "DataPilot" [ref=f3e296]:
+                                - button "DataPilot" [ref=f3e298]:
+                                  - paragraph [ref=f3e300]:
+                                    - strong [ref=f3e301]: DataPilot
+                              - cell "86.11" [ref=f3e302]:
+                                - button "86.11" [ref=f3e304]
+                              - cell "87.57" [ref=f3e305]:
+                                - button "87.57" [ref=f3e307]
+                              - cell "OceanBase AntGroup | user ConfuseG" [ref=f3e308]:
+                                - button "OceanBase AntGroup | user ConfuseG" [ref=f3e310]
+                              - cell "Link" [ref=f3e311]:
+                                - button "Link" [ref=f3e313]:
+                                  - paragraph [ref=f3e315]:
+                                    - link "Link" [ref=f3e316] [cursor=pointer]:
+                                      - /url: https://en.oceanbase.com/blog/24781555459
+                              - cell "Qwen3" [ref=f3e317]:
+                                - button "Qwen3" [ref=f3e319]:
+                                  - paragraph [ref=f3e321]: Qwen3
+                              - cell "09-12-2025" [ref=f3e322]:
+                                - button "09-12-2025" [ref=f3e324]
+                            - row "gg-agent-gpt5-1104-1 88.89 62.96 gg-org | user geo11 Doubao 04-11-2025" [ref=f3e325]:
+                              - cell "gg-agent-gpt5-1104-1" [ref=f3e326]:
+                                - button "gg-agent-gpt5-1104-1" [ref=f3e328]:
+                                  - paragraph [ref=f3e330]:
+                                    - strong [ref=f3e331]: gg-agent-gpt5-1104-1
+                              - cell "88.89" [ref=f3e332]:
+                                - button "88.89" [ref=f3e334]
+                              - cell "62.96" [ref=f3e335]:
+                                - button "62.96" [ref=f3e337]
+                              - cell "gg-org | user geo11" [ref=f3e338]:
+                                - button "gg-org | user geo11" [ref=f3e340]
+                              - cell [ref=f3e341]:
+                                - generic [ref=f3e342]:
+                                  - button
+                              - cell "Doubao" [ref=f3e343]:
+                                - button "Doubao" [ref=f3e345]:
+                                  - paragraph [ref=f3e347]:
+                                    - link "Doubao" [ref=f3e348] [cursor=pointer]:
+                                      - /url: https://artificialanalysis.ai/models/doubao-seed-code
+                              - cell "04-11-2025" [ref=f3e349]:
+                                - button "04-11-2025" [ref=f3e351]
+                            - row "CambioML energent.ai DS Agent 94.44 57.67 CambioML | user lingjiekong Link GPT-5 19-09-2025" [ref=f3e352]:
+                              - cell "CambioML energent.ai DS Agent" [ref=f3e353]:
+                                - button "CambioML energent.ai DS Agent" [ref=f3e355]:
+                                  - paragraph [ref=f3e357]:
+                                    - strong [ref=f3e358]: CambioML energent.ai DS Agent
+                              - cell "94.44" [ref=f3e359]:
+                                - button "94.44" [ref=f3e361]
+                              - cell "57.67" [ref=f3e362]:
+                                - button "57.67" [ref=f3e364]
+                              - cell "CambioML | user lingjiekong" [ref=f3e365]:
+                                - button "CambioML | user lingjiekong" [ref=f3e367]
+                              - cell "Link" [ref=f3e368]:
+                                - button "Link" [ref=f3e370]:
+                                  - paragraph [ref=f3e372]:
+                                    - link "Link" [ref=f3e373] [cursor=pointer]:
+                                      - /url: https://energent.ai/
+                              - cell "GPT-5" [ref=f3e374]:
+                                - button "GPT-5" [ref=f3e376]:
+                                  - paragraph [ref=f3e378]: GPT-5
+                              - cell "19-09-2025" [ref=f3e379]:
+                                - button "19-09-2025" [ref=f3e381]
+                            - row "DS-STAR 87.5 45.24 Google Cloud AI Research Link Gemini-2.5-Pro 08-07-2025" [ref=f3e382]:
+                              - cell "DS-STAR" [ref=f3e383]:
+                                - button "DS-STAR" [ref=f3e385]:
+                                  - paragraph [ref=f3e387]:
+                                    - strong [ref=f3e388]: DS-STAR
+                              - cell "87.5" [ref=f3e389]:
+                                - button "87.5" [ref=f3e391]
+                              - cell "45.24" [ref=f3e392]:
+                                - button "45.24" [ref=f3e394]
+                              - cell "Google Cloud AI Research" [ref=f3e395]:
+                                - button "Google Cloud AI Research" [ref=f3e397]
+                              - cell "Link" [ref=f3e398]:
+                                - button "Link" [ref=f3e400]:
+                                  - paragraph [ref=f3e402]:
+                                    - link "Link" [ref=f3e403] [cursor=pointer]:
+                                      - /url: https://arxiv.org/abs/2509.21825
+                              - cell "Gemini-2.5-Pro" [ref=f3e404]:
+                                - button "Gemini-2.5-Pro" [ref=f3e406]:
+                                  - paragraph [ref=f3e408]: Gemini-2.5-Pro
+                              - cell "08-07-2025" [ref=f3e409]:
+                                - button "08-07-2025" [ref=f3e411]
+                            - row "Amity DA Agent v0.1 80.56 41.01 Amity Solutions Thailand | user aongwachi Link gemini-2.5-pro-preview-05-06 31-05-2025" [ref=f3e412]:
+                              - cell "Amity DA Agent v0.1" [ref=f3e413]:
+                                - button "Amity DA Agent v0.1" [ref=f3e415]:
+                                  - paragraph [ref=f3e417]:
+                                    - strong [ref=f3e418]: Amity DA Agent v0.1
+                              - cell "80.56" [ref=f3e419]:
+                                - button "80.56" [ref=f3e421]
+                              - cell "41.01" [ref=f3e422]:
+                                - button "41.01" [ref=f3e424]
+                              - cell "Amity Solutions Thailand | user aongwachi" [ref=f3e425]:
+                                - button "Amity Solutions Thailand | user aongwachi" [ref=f3e427]
+                              - cell "Link" [ref=f3e428]:
+                                - button "Link" [ref=f3e430]:
+                                  - paragraph [ref=f3e432]:
+                                    - link "Link" [ref=f3e433] [cursor=pointer]:
+                                      - /url: https://www.amitysolutions.com/blog/agentic-ai-multi-agent-data-analysis
+                              - cell "gemini-2.5-pro-preview-05-06" [ref=f3e434]:
+                                - button "gemini-2.5-pro-preview-05-06" [ref=f3e436]:
+                                  - paragraph [ref=f3e438]: gemini-2.5-pro-preview-05-06
+                              - cell "31-05-2025" [ref=f3e439]:
+                                - button "31-05-2025" [ref=f3e441]
+                            - row "AgenticData 94.44 40.48 Tsinghua University Link Qwen 3 03-08-2025" [ref=f3e442]:
+                              - cell "AgenticData" [ref=f3e443]:
+                                - button "AgenticData" [ref=f3e445]:
+                                  - paragraph [ref=f3e447]:
+                                    - strong [ref=f3e448]: AgenticData
+                              - cell "94.44" [ref=f3e449]:
+                                - button "94.44" [ref=f3e451]
+                              - cell "40.48" [ref=f3e452]:
+                                - button "40.48" [ref=f3e454]
+                              - cell "Tsinghua University" [ref=f3e455]:
+                                - button "Tsinghua University" [ref=f3e457]
+                              - cell "Link" [ref=f3e458]:
+                                - button "Link" [ref=f3e460]:
+                                  - paragraph [ref=f3e462]:
+                                    - link "Link" [ref=f3e463] [cursor=pointer]:
+                                      - /url: https://arxiv.org/abs/2508.05002
+                              - cell "Qwen 3" [ref=f3e464]:
+                                - button "Qwen 3" [ref=f3e466]:
+                                  - paragraph [ref=f3e468]: Qwen 3
+                              - cell "03-08-2025" [ref=f3e469]:
+                                - button "03-08-2025" [ref=f3e471]
+                            - row "Mphasis-I2I-Agents 80.56 28.04 Mphasis Limited | user PranavSatheesan claude-3-5-sonnet-20241022 10-04-2025" [ref=f3e472]:
+                              - cell "Mphasis-I2I-Agents" [ref=f3e473]:
+                                - button "Mphasis-I2I-Agents" [ref=f3e475]:
+                                  - paragraph [ref=f3e477]:
+                                    - strong [ref=f3e478]: Mphasis-I2I-Agents
+                              - cell "80.56" [ref=f3e479]:
+                                - button "80.56" [ref=f3e481]
+                              - cell "28.04" [ref=f3e482]:
+                                - button "28.04" [ref=f3e484]
+                              - cell "Mphasis Limited | user PranavSatheesan" [ref=f3e485]:
+                                - button "Mphasis Limited | user PranavSatheesan" [ref=f3e487]
+                              - cell [ref=f3e488]:
+                                - generic [ref=f3e489]:
+                                  - button
+                              - cell "claude-3-5-sonnet-20241022" [ref=f3e490]:
+                                - button "claude-3-5-sonnet-20241022" [ref=f3e492]:
+                                  - paragraph [ref=f3e494]: claude-3-5-sonnet-20241022
+                              - cell "10-04-2025" [ref=f3e495]:
+                                - button "10-04-2025" [ref=f3e497]
+                            - row "Claude 4 Sonnet ReACT Baseline 81.94 19.84 Hugging Face Link claude-sonnet-4-20250514 28-05-2025" [ref=f3e498]:
+                              - cell "Claude 4 Sonnet ReACT Baseline" [ref=f3e499]:
+                                - button "Claude 4 Sonnet ReACT Baseline" [ref=f3e501]:
+                                  - paragraph [ref=f3e503]:
+                                    - strong [ref=f3e504]: Claude 4 Sonnet ReACT Baseline
+                              - cell "81.94" [ref=f3e505]:
+                                - button "81.94" [ref=f3e507]
+                              - cell "19.84" [ref=f3e508]:
+                                - button "19.84" [ref=f3e510]
+                              - cell "Hugging Face" [ref=f3e511]:
+                                - button "Hugging Face" [ref=f3e513]
+                              - cell "Link" [ref=f3e514]:
+                                - button "Link" [ref=f3e516]:
+                                  - paragraph [ref=f3e518]:
+                                    - link "Link" [ref=f3e519] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/DABstep/blob/main/baseline/run.py
+                              - cell "claude-sonnet-4-20250514" [ref=f3e520]:
+                                - button "claude-sonnet-4-20250514" [ref=f3e522]:
+                                  - paragraph [ref=f3e524]: claude-sonnet-4-20250514
+                              - cell "28-05-2025" [ref=f3e525]:
+                                - button "28-05-2025" [ref=f3e527]
+                            - row "Open Data Scientist 84.72 16.4 TogetherAI | user federicotogether Link DeepSeek-V3 24-06-2025" [ref=f3e528]:
+                              - cell "Open Data Scientist" [ref=f3e529]:
+                                - button "Open Data Scientist" [ref=f3e531]:
+                                  - paragraph [ref=f3e533]:
+                                    - strong [ref=f3e534]: Open Data Scientist
+                              - cell "84.72" [ref=f3e535]:
+                                - button "84.72" [ref=f3e537]
+                              - cell "16.4" [ref=f3e538]:
+                                - button "16.4" [ref=f3e540]
+                              - cell "TogetherAI | user federicotogether" [ref=f3e541]:
+                                - button "TogetherAI | user federicotogether" [ref=f3e543]
+                              - cell "Link" [ref=f3e544]:
+                                - button "Link" [ref=f3e546]:
+                                  - paragraph [ref=f3e548]:
+                                    - link "Link" [ref=f3e549] [cursor=pointer]:
+                                      - /url: https://github.com/togethercomputer/open-data-scientist
+                              - cell "DeepSeek-V3" [ref=f3e550]:
+                                - button "DeepSeek-V3" [ref=f3e552]:
+                                  - paragraph [ref=f3e554]: DeepSeek-V3
+                              - cell "24-06-2025" [ref=f3e555]:
+                                - button "24-06-2025" [ref=f3e557]
+                            - row "o4-mini Reasoning Prompt Baseline 76.39 14.55 Hugging Face Link OpenAI o4-mini 22-04-2025" [ref=f3e558]:
+                              - cell "o4-mini Reasoning Prompt Baseline" [ref=f3e559]:
+                                - button "o4-mini Reasoning Prompt Baseline" [ref=f3e561]:
+                                  - paragraph [ref=f3e563]:
+                                    - strong [ref=f3e564]: o4-mini Reasoning Prompt Baseline
+                              - cell "76.39" [ref=f3e565]:
+                                - button "76.39" [ref=f3e567]
+                              - cell "14.55" [ref=f3e568]:
+                                - button "14.55" [ref=f3e570]
+                              - cell "Hugging Face" [ref=f3e571]:
+                                - button "Hugging Face" [ref=f3e573]
+                              - cell "Link" [ref=f3e574]:
+                                - button "Link" [ref=f3e576]:
+                                  - paragraph [ref=f3e578]:
+                                    - link "Link" [ref=f3e579] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/DABstep/blob/main/baseline/run.py
+                              - cell "OpenAI o4-mini" [ref=f3e580]:
+                                - button "OpenAI o4-mini" [ref=f3e582]:
+                                  - paragraph [ref=f3e584]: OpenAI o4-mini
+                              - cell "22-04-2025" [ref=f3e585]:
+                                - button "22-04-2025" [ref=f3e587]
+                            - row "Claude 3.7 Sonnet ReACT Baseline 75 13.76 Hugging Face Link claude-3-7-sonnet-20250219 07-04-2025" [ref=f3e588]:
+                              - cell "Claude 3.7 Sonnet ReACT Baseline" [ref=f3e589]:
+                                - button "Claude 3.7 Sonnet ReACT Baseline" [ref=f3e591]:
+                                  - paragraph [ref=f3e593]:
+                                    - strong [ref=f3e594]: Claude 3.7 Sonnet ReACT Baseline
+                              - cell "75" [ref=f3e595]:
+                                - button "75" [ref=f3e597]
+                              - cell "13.76" [ref=f3e598]:
+                                - button "13.76" [ref=f3e600]
+                              - cell "Hugging Face" [ref=f3e601]:
+                                - button "Hugging Face" [ref=f3e603]
+                              - cell "Link" [ref=f3e604]:
+                                - button "Link" [ref=f3e606]:
+                                  - paragraph [ref=f3e608]:
+                                    - link "Link" [ref=f3e609] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/DABstep/blob/main/baseline/run.py
+                              - cell "claude-3-7-sonnet-20250219" [ref=f3e610]:
+                                - button "claude-3-7-sonnet-20250219" [ref=f3e612]:
+                                  - paragraph [ref=f3e614]: claude-3-7-sonnet-20250219
+                              - cell "07-04-2025" [ref=f3e615]:
+                                - button "07-04-2025" [ref=f3e617]
+                            - row "o3-mini Reasoning Prompt Baseline 72.22 13.76 Adyen Link OpenAI o3-mini 02-02-2025" [ref=f3e618]:
+                              - cell "o3-mini Reasoning Prompt Baseline" [ref=f3e619]:
+                                - button "o3-mini Reasoning Prompt Baseline" [ref=f3e621]:
+                                  - paragraph [ref=f3e623]:
+                                    - strong [ref=f3e624]: o3-mini Reasoning Prompt Baseline
+                              - cell "72.22" [ref=f3e625]:
+                                - button "72.22" [ref=f3e627]
+                              - cell "13.76" [ref=f3e628]:
+                                - button "13.76" [ref=f3e630]
+                              - cell "Adyen" [ref=f3e631]:
+                                - button "Adyen" [ref=f3e633]
+                              - cell "Link" [ref=f3e634]:
+                                - button "Link" [ref=f3e636]:
+                                  - paragraph [ref=f3e638]:
+                                    - link "Link" [ref=f3e639] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/data-agents-benchmark/blob/main/baseline/run.py
+                              - cell "OpenAI o3-mini" [ref=f3e640]:
+                                - button "OpenAI o3-mini" [ref=f3e642]:
+                                  - paragraph [ref=f3e644]: OpenAI o3-mini
+                              - cell "02-02-2025" [ref=f3e645]:
+                                - button "02-02-2025" [ref=f3e647]
+                            - row "Gemini 2.5 Pro Reasoning Prompt Baseline 66.67 12.7 Hugging Face Link Gemini 2.5 Pro 05-04-2025" [ref=f3e648]:
+                              - cell "Gemini 2.5 Pro Reasoning Prompt Baseline" [ref=f3e649]:
+                                - button "Gemini 2.5 Pro Reasoning Prompt Baseline" [ref=f3e651]:
+                                  - paragraph [ref=f3e653]:
+                                    - strong [ref=f3e654]: Gemini 2.5 Pro Reasoning Prompt Baseline
+                              - cell "66.67" [ref=f3e655]:
+                                - button "66.67" [ref=f3e657]
+                              - cell "12.7" [ref=f3e658]:
+                                - button "12.7" [ref=f3e660]
+                              - cell "Hugging Face" [ref=f3e661]:
+                                - button "Hugging Face" [ref=f3e663]
+                              - cell "Link" [ref=f3e664]:
+                                - button "Link" [ref=f3e666]:
+                                  - paragraph [ref=f3e668]:
+                                    - link "Link" [ref=f3e669] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/DABstep/blob/main/baseline/run.py
+                              - cell "Gemini 2.5 Pro" [ref=f3e670]:
+                                - button "Gemini 2.5 Pro" [ref=f3e672]:
+                                  - paragraph [ref=f3e674]: Gemini 2.5 Pro
+                              - cell "05-04-2025" [ref=f3e675]:
+                                - button "05-04-2025" [ref=f3e677]
+                            - row "GPT 4.1 ReACT Baseline 80.56 12.43 Hugging Face Link OpenAI GPT 4.1 22-04-2025" [ref=f3e678]:
+                              - cell "GPT 4.1 ReACT Baseline" [ref=f3e679]:
+                                - button "GPT 4.1 ReACT Baseline" [ref=f3e681]:
+                                  - paragraph [ref=f3e683]:
+                                    - strong [ref=f3e684]: GPT 4.1 ReACT Baseline
+                              - cell "80.56" [ref=f3e685]:
+                                - button "80.56" [ref=f3e687]
+                              - cell "12.43" [ref=f3e688]:
+                                - button "12.43" [ref=f3e690]
+                              - cell "Hugging Face" [ref=f3e691]:
+                                - button "Hugging Face" [ref=f3e693]
+                              - cell "Link" [ref=f3e694]:
+                                - button "Link" [ref=f3e696]:
+                                  - paragraph [ref=f3e698]:
+                                    - link "Link" [ref=f3e699] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/DABstep/blob/main/baseline/run.py
+                              - cell "OpenAI GPT 4.1" [ref=f3e700]:
+                                - button "OpenAI GPT 4.1" [ref=f3e702]:
+                                  - paragraph [ref=f3e704]: OpenAI GPT 4.1
+                              - cell "22-04-2025" [ref=f3e705]:
+                                - button "22-04-2025" [ref=f3e707]
+                            - row "o1 Reasoning Prompt Baseline 69.44 11.11 Adyen Link OpenAI o1 31-01-2025" [ref=f3e708]:
+                              - cell "o1 Reasoning Prompt Baseline" [ref=f3e709]:
+                                - button "o1 Reasoning Prompt Baseline" [ref=f3e711]:
+                                  - paragraph [ref=f3e713]:
+                                    - strong [ref=f3e714]: o1 Reasoning Prompt Baseline
+                              - cell "69.44" [ref=f3e715]:
+                                - button "69.44" [ref=f3e717]
+                              - cell "11.11" [ref=f3e718]:
+                                - button "11.11" [ref=f3e720]
+                              - cell "Adyen" [ref=f3e721]:
+                                - button "Adyen" [ref=f3e723]
+                              - cell "Link" [ref=f3e724]:
+                                - button "Link" [ref=f3e726]:
+                                  - paragraph [ref=f3e728]:
+                                    - link "Link" [ref=f3e729] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/data-agents-benchmark/blob/main/baseline/run.py
+                              - cell "OpenAI o1" [ref=f3e730]:
+                                - button "OpenAI o1" [ref=f3e732]:
+                                  - paragraph [ref=f3e734]: OpenAI o1
+                              - cell "31-01-2025" [ref=f3e735]:
+                                - button "31-01-2025" [ref=f3e737]
+                            - row "Gemini Data Science Agent 61.11 9.79 Google Gemini 2.0 Flash 10-02-2025" [ref=f3e738]:
+                              - cell "Gemini Data Science Agent" [ref=f3e739]:
+                                - button "Gemini Data Science Agent" [ref=f3e741]:
+                                  - paragraph [ref=f3e743]:
+                                    - strong [ref=f3e744]: Gemini Data Science Agent
+                              - cell "61.11" [ref=f3e745]:
+                                - button "61.11" [ref=f3e747]
+                              - cell "9.79" [ref=f3e748]:
+                                - button "9.79" [ref=f3e750]
+                              - cell "Google" [ref=f3e751]:
+                                - button "Google" [ref=f3e753]
+                              - cell [ref=f3e754]:
+                                - generic [ref=f3e755]:
+                                  - button
+                              - cell "Gemini 2.0 Flash" [ref=f3e756]:
+                                - button "Gemini 2.0 Flash" [ref=f3e758]:
+                                  - paragraph [ref=f3e760]: Gemini 2.0 Flash
+                              - cell "10-02-2025" [ref=f3e761]:
+                                - button "10-02-2025" [ref=f3e763]
+                            - row "Claude 3.5 Sonnet ReACT Baseline 77.78 9.26 Adyen Link claude-3-5-sonnet-latest 23-01-2025" [ref=f3e764]:
+                              - cell "Claude 3.5 Sonnet ReACT Baseline" [ref=f3e765]:
+                                - button "Claude 3.5 Sonnet ReACT Baseline" [ref=f3e767]:
+                                  - paragraph [ref=f3e769]:
+                                    - strong [ref=f3e770]: Claude 3.5 Sonnet ReACT Baseline
+                              - cell "77.78" [ref=f3e771]:
+                                - button "77.78" [ref=f3e773]
+                              - cell "9.26" [ref=f3e774]:
+                                - button "9.26" [ref=f3e776]
+                              - cell "Adyen" [ref=f3e777]:
+                                - button "Adyen" [ref=f3e779]
+                              - cell "Link" [ref=f3e780]:
+                                - button "Link" [ref=f3e782]:
+                                  - paragraph [ref=f3e784]:
+                                    - link "Link" [ref=f3e785] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/data-agents-benchmark/blob/main/baseline/run.py
+                              - cell "claude-3-5-sonnet-latest" [ref=f3e786]:
+                                - button "claude-3-5-sonnet-latest" [ref=f3e788]:
+                                  - paragraph [ref=f3e790]: claude-3-5-sonnet-latest
+                              - cell "23-01-2025" [ref=f3e791]:
+                                - button "23-01-2025" [ref=f3e793]
+                            - row "GPT 4.1-mini ReACT baseline 77.78 8.99 Hugging Face Link OpenAI GPT 4.1-mini 22-04-2025" [ref=f3e794]:
+                              - cell "GPT 4.1-mini ReACT baseline" [ref=f3e795]:
+                                - button "GPT 4.1-mini ReACT baseline" [ref=f3e797]:
+                                  - paragraph [ref=f3e799]:
+                                    - strong [ref=f3e800]: GPT 4.1-mini ReACT baseline
+                              - cell "77.78" [ref=f3e801]:
+                                - button "77.78" [ref=f3e803]
+                              - cell "8.99" [ref=f3e804]:
+                                - button "8.99" [ref=f3e806]
+                              - cell "Hugging Face" [ref=f3e807]:
+                                - button "Hugging Face" [ref=f3e809]
+                              - cell "Link" [ref=f3e810]:
+                                - button "Link" [ref=f3e812]:
+                                  - paragraph [ref=f3e814]:
+                                    - link "Link" [ref=f3e815] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/DABstep/blob/main/baseline/run.py
+                              - cell "OpenAI GPT 4.1-mini" [ref=f3e816]:
+                                - button "OpenAI GPT 4.1-mini" [ref=f3e818]:
+                                  - paragraph [ref=f3e820]: OpenAI GPT 4.1-mini
+                              - cell "22-04-2025" [ref=f3e821]:
+                                - button "22-04-2025" [ref=f3e823]
+                            - row "Llama 4 Maverick ReACT Baseline 75 8.73 Hugging Face Link Llama 4 Maverick 09-04-2025" [ref=f3e824]:
+                              - cell "Llama 4 Maverick ReACT Baseline" [ref=f3e825]:
+                                - button "Llama 4 Maverick ReACT Baseline" [ref=f3e827]:
+                                  - paragraph [ref=f3e829]:
+                                    - strong [ref=f3e830]: Llama 4 Maverick ReACT Baseline
+                              - cell "75" [ref=f3e831]:
+                                - button "75" [ref=f3e833]
+                              - cell "8.73" [ref=f3e834]:
+                                - button "8.73" [ref=f3e836]
+                              - cell "Hugging Face" [ref=f3e837]:
+                                - button "Hugging Face" [ref=f3e839]
+                              - cell "Link" [ref=f3e840]:
+                                - button "Link" [ref=f3e842]:
+                                  - paragraph [ref=f3e844]:
+                                    - link "Link" [ref=f3e845] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/DABstep/blob/main/baseline/run.py
+                              - cell "Llama 4 Maverick" [ref=f3e846]:
+                                - button "Llama 4 Maverick" [ref=f3e848]:
+                                  - paragraph [ref=f3e850]: Llama 4 Maverick
+                              - cell "09-04-2025" [ref=f3e851]:
+                                - button "09-04-2025" [ref=f3e853]
+                            - row "GPT 4o ReACT Baseline 66.67 6.08 Adyen Link GPT 4o 23-01-2025" [ref=f3e854]:
+                              - cell "GPT 4o ReACT Baseline" [ref=f3e855]:
+                                - button "GPT 4o ReACT Baseline" [ref=f3e857]:
+                                  - paragraph [ref=f3e859]:
+                                    - strong [ref=f3e860]: GPT 4o ReACT Baseline
+                              - cell "66.67" [ref=f3e861]:
+                                - button "66.67" [ref=f3e863]
+                              - cell "6.08" [ref=f3e864]:
+                                - button "6.08" [ref=f3e866]
+                              - cell "Adyen" [ref=f3e867]:
+                                - button "Adyen" [ref=f3e869]
+                              - cell "Link" [ref=f3e870]:
+                                - button "Link" [ref=f3e872]:
+                                  - paragraph [ref=f3e874]:
+                                    - link "Link" [ref=f3e875] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/data-agents-benchmark/blob/main/baseline/run.py
+                              - cell "GPT 4o" [ref=f3e876]:
+                                - button "GPT 4o" [ref=f3e878]:
+                                  - paragraph [ref=f3e880]: GPT 4o
+                              - cell "23-01-2025" [ref=f3e881]:
+                                - button "23-01-2025" [ref=f3e883]
+                            - row "Deepseek V3 ReACT Baseline 66.67 5.56 Adyen Link Deepseek v3 23-01-2025" [ref=f3e884]:
+                              - cell "Deepseek V3 ReACT Baseline" [ref=f3e885]:
+                                - button "Deepseek V3 ReACT Baseline" [ref=f3e887]:
+                                  - paragraph [ref=f3e889]:
+                                    - strong [ref=f3e890]: Deepseek V3 ReACT Baseline
+                              - cell "66.67" [ref=f3e891]:
+                                - button "66.67" [ref=f3e893]
+                              - cell "5.56" [ref=f3e894]:
+                                - button "5.56" [ref=f3e896]
+                              - cell "Adyen" [ref=f3e897]:
+                                - button "Adyen" [ref=f3e899]
+                              - cell "Link" [ref=f3e900]:
+                                - button "Link" [ref=f3e902]:
+                                  - paragraph [ref=f3e904]:
+                                    - link "Link" [ref=f3e905] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/data-agents-benchmark/blob/main/baseline/run.py
+                              - cell "Deepseek v3" [ref=f3e906]:
+                                - button "Deepseek v3" [ref=f3e908]:
+                                  - paragraph [ref=f3e910]: Deepseek v3
+                              - cell "23-01-2025" [ref=f3e911]:
+                                - button "23-01-2025" [ref=f3e913]
+                            - row "Claude 3.5 Haiku ReACT Baseline 77.78 5.03 Adyen Link claude-3-5-haiku-20241022 24-01-2025" [ref=f3e914]:
+                              - cell "Claude 3.5 Haiku ReACT Baseline" [ref=f3e915]:
+                                - button "Claude 3.5 Haiku ReACT Baseline" [ref=f3e917]:
+                                  - paragraph [ref=f3e919]:
+                                    - strong [ref=f3e920]: Claude 3.5 Haiku ReACT Baseline
+                              - cell "77.78" [ref=f3e921]:
+                                - button "77.78" [ref=f3e923]
+                              - cell "5.03" [ref=f3e924]:
+                                - button "5.03" [ref=f3e926]
+                              - cell "Adyen" [ref=f3e927]:
+                                - button "Adyen" [ref=f3e929]
+                              - cell "Link" [ref=f3e930]:
+                                - button "Link" [ref=f3e932]:
+                                  - paragraph [ref=f3e934]:
+                                    - link "Link" [ref=f3e935] [cursor=pointer]:
+                                      - /url: https://huggingface.co/spaces/adyen/data-agents-benchmark/blob/main/baseline/run.py
+                              - cell "claude-3-5-haiku-20241022" [ref=f3e936]:
+                                - button "claude-3-5-haiku-20241022" [ref=f3e938]:
+                                  - paragraph [ref=f3e940]: claude-3-5-haiku-20241022
+                              - cell "24-01-2025" [ref=f3e941]:
+                                - button "24-01-2025" [ref=f3e943]
+                          - rowgroup
+                  - button "Download Leaderboard" [ref=f3e39] [cursor=pointer]
+            - button "Refresh" [active] [ref=f3e40] [cursor=pointer]
+            - generic [ref=f3e44]:
+              - heading "Benchmark Validation Standards" [level=2] [ref=f3e45]
+              - paragraph [ref=f3e46]:
+                - text: All submissions are initially added to the
+                - strong [ref=f3e47]: Unvalidated Leaderboard
+                - text: . The Adyen/Hugging Face team will attempt, with the participation of the respective submission team, to validate any entries that rank within the top 10.
+              - paragraph [ref=f3e48]:
+                - strong [ref=f3e49]: Validation
+                - text: "confirms that a submission's results were achieved using a novel approach involving data analysis agents. To support validation, participants must provide clear evidence of their methodology. This can be done in one of the following ways:"
+              - list [ref=f3e50]:
+                - listitem [ref=f3e51]:
+                  - strong [ref=f3e52]: "Preferred:"
+                  - text: Share a research paper or blog post along with the source code to enable full reproducibility.
+                - listitem [ref=f3e53]:
+                  - text: Submit a complete dataset that includes
+                  - strong [ref=f3e54]: reasoning traces
+                  - text: demonstrating how the results were produced.
+                - listitem [ref=f3e55]:
+                  - text: Provide access to an
+                  - strong [ref=f3e56]: API
+                  - text: that the Adyen/Hugging Face team can use to independently validate and reproduce results.
+              - paragraph [ref=f3e57]:
+                - text: Our goal with
+                - strong [ref=f3e58]: DABStep
+                - text: is to foster rapid progress and collaboration in the open research community. We strongly encourage participants to share their work and open-source their code whenever possible.
+              - paragraph [ref=f3e59]:
+                - text: Once validated, submissions will be featured and showcased on the
+                - strong [ref=f3e60]: Validated Leaderboard
+                - text: ", including annotations indicating the validation method used (e.g.,"
+                - code [ref=f3e61]: traces
+                - text: ","
+                - code [ref=f3e62]: code
+                - text: ","
+                - code [ref=f3e63]: API
+                - text: ).
+            - button "📙 Citation ▼" [ref=f3e66] [cursor=pointer]:
+              - generic [ref=f3e67]: 📙 Citation
+              - generic [ref=f3e68]: ▼
+            - generic [ref=f3e69]:
+              - button "Submit new agent answers for evaluation ▼" [ref=f3e70] [cursor=pointer]:
+                - generic [ref=f3e71]: Submit new agent answers for evaluation
+                - generic [ref=f3e72]: ▼
+              - generic [ref=f3e74]:
+                - generic [ref=f3e79]:
+                  - heading "Submissions" [level=2] [ref=f3e80]
+                  - paragraph [ref=f3e81]: Scores are expressed as the percentage of correct answers.
+                  - paragraph [ref=f3e82]: Each question calls for an answer that is either a string (one or a few words), a number, or a comma separated list of strings or floats, unless specified otherwise. There is only one correct answer. Hence, evaluation is done via quasi exact match between a model’s answer and the ground truth (up to some normalization that is tied to the “type” of the ground truth).
+                  - paragraph [ref=f3e83]:
+                    - text: "We expect submissions to be json-line files with the following format. Mandatory fields are:"
+                    - code [ref=f3e84]: task_id
+                    - text: and
+                    - code [ref=f3e85]: agent_answer
+                    - text: . However,
+                    - code [ref=f3e86]: reasoning_trace
+                    - text: "is optional:"
+                  - code [ref=f3e89]: "{\"task_id\": \"task_id_1\", \"agent_answer\": \"Answer 1 from your agent\", \"reasoning_trace\": \"The different steps by which your model reached answer 1\"} {\"task_id\": \"task_id_2\", \"agent_answer\": \"Answer 2 from your agent\", \"reasoning_trace\": \"The different steps by which your model reached answer 2\"}"
+                  - paragraph [ref=f3e90]:
+                    - text: Our scoring function can be found
+                    - link "here" [ref=f3e91] [cursor=pointer]:
+                      - /url: https://huggingface.co/spaces/adyen/data-agents-benchmark/blob/main/dabstep_benchmark/evaluation/scorer.py
+                    - text: .
+                - generic [ref=f3e92]:
+                  - generic [ref=f3e94]:
+                    - generic [ref=f3e96]:
+                      - generic [ref=f3e97]: Agent name
+                      - textbox "Agent name" [ref=f3e944]:
+                        - /placeholder: ""
+                    - generic [ref=f3e101]:
+                      - generic [ref=f3e102]: Model family
+                      - textbox "Model family" [ref=f3e945]:
+                        - /placeholder: ""
+                    - generic [ref=f3e106]:
+                      - generic [ref=f3e107]: System prompt example
+                      - textbox "System prompt example" [ref=f3e946]:
+                        - /placeholder: ""
+                    - generic [ref=f3e111]:
+                      - generic [ref=f3e112]: Repo URL with agent code
+                      - textbox "Repo URL with agent code" [ref=f3e947]:
+                        - /placeholder: ""
+                  - generic [ref=f3e115]:
+                    - generic [ref=f3e116]:
+                      - generic [ref=f3e118]:
+                        - generic [ref=f3e119]: Organisation
+                        - textbox "Organisation" [ref=f3e948]:
+                          - /placeholder: ""
+                      - generic [ref=f3e123]:
+                        - generic [ref=f3e124]: Contact email (will be stored privately, & used if there is an issue with your submission)
+                        - textbox "Contact email (will be stored privately, & used if there is an issue with your submission)" [ref=f3e949]:
+                          - /placeholder: ""
+                    - generic [ref=f3e127]:
+                      - generic:
+                        - generic:
+                          - img
+                        - text: File
+                      - button "Click to upload or drop files" [ref=f3e128] [cursor=pointer]:
+                        - generic [ref=f3e129]:
+                          - img [ref=f3e131]
+                          - text: Drop File Here
+                          - generic [ref=f3e134]: "- or -"
+                          - text: Click to Upload
+                - generic [ref=f3e135]:
+                  - button "Sign in with Hugging Face icon Sign in with Hugging Face" [ref=f3e136] [cursor=pointer]:
+                    - img "Sign in with Hugging Face icon" [ref=f3e950]
+                    - text: Sign in with Hugging Face
+                  - button "Submit answers" [ref=f3e137] [cursor=pointer]
+        - contentinfo "Gradio footer navigation" [ref=f3e138]:
+          - button "Use via API logo" [ref=f3e139] [cursor=pointer]:
+            - text: Use via API
+            - img "logo" [ref=f3e140]
+          - generic [ref=f3e141]: ·
+          - link "Built with Gradio logo" [ref=f3e142] [cursor=pointer]:
+            - /url: https://gradio.app
+            - text: Built with Gradio
+            - img "logo" [ref=f3e143]
+          - generic [ref=f3e144]: ·
+          - button "Settings Settings" [ref=f3e145] [cursor=pointer]:
+            - text: Settings
+            - img "Settings" [ref=f3e146]

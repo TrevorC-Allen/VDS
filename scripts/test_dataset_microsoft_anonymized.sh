@@ -37,6 +37,8 @@ VDS_LLM_PROVIDER=mock "${PY}" scripts/run_generic_dataset_eval.py \
 
 echo "Microsoft generic comparison: ${OUT_DIR}/comparison.md"
 echo "Microsoft generic VDS answers: ${OUT_DIR}/vds_answers.jsonl"
+COMPARISON_JUDGE="${COMPARISON_JUDGE:-heuristic}" "${PY}" scripts/score_comparison_answers.py "${OUT_DIR}/comparison.md" --judge "${COMPARISON_JUDGE:-heuristic}" --print-summary
+echo "Microsoft generic scored comparison: ${OUT_DIR}/comparison_scored.md"
 
 if [[ "${RUN_STANDARD_BENCHMARK}" != "0" ]]; then
   VDS_LLM_PROVIDER=mock "${PY}" -m multi_agent_workflows.microsoft_anonymized_benchmark_runner \

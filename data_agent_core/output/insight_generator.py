@@ -32,7 +32,7 @@ def generate_insight(
     anomaly_findings = _anomaly_findings(rows, columns)
     volatility_findings = _volatility_findings(rows, columns)
     caveats = _quality_caveats(quality_report)
-    suggestions = _suggestions(anomaly_findings, volatility_findings, quality_report)
+    suggestions = _suggestions(anomaly_findings, volatility_findings, quality_report, rows)
     summary = _summary(question, key_numbers, rows)
     return InsightResult(
         summary=summary,
@@ -82,7 +82,7 @@ def _key_numbers(result: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str
 
 def _summary(question: str, key_numbers: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     if rows:
-        return f"Verified result 已通过校验，返回 {len(rows)} 行可展示数据；下面的洞察只基于已验证结果、质量报告和字段语义。"
+        return f"结果已通过校验，当前最值得看的是这 {len(rows)} 条结果背后的异常、波动或维度差异。"
     if key_numbers.get("answer_value") is not None:
         return f"本次结果已通过校验，核心数值为 {key_numbers['answer_value']}。"
     return f"本次结果已通过校验，可用于回答：{question}"
@@ -166,20 +166,32 @@ def _suggestions(
     anomaly_findings: list[dict[str, Any]],
     volatility_findings: list[dict[str, Any]],
     quality_report: dict[str, Any] | None,
+    rows: list[dict[str, Any]],
 ) -> list[str]:
-    suggestions: list[str] = []
     if anomaly_findings:
         first = anomaly_findings[0]
-        suggestions.append(first.get("message") or "观察：存在离群点；依据：统计边界；建议：复核原始记录。")
+        metric = str(first.get("metric") or "核心指标")
+        count = int(first.get("count") or 0)
+        return [
+            f"观察：{metric} 出现 {count} 个明显离群点；依据：已验证结果的 IQR 边界；建议：下一步先复核这些异常高/低点是否为真实业务事件，再按客户、城市、产品或渠道拆分来源。"
+        ]
     if volatility_findings:
         first = volatility_findings[0]
-        suggestions.append(first.get("message") or "观察：存在阶段波动；依据：周期变化率；建议：继续拆分维度。")
+        metric = str(first.get("metric") or "核心指标")
+        count = int(first.get("count") or 0)
+        return [
+            f"观察：{metric} 有 {count} 次较大阶段波动；依据：相邻周期变化率；建议：下一步按同一周期口径拆到区域、客户或产品，先找出波动最大的贡献项。"
+        ]
     if isinstance(quality_report, dict) and int(quality_report.get("issue_count") or 0) > 0:
         issue_count = int(quality_report.get("issue_count") or 0)
-        suggestions.append(f"风险：数据质量扫描发现 {issue_count} 个潜在问题；依据：quality_report；建议：正式决策前先处理高严重度缺失、重复或异常值。")
-    if not suggestions:
-        suggestions.append("观察：当前结果未显示明显异常；依据：已验证结果未触发离群、波动或质量告警；建议：继续按时间、区域、客户或产品维度下钻。")
-    return suggestions
+        return [
+            f"观察：数据质量扫描发现 {issue_count} 个潜在问题；依据：缺失、重复和异常值扫描；建议：下一步先做清洗前后核心指标对比，再决定是否删除、填充或保留。"
+        ]
+    if rows:
+        return [
+            "观察：当前结果没有触发明显异常信号；依据：已验证结果未出现显著离群、阶段波动或质量告警；建议：下一步选一个最关键维度做趋势或 Top/Bottom 对比。"
+        ]
+    return ["建议：先补充具体指标、时间范围和分组维度，再继续做可验证分析。"]
 
 
 def _next_questions(plan: AnalysisPlan | dict[str, Any] | None, rows: list[dict[str, Any]]) -> list[str]:

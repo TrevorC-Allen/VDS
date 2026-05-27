@@ -142,6 +142,14 @@ git checkout -b feature/project-rules-and-data-agent-skeleton
 3. 如果本轮修改确认不影响 README.md，必须在 CHANGELOG_AI.md 的记录中写明 README 无需更新的原因。
 4. 发起 PR 前必须检查 README.md、MAIN_GOAL.md、CHANGELOG_AI.md 和相关 docs 的阶段口径是否一致。
 
+## 测试文档规则
+
+1. 每次正式测试都必须生成或更新 `docs/test-runs/*.md`。
+2. API smoke、浏览器 smoke、benchmark 回归、LLM GPT-like gate、changelog audit 和修复后复测都属于正式测试。
+3. 测试文档必须写清测试目标、运行环境、数据、问题、预期、实际结果、证据、失败等级、GPT-like 判定、Not Applicable 归因、能力族归因和是否需要补测。
+4. 没有测试文档支撑的测试不能作为验收完成证据；CHANGELOG_AI.md 只能引用测试文档，不能替代测试文档。
+5. 用户可见体验改动必须优先使用 `scripts/run_vds_llm_quality_gate.sh` 或同等级 GPT-like 测试文档做验收补充。
+
 ## Commit Message 规范
 
 格式：
