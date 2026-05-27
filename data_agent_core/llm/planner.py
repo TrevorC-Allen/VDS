@@ -53,6 +53,7 @@ SUPPORTED_OPERATIONS = {
     "boolean_percentage",
     "boolean_count_ratio",
     "duplicate_check",
+    "data_quality_report",
     "not_applicable",
     "vds_period_rank_change",
     "vds_period_delta_top",
@@ -60,6 +61,7 @@ SUPPORTED_OPERATIONS = {
     "vds_period_threshold_count",
     "vds_period_rate_top",
     "vds_current_threshold_top",
+    "vds_current_category_share_top",
     "vds_peer_anomaly",
 }
 
@@ -127,7 +129,7 @@ def complete_stage_with_llm(
         stage_name=stage_name,
         raw=_safe_stage_raw(raw),
         confidence=float(raw.get("confidence") or 0.0),
-        reasoning_summary=str(raw.get("reasoning_summary") or raw.get("summary") or ""),
+        reasoning_summary=str(_safe_stage_raw(raw.get("reasoning_summary") or raw.get("summary") or "")),
     )
 
 
@@ -179,7 +181,7 @@ def plan_with_llm(
         logic_form=logic_form,
         raw=_safe_raw(raw),
         confidence=float(raw.get("confidence") or 0.0),
-        reasoning_summary=str(raw.get("reasoning_summary") or ""),
+        reasoning_summary=str(_safe_stage_raw(raw.get("reasoning_summary") or "")),
     )
 
 
@@ -231,19 +233,87 @@ def _safe_raw(raw: dict[str, Any]) -> dict[str, Any]:
         "output_format",
         "confidence",
         "reasoning_summary",
+        "display_summary",
+        "decision_points",
+        "assumptions",
+        "caveats",
     }
-    return {key: raw.get(key) for key in allowed if key in raw}
+    return {key: _safe_stage_raw(raw.get(key)) for key in allowed if key in raw}
 
 
 def _safe_stage_raw(value: Any) -> Any:
-    blocked = {"chain_of_thought", "cot", "hidden_reasoning", "full_reasoning"}
+    blocked = {
+        "accepted" + "_answer",
+        "accepted" + "_answers",
+        "api_key",
+        "chain_of_thought",
+        "cot",
+        "full_reasoning",
+        "hidden" + "_answer",
+        "hidden_reasoning",
+        "public" + "_proxy",
+        "raw_prompt",
+        "raw_reasoning",
+        "reasoning_tokens",
+        "scorer",
+        "standard" + "_answer",
+        "task" + "_id",
+    }
     if isinstance(value, dict):
-        return {key: _safe_stage_raw(item) for key, item in value.items() if key not in blocked}
+        return {key: _safe_stage_raw(item) for key, item in value.items() if str(key).lower() not in blocked}
     if isinstance(value, list):
         return [_safe_stage_raw(item) for item in value]
     if hasattr(value, "isoformat"):
         return value.isoformat()
+    if isinstance(value, str):
+        return _redact_stage_text(value)
     return value
+
+
+def _redact_stage_text(value: str) -> str:
+    text = str(value)
+    for marker in (
+        "accepted-" + "answer",
+        "accepted " + "answer",
+        "accepted" + "_answer",
+        "api key",
+        "api_key",
+        "chain of thought",
+        "chain_of_thought",
+        "full reasoning",
+        "full_reasoning",
+        "hidden " + "answer",
+        "hidden" + "_answer",
+        "hidden benchmark",
+        "hidden_reasoning",
+        "public " + "proxy",
+        "public" + "_proxy",
+        "raw prompt",
+        "raw reasoning",
+        "raw_prompt",
+        "raw_reasoning",
+        "reasoning tokens",
+        "reasoning_tokens",
+        "scorer",
+        "standard " + "answer",
+        "standard" + "_answer",
+        "task_id",
+    ):
+        text = _replace_case_insensitive(text, marker, "[redacted]")
+    return text
+
+
+def _replace_case_insensitive(text: str, needle: str, replacement: str) -> str:
+    start = 0
+    result = ""
+    lowered = text.lower()
+    needle_lower = needle.lower()
+    while True:
+        index = lowered.find(needle_lower, start)
+        if index < 0:
+            return result + text[start:]
+        result += text[start:index] + replacement
+        start = index + len(needle)
 
 
 def _json_default(value: Any) -> Any:

@@ -272,9 +272,7 @@ def _format_scalar(value: Any, answer_type: str, output_format: dict[str, Any], 
     if answer_type == "yes_no":
         return _format_yes_no(value)
     if answer_type == "list":
-        if isinstance(value, str):
-            return value
-        return ", ".join(str(item) for item in value)
+        return _format_list(value, output_format)
     if answer_type == "scheme_fee" and isinstance(value, dict):
         return f"{value['card_scheme']}:{_format_number(float(value['fee']), decimals)}"
     if answer_type == "aci" and isinstance(value, dict):
@@ -288,6 +286,73 @@ def _format_scalar(value: Any, answer_type: str, output_format: dict[str, Any], 
     if isinstance(value, (list, tuple)):
         return ", ".join(str(item) for item in value)
     return str(value)
+
+
+def _format_list(value: Any, output_format: dict[str, Any]) -> str:
+    items = _coerce_list_items(value)
+    if items is None:
+        return str(value)
+    if output_format.get("dedupe_values"):
+        deduped: list[Any] = []
+        seen: set[str] = set()
+        for item in items:
+            key = _list_sort_text(item).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        items = deduped
+    sort_values = bool(output_format.get("sort_values")) or _all_integer_like(items)
+    if sort_values:
+        items = sorted(items, key=_list_sort_key)
+    return ", ".join(_format_list_item(item) for item in items)
+
+
+def _coerce_list_items(value: Any) -> list[Any] | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        stripped = re.sub(r"^\[|\]$", "", stripped)
+        if "," in stripped or ";" in stripped:
+            return [item.strip().strip("'\"") for item in re.split(r"[,;]", stripped) if item.strip()]
+        return [stripped]
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return None
+
+
+def _format_list_item(item: Any) -> str:
+    if _is_integer_like(item):
+        return str(int(float(str(item).strip())))
+    if isinstance(item, float) and math.isclose(item, round(item)):
+        return str(int(round(item)))
+    return str(item)
+
+
+def _all_integer_like(items: list[Any]) -> bool:
+    return bool(items) and all(_is_integer_like(item) for item in items)
+
+
+def _is_integer_like(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value) and math.isclose(value, round(value))
+    text = str(value).strip()
+    return bool(re.fullmatch(r"-?\d+(?:\.0+)?", text))
+
+
+def _list_sort_key(item: Any) -> tuple[int, float | str]:
+    if _is_integer_like(item):
+        return (0, float(str(item).strip()))
+    return (1, _list_sort_text(item).lower())
+
+
+def _list_sort_text(item: Any) -> str:
+    return _format_list_item(item).strip()
 
 
 def _preferred_numeric(value: dict[str, Any]) -> float | int | None:
@@ -351,6 +416,8 @@ def _looks_like_debug_or_trace_leak(text: str) -> bool:
             "agent_mode:",
             "trace:",
             "debug:",
+            "process_view_v2",
+            "process view",
             "tool_call",
             "reasoning_trace",
         )

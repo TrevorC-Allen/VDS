@@ -1,0 +1,26 @@
+{
+  "name": "generic_dataset_eval",
+  "description": "Dataset-agnostic general, schema, quality, analysis-readiness, and cleaning-boundary evaluation pack.",
+  "output_root": "outputs/eval_gate",
+  "thresholds": {
+    "route_correct": 1.0,
+    "risk_free": 1.0,
+    "grounded": 0.95,
+    "user_value": 0.9,
+    "followup_ready": 0.9,
+    "numeric_tolerance": 0.01
+  },
+  "case_groups": [
+    "A_no_file_general",
+    "B_uploaded_general_data_understanding",
+    "C_ambiguous_user_questions",
+    "D_general_to_analysis_routing",
+    "E_technical_review_guardrails"
+  ],
+  "scoring_notes": [
+    "This pack is dataset-agnostic and should run before any domain-specific benchmark.",
+    "Standard answers are generated from uploaded files after the case manifest is defined.",
+    "Domain-specific questions such as YoY, airport share, CBD fee, inventory turnover, ARR, or cohort retention should be added as separate extension packs.",
+    "Cleaning cases are simulations only; the runner never mutates source files."
+  ]
+}

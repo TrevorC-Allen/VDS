@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Virtual Data Scientist Workbench</title>
+    <link rel="icon" href="/frontend/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/frontend/styles.css?v=20260526-project-move-default" />
+  </head>
+  <body>
+    <div id="context-menu" class="context-menu hidden" role="menu" aria-label="操作菜单"></div>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="历史 Chat">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">V</div>
+          <div>
+            <strong>Virtual Data Scientist</strong>
+            <span>Data analysis chat</span>
+          </div>
+        </div>
+
+        <button id="new-chat-button" class="new-chat-button" type="button" aria-label="新分析">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          新分析
+        </button>
+
+        <section class="project-panel" aria-labelledby="project-title">
+          <div class="project-header">
+            <h2 id="project-title">项目</h2>
+            <span id="project-count">0</span>
+          </div>
+          <button id="new-project-button" class="project-nav-button" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path><path d="M12 12v5M9.5 14.5h5"></path></svg>
+            <span>新项目</span>
+          </button>
+          <ol id="project-list" class="project-list" aria-label="项目列表">
+            <li class="project-empty">暂无 Project</li>
+          </ol>
+          <p id="project-summary" class="project-summary">project-only memory</p>
+        </section>
+
+        <section class="history-panel" aria-labelledby="history-title">
+          <div class="history-header">
+            <h2 id="history-title">历史 Chat</h2>
+            <span id="history-count">0</span>
+          </div>
+          <ol id="run-history" class="run-history">
+            <li class="history-empty">上传数据并提问后，这里会显示最近的分析记录。</li>
+          </ol>
+        </section>
+      </aside>
+
+      <main class="chat-workspace">
+        <header class="chat-topbar">
+          <div>
+            <h1>VDS</h1>
+            <p id="dataset-status">等待上传数据集</p>
+          </div>
+          <div class="status-strip" aria-live="polite">
+            <a class="monitor-link" href="/monitor" target="_blank" rel="noreferrer" title="打开监看页">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M7 15l3-3 3 2 5-7"></path><path d="M17 7h3v3"></path></svg>
+              <span>监看页</span>
+            </a>
+            <span id="api-status" class="status-pill idle">准备就绪</span>
+            <span id="dataset-chip" class="dataset-chip">未上传数据</span>
+          </div>
+        </header>
+
+        <section id="chat-messages" class="chat-messages" aria-live="polite">
+          <section id="project-home" class="project-home hidden" aria-labelledby="project-home-title">
+            <div class="project-home-inner">
+              <div class="project-home-heading">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7l2 2h7v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path></svg>
+                <h2 id="project-home-title">Project</h2>
+              </div>
+              <button id="project-new-chat-button" class="project-new-chat-button" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+                <span id="project-new-chat-label">Project 中的新聊天</span>
+              </button>
+              <div class="project-tabs" role="tablist" aria-label="Project 内容">
+                <button id="project-tab-chats" class="project-tab active" type="button" role="tab" aria-selected="true" aria-controls="project-chats-panel">聊天</button>
+                <button id="project-tab-sources" class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-sources-panel">来源</button>
+              </div>
+              <section id="project-chats-panel" class="project-tab-panel" role="tabpanel" aria-labelledby="project-tab-chats">
+                <ol id="project-conversation-list" class="project-conversation-list">
+                  <li class="project-home-empty">这个 Project 还没有聊天。</li>
+                </ol>
+              </section>
+              <section id="project-sources-panel" class="project-tab-panel hidden" role="tabpanel" aria-labelledby="project-tab-sources">
+                <div class="project-source-group">
+                  <h3>文件和来源</h3>
+                  <ol id="project-source-list" class="project-source-list">
+                    <li class="project-home-empty">上传共享文件后会显示在这里。</li>
+                  </ol>
+                </div>
+                <div class="project-source-group">
+                  <h3>项目记忆</h3>
+                  <ol id="project-memory-list" class="project-source-list">
+                    <li class="project-home-empty">保存的 Project memory 会显示在这里。</li>
+                  </ol>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <article class="message assistant-message welcome-message">
+            <div class="avatar" aria-hidden="true">V</div>
+            <div class="message-content">
+              <h2>今天要分析什么数据？</h2>
+              <p class="message-copy">上传数据文件，然后直接提问。我会像对话一样展示理解、选择数据、分析和回答的过程。</p>
+            </div>
+          </article>
+
+          <article id="profile-message" class="message assistant-message hidden">
+            <div class="avatar" aria-hidden="true">V</div>
+            <div class="message-content">
+              <section class="analysis-block profile-panel" aria-labelledby="profile-title">
+                <div class="block-header">
+                  <div>
+                    <h2 id="profile-title">已读取数据</h2>
+                    <p id="profile-summary">暂无数据概览</p>
+                  </div>
+                </div>
+                <div id="table-list" class="table-list empty-state">上传后显示文件、sheet、表名和行列数。</div>
+                <div class="field-table-wrap">
+                  <table class="field-table">
+                    <thead>
+                      <tr>
+                        <th>字段</th>
+                        <th>类型</th>
+                        <th>样例</th>
+                      </tr>
+                    </thead>
+                    <tbody id="field-table-body">
+                      <tr><td colspan="3" class="muted-cell">选择一个表查看字段预览。</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </article>
+
+          <article id="result-message" class="message assistant-message hidden">
+            <div class="avatar" aria-hidden="true">V</div>
+            <div class="message-content result-stack">
+              <section class="analysis-block result-panel" aria-labelledby="result-title">
+                <div class="block-header">
+                  <div>
+                    <h2 id="result-title">分析结果</h2>
+                    <p id="result-status">尚未运行</p>
+                  </div>
+                </div>
+                <div id="answer" class="answer-box">-</div>
+                <div id="chart-panel" class="chart-panel empty-state">分析完成后会生成适合的图表或重点结果。</div>
+                <div id="result-table" class="result-table empty-state">结果表会显示在这里。</div>
+              </section>
+
+              <section class="analysis-block insight-panel" aria-labelledby="insight-title">
+                <div class="block-header compact">
+                  <h2 id="insight-title">简要结论</h2>
+                </div>
+                <div id="insight-summary" class="insight-summary muted-cell">暂无洞察。</div>
+                <ul id="insight-list" class="compact-list"></ul>
+              </section>
+
+              <section class="analysis-block process-panel" aria-labelledby="process-title">
+                <h2 id="process-title" class="visually-hidden">正在做什么</h2>
+                <div class="process-line">
+                  <p id="process-summary">提问后，我会用一行摘要说明当前正在处理什么。</p>
+                </div>
+                <details id="process-details" class="process-details">
+                  <summary>查看处理过程</summary>
+                  <ol id="process-timeline" class="process-timeline" aria-live="polite">
+                    <li class="muted-cell">提问后显示分析过程。</li>
+                  </ol>
+                </details>
+              </section>
+
+              <section class="analysis-block artifact-panel hidden" aria-labelledby="artifact-title">
+                <div class="block-header compact">
+                  <h2 id="artifact-title">代码</h2>
+                </div>
+                <div class="artifact-list"></div>
+              </section>
+            </div>
+          </article>
+        </section>
+
+        <section class="composer-shell" aria-label="对话输入">
+          <div class="composer">
+            <div
+              id="question-input"
+              class="composer-input is-empty"
+              role="textbox"
+              aria-multiline="true"
+              aria-label="向 VDS 提问，例如：哪个城市订单金额最高？"
+              data-placeholder="向 VDS 提问，例如：哪个城市订单金额最高？"
+              contenteditable="plaintext-only"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              data-ms-editor="false"
+              data-gramm="false"
+              data-gramm_editor="false"
+              data-enable-grammarly="false"
+            ></div>
+            <div class="composer-actions">
+              <div class="upload-controls" aria-label="文件上传">
+                <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md,.txt,.yaml,.yml" />
+                <label class="icon-button upload-pick-button" for="file-input" title="选择文件" aria-label="选择文件">
+                  <svg viewBox="0 0 24 24"><path d="m21.4 11.6-8.5 8.5a5 5 0 0 1-7.1-7.1l9-9a3.2 3.2 0 0 1 4.5 4.5l-9.1 9.1a1.5 1.5 0 0 1-2.1-2.1l8.3-8.3" /></svg>
+                </label>
+                <button id="upload-button" class="button secondary upload-button" type="button" disabled>上传</button>
+                <div class="file-status-wrap">
+                  <div class="file-status" aria-live="polite">
+                    <button id="file-summary" class="file-summary-button" type="button" disabled aria-expanded="false" aria-controls="file-panel">选择文件</button>
+                    <span id="file-detail">数据和说明文件支持多选</span>
+                  </div>
+                  <section id="file-panel" class="file-panel hidden" aria-label="文件列表">
+                    <div class="file-panel-header">
+                      <strong>文件</strong>
+                      <span id="file-panel-count">0</span>
+                    </div>
+                    <ul id="file-panel-list" class="file-panel-list"></ul>
+                  </section>
+                </div>
+              </div>
+              <div class="controls-row">
+                <label>
+                  执行
+                  <select id="execution-mode">
+                    <option value="auto">auto</option>
+                    <option value="dual">dual</option>
+                    <option value="pandas">pandas</option>
+                    <option value="sql">sql</option>
+                  </select>
+                </label>
+                <label>
+                  Agent
+                  <select id="agent-mode">
+                    <option value="multi_agent">multi_agent</option>
+                    <option value="single_agent">single_agent</option>
+                  </select>
+                </label>
+              </div>
+              <button id="run-button" class="button primary" type="button" disabled>
+                <span>发送</span>
+                <svg viewBox="0 0 24 24"><path d="m5 12 14-8-5 16-3-6-6-2Z" /></svg>
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="/frontend/app.js?v=20260526-project-move-default" type="module"></script>
+  </body>
+</html>

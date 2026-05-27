@@ -143,6 +143,13 @@ class BenchmarkMetricsTest(unittest.TestCase):
                 "expected_available": False,
                 "output_risk_flags": {"debug_or_trace_leak": True},
             },
+            {
+                "task_id": "process_leak",
+                "agent_answer": "process_view_v2: reasoning_trace",
+                "success": False,
+                "correct": None,
+                "expected_available": False,
+            },
         ]
 
         risks = summarize_details(details)["risk_taxonomy"]
@@ -150,8 +157,8 @@ class BenchmarkMetricsTest(unittest.TestCase):
         self.assertEqual(1, risks["format_risk"]["count"])
         self.assertEqual(1, risks["semantic_risk"]["count"])
         self.assertEqual(1, risks["capability_risk"]["count"])
-        self.assertEqual(2, risks["submission_risk"]["count"])
-        self.assertEqual(1, risks["trace_redaction_risk"]["count"])
+        self.assertEqual(3, risks["submission_risk"]["count"])
+        self.assertEqual(2, risks["trace_redaction_risk"]["count"])
         self.assertFalse(risks["official_hidden_unknown"]["applies"])
         self.assertFalse(risks["public_proxy_observation"]["used_in_core_chain"])
 

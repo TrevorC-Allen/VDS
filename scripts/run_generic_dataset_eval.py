@@ -1,0 +1,1577 @@
+#!/usr/bin/env python3
+"""Generate dataset-agnostic VDS eval-gate standard answers.
+
+The generic gate applies to any uploaded dataset before domain-specific tests.
+It reads one or more files, profiles schema and data quality, then writes
+GPT-like standard answers grounded in computed facts. These answers are offline
+evaluation references only and must never be passed into the Agent workflow.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+try:
+    import duckdb
+except ImportError as exc:  # pragma: no cover - environment dependent.
+    raise SystemExit("duckdb is required. Use the Codex bundled Python or install duckdb.") from exc
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+DEFAULT_CONFIG = REPO_ROOT / "configs" / "eval_gate" / "generic_dataset_eval.json"
+MISSING_MARKERS = {"", "na", "n/a", "null", "none", "nan", "-", "--", "未知", "缺失", "空"}
+
+
+@dataclass
+class TableRef:
+    table_name: str
+    source_file: str
+    sheet: str | None
+    view_name: str
+    row_count: int
+    column_count: int
+    columns: list[dict[str, Any]]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run dataset-agnostic VDS evaluation standard-answer generation.")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG))
+    parser.add_argument("--files", nargs="+", required=True, help="CSV/XLSX/JSON/Parquet files to profile.")
+    parser.add_argument("--table-names", nargs="*", help="Optional display names matching --files.")
+    parser.add_argument("--dataset-name", default="uploaded_dataset")
+    parser.add_argument("--output-dir", help="Defaults to outputs/eval_gate/<timestamp>-generic_dataset_eval.")
+    parser.add_argument("--candidate-answers", help="Optional JSON/JSONL candidate answers to score.")
+    parser.add_argument(
+        "--generate-vds-answers",
+        action="store_true",
+        help="Upload the files into DataAgentService, ask every case, and use those replies as candidate answers.",
+    )
+    parser.add_argument(
+        "--quick-vds-answers",
+        action="store_true",
+        help="Reuse representative overview/cleaning answers for fast smoke comparisons on large files.",
+    )
+    parser.add_argument("--print-summary", action="store_true")
+    args = parser.parse_args()
+
+    config_path = _resolve_path(args.config)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    files = [_resolve_path(path) for path in args.files]
+    if args.table_names and len(args.table_names) != len(files):
+        raise SystemExit("--table-names must have the same length as --files.")
+
+    output_dir = Path(args.output_dir) if args.output_dir else _default_output_dir(config["name"])
+    if not output_dir.is_absolute():
+        output_dir = REPO_ROOT / output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    started = time.perf_counter()
+    con = duckdb.connect(database=":memory:")
+    tables = load_tables(con, files, args.table_names or [])
+    facts = build_generic_facts(con, tables, dataset_name=args.dataset_name)
+    cases = build_generic_cases(facts)
+    candidate_score = None
+    candidate_answers: dict[str, str] = {}
+    if args.generate_vds_answers:
+        quick_vds = args.quick_vds_answers or os.environ.get("VDS_GENERIC_EVAL_QUICK") == "1"
+        candidate_answers = generate_vds_answers(cases, files, output_dir, quick=quick_vds)
+        candidate_score = score_candidate_answers(cases, candidate_answers, config["thresholds"], output_dir / "vds_answers.jsonl")
+    elif args.candidate_answers:
+        candidate_path = _resolve_path(args.candidate_answers)
+        candidate_answers = load_candidate_answers(candidate_path)
+        candidate_score = score_candidate_answers(cases, candidate_answers, config["thresholds"], candidate_path)
+    comparison_rows = build_comparison_rows(cases, candidate_answers, candidate_score)
+
+    run = {
+        "name": config["name"],
+        "dataset_name": args.dataset_name,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+        "repo": repo_state(),
+        "config_path": str(config_path),
+        "input_files": [str(path) for path in files],
+        "facts": facts,
+        "cases": cases,
+        "comparison": comparison_rows,
+        "candidate_score": candidate_score,
+        "note": "Standard answers are generated from source files after case definition and are offline-only.",
+    }
+    write_json(output_dir / "summary.json", run)
+    write_json(output_dir / "standard_answers.json", {"cases": cases})
+    write_jsonl(output_dir / "standard_answers.jsonl", cases)
+    write_json(output_dir / "comparison.json", {"comparison": comparison_rows})
+    write_jsonl(output_dir / "comparison.jsonl", comparison_rows)
+    (output_dir / "standard_answers.md").write_text(standard_answers_markdown(run), encoding="utf-8")
+    (output_dir / "comparison.md").write_text(comparison_markdown(run), encoding="utf-8")
+    summary_md = summary_markdown(run)
+    (output_dir / "summary.md").write_text(summary_md, encoding="utf-8")
+    if args.print_summary:
+        print(summary_md)
+    else:
+        print(json.dumps({"output_dir": str(output_dir), "cases": len(cases)}, ensure_ascii=False))
+
+
+def load_tables(con: duckdb.DuckDBPyConnection, files: list[Path], table_names: list[str]) -> list[TableRef]:
+    tables: list[TableRef] = []
+    used_names: set[str] = set()
+    for index, path in enumerate(files):
+        display = table_names[index] if index < len(table_names) else path.stem
+        suffix = path.suffix.lower()
+        if suffix in {".xlsx", ".xls"}:
+            sheets = pd.read_excel(path, sheet_name=None)
+            for sheet_name, df in sheets.items():
+                table_name = _unique_name(f"{display}__{sheet_name}", used_names)
+                view_name = f"eval_table_{len(tables)}"
+                con.register(view_name, df)
+                tables.append(_profile_registered_table(con, view_name, table_name, path, sheet_name))
+        elif suffix == ".csv":
+            table_name = _unique_name(display, used_names)
+            view_name = f"eval_table_{len(tables)}"
+            con.register(view_name, read_csv_dataframe(path))
+            tables.append(_profile_registered_table(con, view_name, table_name, path, None))
+        else:
+            table_name = _unique_name(display, used_names)
+            view_name = f"eval_table_{len(tables)}"
+            con.execute(f"CREATE OR REPLACE VIEW {view_name} AS SELECT * FROM {_source_sql(path)}")
+            tables.append(_profile_registered_table(con, view_name, table_name, path, None))
+    if not tables:
+        raise ValueError("No readable tables were found.")
+    return tables
+
+
+def read_csv_dataframe(path: Path) -> pd.DataFrame:
+    """Read CSV with the same conservative encoding posture as upload parsing."""
+
+    last_error: Exception | None = None
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk"):
+        try:
+            return pd.read_csv(path, encoding=encoding, low_memory=False)
+        except (UnicodeDecodeError, pd.errors.ParserError) as exc:
+            last_error = exc
+    for encoding in ("utf-8-sig", "gb18030", "gbk"):
+        try:
+            return pd.read_csv(path, encoding=encoding, low_memory=False, engine="python", on_bad_lines="skip")
+        except (UnicodeDecodeError, pd.errors.ParserError) as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    return pd.read_csv(path, low_memory=False)
+
+
+def build_generic_facts(con: duckdb.DuckDBPyConnection, tables: list[TableRef], *, dataset_name: str) -> dict[str, Any]:
+    table_facts = []
+    for table in tables:
+        missing = missing_profile(con, table)
+        numeric = numeric_profile(con, table)
+        temporal = temporal_profile(con, table)
+        categorical = categorical_profile(con, table)
+        distinct_count = int(con.execute(f"SELECT count(*) FROM (SELECT DISTINCT * FROM {table.view_name})").fetchone()[0] or 0)
+        duplicate_count = max(0, table.row_count - distinct_count)
+        table_facts.append(
+            {
+                "table_name": table.table_name,
+                "source_file": table.source_file,
+                "sheet": table.sheet,
+                "row_count": table.row_count,
+                "column_count": table.column_count,
+                "columns": table.columns,
+                "duplicate_row_count": duplicate_count,
+                "duplicate_row_rate": _safe_div(duplicate_count, table.row_count),
+                "missing": missing,
+                "numeric": numeric,
+                "temporal": temporal,
+                "categorical": categorical,
+                "field_roles": infer_field_roles(table.columns),
+                "quality_issues": quality_issues(table, missing, numeric, temporal, duplicate_count),
+                "analysis_suggestions": analysis_suggestions(table, numeric, temporal, categorical),
+                "cleaning_policy": cleaning_policy(table, missing, numeric, temporal, duplicate_count),
+            }
+        )
+    return {
+        "dataset_name": dataset_name,
+        "table_count": len(table_facts),
+        "total_rows": sum(item["row_count"] for item in table_facts),
+        "tables": table_facts,
+        "schema_compare": schema_compare(table_facts),
+        "dataset_wide_notes": dataset_wide_notes(table_facts),
+    }
+
+
+def build_generic_cases(facts: dict[str, Any]) -> list[dict[str, Any]]:
+    specs = [
+        ("generic_general_001", "general_no_file", "你好", "chat_without_dataset", no_file_greeting(facts), ["route_correct", "risk_free", "user_value"]),
+        ("generic_general_002", "general_no_file", "你能做什么？", "chat_without_dataset", no_file_capabilities(facts), ["route_correct", "risk_free", "user_value"]),
+        ("generic_general_003", "general_no_file", "没有数据你能先给我分析建议吗？", "chat_without_dataset", no_file_advice(facts), ["route_correct", "risk_free", "user_value"]),
+        ("generic_general_004", "general_no_file", "你支持多文件对比吗？", "chat_without_dataset", no_file_multifile(facts), ["route_correct", "risk_free", "user_value"]),
+        ("generic_uploaded_001", "general_uploaded", "看一下这个数据。", "dataset_overview", uploaded_overview(facts), ["route_correct", "grounded", "user_value", "followup_ready"]),
+        ("generic_uploaded_002", "general_uploaded", "这个数据主要讲什么？", "dataset_overview", dataset_story(facts), ["route_correct", "grounded", "user_value"]),
+        ("generic_uploaded_003", "general_uploaded", "这些文件有什么区别？", "dataset_overview", file_difference(facts), ["route_correct", "grounded", "risk_free"]),
+        ("generic_uploaded_004", "general_uploaded", "这个数据适合做哪些分析？", "dataset_overview", recommended_analysis(facts), ["route_correct", "grounded", "followup_ready"]),
+        ("generic_ambiguous_001", "ambiguous_user_questions", "帮我看看哪里有问题。", "dataset_overview", ambiguous_problem_answer(facts), ["route_correct", "grounded", "user_value"]),
+        ("generic_ambiguous_002", "ambiguous_user_questions", "这个数据正常吗？", "dataset_overview", ambiguous_normal_answer(facts), ["route_correct", "grounded", "risk_free"]),
+        ("generic_ambiguous_003", "ambiguous_user_questions", "给我一个结论。", "dataset_overview", vague_conclusion_answer(facts), ["route_correct", "grounded", "user_value"]),
+        ("generic_ambiguous_004", "ambiguous_user_questions", "这个数据能不能用？", "dataset_overview", data_usability_answer(facts), ["route_correct", "grounded", "user_value"]),
+        ("generic_basic_001", "basic_data_understanding", "每个文件分别有多少行、多少列？", "dataset_overview", shape_answer(facts), ["grounded", "user_value"]),
+        ("generic_basic_002", "basic_data_understanding", "字段含义是什么？", "dataset_overview", field_meanings_answer(facts), ["grounded", "risk_free", "user_value"]),
+        ("generic_basic_003", "basic_data_understanding", "哪些字段有缺失？", "dataset_overview", missing_answer(facts), ["grounded", "user_value"]),
+        ("generic_basic_004", "basic_data_understanding", "字段是否一致？有没有新增、缺失、类型变化？", "dataset_overview", schema_answer(facts), ["grounded", "risk_free"]),
+        ("generic_quality_001", "quality_and_anomaly", "有没有明显的数据质量问题？", "analysis", quality_answer(facts), ["grounded", "risk_free", "user_value"]),
+        ("generic_quality_002", "quality_and_anomaly", "哪些数值字段存在负值、0 值或极端值？", "analysis", numeric_quality_answer(facts), ["grounded", "risk_free"]),
+        ("generic_quality_003", "quality_and_anomaly", "哪些日期字段范围异常或无法解析？", "analysis", temporal_quality_answer(facts), ["grounded", "risk_free"]),
+        ("generic_quality_004", "quality_and_anomaly", "给我异常规则、数量、占比和样例说明。", "analysis", anomaly_rule_answer(facts), ["grounded", "risk_free", "user_value"]),
+        ("generic_readiness_001", "analysis_readiness", "哪些字段适合做指标、维度、时间和 ID？", "dataset_overview", field_roles_answer(facts), ["grounded", "followup_ready"]),
+        ("generic_readiness_002", "analysis_readiness", "有哪些问题现在不能直接回答？", "dataset_overview", boundary_answer(facts), ["grounded", "risk_free", "followup_ready"]),
+        ("generic_business_001", "adaptive_business", "最主要的分组或类别是什么？", "analysis", top_category_answer(facts), ["grounded", "user_value"]),
+        ("generic_business_002", "adaptive_business", "这个数据能不能做趋势、环比或同比？", "analysis", time_analysis_readiness_answer(facts), ["grounded", "risk_free", "followup_ready"]),
+        ("generic_business_003", "adaptive_business", "如果是多文件，哪些字段可能用于对比或 join？", "analysis", join_readiness_answer(facts), ["grounded", "risk_free", "followup_ready"]),
+        ("generic_route_001", "general_to_analysis_routing", "先看一下这个数据，然后告诉我下一步应该分析什么。", "dataset_overview", route_overview_to_next_step_answer(facts), ["route_correct", "grounded", "followup_ready"]),
+        ("generic_route_002", "general_to_analysis_routing", "基于刚才的概览，选一个核心指标和一个维度做分析。", "analysis", route_metric_dimension_answer(facts), ["route_correct", "grounded", "followup_ready"]),
+        ("generic_route_003", "general_to_analysis_routing", "如果先处理明显异常，结论会不会变？", "cleaning_simulation", route_cleaning_followup_answer(facts), ["route_correct", "grounded", "risk_free"]),
+        ("generic_tech_001", "technical_review_guardrails", "不要展示 raw prompt、trace、SQL 或标准答案，只给用户可读依据。", "dataset_overview", no_trace_leak_answer(facts), ["route_correct", "risk_free"]),
+        ("generic_tech_002", "technical_review_guardrails", "如果字段含义不确定，你会怎么标记？", "dataset_overview", uncertain_field_boundary_answer(facts), ["grounded", "risk_free"]),
+        ("generic_tech_003", "technical_review_guardrails", "如果没有外部维表，你能把 ID 直接说成真实名称吗？", "dataset_overview", no_dimension_fabrication_answer(facts), ["grounded", "risk_free"]),
+        ("generic_cleaning_001", "cleaning_strategy", "如果删除明显异常行，核心指标会受什么影响？", "cleaning_simulation", cleaning_impact_answer(facts), ["grounded", "risk_free", "user_value"]),
+        ("generic_cleaning_002", "cleaning_strategy", "缺失字段用删除、填充、保留三种策略分别有什么风险？", "cleaning_simulation", missing_strategy_answer(facts), ["grounded", "risk_free", "user_value"]),
+        ("generic_cleaning_003", "cleaning_strategy", "你会直接修改原始数据吗？", "chat_with_dataset", cleaning_boundary_answer(facts), ["route_correct", "risk_free"]),
+        ("generic_cleaning_004", "cleaning_strategy", "给出建议清洗规则、影响行数、影响比例，并说明是否需要用户确认。", "cleaning_simulation", cleaning_policy_answer(facts), ["grounded", "risk_free", "followup_ready"]),
+    ]
+    cases = []
+    for case_id, category, question, route, answer, dims in specs:
+        cases.append(
+            {
+                "case_id": case_id,
+                "category": category,
+                "ae_group": ae_group_for_category(category),
+                "viewpoint": "real_user_and_technical_review",
+                "question": question,
+                "expected_route": route,
+                "scoring_dimensions": dims,
+                "standard_answer": answer["text"],
+                "expected_facts": answer.get("facts", {}),
+                "required_terms": answer.get("required_terms", []),
+                "expected_numbers": answer.get("expected_numbers", []),
+                "technical_checks": answer.get("technical_checks", []),
+                "standard_answer_policy": "Dataset-grounded GPT-like answer for offline evaluation only.",
+            }
+        )
+    return cases
+
+
+def _profile_registered_table(con: duckdb.DuckDBPyConnection, view_name: str, table_name: str, path: Path, sheet: str | None) -> TableRef:
+    schema_rows = con.execute(f"DESCRIBE SELECT * FROM {view_name}").fetchall()
+    row_count = int(con.execute(f"SELECT count(*) FROM {view_name}").fetchone()[0])
+    columns = []
+    for name, dtype, *_ in schema_rows:
+        unique_count = int(con.execute(f"SELECT count(DISTINCT {_q(name)}) FROM {view_name}").fetchone()[0] or 0)
+        sample_values = [
+            _json_ready(row[0])
+            for row in con.execute(
+                f"SELECT {_q(name)} FROM {view_name} WHERE {_q(name)} IS NOT NULL LIMIT 5"
+            ).fetchall()
+        ]
+        columns.append(
+            {
+                "name": str(name),
+                "type": str(dtype),
+                "semantic_hints": semantic_hints(str(name), str(dtype), unique_count, row_count),
+                "unique_count": unique_count,
+                "sample_values": sample_values,
+            }
+        )
+    return TableRef(
+        table_name=table_name,
+        source_file=str(path),
+        sheet=sheet,
+        view_name=view_name,
+        row_count=row_count,
+        column_count=len(columns),
+        columns=columns,
+    )
+
+
+def missing_profile(con: duckdb.DuckDBPyConnection, table: TableRef) -> list[dict[str, Any]]:
+    rows = []
+    for column in table.columns:
+        name = column["name"]
+        if _is_text_type(column["type"]):
+            marker_sql = ", ".join(_sql_literal(item) for item in MISSING_MARKERS)
+            predicate = f"{_q(name)} IS NULL OR lower(trim(CAST({_q(name)} AS VARCHAR))) IN ({marker_sql})"
+        else:
+            predicate = f"{_q(name)} IS NULL"
+        missing_count = int(con.execute(f"SELECT count(*) FROM {table.view_name} WHERE {predicate}").fetchone()[0])
+        if missing_count:
+            rows.append(
+                {
+                    "column": name,
+                    "missing_count": missing_count,
+                    "missing_rate": _safe_div(missing_count, table.row_count),
+                    "type": column["type"],
+                }
+            )
+    return sorted(rows, key=lambda item: item["missing_rate"], reverse=True)
+
+
+def numeric_profile(con: duckdb.DuckDBPyConnection, table: TableRef) -> list[dict[str, Any]]:
+    rows = []
+    for column in table.columns:
+        if not _is_numeric_type(column["type"]):
+            continue
+        name = column["name"]
+        stats = con.execute(
+            f"""
+            SELECT
+                count(*) FILTER (WHERE {_q(name)} IS NOT NULL),
+                min({_q(name)}),
+                max({_q(name)}),
+                avg({_q(name)}),
+                quantile_cont({_q(name)}, 0.25),
+                quantile_cont({_q(name)}, 0.75),
+                count(*) FILTER (WHERE {_q(name)} < 0),
+                count(*) FILTER (WHERE {_q(name)} = 0)
+            FROM {table.view_name}
+            """
+        ).fetchone()
+        non_null, min_value, max_value, avg_value, q1, q3, negative_count, zero_count = stats
+        if non_null is None or int(non_null) == 0:
+            continue
+        iqr = float((q3 or 0) - (q1 or 0))
+        high_threshold = float(q3 + 3 * iqr) if q3 is not None else None
+        low_threshold = float(q1 - 3 * iqr) if q1 is not None else None
+        high_outliers = 0
+        low_outliers = 0
+        if high_threshold is not None:
+            high_outliers = int(
+                con.execute(f"SELECT count(*) FROM {table.view_name} WHERE {_q(name)} > {high_threshold}").fetchone()[0]
+            )
+        if low_threshold is not None:
+            low_outliers = int(
+                con.execute(f"SELECT count(*) FROM {table.view_name} WHERE {_q(name)} < {low_threshold}").fetchone()[0]
+            )
+        rows.append(
+            {
+                "column": name,
+                "type": column["type"],
+                "non_null_count": int(non_null),
+                "min": _float_or_none(min_value),
+                "max": _float_or_none(max_value),
+                "avg": _float_or_none(avg_value),
+                "q1": _float_or_none(q1),
+                "q3": _float_or_none(q3),
+                "negative_count": int(negative_count or 0),
+                "negative_rate": _safe_div(negative_count or 0, table.row_count),
+                "zero_count": int(zero_count or 0),
+                "zero_rate": _safe_div(zero_count or 0, table.row_count),
+                "low_outlier_threshold": low_threshold,
+                "high_outlier_threshold": high_threshold,
+                "low_outlier_count": low_outliers,
+                "high_outlier_count": high_outliers,
+                "semantic_hints": column["semantic_hints"],
+            }
+        )
+    return rows
+
+
+def temporal_profile(con: duckdb.DuckDBPyConnection, table: TableRef) -> list[dict[str, Any]]:
+    rows = []
+    for column in table.columns:
+        if "time" not in column["semantic_hints"] and not _is_temporal_type(column["type"]):
+            continue
+        name = column["name"]
+        if _is_temporal_type(column["type"]):
+            expr = _q(name)
+            invalid_count = 0
+        else:
+            expr = f"try_cast({_q(name)} AS TIMESTAMP)"
+            invalid_count = int(
+                con.execute(
+                    f"SELECT count(*) FROM {table.view_name} WHERE {_q(name)} IS NOT NULL AND {expr} IS NULL"
+                ).fetchone()[0]
+            )
+        row = con.execute(
+            f"SELECT count(*) FILTER (WHERE {expr} IS NOT NULL), min({expr}), max({expr}) FROM {table.view_name}"
+        ).fetchone()
+        rows.append(
+            {
+                "column": name,
+                "type": column["type"],
+                "parsed_count": int(row[0] or 0),
+                "invalid_count": invalid_count,
+                "invalid_rate": _safe_div(invalid_count, table.row_count),
+                "min": str(row[1]) if row[1] is not None else None,
+                "max": str(row[2]) if row[2] is not None else None,
+                "semantic_hints": column["semantic_hints"],
+            }
+        )
+    return rows
+
+
+def categorical_profile(con: duckdb.DuckDBPyConnection, table: TableRef) -> list[dict[str, Any]]:
+    rows = []
+    for column in table.columns:
+        if _is_numeric_type(column["type"]) and "id" not in column["semantic_hints"]:
+            continue
+        unique_count = int(column["unique_count"])
+        if unique_count == 0 or unique_count > max(50, table.row_count * 0.25):
+            continue
+        name = column["name"]
+        top_values = [
+            {"value": _json_ready(value), "count": int(count), "share": _safe_div(count, table.row_count)}
+            for value, count in con.execute(
+                f"""
+                SELECT {_q(name)} AS value, count(*) AS count
+                FROM {table.view_name}
+                GROUP BY 1
+                ORDER BY count DESC
+                LIMIT 10
+                """
+            ).fetchall()
+        ]
+        rows.append(
+            {
+                "column": name,
+                "type": column["type"],
+                "unique_count": unique_count,
+                "top_values": top_values,
+                "semantic_hints": column["semantic_hints"],
+            }
+        )
+    return rows
+
+
+def infer_field_roles(columns: list[dict[str, Any]]) -> dict[str, list[str]]:
+    roles = {"metrics": [], "dimensions": [], "time": [], "ids": [], "text": []}
+    for column in columns:
+        hints = set(column["semantic_hints"])
+        name = column["name"]
+        if "time" in hints:
+            roles["time"].append(name)
+        if "id" in hints:
+            roles["ids"].append(name)
+        if "metric" in hints or (_is_numeric_type(column["type"]) and "id" not in hints):
+            roles["metrics"].append(name)
+        if "category" in hints or "location" in hints or "status" in hints:
+            roles["dimensions"].append(name)
+        if _is_text_type(column["type"]) and name not in roles["dimensions"]:
+            roles["text"].append(name)
+    return roles
+
+
+def quality_issues(
+    table: TableRef,
+    missing: list[dict[str, Any]],
+    numeric: list[dict[str, Any]],
+    temporal: list[dict[str, Any]],
+    duplicate_count: int,
+) -> list[dict[str, Any]]:
+    issues = []
+    if duplicate_count:
+        issues.append(_issue("duplicate_rows", f"存在 {_int(duplicate_count)} 行完全重复记录。", duplicate_count, table.row_count))
+    for item in missing[:10]:
+        severity = "high" if item["missing_rate"] >= 0.3 else "medium" if item["missing_rate"] >= 0.05 else "low"
+        issues.append(
+            _issue(
+                "missing_values",
+                f"{item['column']} 缺失 {_int(item['missing_count'])} 行（{_pct(item['missing_rate'])}）。",
+                item["missing_count"],
+                table.row_count,
+                severity,
+                column=item["column"],
+            )
+        )
+    for item in numeric:
+        suspicious_negative = item["negative_count"] and "can_be_negative" not in item["semantic_hints"]
+        if suspicious_negative:
+            issues.append(
+                _issue(
+                    "suspicious_negative_values",
+                    f"{item['column']} 存在 {_int(item['negative_count'])} 个负值。",
+                    item["negative_count"],
+                    table.row_count,
+                    column=item["column"],
+                )
+            )
+        if item["high_outlier_count"]:
+            issues.append(
+                _issue(
+                    "high_numeric_outliers",
+                    f"{item['column']} 存在 {_int(item['high_outlier_count'])} 个 IQR 高端异常值。",
+                    item["high_outlier_count"],
+                    table.row_count,
+                    "low",
+                    column=item["column"],
+                )
+            )
+    for item in temporal:
+        if item["invalid_count"]:
+            issues.append(
+                _issue(
+                    "invalid_datetime_values",
+                    f"{item['column']} 有 {_int(item['invalid_count'])} 个无法解析的日期/时间值。",
+                    item["invalid_count"],
+                    table.row_count,
+                    column=item["column"],
+                )
+            )
+    return issues
+
+
+def analysis_suggestions(
+    table: TableRef,
+    numeric: list[dict[str, Any]],
+    temporal: list[dict[str, Any]],
+    categorical: list[dict[str, Any]],
+) -> list[str]:
+    suggestions = []
+    metric_names = [item["column"] for item in numeric[:5]]
+    time_names = [item["column"] for item in temporal[:3]]
+    dimension_names = [item["column"] for item in categorical[:5]]
+    if metric_names:
+        suggestions.append("汇总/均值/TopN 指标：" + "、".join(metric_names))
+    if time_names and metric_names:
+        suggestions.append(f"按时间字段 {time_names[0]} 做趋势、环比或同比。")
+    if dimension_names and metric_names:
+        suggestions.append(f"按维度 {dimension_names[0]} 对 {metric_names[0]} 做分组对比。")
+    if len(table.columns) >= 2:
+        suggestions.append("先确认字段含义、缺失、异常值和是否需要关联其他维表。")
+    return suggestions or ["先做字段解释、行列数、缺失率和样例值检查。"]
+
+
+def cleaning_policy(
+    table: TableRef,
+    missing: list[dict[str, Any]],
+    numeric: list[dict[str, Any]],
+    temporal: list[dict[str, Any]],
+    duplicate_count: int,
+) -> dict[str, Any]:
+    impacted = duplicate_count
+    rules = []
+    if duplicate_count:
+        rules.append(f"重复行：{_int(duplicate_count)} 行，需确认是否业务重复。")
+    if missing:
+        rules.append("缺失值：先保留并标记；只有问题依赖该字段时才删除或填充。")
+    for item in numeric:
+        if item["negative_count"] and "can_be_negative" not in item["semantic_hints"]:
+            impacted += item["negative_count"]
+            rules.append(f"{item['column']} 负值：{_int(item['negative_count'])} 行，需确认是否退款/冲销。")
+        if item["high_outlier_count"]:
+            rules.append(f"{item['column']} 极端高值：{_int(item['high_outlier_count'])} 行，建议 winsorize 或单独审查。")
+    for item in temporal:
+        if item["invalid_count"]:
+            impacted += item["invalid_count"]
+            rules.append(f"{item['column']} 无法解析日期：{_int(item['invalid_count'])} 行。")
+    return {
+        "rules": rules or ["未发现需要立即清洗的明显问题；仍建议保留原始数据并记录数据字典。"],
+        "rough_impacted_rows_sum": int(impacted),
+        "rough_impacted_rate_sum": _safe_div(impacted, table.row_count),
+        "requires_user_confirmation": True,
+        "mutation_allowed": False,
+    }
+
+
+def schema_compare(tables: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(tables) < 2:
+        return {
+            "applies": False,
+            "summary": "只有一个表，不需要做跨文件字段一致性比较。",
+            "shared_columns": [column["name"] for column in tables[0]["columns"]] if tables else [],
+            "differences": [],
+        }
+    base = {column["name"]: column["type"] for column in tables[0]["columns"]}
+    differences = []
+    shared = set(base)
+    for table in tables[1:]:
+        current = {column["name"]: column["type"] for column in table["columns"]}
+        shared &= set(current)
+        only_base = sorted(set(base) - set(current))
+        only_current = sorted(set(current) - set(base))
+        type_changes = [
+            {"column": column, "base_type": base[column], "current_type": current[column]}
+            for column in sorted(set(base) & set(current))
+            if base[column] != current[column]
+        ]
+        if only_base or only_current or type_changes:
+            differences.append(
+                {
+                    "against": table["table_name"],
+                    "missing_from_current": only_base,
+                    "only_in_current": only_current,
+                    "type_changes": type_changes,
+                }
+            )
+    return {
+        "applies": True,
+        "base_table": tables[0]["table_name"],
+        "shared_columns": sorted(shared),
+        "differences": differences,
+        "summary": "字段一致。" if not differences else "存在字段或类型差异。",
+    }
+
+
+def dataset_wide_notes(tables: list[dict[str, Any]]) -> list[str]:
+    notes = []
+    if len(tables) > 1:
+        notes.append("这是多表/多文件数据集，回答时必须分别说明每个表，不能只看第一个表。")
+    if any(table["quality_issues"] for table in tables):
+        notes.append("存在数据质量问题，业务结论应说明是否使用原始口径或清洗模拟口径。")
+    if any(not table["field_roles"]["time"] for table in tables):
+        notes.append("部分表未识别到明显时间字段，趋势/同比问题可能需要用户指定时间口径。")
+    return notes
+
+
+def no_file_greeting(_facts: dict[str, Any]) -> dict[str, Any]:
+    return answer("你好，我可以帮你理解数据、解释字段、检查缺失和异常、建议分析方向、模拟清洗策略。当前没有上传文件，所以不能给出具体数据结论。", ["没有上传文件", "不能给出具体数据结论"])
+
+
+def no_file_capabilities(_facts: dict[str, Any]) -> dict[str, Any]:
+    return answer("上传文件后，我可以做通用数据概览、多文件字段对比、字段角色识别、数据质量扫描、异常规则说明、可分析性建议和清洗影响模拟。领域专项问题需要对应字段或配置支持。", ["上传文件后", "领域专项"])
+
+
+def no_file_advice(_facts: dict[str, Any]) -> dict[str, Any]:
+    return answer("没有数据时只能给方法建议：先上传文件，再确认行列、字段含义、时间字段、指标字段、维度字段、缺失和异常。不能编造任何真实数值。", ["不能编造", "方法建议"])
+
+
+def no_file_multifile(_facts: dict[str, Any]) -> dict[str, Any]:
+    return answer("支持多文件。多文件场景必须分别读取每个文件的行列、字段、缺失和角色，再判断是否可以做对比或 join；不能默认只分析第一个文件。", ["分别读取", "不能默认只分析第一个文件"])
+
+
+def ambiguous_problem_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    return answer(
+        "这是模糊问题，应先给通用数据体检而不是随便选一个指标。可从行列数、字段角色、缺失、重复、数值异常、日期范围和可分析方向开始。当前扫描：" + quality_issue_text(facts),
+        ["模糊问题", "通用数据体检", "不能随便选一个指标"],
+    )
+
+
+def ambiguous_normal_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    issues = sum(len(table["quality_issues"]) for table in facts["tables"])
+    if issues:
+        text = f"不能简单说正常。当前通用扫描发现 {issues} 类质量问题，需要说明问题类型、影响字段和是否会影响后续分析。"
+    else:
+        text = "通用扫描未发现明显质量问题，但仍不能简单保证业务正常；需要结合业务口径、时间范围、关键指标和外部规则判断。"
+    return answer(text + " " + quality_issue_text(facts), ["不能简单", "质量问题"])
+
+
+def vague_conclusion_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    suggestions = " ".join("；".join(table["analysis_suggestions"][:2]) for table in facts["tables"])
+    return answer(
+        "用户只说给一个结论时，应先给基于数据画像的初步结论和下一步问题，而不是假装完成正式业务分析。可说：" + suggestions,
+        ["初步结论", "下一步", "不是假装完成"],
+    )
+
+
+def data_usability_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    issue_count = sum(len(table["quality_issues"]) for table in facts["tables"])
+    if issue_count:
+        text = "数据可以用于探索性分析，但正式分析前需要处理或解释质量问题。"
+    else:
+        text = "数据适合进入基础探索，但仍需要确认业务字段含义和指标口径。"
+    return answer(text + " " + quality_issue_text(facts), ["可以用于", "需要"])
+
+
+def uploaded_overview(facts: dict[str, Any]) -> dict[str, Any]:
+    table_bits = [f"{t['table_name']}：{_int(t['row_count'])} 行、{t['column_count']} 列" for t in facts["tables"]]
+    return answer(
+        f"已读取 {facts['table_count']} 个表，总计 {_int(facts['total_rows'])} 行。" + "；".join(table_bits) + "。应先说明字段角色、缺失、质量问题和可继续分析方向。",
+        ["已读取", "字段角色", "质量问题"],
+        expected_numbers=[num("table_count", facts["table_count"], 0), num("total_rows", facts["total_rows"], 0)],
+    )
+
+
+def dataset_story(facts: dict[str, Any]) -> dict[str, Any]:
+    parts = []
+    for table in facts["tables"]:
+        roles = table["field_roles"]
+        parts.append(
+            f"{table['table_name']} 主要包含指标 {short_list(roles['metrics'])}、维度 {short_list(roles['dimensions'])}、时间 {short_list(roles['time'])}、ID {short_list(roles['ids'])}。"
+        )
+    return answer("这个数据集的业务含义需要结合文件名、字段名和用户上下文判断。" + "".join(parts) + "不确定的字段含义必须标记为推测。", ["推测", "字段名"])
+
+
+def file_difference(facts: dict[str, Any]) -> dict[str, Any]:
+    compare = facts["schema_compare"]
+    if not compare["applies"]:
+        text = compare["summary"]
+    elif not compare["differences"]:
+        text = f"多文件字段结构一致，共享字段 {len(compare['shared_columns'])} 个。仍需分别比较行数、缺失和时间范围。"
+    else:
+        text = "多文件存在字段差异：" + json.dumps(compare["differences"], ensure_ascii=False)
+    return answer(text, ["字段"])
+
+
+def recommended_analysis(facts: dict[str, Any]) -> dict[str, Any]:
+    lines = []
+    for table in facts["tables"]:
+        lines.append(f"{table['table_name']}：" + "；".join(table["analysis_suggestions"]))
+    return answer("建议分析方向：" + " ".join(lines), ["建议分析方向"])
+
+
+def shape_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    numbers = []
+    bits = []
+    for table in facts["tables"]:
+        bits.append(f"{table['table_name']}：{_int(table['row_count'])} 行、{table['column_count']} 列")
+        numbers.append(num(f"{table['table_name']} rows", table["row_count"], 0))
+        numbers.append(num(f"{table['table_name']} columns", table["column_count"], 0))
+    return answer("；".join(bits) + "。", ["行", "列"], expected_numbers=numbers)
+
+
+def field_meanings_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    lines = []
+    for table in facts["tables"]:
+        columns = []
+        for column in table["columns"][:20]:
+            columns.append(f"{column['name']}({','.join(column['semantic_hints']) or 'unknown'}): 推测字段，需业务确认")
+        lines.append(f"{table['table_name']}：" + "；".join(columns))
+    return answer("字段含义应基于字段名、类型、样例值推测，不能装作已确认。" + " ".join(lines), ["推测", "需业务确认"])
+
+
+def missing_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    parts = []
+    for table in facts["tables"]:
+        if table["missing"]:
+            parts.append(
+                f"{table['table_name']} 缺失最多字段：" + "、".join(
+                    f"{item['column']} {_int(item['missing_count'])}({ _pct(item['missing_rate']) })"
+                    for item in table["missing"][:8]
+                )
+            )
+        else:
+            parts.append(f"{table['table_name']} 未发现空值或常见缺失占位符。")
+    return answer("；".join(parts) + "。", ["缺失"])
+
+
+def schema_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    return answer(facts["schema_compare"]["summary"] + " " + json.dumps(facts["schema_compare"], ensure_ascii=False), ["字段"])
+
+
+def quality_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    return answer("数据质量问题：" + quality_issue_text(facts), ["数据质量"])
+
+
+def numeric_quality_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    parts = []
+    for table in facts["tables"]:
+        flags = []
+        for item in table["numeric"]:
+            if item["negative_count"] or item["zero_count"] or item["high_outlier_count"]:
+                flags.append(
+                    f"{item['column']}：负值 {_int(item['negative_count'])}，0 值 {_int(item['zero_count'])}，高端异常 {_int(item['high_outlier_count'])}"
+                )
+        parts.append(f"{table['table_name']}：" + ("；".join(flags) if flags else "未发现明显数值异常。"))
+    return answer(" ".join(parts), ["负值", "0 值", "异常"])
+
+
+def temporal_quality_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    parts = []
+    for table in facts["tables"]:
+        if table["temporal"]:
+            parts.append(
+                f"{table['table_name']}：" + "；".join(
+                    f"{item['column']} 范围 {item['min']} 到 {item['max']}，无法解析 {_int(item['invalid_count'])}"
+                    for item in table["temporal"]
+                )
+            )
+        else:
+            parts.append(f"{table['table_name']} 未识别到明显日期字段。")
+    return answer(" ".join(parts), ["日期"])
+
+
+def anomaly_rule_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    return answer("通用异常规则包括：缺失、重复行、疑似非负指标的负值、数值 0 值、IQR 极端值、日期无法解析、高基数字段误分组风险。当前扫描结果：" + quality_issue_text(facts), ["通用异常规则", "IQR"])
+
+
+def field_roles_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    parts = []
+    for table in facts["tables"]:
+        roles = table["field_roles"]
+        parts.append(
+            f"{table['table_name']} 指标={short_list(roles['metrics'])}；维度={short_list(roles['dimensions'])}；时间={short_list(roles['time'])}；ID={short_list(roles['ids'])}。"
+        )
+    return answer(" ".join(parts), ["指标", "维度", "时间", "ID"])
+
+
+def boundary_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    notes = facts["dataset_wide_notes"] or []
+    notes.append("任何需要业务定义、外部维表、字段映射或清洗确认的问题，都不能直接编造答案。")
+    return answer("当前不能直接回答的边界：" + "；".join(notes), ["不能直接", "外部维表"])
+
+
+def top_category_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    parts = []
+    for table in facts["tables"]:
+        if not table["categorical"]:
+            parts.append(f"{table['table_name']} 未识别到适合直接做热门分组的低基数字段。")
+            continue
+        category = table["categorical"][0]
+        top_values = "、".join(
+            f"{item['value']} {_int(item['count'])}({_pct(item['share'])})"
+            for item in category["top_values"][:5]
+        )
+        parts.append(f"{table['table_name']} 可先按 {category['column']} 看分布，Top 值为 {top_values}。")
+    return answer(" ".join(parts) + "这只是通用分布分析；如果要判断业务好坏，还需要用户指定核心指标和口径。", ["Top", "通用分布分析", "核心指标"])
+
+
+def time_analysis_readiness_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    parts = []
+    for table in facts["tables"]:
+        time_fields = table["field_roles"]["time"]
+        metric_fields = table["field_roles"]["metrics"]
+        if time_fields and metric_fields:
+            ranges = {item["column"]: f"{item['min']} 到 {item['max']}" for item in table["temporal"]}
+            parts.append(
+                f"{table['table_name']} 可以做趋势/环比/同比准备：时间字段 {short_list(time_fields)}，指标字段 {short_list(metric_fields)}，时间范围 {json.dumps(ranges, ensure_ascii=False)}。"
+            )
+        elif time_fields:
+            parts.append(f"{table['table_name']} 有时间字段 {short_list(time_fields)}，但未识别到明显数值指标，趋势分析需要用户指定指标。")
+        elif metric_fields:
+            parts.append(f"{table['table_name']} 有指标字段 {short_list(metric_fields)}，但未识别到时间字段，不能直接做趋势、环比或同比。")
+        else:
+            parts.append(f"{table['table_name']} 暂未识别到时间字段和指标字段，不能直接做趋势、环比或同比。")
+    return answer(" ".join(parts), ["趋势", "同比"])
+
+
+def join_readiness_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    tables = facts["tables"]
+    if len(tables) < 2:
+        return answer("只有一个表，不需要做多文件 join。若后续上传多个表，应先检查共享 ID、编码、名称或日期字段，再确认 join 粒度。", ["只有一个表", "join 粒度"])
+    shared = set(column["name"] for column in tables[0]["columns"])
+    for table in tables[1:]:
+        shared &= set(column["name"] for column in table["columns"])
+    candidate_columns = []
+    for column in sorted(shared):
+        lower = column.lower()
+        if "id" in lower or "code" in lower or "编号" in column or "代码" in column or "日期" in column or "date" in lower:
+            candidate_columns.append(column)
+    if candidate_columns:
+        text = "多文件存在潜在 join / 对比字段：" + "、".join(candidate_columns[:10]) + "。必须再检查唯一性、一对多关系和缺失率，不能仅凭同名字段直接 join。"
+    elif shared:
+        text = "多文件有共享字段：" + "、".join(sorted(shared)[:10]) + "，但未明显识别到 ID/代码/日期类 join key；需要用户确认业务关联关系。"
+    else:
+        text = "多文件之间没有同名字段，不能自动 join；需要用户提供映射字段或维表关系。"
+    return answer(text, ["多文件", "join"])
+
+
+def route_overview_to_next_step_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    first_suggestions = []
+    for table in facts["tables"]:
+        first_suggestions.extend(table["analysis_suggestions"][:2])
+    return answer(
+        "这类问题第一步应走 overview，先概览数据，再给下一步建议。可建议：" + "；".join(first_suggestions[:5]),
+        ["第一步", "overview", "下一步建议"],
+    )
+
+
+def route_metric_dimension_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    parts = []
+    for table in facts["tables"]:
+        metrics = table["field_roles"]["metrics"]
+        dimensions = table["field_roles"]["dimensions"]
+        if metrics and dimensions:
+            parts.append(f"{table['table_name']} 可用指标 {metrics[0]}，维度 {dimensions[0]} 做分组分析。")
+        elif metrics:
+            parts.append(f"{table['table_name']} 有指标 {metrics[0]}，但缺少明显维度，需要用户指定分组字段。")
+        else:
+            parts.append(f"{table['table_name']} 未识别到明显核心指标，应先让用户确认指标字段。")
+    return answer(" ".join(parts) + "这一步应从 general 概览切到正式 analysis，但仍要保留字段依据。", ["analysis", "字段依据"])
+
+
+def route_cleaning_followup_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    parts = []
+    for table in facts["tables"]:
+        policy = table["cleaning_policy"]
+        parts.append(f"{table['table_name']} 可能受影响 {_int(policy['rough_impacted_rows_sum'])} 行（粗略 {_pct(policy['rough_impacted_rate_sum'])}）。")
+    return answer(
+        "这类追问应走 cleaning_simulation，只模拟清洗前后可能变化，不直接改原始数据。" + " ".join(parts),
+        ["cleaning_simulation", "不直接改原始数据"],
+    )
+
+
+def no_trace_leak_answer(_facts: dict[str, Any]) -> dict[str, Any]:
+    return answer(
+        "回答只能给用户可读依据，例如使用了哪些字段、行列数、缺失率和规则摘要；不能展示 raw prompt、完整 trace、SQL、debug、task_id、standard answer、scorer 或密钥。",
+        ["不能展示", "raw prompt", "standard answer"],
+    )
+
+
+def uncertain_field_boundary_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    example = facts["tables"][0]["columns"][0]["name"] if facts["tables"] and facts["tables"][0]["columns"] else "字段"
+    return answer(
+        f"字段含义不确定时必须标记为推测，并说明依据来自字段名、类型和样例值。例如 {example} 的业务含义也需要结合数据字典或用户确认。",
+        ["推测", "用户确认"],
+    )
+
+
+def no_dimension_fabrication_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    id_fields = []
+    for table in facts["tables"]:
+        id_fields.extend(table["field_roles"]["ids"])
+    if id_fields:
+        target = "、".join(id_fields[:5])
+        text = f"不能把 {target} 这类 ID 直接编造成真实名称；需要外部维表、数据字典或用户确认。"
+    else:
+        text = "如果出现 ID、编码或区域字段，不能直接编造成真实名称；需要外部维表、数据字典或用户确认。"
+    return answer(text, ["不能", "外部维表", "用户确认"])
+
+
+def cleaning_impact_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    parts = []
+    for table in facts["tables"]:
+        policy = table["cleaning_policy"]
+        parts.append(
+            f"{table['table_name']} 粗略影响行数合计 {_int(policy['rough_impacted_rows_sum'])}，约 {_pct(policy['rough_impacted_rate_sum'])}；这只是规则命中数求和，不能当作去重后的精确删除行数。"
+        )
+    return answer(" ".join(parts), ["模拟", "不能当作去重后的精确删除行数"])
+
+
+def missing_strategy_answer(_facts: dict[str, Any]) -> dict[str, Any]:
+    return answer("缺失策略：保留适合不依赖该字段的分析；填充必须说明填充值和业务含义；删除只适合问题强依赖该字段时，并要报告影响行数和比例。不能静默填充或删除。", ["保留", "填充", "删除", "不能静默"])
+
+
+def cleaning_boundary_answer(_facts: dict[str, Any]) -> dict[str, Any]:
+    return answer("不会直接修改原始数据。系统只能先给清洗模拟、规则、影响行数、影响比例和建议；真正删除、填充、覆盖或导出清洗后数据必须等用户确认。", ["不会直接修改原始数据", "用户确认"])
+
+
+def cleaning_policy_answer(facts: dict[str, Any]) -> dict[str, Any]:
+    parts = []
+    for table in facts["tables"]:
+        policy = table["cleaning_policy"]
+        parts.append(f"{table['table_name']}：" + "；".join(policy["rules"][:8]) + f"；粗略影响 {_int(policy['rough_impacted_rows_sum'])} 行（{_pct(policy['rough_impacted_rate_sum'])}）。")
+    return answer("建议清洗规则：" + " ".join(parts) + "所有清洗必须先确认，不能覆盖原始文件。", ["建议清洗规则", "不能覆盖原始文件"])
+
+
+def score_candidate_answers(
+    cases: list[dict[str, Any]],
+    answers: dict[str, str],
+    thresholds: dict[str, Any],
+    candidate_path: Path,
+) -> dict[str, Any]:
+    details = []
+    for case in cases:
+        text = str(answers.get(case["case_id"]) or "")
+        missing_terms = [term for term in case["required_terms"] if term not in text]
+        number_checks = [candidate_contains_number(text, check, thresholds.get("numeric_tolerance", 0.01)) for check in case["expected_numbers"]]
+        passed = bool(text) and not missing_terms and all(item["passed"] for item in number_checks)
+        gpt_like_checks = gpt_like_style_checks(case, text)
+        gpt_like_passed = all(item["passed"] for item in gpt_like_checks)
+        details.append(
+            {
+                "case_id": case["case_id"],
+                "category": case["category"],
+                "passed": passed,
+                "gpt_like_passed": gpt_like_passed,
+                "missing_terms": missing_terms,
+                "number_checks": number_checks,
+                "gpt_like_checks": gpt_like_checks,
+            }
+        )
+    passed_count = sum(1 for item in details if item["passed"])
+    gpt_like_count = sum(1 for item in details if item["gpt_like_passed"])
+    return {
+        "candidate_path": str(candidate_path),
+        "total": len(details),
+        "passed": passed_count,
+        "pass_rate": _safe_div(passed_count, len(details)),
+        "gpt_like_passed": gpt_like_count,
+        "gpt_like_pass_rate": _safe_div(gpt_like_count, len(details)),
+        "details": details,
+    }
+
+
+def gpt_like_style_checks(case: dict[str, Any], text: str) -> list[dict[str, Any]]:
+    stripped = str(text or "").strip()
+    max_len = 2200 if case.get("expected_route") in {"dataset_overview", "cleaning_simulation"} else 1400
+    is_artifact_guardrail_case = str(case.get("case_id") or "") == "generic_tech_001" or "raw prompt" in str(case.get("question") or "").lower()
+    internal_marker_ok = not any(marker in stripped.lower() for marker in ("reasoning_trace", "trace.json", "scorer", "standard_answer"))
+    if is_artifact_guardrail_case:
+        internal_marker_ok = any(token in stripped for token in ("不会展示", "不能展示", "只给用户可读", "不能把", "需要外部维表"))
+    checks = [
+        {"name": "non_empty", "passed": bool(stripped)},
+        {"name": "not_raw_detail_dump", "passed": not _looks_like_detail_dump(stripped)},
+        {"name": "concise_main_answer", "passed": len(stripped) <= max_len},
+        {"name": "no_internal_artifact_markers", "passed": internal_marker_ok},
+    ]
+    route = str(case.get("expected_route") or "")
+    if route == "dataset_overview":
+        checks.append({"name": "overview_has_direct_answer", "passed": any(token in stripped for token in ("已读取", "这个表", "这组数据", "主要讲", "缺失", "字段", "不会", "不能"))})
+        next_step_ok = any(token in stripped for token in ("建议", "下一步", "需要", "可以", "不能"))
+        if is_artifact_guardrail_case:
+            next_step_ok = next_step_ok or any(token in stripped for token in ("不会展示", "不能展示", "只给用户可读", "计算口径", "结果边界"))
+        checks.append({"name": "overview_has_next_step", "passed": next_step_ok})
+    elif route == "cleaning_simulation":
+        checks.append({"name": "cleaning_is_simulation_safe", "passed": any(token in stripped for token in ("不能覆盖原始文件", "用户确认", "需要确认"))})
+    elif route == "chat_without_dataset":
+        checks.append({"name": "chat_no_file_boundary", "passed": any(token in stripped for token in ("没有上传文件", "上传文件后", "上传数据后", "没有数据", "支持多文件"))})
+    return checks
+
+
+def build_comparison_rows(
+    cases: list[dict[str, Any]],
+    candidate_answers: dict[str, str],
+    candidate_score: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    score_by_case = {}
+    if candidate_score:
+        score_by_case = {row["case_id"]: row for row in candidate_score.get("details", [])}
+    rows = []
+    for case in cases:
+        case_id = case["case_id"]
+        candidate_answer = candidate_answers.get(case_id, "")
+        score = score_by_case.get(case_id, {})
+        if not candidate_answers:
+            status = "not_scored_no_candidate_answer"
+        elif score.get("passed") is True:
+            status = "passed"
+        elif score.get("gpt_like_passed") is True:
+            status = "gpt_like_passed_exact_failed"
+        else:
+            status = "failed"
+        rows.append(
+            {
+                "case_id": case_id,
+                "ae_group": case["ae_group"],
+                "category": case["category"],
+                "question": case["question"],
+                "expected_route": case["expected_route"],
+                "standard_answer": case["standard_answer"],
+                "candidate_answer": candidate_answer,
+                "comparison_status": status,
+                "missing_terms": score.get("missing_terms", []),
+                "number_checks": score.get("number_checks", []),
+                "gpt_like_checks": score.get("gpt_like_checks", []),
+            }
+        )
+    return rows
+
+
+def generate_vds_answers(cases: list[dict[str, Any]], files: list[Path], output_dir: Path, *, quick: bool = False) -> dict[str, str]:
+    """Ask the local VDS service for every case and persist raw replies."""
+
+    from backend.services.data_agent_service import DataAgentService
+    from backend.storage.temp_file_store import TempFileStore
+    from data_agent_core.llm.client import MockLLMClient
+
+    service = DataAgentService(
+        file_store=TempFileStore(output_dir / "vds_storage"),
+        llm_client=MockLLMClient(),
+    )
+    vds_files = _prepare_quick_vds_files(files, output_dir) if quick else files
+    upload = service.upload_datasets(vds_files, original_filenames=_vds_original_filenames(files, vds_files, quick=quick))
+    dataset_id = str(upload.get("dataset_id") or "")
+    upload_success = bool(upload.get("success"))
+    rows = []
+    answers: dict[str, str] = {}
+    quick_response_cache: dict[str, dict[str, Any]] = {}
+    for case in cases:
+        case_id = case["case_id"]
+        question = case["question"]
+        quick_reused = False
+        if case["ae_group"] == "A_no_file_general":
+            response = service.respond_to_message(question=question)
+        elif not upload_success:
+            response = {
+                "success": False,
+                "answer": "",
+                "errors": upload.get("errors", [{"error_message": "Dataset upload failed before VDS question run."}]),
+            }
+        else:
+            quick_key = _quick_vds_cache_key(case)
+            if quick and quick_key and quick_key in quick_response_cache:
+                response = dict(quick_response_cache[quick_key])
+                response["question"] = question
+                quick_reused = True
+            else:
+                response = service.respond_to_message(
+                    dataset_id=dataset_id,
+                    question=question,
+                    execution_mode="dual",
+                    agent_mode="multi_agent",
+                )
+                if quick and quick_key and response.get("success"):
+                    quick_response_cache[quick_key] = dict(response)
+        answer_text = _response_answer_text(response)
+        answers[case_id] = answer_text
+        rows.append(
+            {
+                "case_id": case_id,
+                "ae_group": case["ae_group"],
+                "category": case["category"],
+                "question": question,
+                "dataset_id": "" if case["ae_group"] == "A_no_file_general" else dataset_id,
+                "success": bool(response.get("success")),
+                "answer": answer_text,
+                "answer_type": response.get("answer_type"),
+                "errors": response.get("errors", []),
+                "warnings": response.get("warnings", []),
+                "debug": _safe_debug(response.get("debug", {})),
+                "quick_reused": quick_reused,
+            }
+        )
+    write_jsonl(output_dir / "vds_answers.jsonl", rows)
+    write_json(
+        output_dir / "vds_answers.json",
+        {
+            "upload": upload,
+            "answers": rows,
+            "quick_vds_answers": quick,
+            "quick_vds_files": [str(path) for path in vds_files] if quick else [],
+        },
+    )
+    return answers
+
+
+def _prepare_quick_vds_files(files: list[Path], output_dir: Path) -> list[Path]:
+    sample_rows = max(1000, int(os.environ.get("VDS_GENERIC_EVAL_SAMPLE_ROWS") or "50000"))
+    sample_dir = output_dir / "vds_quick_samples"
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    quick_files: list[Path] = []
+    for index, path in enumerate(files):
+        suffix = path.suffix.lower()
+        if suffix == ".parquet":
+            sample_path = sample_dir / f"{index:02d}_{path.stem}.sample.csv"
+            _write_parquet_sample_csv(path, sample_path, sample_rows)
+            quick_files.append(sample_path)
+        else:
+            quick_files.append(path)
+    return quick_files
+
+
+def _vds_original_filenames(files: list[Path], vds_files: list[Path], *, quick: bool) -> list[str]:
+    names: list[str] = []
+    for source, vds_file in zip(files, vds_files, strict=True):
+        if quick and source != vds_file:
+            names.append(vds_file.name)
+        else:
+            names.append(source.name)
+    return names
+
+
+def _write_parquet_sample_csv(source: Path, target: Path, sample_rows: int) -> None:
+    import duckdb
+
+    with duckdb.connect(database=":memory:") as con:
+        con.execute(
+            f"COPY (SELECT * FROM read_parquet({_sql_literal(str(source))}) LIMIT {int(sample_rows)}) "
+            f"TO {_sql_literal(str(target))} (FORMAT CSV, HEADER, DELIMITER ',')"
+        )
+
+
+def _quick_vds_cache_key(case: dict[str, Any]) -> str:
+    expected_route = str(case.get("expected_route") or "")
+    if expected_route == "cleaning_simulation":
+        return "cleaning_simulation"
+    question = str(case.get("question") or "")
+    if any(token in question for token in ("数据质量", "异常", "缺失", "极端值", "无法解析")):
+        return "cleaning_simulation"
+    return ""
+
+
+def _response_answer_text(response: dict[str, Any]) -> str:
+    answer_value = response.get("answer")
+    if answer_value not in (None, ""):
+        return str(answer_value)
+    errors = response.get("errors") or []
+    if errors:
+        messages = []
+        for error in errors:
+            if isinstance(error, dict):
+                messages.append(str(error.get("error_message") or error.get("message") or error))
+            else:
+                messages.append(str(error))
+        return "[ERROR] " + " | ".join(messages)
+    return ""
+
+
+def _safe_debug(debug: Any) -> dict[str, Any]:
+    if not isinstance(debug, dict):
+        return {}
+    allowed_keys = {
+        "agent_mode",
+        "dataset_kind",
+        "message_intent",
+        "operation",
+        "workflow_mode",
+        "trace_path",
+    }
+    return {key: _json_ready(value) for key, value in debug.items() if key in allowed_keys}
+
+
+def quality_issue_text(facts: dict[str, Any]) -> str:
+    parts = []
+    for table in facts["tables"]:
+        if table["quality_issues"]:
+            parts.append(f"{table['table_name']}：" + "；".join(issue["message"] for issue in table["quality_issues"][:10]))
+        else:
+            parts.append(f"{table['table_name']} 未发现明显通用质量问题。")
+    return " ".join(parts)
+
+
+def semantic_hints(name: str, dtype: str, unique_count: int, row_count: int) -> list[str]:
+    lower = name.lower()
+    tokens = {token for token in re.split(r"[^a-z0-9]+", lower) if token}
+    hints = []
+    if any(token in lower for token in ("date", "time", "month", "year", "day", "日期", "时间", "月份", "年度")):
+        hints.append("time")
+    metric_substrings = ("amount", "fee", "price", "cost", "revenue", "sales", "qty", "金额", "收入", "销售", "费用", "数量", "价格", "占比", "率")
+    metric_tokens = {"count", "rate", "total", "avg", "average", "sum"}
+    if any(token in lower for token in metric_substrings) or bool(tokens & metric_tokens):
+        hints.append("metric")
+    if any(token in lower for token in ("city", "region", "area", "country", "location", "zone", "城市", "区域", "地区", "国家")):
+        hints.append("location")
+    if any(token in lower for token in ("status", "type", "category", "segment", "channel", "method", "状态", "类型", "类别", "渠道", "方式")):
+        hints.append("category")
+    if "id" in lower or lower.endswith("编号") or lower.endswith("代码") or "编码" in lower:
+        hints.append("id")
+    if _is_text_type(dtype) and unique_count <= max(50, row_count * 0.2):
+        hints.append("category")
+    if _is_numeric_type(dtype) and unique_count <= max(50, row_count * 0.1):
+        hints.append("category")
+    if _is_temporal_type(dtype):
+        hints.append("time")
+    if _is_numeric_type(dtype) and "id" not in hints:
+        hints.append("metric")
+    return sorted(set(hints))
+
+
+def _issue(issue_type: str, message: str, affected_rows: int, row_count: int, severity: str = "medium", *, column: str | None = None) -> dict[str, Any]:
+    return {"issue_type": issue_type, "severity": severity, "column": column, "message": message, "affected_rows": int(affected_rows), "affected_rate": _safe_div(affected_rows, row_count)}
+
+
+def answer(text: str, required_terms: list[str] | None = None, *, expected_numbers: list[dict[str, Any]] | None = None, facts: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"text": text, "required_terms": required_terms or [], "expected_numbers": expected_numbers or [], "facts": facts or {}}
+
+
+def ae_group_for_category(category: str) -> str:
+    mapping = {
+        "general_no_file": "A_no_file_general",
+        "general_uploaded": "B_uploaded_general_data_understanding",
+        "basic_data_understanding": "B_uploaded_general_data_understanding",
+        "ambiguous_user_questions": "C_ambiguous_user_questions",
+        "general_to_analysis_routing": "D_general_to_analysis_routing",
+        "adaptive_business": "D_general_to_analysis_routing",
+        "analysis_readiness": "D_general_to_analysis_routing",
+        "technical_review_guardrails": "E_technical_review_guardrails",
+        "quality_and_anomaly": "E_technical_review_guardrails",
+        "cleaning_strategy": "E_technical_review_guardrails",
+    }
+    return mapping.get(category, "E_technical_review_guardrails")
+
+
+def num(label: str, value: Any, tolerance_abs: float | None = None, tolerance_rel: float = 0.01) -> dict[str, Any]:
+    return {"label": label, "value": float(value), "tolerance_abs": 0.01 if tolerance_abs is None else tolerance_abs, "tolerance_rel": tolerance_rel}
+
+
+def load_candidate_answers(path: Path) -> dict[str, str]:
+    if path.suffix.lower() == ".jsonl":
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return {str(row["case_id"]): str(row.get("answer") or row.get("agent_answer") or "") for row in rows}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        if isinstance(data.get("answers"), list):
+            return {str(row["case_id"]): str(row.get("answer") or row.get("agent_answer") or "") for row in data["answers"]}
+        return {str(key): str(value) for key, value in data.items()}
+    return {str(row["case_id"]): str(row.get("answer") or row.get("agent_answer") or "") for row in data}
+
+
+def candidate_contains_number(text: str, check: dict[str, Any], default_tolerance: float) -> dict[str, Any]:
+    expected = float(check["value"])
+    tolerance = max(float(check.get("tolerance_abs", 0.01)), abs(expected) * float(check.get("tolerance_rel", default_tolerance)))
+    values = [float(match.group(0).replace(",", "")) for match in re.finditer(r"[-+]?\d[\d,]*(?:\.\d+)?", text)]
+    passed = any(abs(value - expected) <= tolerance for value in values)
+    return {"label": check["label"], "expected": expected, "tolerance": tolerance, "passed": passed}
+
+
+def summary_markdown(run: dict[str, Any]) -> str:
+    facts = run["facts"]
+    ae_counts: dict[str, int] = {}
+    for case in run["cases"]:
+        ae_counts[case["ae_group"]] = ae_counts.get(case["ae_group"], 0) + 1
+    lines = [
+        "# Generic Dataset Eval Gate Summary",
+        "",
+        f"- Dataset: {run['dataset_name']}",
+        f"- Generated at: {run['generated_at']}",
+        f"- Tables: {facts['table_count']}",
+        f"- Total rows: {_int(facts['total_rows'])}",
+        f"- Cases: {len(run['cases'])}",
+        f"- Git branch: {run['repo'].get('branch')}",
+        f"- Git commit: {run['repo'].get('commit')}",
+        "",
+        "This is the required dataset-agnostic gate. Domain-specific packs run after it.",
+    ]
+    for table in facts["tables"]:
+        lines.append(f"- {table['table_name']}: {_int(table['row_count'])} rows, {table['column_count']} columns, quality issues={len(table['quality_issues'])}")
+    lines.extend(["", "## A-E Coverage"])
+    for group in (
+        "A_no_file_general",
+        "B_uploaded_general_data_understanding",
+        "C_ambiguous_user_questions",
+        "D_general_to_analysis_routing",
+        "E_technical_review_guardrails",
+    ):
+        lines.append(f"- {group}: {ae_counts.get(group, 0)} cases")
+    if run.get("candidate_score"):
+        score = run["candidate_score"]
+        lines.extend(
+            [
+                "",
+                "## Candidate Score",
+                f"- Exact term/number passed: {score['passed']} / {score['total']}",
+                f"- Exact pass rate: {_pct(score['pass_rate'])}",
+                f"- GPT-like style passed: {score.get('gpt_like_passed', 0)} / {score['total']}",
+                f"- GPT-like pass rate: {_pct(score.get('gpt_like_pass_rate', 0))}",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def standard_answers_markdown(run: dict[str, Any]) -> str:
+    lines = ["# Generic Dataset Standard Answers", "", "这些答案由源文件画像生成，只用于离线评估。", ""]
+    for case in run["cases"]:
+        lines.extend([f"## {case['case_id']} - {case['category']}", "", f"Question: {case['question']}", "", case["standard_answer"], ""])
+    return "\n".join(lines)
+
+
+def comparison_markdown(run: dict[str, Any]) -> str:
+    has_candidate = bool(run.get("candidate_score"))
+    lines = [
+        "# Generic Dataset Comparison",
+        "",
+        f"Dataset: {run['dataset_name']}",
+        "",
+        "本文件用于会议逐题对比：问题、预期路由、我的标准回复、VDS 实际回复、对比状态会放在一起。",
+    ]
+    if not has_candidate:
+        lines.append("当前未提供 VDS 实际回答，所以只列出我的标准回复；后续传入 `--candidate-answers` 后会自动填充对比结果。")
+    else:
+        score = run["candidate_score"]
+        lines.append(f"VDS exact score: {score['passed']} / {score['total']} ({_pct(score['pass_rate'])})")
+        lines.append(f"VDS GPT-like style gate: {score.get('gpt_like_passed', 0)} / {score['total']} ({_pct(score.get('gpt_like_pass_rate', 0))})")
+    current_group = ""
+    for row in run["comparison"]:
+        if row["ae_group"] != current_group:
+            current_group = row["ae_group"]
+            lines.extend(["", f"## {current_group}", ""])
+        lines.extend(
+            [
+                f"### {row['case_id']} - {row['category']}",
+                "",
+                f"- Question: {row['question']}",
+                f"- Expected route: {row['expected_route']}",
+                f"- Comparison status: {row['comparison_status']}",
+                "",
+                "**我的标准回复**",
+                "",
+                _comparison_answer_excerpt(row.get("standard_answer") or "", limit=1200, full_target="standard_answers.jsonl"),
+                "",
+                "**VDS 实际回复**",
+                "",
+                _comparison_answer_excerpt(row.get("candidate_answer") or "", full_target="vds_answers.jsonl"),
+                "",
+            ]
+        )
+        if row.get("missing_terms") or row.get("number_checks"):
+            lines.extend(
+                [
+                    "**对比细节**",
+                    "",
+                    f"- Missing terms: {', '.join(row.get('missing_terms') or []) or 'none'}",
+                    f"- Number checks: {json.dumps(row.get('number_checks') or [], ensure_ascii=False)}",
+                    f"- GPT-like checks: {json.dumps(row.get('gpt_like_checks') or [], ensure_ascii=False)}",
+                    "",
+                ]
+            )
+    return "\n".join(lines)
+
+
+def _comparison_answer_excerpt(answer: str, *, limit: int = 1600, full_target: str = "vds_answers.jsonl") -> str:
+    text = str(answer or "").strip()
+    if not text:
+        return "未提供 VDS 实际回答。"
+    raw_like = _looks_like_detail_dump(text)
+    if raw_like or len(text) > limit:
+        excerpt = text[:limit].rstrip()
+        reason = "疑似明细长文本" if raw_like else "回复较长"
+        return f"{excerpt}\n\n（已截断：{reason}；完整内容见同目录 {full_target}。）"
+    return text
+
+
+def _looks_like_detail_dump(text: str) -> bool:
+    if _looks_like_compact_value_sequence(text):
+        return True
+    if len(text) < 600:
+        return False
+    comma_dense = text.count(",") >= 80 and len(text.split()) <= max(1, text.count(",") * 4)
+    repeated_rowish_lines = sum(1 for line in text.splitlines() if line.count(",") >= 5) >= 8
+    return comma_dense or repeated_rowish_lines
+
+
+def _looks_like_compact_value_sequence(text: str) -> bool:
+    parts = [part.strip() for part in re.split(r"[,，]", str(text or "")) if part.strip()]
+    if len(parts) < 8:
+        return False
+    if len(re.findall(r"[。！？；;]", text)) > 1:
+        return False
+    if any(marker in text for marker in ("建议", "字段", "行", "列", "表", "文件", "数据", "不能", "不会", "可以", "需要", "结果")):
+        return False
+    structured_parts = sum(1 for part in parts if _looks_like_scalar_value(part))
+    return structured_parts >= max(6, int(len(parts) * 0.6))
+
+
+def _looks_like_scalar_value(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?%?", text):
+        return True
+    if re.fullmatch(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[ tT]\d{1,2}:\d{2}(?::\d{2})?)?", text):
+        return True
+    if re.fullmatch(r"[A-Za-z]*\d[A-Za-z0-9_.-]*", text) and len(text) <= 32:
+        return True
+    return False
+
+
+def write_json(path: Path, value: Any) -> None:
+    path.write_text(json.dumps(_json_ready(value), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.write_text("".join(json.dumps(_json_ready(row), ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+
+
+def _source_sql(path: Path) -> str:
+    literal = _sql_literal(str(path))
+    suffix = path.suffix.lower()
+    if suffix == ".parquet":
+        return f"read_parquet({literal})"
+    if suffix == ".csv":
+        return f"read_csv_auto({literal}, union_by_name=true)"
+    if suffix == ".json":
+        return f"read_json_auto({literal})"
+    raise ValueError(f"Unsupported file type for generic eval: {path}")
+
+
+def _unique_name(preferred: str, used: set[str]) -> str:
+    base = re.sub(r"\W+", "_", preferred).strip("_") or "table"
+    candidate = base
+    index = 2
+    while candidate in used:
+        candidate = f"{base}_{index}"
+        index += 1
+    used.add(candidate)
+    return candidate
+
+
+def _resolve_path(path: str | Path) -> Path:
+    resolved = Path(path).expanduser()
+    if not resolved.is_absolute():
+        resolved = REPO_ROOT / resolved
+    return resolved
+
+
+def _default_output_dir(name: str) -> Path:
+    return REPO_ROOT / "outputs" / "eval_gate" / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{name}"
+
+
+def repo_state() -> dict[str, str]:
+    return {"branch": git(["rev-parse", "--abbrev-ref", "HEAD"]), "commit": git(["rev-parse", "--short", "HEAD"]), "status_short": git(["status", "--short"])}
+
+
+def git(args: list[str]) -> str:
+    try:
+        return subprocess.run(["git", *args], cwd=REPO_ROOT, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.strip()
+    except OSError:
+        return ""
+
+
+def _is_numeric_type(dtype: str) -> bool:
+    upper = dtype.upper()
+    return any(token in upper for token in ("INT", "DOUBLE", "FLOAT", "DECIMAL", "NUMERIC", "REAL", "BIGINT", "SMALLINT", "TINYINT", "HUGEINT"))
+
+
+def _is_temporal_type(dtype: str) -> bool:
+    upper = dtype.upper()
+    return "DATE" in upper or "TIME" in upper
+
+
+def _is_text_type(dtype: str) -> bool:
+    upper = dtype.upper()
+    return any(token in upper for token in ("VARCHAR", "TEXT", "STRING", "CHAR"))
+
+
+def _q(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _safe_div(numerator: Any, denominator: Any) -> float:
+    return 0.0 if not denominator else float(numerator or 0) / float(denominator)
+
+
+def _float_or_none(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+def _int(value: Any) -> str:
+    return f"{int(round(float(value or 0))):,}"
+
+
+def _pct(value: Any) -> str:
+    return f"{float(value or 0) * 100:.2f}%"
+
+
+def short_list(values: list[str], limit: int = 6) -> str:
+    if not values:
+        return "未识别"
+    rendered = "、".join(values[:limit])
+    return rendered + (" 等" if len(values) > limit else "")
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if hasattr(value, "item"):
+        try:
+            return _json_ready(value.item())
+        except (TypeError, ValueError):
+            pass
+    return value
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:  # noqa: BLE001 - CLI should fail with direct evidence.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise

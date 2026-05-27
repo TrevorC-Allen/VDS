@@ -14,6 +14,8 @@ from data_agent_core.core.intent_parser import parse_generic_table_question
 from data_agent_core.contracts.analysis_contracts import UserQuestion
 from data_agent_core.contracts.verification_contracts import VerificationResult
 from data_agent_core.executors.pandas_executor import execute_plan
+from data_agent_core.output.chart_planner import build_chart_spec
+from data_agent_core.output.chart_renderer import attach_rendered_chart
 from data_agent_core.output.response_builder import build_response, format_answer
 
 
@@ -306,6 +308,114 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.assertEqual(image_pass, "一号店")
         item_count = self._answer("2026年5月陈列执行中货架执行次数最高的门店是哪家？", "答案只返回门店名称。")
         self.assertEqual(item_count, "一号店")
+
+    def test_retail_distribution_product_share_respects_employee_scope(self) -> None:
+        original = self.tables["v_trd_dist_ord_dtl"]
+        self.tables["v_trd_dist_ord_dtl"] = pd.concat(
+            [
+                original,
+                pd.DataFrame(
+                    [
+                        {
+                            "sign_time": "2026-05-04",
+                            "sign_amt": 300.0,
+                            "sign_box_cnt": 4.0,
+                            "emp_name": "张三",
+                            "p_emp_name": "赵经理",
+                            "cust_code": "C3",
+                            "cust_name": "三号店",
+                            "ctg_name": "东方树叶",
+                            "cmdt_tag_name": "普通本品",
+                            "ord_type_name": "业代订单",
+                            "sku_code": "S4",
+                            "sku_name": "红茶SKU",
+                            "ord_status_name": "已签收",
+                        },
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+
+        logic = parse_generic_table_question(
+            "张三在2026年5月的历史分销金额中，天然水占比是多少？",
+            self.tables,
+            "答案只返回百分比，保留2位小数。",
+        )
+        result = execute_plan(build_analysis_plan(logic), {"tables": self.tables})
+
+        self.assertEqual("retail_distribution_product_share", logic.operation)
+        self.assertEqual("张三", logic.parameters["person"])
+        self.assertEqual("employee", logic.parameters["role"])
+        self.assertEqual(["v_trd_dist_ord_dtl"], logic.source_tables)
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual("25.00%", format_answer(result.value, logic.output_format))
+
+        manager_logic = parse_generic_table_question(
+            "赵经理在2026年5月的历史分销金额中，天然水占比是多少？",
+            self.tables,
+            "答案只返回百分比，保留2位小数。",
+        )
+        manager_result = execute_plan(build_analysis_plan(manager_logic), {"tables": self.tables})
+        self.assertEqual("manager", manager_logic.parameters["role"])
+        self.assertTrue(manager_result.success, manager_result.errors)
+        self.assertEqual("16.67%", format_answer(manager_result.value, manager_logic.output_format))
+        self.tables["v_trd_dist_ord_dtl"] = original
+
+    def test_visual_manager_target_trend_returns_chartable_rows(self) -> None:
+        self.tables["ads_trd_dist_ord_target_mgr_1m_df"] = pd.DataFrame(
+            [
+                {"stat_month": 202601, "mgr_name": "赵经理", "target_amt": 1000.0},
+                {"stat_month": 202602, "mgr_name": "赵经理", "target_amt": 1200.0},
+                {"stat_month": 202603, "mgr_name": "赵经理", "target_amt": 900.0},
+                {"stat_month": 202604, "mgr_name": "赵经理", "target_amt": 1300.0},
+                {"stat_month": 202605, "mgr_name": "赵经理", "target_amt": 1500.0},
+                {"stat_month": 202601, "mgr_name": "钱经理", "target_amt": 800.0},
+                {"stat_month": 202602, "mgr_name": "钱经理", "target_amt": 880.0},
+                {"stat_month": 202603, "mgr_name": "钱经理", "target_amt": 920.0},
+                {"stat_month": 202604, "mgr_name": "钱经理", "target_amt": 960.0},
+                {"stat_month": 202605, "mgr_name": "钱经理", "target_amt": 1020.0},
+            ]
+        )
+
+        logic = parse_generic_table_question("请展示2026年1月至5月两位主任的月度分销目标金额趋势，生成折线图。", self.tables, "")
+        result = execute_plan(build_analysis_plan(logic), {"tables": self.tables})
+        chart = attach_rendered_chart(build_chart_spec(plan=build_analysis_plan(logic), execution_result=result, verification_passed=True))
+
+        self.assertEqual("retail_manager_target_monthly_trend", logic.operation)
+        self.assertEqual(["月份", "赵经理", "钱经理"], result.columns)
+        self.assertEqual(5, len(result.rows))
+        self.assertEqual("line", chart.chart_type)
+        self.assertEqual(2, len(chart.series))
+        self.assertTrue(chart.image_data_uri.startswith("data:image/svg+xml;base64,"))
+
+    def test_visual_top_employee_visit_success_rate_returns_multiseries_chart(self) -> None:
+        self.tables["v_chl_visit_dtl"] = pd.DataFrame(
+            [
+                {"visit_date": "2026-01-05", "emp_name": "张三", "cust_code": "C1", "if_visit_sucess": 1},
+                {"visit_date": "2026-01-06", "emp_name": "张三", "cust_code": "C2", "if_visit_sucess": 0},
+                {"visit_date": "2026-02-05", "emp_name": "张三", "cust_code": "C1", "if_visit_sucess": 1},
+                {"visit_date": "2026-01-05", "emp_name": "李四", "cust_code": "C3", "if_visit_sucess": 1},
+                {"visit_date": "2026-02-05", "emp_name": "李四", "cust_code": "C4", "if_visit_sucess": 1},
+                {"visit_date": "2026-03-05", "emp_name": "李四", "cust_code": "C5", "if_visit_sucess": 0},
+                {"visit_date": "2026-04-05", "emp_name": "王五", "cust_code": "C6", "if_visit_sucess": 0},
+                {"visit_date": "2026-05-05", "emp_name": "王五", "cust_code": "C7", "if_visit_sucess": 1},
+            ]
+        )
+
+        logic = parse_generic_table_question("请展示2026年1月至5月拜访量最高的2名业代的月度拜访成功率，生成多折线图。", self.tables, "")
+        plan = build_analysis_plan(logic)
+        result = execute_plan(plan, {"tables": self.tables})
+        chart = attach_rendered_chart(build_chart_spec(plan=plan, execution_result=result, verification_passed=True))
+
+        self.assertEqual("retail_top_employee_visit_success_rate_trend", logic.operation)
+        self.assertEqual("月份", result.columns[0])
+        self.assertEqual(5, len(result.rows))
+        self.assertIn("李四", result.columns)
+        self.assertIn("张三", result.columns)
+        self.assertEqual("line", chart.chart_type)
+        self.assertEqual(2, len(chart.series))
+        self.assertTrue(chart.image_data_uri.startswith("data:image/svg+xml;base64,"))
 
 
 if __name__ == "__main__":

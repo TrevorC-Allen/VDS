@@ -130,6 +130,70 @@ class SemanticMetricVerificationTest(unittest.TestCase):
         for field_name in ("metric_definition", "numerator", "denominator", "entity_grain", "time_window", "candidate_set", "filters", "output_contract"):
             self.assertTrue(contract[field_name], field_name)
 
+    def test_count_per_unique_entity_satisfies_count_metric_question(self) -> None:
+        payments = pd.DataFrame(
+            [
+                {"email_address": "a@example.com", "eur_amount": 10.0},
+                {"email_address": "a@example.com", "eur_amount": 20.0},
+                {"email_address": "b@example.com", "eur_amount": 30.0},
+            ]
+        )
+        plan = build_analysis_plan(
+            LogicForm(
+                task_type="aggregation",
+                operation="metric_per_distinct_entity",
+                metric="__row_count__",
+                metric_definition={"name": "transactions_per_unique_email", "aggregation": "mean"},
+                parameters={
+                    "table": "payments",
+                    "metric": "__row_count__",
+                    "entity_field": "email_address",
+                    "aggregation": "count",
+                },
+                output_format={"answer_type": "number"},
+            )
+        )
+        primary = pandas_executor.execute_plan(plan, {"payments": payments})
+        comparison = compare_results(primary, sql_executor.execute_plan(plan, {"payments": payments}))
+
+        verification = verify_execution(
+            primary,
+            comparison=comparison,
+            plan=plan,
+            user_question=UserQuestion(
+                dataset_id="synthetic_payments",
+                question="What is the average number of transactions per unique shopper based on email addresses?",
+            ),
+        )
+
+        self.assertTrue(primary.success, primary.errors)
+        self.assertTrue(comparison.consistent, comparison.issues)
+        self.assertTrue(verification.passed, verification.semantic_verification_notes)
+        self.assertAlmostEqual(1.5, float(primary.value))
+
+    def test_analysis_plan_normalizes_llm_candidate_set_without_source(self) -> None:
+        plan = build_analysis_plan(
+            LogicForm(
+                task_type="ranking",
+                operation="vds_period_rank_change",
+                metric="PSD_row",
+                candidate_set={"option": "all stores present in both weeks"},
+                parameters={
+                    "table": "sales",
+                    "metric": "PSD_row",
+                    "entity": "门店名称",
+                    "current_period": "本周",
+                    "previous_period": "上周",
+                    "direction": "decline",
+                    "limit": 10,
+                },
+                output_format={"answer_type": "table"},
+            )
+        )
+
+        self.assertEqual("data", plan.logic_form.candidate_set["source"])
+        self.assertEqual("门店名称", plan.logic_form.candidate_set["field"])
+
     def test_verifier_rejects_missing_unique_denominator_for_per_unique_question(self) -> None:
         plan = build_analysis_plan(
             LogicForm(
@@ -348,6 +412,66 @@ class SemanticMetricVerificationTest(unittest.TestCase):
         self.assertFalse(verification.semantic_passed)
         self.assertEqual("repair_denominator", verification.correction_action["action"])
         self.assertEqual("销售额", verification.correction_action["field"])
+
+    def test_verifier_rejects_fee_selection_outside_candidate_table(self) -> None:
+        plan = build_analysis_plan(
+            LogicForm(
+                task_type="fee_rule",
+                operation="best_fraud_aci_choice",
+                filters={"merchant": "SyntheticMerchant", "year": 2023, "month": 1},
+                output_format={"answer_type": "scheme_fee"},
+            )
+        )
+        primary = ExecutionResult(
+            backend="pandas",
+            success=True,
+            value={
+                "selected": "Z",
+                "fee": 1.0,
+                "candidate_table": [{"aci": "D", "fee": 2.0}, {"aci": "E", "fee": 1.0}],
+            },
+        )
+
+        verification = verify_execution(
+            primary,
+            plan=plan,
+            user_question=UserQuestion(
+                dataset_id="synthetic_fee_rules",
+                question="For fraudulent transactions, which ACI leads to the lowest possible fees?",
+            ),
+        )
+
+        self.assertFalse(verification.passed)
+        self.assertFalse(verification.semantic_passed)
+        self.assertEqual("reselect_from_candidate_table", verification.correction_action["action"])
+
+    def test_verifier_rejects_fee_candidate_table_without_numeric_fee(self) -> None:
+        plan = build_analysis_plan(
+            LogicForm(
+                task_type="fee_rule",
+                operation="aci_fee_extreme",
+                parameters={"transaction_value": 10.0},
+                output_format={"answer_type": "aci"},
+            )
+        )
+        primary = ExecutionResult(
+            backend="pandas",
+            success=True,
+            value={"selected": "A", "candidate_table": [{"aci": "A", "fee": None}]},
+        )
+
+        verification = verify_execution(
+            primary,
+            plan=plan,
+            user_question=UserQuestion(
+                dataset_id="synthetic_fee_rules",
+                question="Which ACI is the most expensive for a transaction of 10 euros?",
+            ),
+        )
+
+        self.assertFalse(verification.passed)
+        self.assertFalse(verification.semantic_passed)
+        self.assertEqual("repair_fee_candidate_table", verification.correction_action["action"])
 
 
 if __name__ == "__main__":

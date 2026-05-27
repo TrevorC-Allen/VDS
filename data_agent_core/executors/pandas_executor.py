@@ -10,6 +10,7 @@ import pandas as pd
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan
 from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.core.dabstep_fee_engine import DabstepFeeEngine
+from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import PANDAS_EXECUTION_ERROR
 from data_agent_core.executors.chinese_retail_executor import execute_chinese_retail_operation, is_chinese_retail_operation
@@ -23,14 +24,18 @@ def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult
     try:
         value = _execute_value(plan, context)
         columns, rows = _result_rows(value)
+        warnings = _join_warnings(plan.logic_form.parameters)
+        debug = _join_debug(plan.logic_form.parameters)
         return ExecutionResult(
             backend="pandas",
             success=True,
             columns=columns,
             rows=rows,
             value=value,
-            summary=f"Executed operation {plan.logic_form.operation}.",
+            summary=_execution_summary(plan.logic_form.operation, debug),
             latency_ms=(time.perf_counter() - start) * 1000,
+            warnings=warnings,
+            debug=debug,
         )
     except Exception as exc:  # noqa: BLE001 - keep failures structured
         return ExecutionResult(
@@ -61,18 +66,20 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         return execute_vds_bi_operation(logic, context)
     if op == "not_applicable":
         return "Not Applicable"
+    if op == "data_quality_report":
+        report = report_to_dict(build_data_quality_report(_tables_for_quality(context), generated_from="analysis_request")) or {}
+        report["answer"] = report.get("summary") or "数据质量扫描完成。"
+        return report
     if op == "schema_field_lookup":
         return _schema_field_lookup(_analysis_dataframe(context, params), params)
     if op == "detail_lookup":
-        return _detail_lookup(context["tables"], params)
+        return _detail_lookup(_analysis_dataframe(context, params), params)
     if op == "filtering":
-        return _filtering(context["tables"], params)
+        return _filtering(_analysis_dataframe(context, params), params)
     if op == "aggregation":
-        if "tables" not in context:
-            return _aggregation_dataframe(_analysis_dataframe(context, params), params)
-        return _aggregation(context["tables"], params)
+        return _aggregation_dataframe(_analysis_dataframe(context, params), params)
     if op == "ranking":
-        return _ranking(context["tables"], params)
+        return _ranking_dataframe(_analysis_dataframe(context, params), params)
     if op == "row_count":
         return _row_count(_analysis_dataframe(context, params), filters)
     if op == "distinct_count":
@@ -265,6 +272,14 @@ def _result_rows(value: Any) -> tuple[list[str], list[dict[str, Any]]]:
                     columns.append(str(key))
         return columns, value
     if isinstance(value, dict):
+        candidate_table = value.get("candidate_table")
+        if isinstance(candidate_table, list) and all(isinstance(row, dict) for row in candidate_table):
+            columns: list[str] = []
+            for row in candidate_table:
+                for key in row:
+                    if key not in columns:
+                        columns.append(str(key))
+            return columns, candidate_table
         return list(value.keys()), [value]
     return ["answer"], [{"answer": value}]
 
@@ -277,19 +292,135 @@ def _table(tables: dict[str, pd.DataFrame], name: str | None = None) -> pd.DataF
     return max(tables.values(), key=lambda df: (len(df), len(df.columns)))
 
 
+def _tables_for_quality(context: dict[str, Any]) -> dict[str, pd.DataFrame]:
+    if "tables" in context:
+        return context["tables"]
+    if "payments" in context:
+        return {"payments": context["payments"]}
+    raise ValueError("No tables available for data quality scan.")
+
+
 def _analysis_dataframe(context: dict[str, Any], params: dict[str, Any]) -> pd.DataFrame:
     if "payments" in context:
         return context["payments"]
-    return _table(context["tables"], params.get("table"))
+    tables = context["tables"]
+    join_plan = params.get("join_plan")
+    if isinstance(join_plan, dict) and join_plan:
+        return _materialize_join(tables, params, join_plan)
+    return _table(tables, params.get("table"))
 
 
-def _detail_lookup(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> list[dict[str, Any]]:
-    data = _table(tables, params.get("table"))
+def _materialize_join(tables: dict[str, pd.DataFrame], params: dict[str, Any], join_plan: dict[str, Any]) -> pd.DataFrame:
+    """Materialize a trusted two-table join for uploaded-table analysis."""
+
+    if not join_plan.get("trusted"):
+        reason = str(join_plan.get("reason") or "Join plan is not trusted.")
+        raise ValueError(f"Join required but not trusted: {reason}")
+    if join_plan.get("many_to_many_risk"):
+        raise ValueError("Join required but many-to-many risk is present; ask for join-key clarification.")
+
+    left_table = str(join_plan.get("left_table") or params.get("table") or "")
+    right_table = str(join_plan.get("right_table") or "")
+    left_key = str(join_plan.get("left_key") or "")
+    right_key = str(join_plan.get("right_key") or "")
+    if left_table not in tables or right_table not in tables:
+        raise ValueError("Join plan references a table that is not available.")
+    left = tables[left_table]
+    right = tables[right_table]
+    if left_key not in left.columns or right_key not in right.columns:
+        raise ValueError("Join plan references a key column that is not available.")
+
+    relationship = str(join_plan.get("relationship") or "many_to_one")
+    validate = {"one_to_one": "1:1", "many_to_one": "m:1"}.get(relationship)
+    if validate is None:
+        raise ValueError(f"Unsupported join relationship for controlled executor: {relationship}")
+
+    right_keys = set(right[right_key].dropna().astype(str))
+    left_key_series = left[left_key].dropna().astype(str)
+    unmatched_keys = sorted(set(left_key_series) - right_keys)
+    joined = left.merge(
+        right,
+        how=str(join_plan.get("join_type") or "left"),
+        left_on=left_key,
+        right_on=right_key,
+        suffixes=("", f"__{right_table}"),
+        validate=validate,
+    )
+    summary = {
+        "trusted": True,
+        "left_table": left_table,
+        "right_table": right_table,
+        "left_key": left_key,
+        "right_key": right_key,
+        "join_type": str(join_plan.get("join_type") or "left"),
+        "relationship": relationship,
+        "left_rows": int(len(left)),
+        "right_rows": int(len(right)),
+        "joined_rows": int(len(joined)),
+        "unmatched_left_key_count": int(len(unmatched_keys)),
+        "unmatched_left_keys_sample": unmatched_keys[:10],
+    }
+    params["_join_execution_summary"] = summary
+    return joined
+
+
+def _join_debug(params: dict[str, Any]) -> dict[str, Any]:
+    join_plan = params.get("join_plan")
+    if not isinstance(join_plan, dict) or not join_plan:
+        return {}
+    debug = {
+        "join_plan": {
+            key: join_plan.get(key)
+            for key in (
+                "trusted",
+                "join_type",
+                "left_table",
+                "right_table",
+                "left_key",
+                "right_key",
+                "relationship",
+                "confidence",
+                "overlap_rate",
+                "many_to_many_risk",
+                "reason",
+            )
+            if key in join_plan
+        }
+    }
+    if isinstance(params.get("_join_execution_summary"), dict):
+        debug["join_execution_summary"] = params["_join_execution_summary"]
+    return debug
+
+
+def _join_warnings(params: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    summary = params.get("_join_execution_summary")
+    if isinstance(summary, dict) and summary.get("unmatched_left_key_count"):
+        warnings.append(
+            "Join left some primary rows unmatched: "
+            f"{summary['unmatched_left_key_count']} distinct key(s)."
+        )
+    join_plan = params.get("join_plan")
+    if isinstance(join_plan, dict) and join_plan.get("many_to_many_risk"):
+        warnings.append("Join plan has many-to-many risk and was not materialized.")
+    return warnings
+
+
+def _execution_summary(operation: str, debug: dict[str, Any]) -> str:
+    if "join_execution_summary" in debug:
+        summary = debug["join_execution_summary"]
+        return (
+            f"Executed operation {operation} after joining "
+            f"{summary.get('left_table')} to {summary.get('right_table')}."
+        )
+    return f"Executed operation {operation}."
+
+
+def _detail_lookup(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
     return data.head(int(params.get("limit") or 20)).to_dict(orient="records")
 
 
-def _filtering(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> list[dict[str, Any]]:
-    data = _table(tables, params.get("table"))
+def _filtering(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
     for condition in params.get("conditions") or []:
         column = condition.get("column")
         if column not in data.columns:
@@ -319,6 +450,10 @@ def _aggregation_dataframe(data: pd.DataFrame, params: dict[str, Any]) -> Any:
 
 def _ranking(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> list[dict[str, Any]]:
     data = _table(tables, params.get("table"))
+    return _ranking_dataframe(data, params)
+
+
+def _ranking_dataframe(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
     dimension = params.get("dimension")
     if not dimension:
         raise ValueError("Ranking requires a dimension column.")
@@ -1072,6 +1207,11 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
         if expected == "__NOT_NULL__":
             data = data[~_null_mask(data[column])]
             continue
+        if _is_day_of_year_range_filter(column, expected):
+            start, end = expected
+            values = pd.to_numeric(data[column], errors="coerce")
+            data = data[(values >= float(start)) & (values <= float(end))]
+            continue
         if isinstance(expected, dict) and ("min" in expected or "max" in expected):
             values = pd.to_numeric(data[column], errors="coerce")
             mask = values.notna()
@@ -1083,6 +1223,17 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
             continue
         data = data[_series_equals(data[column], expected)]
     return data
+
+
+def _is_day_of_year_range_filter(column: Any, expected: Any) -> bool:
+    if str(column) != "day_of_year" or not isinstance(expected, (list, tuple)) or len(expected) != 2:
+        return False
+    try:
+        start = float(expected[0])
+        end = float(expected[1])
+    except (TypeError, ValueError):
+        return False
+    return start <= end
 
 
 def _series_equals(series: pd.Series, expected: Any) -> pd.Series:

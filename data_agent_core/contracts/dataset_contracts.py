@@ -26,6 +26,8 @@ class TableProfile:
     row_count: int
     column_count: int
     columns: list[ColumnProfile] = field(default_factory=list)
+    source_file: str | None = None
+    sheet: str | None = None
 
 
 @dataclass
@@ -39,3 +41,4 @@ class DatasetProfile:
     created_at: str | None = None
     warnings: list[str] = field(default_factory=list)
     errors: list[Any] = field(default_factory=list)
+    quality_report: dict[str, Any] | None = None

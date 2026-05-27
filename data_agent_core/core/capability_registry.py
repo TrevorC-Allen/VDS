@@ -82,7 +82,16 @@ VDS_BI_OPERATIONS = frozenset(
         "vds_period_threshold_count",
         "vds_period_rate_top",
         "vds_current_threshold_top",
+        "vds_current_category_share_top",
+        "vds_current_filtered_metric_top",
         "vds_peer_anomaly",
+        "vds_period_group_comparison",
+        "vds_current_rank_with_period_change",
+        "vds_group_top_entities",
+        "vds_status_impact_top",
+        "vds_current_share_top",
+        "vds_current_top",
+        "vds_three_period_top",
     }
 )
 
@@ -302,6 +311,17 @@ _REGISTRY: dict[str, CapabilityMetadata] = {
         sql_support=SQL_SUPPORT_UNSUPPORTED,
         supports_chinese=True,
         supports_english=True,
+    ),
+    "data_quality_report": CapabilityMetadata(
+        operation="data_quality_report",
+        capability_family="data_quality",
+        input_contract="dataset tables and column profiles",
+        output_contract="quality score, issue list, and cleaning suggestions",
+        supports_pandas=True,
+        sql_support=SQL_SUPPORT_UNSUPPORTED,
+        supports_chinese=True,
+        supports_english=True,
+        support_boundary="Reports likely issues and suggested cleaning actions only; it does not mutate uploaded data.",
     ),
     "boolean_percentage": CapabilityMetadata(
         operation="boolean_percentage",
@@ -538,6 +558,8 @@ def native_sql_support_for_logic_form(logic_form: Any, *, available_columns: Ite
     """Return whether native SQL should run for the concrete logic form."""
 
     operation = _operation_from_logic_form(logic_form)
+    if _has_join_plan(logic_form):
+        return False
     if not is_native_sql_operation(operation):
         return False
     if operation == "field_values" and available_columns is not None:
@@ -555,7 +577,9 @@ def coverage_summary_for_logic_form(logic_form: Any, *, available_columns: Itera
     sql_support = metadata.sql_support
     native_supported = native_sql_support_for_logic_form(logic_form, available_columns=available_columns)
     reason = ""
-    if sql_support == SQL_SUPPORT_SHARED_RULE_ENGINE:
+    if _has_join_plan(logic_form):
+        reason = "Current native SQL path does not materialize uploaded-table join plans."
+    elif sql_support == SQL_SUPPORT_SHARED_RULE_ENGINE:
         reason = "Current native SQL path does not cover shared rule-engine operations."
     elif sql_support == SQL_SUPPORT_UNSUPPORTED:
         reason = "Current native SQL path does not cover this capability family."
@@ -587,3 +611,11 @@ def _field_from_logic_form(logic_form: Any) -> str | None:
     if isinstance(params, Mapping) and params.get("field"):
         return str(params["field"])
     return None
+
+
+def _has_join_plan(logic_form: Any) -> bool:
+    if isinstance(logic_form, Mapping):
+        join_plan = logic_form.get("join_plan") or (logic_form.get("parameters") or {}).get("join_plan")
+    else:
+        join_plan = getattr(logic_form, "join_plan", None) or (getattr(logic_form, "parameters", {}) or {}).get("join_plan")
+    return bool(join_plan)

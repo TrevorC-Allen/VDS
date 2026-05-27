@@ -52,6 +52,9 @@ CHINESE_RETAIL_OPERATIONS = {
     "retail_customer_feature_count",
     "retail_visit_record_count",
     "retail_history_field_values",
+    "retail_manager_target_monthly_trend",
+    "retail_top_employee_visit_success_rate_trend",
+    "retail_category_distribution_monthly_trend",
 }
 
 
@@ -141,6 +144,12 @@ def execute_chinese_retail_operation(logic: LogicForm, context: dict[str, Any]) 
         return _retail_visit_record_count(tables, params)
     if op == "retail_history_field_values":
         return _retail_history_field_values(tables, params)
+    if op == "retail_manager_target_monthly_trend":
+        return _retail_manager_target_monthly_trend(tables, params)
+    if op == "retail_top_employee_visit_success_rate_trend":
+        return _retail_top_employee_visit_success_rate_trend(tables, params)
+    if op == "retail_category_distribution_monthly_trend":
+        return _retail_category_distribution_monthly_trend(tables, params)
     raise ValueError(f"Unsupported Chinese retail operation: {op}")
 
 
@@ -612,6 +621,101 @@ def _retail_history_field_values(tables: dict[str, pd.DataFrame], params: dict[s
     return sorted(values)
 
 
+def _retail_manager_target_monthly_trend(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    target = _table_with_columns(tables, {"stat_month", "mgr_name", "target_amt"}, ("ads_trd_dist_ord_target_mgr_1m_df",))
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return "Not Applicable"
+    data = _filter_stat_month_range(target, months)
+    if data.empty:
+        return "Not Applicable"
+    data = data.copy()
+    data["target_amt_n"] = _numeric(data["target_amt"])
+    managers = sorted([str(value) for value in data["mgr_name"].dropna().astype(str).unique() if str(value)])
+    if not managers:
+        return "Not Applicable"
+    pivot = (
+        data.groupby(["stat_month", "mgr_name"], dropna=True)["target_amt_n"]
+        .sum()
+        .unstack(fill_value=0.0)
+        .reindex(index=months, columns=managers, fill_value=0.0)
+    )
+    rows = [{"月份": _ym_label(month), **{manager: float(pivot.loc[month, manager]) for manager in managers}} for month in months]
+    return {
+        "answer": f"已生成{_ym_label(months[0])}至{_ym_label(months[-1])}{len(managers)}位主任的月度分销目标金额趋势。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "target_amt",
+    }
+
+
+def _retail_top_employee_visit_success_rate_trend(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    visits = _visit_table(tables)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return "Not Applicable"
+    data = _filter_date_month_range(visits, "visit_date", months)
+    if data.empty or "emp_name" not in data.columns or "if_visit_sucess" not in data.columns:
+        return "Not Applicable"
+    limit = int(params.get("limit") or 5)
+    top_employees = data["emp_name"].dropna().astype(str).value_counts().head(limit).index.tolist()
+    if not top_employees:
+        return "Not Applicable"
+    scoped = data[data["emp_name"].astype(str).isin(top_employees)].copy()
+    scoped["month"] = pd.to_datetime(scoped["visit_date"], errors="coerce").dt.strftime("%Y%m").astype(int)
+    scoped["success"] = (_numeric(scoped["if_visit_sucess"]) == 1).astype(int)
+    grouped = scoped.groupby(["month", "emp_name"], dropna=True).agg(total=("cust_code", "count"), success=("success", "sum"))
+    rows: list[dict[str, Any]] = []
+    for month in months:
+        row: dict[str, Any] = {"月份": _ym_label(month)}
+        for employee in top_employees:
+            key = (month, employee)
+            if key not in grouped.index:
+                row[employee] = 0.0
+                continue
+            total = float(grouped.loc[key, "total"])
+            success = float(grouped.loc[key, "success"])
+            row[employee] = 0.0 if total == 0 else success / total * 100
+        rows.append(row)
+    return {
+        "answer": f"已生成{_ym_label(months[0])}至{_ym_label(months[-1])}拜访量最高{len(top_employees)}名业代的月度拜访成功率趋势。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "visit_success_rate",
+    }
+
+
+def _retail_category_distribution_monthly_trend(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    hist = _history_table(tables)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return "Not Applicable"
+    data = _filter_date_month_range(hist, "sign_time", months)
+    if data.empty or "ctg_name" not in data.columns or "sign_amt" not in data.columns:
+        return "Not Applicable"
+    limit = int(params.get("limit") or 5)
+    data = data.copy()
+    data["month"] = pd.to_datetime(data["sign_time"], errors="coerce").dt.strftime("%Y%m").astype(int)
+    data["sign_amt_n"] = _numeric(data["sign_amt"])
+    categories = data.groupby("ctg_name", dropna=True)["sign_amt_n"].sum().sort_values(ascending=False).head(limit).index.tolist()
+    if not categories:
+        return "Not Applicable"
+    pivot = (
+        data[data["ctg_name"].isin(categories)]
+        .groupby(["month", "ctg_name"], dropna=True)["sign_amt_n"]
+        .sum()
+        .unstack(fill_value=0.0)
+        .reindex(index=months, columns=categories, fill_value=0.0)
+    )
+    rows = [{"月份": _ym_label(month), **{category: float(pivot.loc[month, category]) for category in categories}} for month in months]
+    return {
+        "answer": f"已生成{_ym_label(months[0])}至{_ym_label(months[-1])}分品类历史分销金额趋势。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "sign_amt",
+    }
+
+
 def _route_customer_codes(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> set[str]:
     route = _route_rows(tables, params)
     return set(route["cust_code"].dropna().astype(str))
@@ -727,6 +831,22 @@ def _filter_ym(data: pd.DataFrame, date_column: str, ym: Any) -> pd.DataFrame:
     return data[(dates.dt.year == year) & (dates.dt.month == month)]
 
 
+def _filter_date_month_range(data: pd.DataFrame, date_column: str, months: list[int]) -> pd.DataFrame:
+    if not months:
+        return data.iloc[0:0]
+    dates = pd.to_datetime(data[date_column], errors="coerce")
+    month_values = dates.dt.strftime("%Y%m")
+    valid = month_values.notna()
+    numeric_months = pd.to_numeric(month_values.where(valid), errors="coerce")
+    return data[numeric_months.isin(months)]
+
+
+def _filter_stat_month_range(data: pd.DataFrame, months: list[int]) -> pd.DataFrame:
+    if not months:
+        return data.iloc[0:0]
+    return data[pd.to_numeric(data["stat_month"], errors="coerce").isin(months)]
+
+
 def _filter_date(data: pd.DataFrame, date_column: str, date_text: Any) -> pd.DataFrame:
     if not date_text:
         return data
@@ -766,6 +886,25 @@ def _split_ym(ym: Any) -> tuple[int | None, int | None]:
     if len(text) != 6:
         return None, None
     return int(text[:4]), int(text[4:])
+
+
+def _month_range(start_ym: Any, end_ym: Any) -> list[int]:
+    start_year, start_month = _split_ym(start_ym)
+    end_year, end_month = _split_ym(end_ym)
+    if not start_year or not start_month or not end_year or not end_month:
+        return []
+    start = pd.Period(year=start_year, month=start_month, freq="M")
+    end = pd.Period(year=end_year, month=end_month, freq="M")
+    if end < start:
+        start, end = end, start
+    return [int(period.strftime("%Y%m")) for period in pd.period_range(start, end, freq="M")]
+
+
+def _ym_label(ym: Any) -> str:
+    year, month = _split_ym(ym)
+    if not year or not month:
+        return str(ym)
+    return f"{year}年{month}月"
 
 
 def _sum(data: pd.DataFrame, column: str) -> float:

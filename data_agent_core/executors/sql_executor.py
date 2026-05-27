@@ -578,6 +578,12 @@ def _where_from_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
             where.append("CAST(strftime('%m', date(year || '-01-01', '+' || (day_of_year - 1) || ' days')) AS INTEGER) BETWEEN ? AND ?")
             values.extend([int(start), int(end)])
             continue
+        if _is_day_of_year_range_filter(column, expected):
+            start, end = expected
+            q_column = _quote_identifier(str(column))
+            where.append(f"CAST({q_column} AS REAL) BETWEEN ? AND ?")
+            values.extend([float(start), float(end)])
+            continue
         if isinstance(expected, dict) and ("min" in expected or "max" in expected):
             q_column = _quote_identifier(str(column))
             if expected.get("min") is not None:
@@ -590,6 +596,17 @@ def _where_from_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
         where.append(f"{_quote_identifier(str(column))} = ?")
         values.append(expected)
     return (" WHERE " + " AND ".join(where) if where else ""), values
+
+
+def _is_day_of_year_range_filter(column: Any, expected: Any) -> bool:
+    if str(column) != "day_of_year" or not isinstance(expected, (list, tuple)) or len(expected) != 2:
+        return False
+    try:
+        start = float(expected[0])
+        end = float(expected[1])
+    except (TypeError, ValueError):
+        return False
+    return start <= end
 
 
 def _bool_literals_sql(expected: bool) -> str:
