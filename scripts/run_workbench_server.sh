@@ -29,6 +29,7 @@ missing = [
         ("fastapi", "fastapi"),
         ("uvicorn", "uvicorn"),
         ("python-multipart", "python_multipart"),
+        ("matplotlib>=3.8", "matplotlib"),
     ]
     if importlib.util.find_spec(module) is None
 ]

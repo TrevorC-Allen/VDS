@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate dataset-agnostic VDS eval-gate standard answers.
+"""Generate dataset-agnostic VDS eval-gate reference answers.
 
 The generic gate applies to any uploaded dataset before domain-specific tests.
 It reads one or more files, profiles schema and data quality, then writes
-GPT-like standard answers grounded in computed facts. These answers are offline
+DeepSeek or browser GPT reference answers grounded in computed facts. These answers are offline
 evaluation references only and must never be passed into the Agent workflow.
 """
 
@@ -35,6 +35,52 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 DEFAULT_CONFIG = REPO_ROOT / "configs" / "eval_gate" / "generic_dataset_eval.json"
 MISSING_MARKERS = {"", "na", "n/a", "null", "none", "nan", "-", "--", "未知", "缺失", "空"}
+ORDINARY_ACCEPTANCE_THRESHOLD = 1.0
+COMPLEX_ACCEPTANCE_THRESHOLD = 0.9
+ANSWERABLE_CASE_NOT_APPLICABLE_LIMIT = 0
+REFERENCE_SOURCE_LABELS = {
+    "deepseek_reference": "deepseek",
+    "browser_gpt_reference": "gpt",
+    "deterministic_fallback": "deterministic_smoke",
+}
+
+CASE_ACCEPTANCE_METADATA: dict[str, dict[str, Any]] = {
+    "generic_general_001": {"difficulty_bucket": "ordinary", "capability_family": "safety_boundary"},
+    "generic_general_002": {"difficulty_bucket": "ordinary", "capability_family": "safety_boundary"},
+    "generic_general_003": {"difficulty_bucket": "ordinary", "capability_family": "broad_question_routing"},
+    "generic_general_004": {"difficulty_bucket": "ordinary", "capability_family": "multi_file_routing"},
+    "generic_uploaded_001": {"difficulty_bucket": "ordinary", "capability_family": "overview"},
+    "generic_uploaded_002": {"difficulty_bucket": "ordinary", "capability_family": "overview"},
+    "generic_uploaded_003": {"difficulty_bucket": "ordinary", "capability_family": "table_routing"},
+    "generic_uploaded_004": {"difficulty_bucket": "ordinary", "capability_family": "analysis_readiness"},
+    "generic_ambiguous_001": {"difficulty_bucket": "ordinary", "capability_family": "broad_question_routing"},
+    "generic_ambiguous_002": {"difficulty_bucket": "ordinary", "capability_family": "quality"},
+    "generic_ambiguous_003": {"difficulty_bucket": "ordinary", "capability_family": "broad_question_routing"},
+    "generic_ambiguous_004": {"difficulty_bucket": "ordinary", "capability_family": "quality"},
+    "generic_basic_001": {"difficulty_bucket": "ordinary", "capability_family": "table_routing"},
+    "generic_basic_002": {"difficulty_bucket": "ordinary", "capability_family": "field_mapping"},
+    "generic_basic_003": {"difficulty_bucket": "ordinary", "capability_family": "quality"},
+    "generic_basic_004": {"difficulty_bucket": "ordinary", "capability_family": "field_mapping"},
+    "generic_quality_001": {"difficulty_bucket": "ordinary", "capability_family": "quality"},
+    "generic_quality_002": {"difficulty_bucket": "ordinary", "capability_family": "quality"},
+    "generic_quality_003": {"difficulty_bucket": "ordinary", "capability_family": "quality"},
+    "generic_quality_004": {"difficulty_bucket": "complex", "capability_family": "anomaly_ratio"},
+    "generic_readiness_001": {"difficulty_bucket": "ordinary", "capability_family": "field_mapping"},
+    "generic_readiness_002": {"difficulty_bucket": "ordinary", "capability_family": "true_unsupported_boundary"},
+    "generic_business_001": {"difficulty_bucket": "ordinary", "capability_family": "topn_single_table"},
+    "generic_business_002": {"difficulty_bucket": "complex", "capability_family": "trend"},
+    "generic_business_003": {"difficulty_bucket": "complex", "capability_family": "join"},
+    "generic_route_001": {"difficulty_bucket": "ordinary", "capability_family": "broad_question_routing"},
+    "generic_route_002": {"difficulty_bucket": "ordinary", "capability_family": "single_table_aggregation"},
+    "generic_route_003": {"difficulty_bucket": "complex", "capability_family": "correction_retry"},
+    "generic_tech_001": {"difficulty_bucket": "ordinary", "capability_family": "safety_boundary"},
+    "generic_tech_002": {"difficulty_bucket": "ordinary", "capability_family": "field_mapping"},
+    "generic_tech_003": {"difficulty_bucket": "ordinary", "capability_family": "safety_boundary"},
+    "generic_cleaning_001": {"difficulty_bucket": "complex", "capability_family": "quality"},
+    "generic_cleaning_002": {"difficulty_bucket": "ordinary", "capability_family": "quality"},
+    "generic_cleaning_003": {"difficulty_bucket": "ordinary", "capability_family": "safety_boundary"},
+    "generic_cleaning_004": {"difficulty_bucket": "complex", "capability_family": "quality"},
+}
 
 
 @dataclass
@@ -49,7 +95,7 @@ class TableRef:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run dataset-agnostic VDS evaluation standard-answer generation.")
+    parser = argparse.ArgumentParser(description="Run dataset-agnostic VDS evaluation source-answer generation.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--files", nargs="+", required=True, help="CSV/XLSX/JSON/Parquet files to profile.")
     parser.add_argument("--table-names", nargs="*", help="Optional display names matching --files.")
@@ -64,7 +110,34 @@ def main() -> None:
     parser.add_argument(
         "--quick-vds-answers",
         action="store_true",
-        help="Reuse representative overview/cleaning answers for fast smoke comparisons on large files.",
+        help="Smoke only: sample large files and reuse representative cleaning answers. Not valid for acceptance scoring.",
+    )
+    parser.add_argument(
+        "--vds-answer-provider",
+        choices=("env", "mock"),
+        default=os.environ.get("VDS_CANDIDATE_ANSWER_PROVIDER", "env"),
+        help=(
+            "Provider for generated VDS candidate answers. Default env loads VDS_LLM_PROVIDER and rejects mock. "
+            "Use mock only for local script smoke checks."
+        ),
+    )
+    parser.add_argument(
+        "--source-answer-origin",
+        "--standard-answer-source",
+        dest="standard_answer_source",
+        choices=("deepseek", "browser_gpt", "llm", "gpt", "deterministic", "auto"),
+        default=os.environ.get("VDS_STANDARD_ANSWER_SOURCE", "deepseek"),
+        help=(
+            "Source answer origin. Default deepseek. llm is a legacy alias for deepseek; "
+            "gpt means manually captured browser GPT answers and requires --source-answers-file; "
+            "Use deterministic only for local smoke/debug; auto tries DeepSeek and records deterministic fallback if no LLM is configured."
+        ),
+    )
+    parser.add_argument(
+        "--source-answers-file",
+        "--standard-answers-file",
+        dest="standard_answers_file",
+        help="JSON/JSONL mapping for manually captured browser GPT answers. Required when --source-answer-origin=browser_gpt or gpt.",
     )
     parser.add_argument("--print-summary", action="store_true")
     args = parser.parse_args()
@@ -84,12 +157,26 @@ def main() -> None:
     con = duckdb.connect(database=":memory:")
     tables = load_tables(con, files, args.table_names or [])
     facts = build_generic_facts(con, tables, dataset_name=args.dataset_name)
-    cases = build_generic_cases(facts)
+    deterministic_cases = build_generic_cases(facts)
+    external_standard_answers = load_external_standard_answers(_resolve_path(args.standard_answers_file)) if args.standard_answers_file else None
+    cases, standard_generation = apply_standard_answer_source(
+        deterministic_cases,
+        facts,
+        source=args.standard_answer_source,
+        external_standard_answers=external_standard_answers,
+    )
     candidate_score = None
     candidate_answers: dict[str, str] = {}
+    candidate_generation: dict[str, Any] | None = None
     if args.generate_vds_answers:
         quick_vds = args.quick_vds_answers or os.environ.get("VDS_GENERIC_EVAL_QUICK") == "1"
-        candidate_answers = generate_vds_answers(cases, files, output_dir, quick=quick_vds)
+        candidate_answers, candidate_generation = generate_vds_answers(
+            cases,
+            files,
+            output_dir,
+            quick=quick_vds,
+            answer_provider=args.vds_answer_provider,
+        )
         candidate_score = score_candidate_answers(cases, candidate_answers, config["thresholds"], output_dir / "vds_answers.jsonl")
     elif args.candidate_answers:
         candidate_path = _resolve_path(args.candidate_answers)
@@ -107,16 +194,29 @@ def main() -> None:
         "input_files": [str(path) for path in files],
         "facts": facts,
         "cases": cases,
+        "standard_answer_generation": standard_generation,
+        "candidate_answer_generation": candidate_generation,
         "comparison": comparison_rows,
         "candidate_score": candidate_score,
-        "note": "Standard answers are generated from source files after case definition and are offline-only.",
+        "acceptance_policy": acceptance_policy(),
+        "note": (
+            "Source answers are generated as explicitly labeled deepseek answers or imported browser GPT answers "
+            "from source-file facts after case definition and are offline-only."
+        ),
     }
     write_json(output_dir / "summary.json", run)
+    source_prefix = source_answer_artifact_prefix(standard_generation)
     write_json(output_dir / "standard_answers.json", {"cases": cases})
     write_jsonl(output_dir / "standard_answers.jsonl", cases)
+    if source_prefix != "standard_answers":
+        write_json(output_dir / f"{source_prefix}.json", {"cases": cases})
+        write_jsonl(output_dir / f"{source_prefix}.jsonl", cases)
     write_json(output_dir / "comparison.json", {"comparison": comparison_rows})
     write_jsonl(output_dir / "comparison.jsonl", comparison_rows)
-    (output_dir / "standard_answers.md").write_text(standard_answers_markdown(run), encoding="utf-8")
+    source_answers_md = standard_answers_markdown(run)
+    (output_dir / "standard_answers.md").write_text(source_answers_md, encoding="utf-8")
+    if source_prefix != "standard_answers":
+        (output_dir / f"{source_prefix}.md").write_text(source_answers_md, encoding="utf-8")
     (output_dir / "comparison.md").write_text(comparison_markdown(run), encoding="utf-8")
     summary_md = summary_markdown(run)
     (output_dir / "summary.md").write_text(summary_md, encoding="utf-8")
@@ -252,11 +352,17 @@ def build_generic_cases(facts: dict[str, Any]) -> list[dict[str, Any]]:
     ]
     cases = []
     for case_id, category, question, route, answer, dims in specs:
+        acceptance = acceptance_metadata_for_case(case_id, category)
         cases.append(
             {
                 "case_id": case_id,
                 "category": category,
                 "ae_group": ae_group_for_category(category),
+                "difficulty_bucket": acceptance["difficulty_bucket"],
+                "capability_family": acceptance["capability_family"],
+                "answerability": acceptance["answerability"],
+                "acceptance_threshold": acceptance["acceptance_threshold"],
+                "not_applicable_policy": acceptance["not_applicable_policy"],
                 "viewpoint": "real_user_and_technical_review",
                 "question": question,
                 "expected_route": route,
@@ -270,6 +376,367 @@ def build_generic_cases(facts: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return cases
+
+
+def apply_standard_answer_source(
+    cases: list[dict[str, Any]],
+    facts: dict[str, Any],
+    *,
+    source: str,
+    external_standard_answers: dict[str, str] | None = None,
+    llm_client: Any | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Replace deterministic case text with explicitly sourced reference answers."""
+
+    normalized = str(source or "deepseek").strip().lower()
+    if normalized == "llm":
+        normalized = "deepseek"
+    if normalized == "gpt":
+        normalized = "browser_gpt"
+    if normalized not in {"deepseek", "browser_gpt", "deterministic", "auto"}:
+        raise ValueError("source answer origin must be one of: deepseek, browser_gpt, llm, gpt, deterministic, auto")
+    if normalized == "deterministic":
+        return _mark_deterministic_standard_cases(cases, reason="explicit_deterministic_source")
+    if normalized == "browser_gpt":
+        if external_standard_answers is None:
+            raise RuntimeError("--source-answer-origin browser_gpt/gpt requires --source-answers-file.")
+        return _mark_external_standard_cases(
+            cases,
+            external_standard_answers,
+            source="browser_gpt_reference",
+            model="browser_gpt_manual",
+            policy=(
+                "Browser GPT answer imported from a human-captured external file; "
+                "offline evaluation only, never passed into VDS agent execution."
+            ),
+        )
+
+    try:
+        client = llm_client or _load_formal_deepseek_reference_client()
+        _validate_formal_deepseek_reference_client(client)
+    except Exception as exc:  # noqa: BLE001 - CLI should explain fallback policy directly.
+        if normalized == "auto":
+            return _mark_deterministic_standard_cases(cases, reason=f"llm_unavailable:{type(exc).__name__}:{str(exc)[:180]}")
+        raise RuntimeError(
+            "DeepSeek source answers are required. Set VDS_LLM_PROVIDER=deepseek and DEEPSEEK_API_KEY "
+            "or pass --source-answer-origin deterministic only for smoke/debug runs."
+        ) from exc
+
+    provider_source = "deepseek_reference"
+    llm_cases: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for index, case in enumerate(cases, start=1):
+        try:
+            generated = generate_llm_standard_answer(case, facts, client, index=index, total=len(cases))
+        except Exception as exc:  # noqa: BLE001 - case-level failures should fail formal LLM source.
+            if normalized == "auto":
+                generated = {"standard_answer": case["standard_answer"], "notes": [f"deterministic fallback after {type(exc).__name__}: {str(exc)[:160]}"], "confidence": 0.0}
+                failures.append({"case_id": case["case_id"], "error": f"{type(exc).__name__}: {str(exc)[:300]}"})
+            else:
+                raise RuntimeError(f"DeepSeek source answer failed for {case['case_id']}: {type(exc).__name__}: {str(exc)[:300]}") from exc
+        next_case = dict(case)
+        next_case["standard_answer"] = str(generated.get("standard_answer") or "").strip()
+        if not next_case["standard_answer"]:
+            raise RuntimeError(f"DeepSeek source answer was empty for {case['case_id']}.")
+        next_case["source_answer"] = next_case["standard_answer"]
+        generated_notes = [str(item) for item in generated.get("notes", []) if str(item).strip()]
+        used_fallback = bool(generated_notes and generated_notes[0].startswith("deterministic fallback"))
+        next_case["standard_answer_source"] = "deterministic_fallback" if used_fallback else provider_source
+        next_case["reference_answer_label"] = reference_answer_label(next_case["standard_answer_source"])
+        next_case["standard_answer_policy"] = (
+            "DETERMINISTIC FALLBACK ONLY: not a formal DeepSeek/browser GPT reference. "
+            "Use --source-answer-origin=deepseek or browser_gpt for acceptance scoring."
+            if used_fallback
+            else (
+                "DeepSeek answer generated from computed dataset facts; "
+                "offline evaluation only, never passed into VDS agent execution."
+            )
+        )
+        next_case["standard_answer_model"] = "deterministic" if used_fallback else _llm_model_name(client)
+        next_case["standard_answer_notes"] = generated_notes
+        next_case["standard_answer_confidence"] = _score_float(generated.get("confidence"), default=0.0)
+        llm_cases.append(next_case)
+    return (
+        llm_cases,
+        {
+            "source": f"mixed_{provider_source}_with_deterministic_fallback" if failures else provider_source,
+            "label": reference_answer_label(provider_source),
+            "model": _llm_model_name(client),
+            "case_count": len(llm_cases),
+            "fallback_failures": failures,
+            "policy": "All formal source answers are DeepSeek answers grounded in computed facts.",
+        },
+    )
+
+
+def generate_llm_standard_answer(case: dict[str, Any], facts: dict[str, Any], llm_client: Any, *, index: int, total: int) -> dict[str, Any]:
+    payload = {
+        "case_index": index,
+        "case_count": total,
+        "case_id": case.get("case_id"),
+        "category": case.get("category"),
+        "question": case.get("question"),
+        "expected_route": case.get("expected_route"),
+        "case_fact_hints": _standard_answer_case_fact_hints(case),
+        "computed_fact_digest": _standard_answer_fact_digest(facts),
+    }
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是 ChatGPT Data Analysis 网页端风格的标准答案生成器。"
+                "你只根据用户问题、computed_fact_digest 和 case_fact_hints 生成中文 deepseek answer。"
+                "case_fact_hints 只是评测事实约束，不是参考文案。"
+                "不要模仿 VDS 当前输出，不要模仿 deterministic fallback，不要输出模板字段清单，"
+                "不要泄露 raw prompt、trace、task_id、scorer 或标准答案生成过程。"
+                "回答要像 GPT：自然、结论优先、有依据、有口径、有边界，必要时给下一步。"
+                "不要新增 computed_fact_digest 之外的数字；字段含义不确定时说推测或需要确认。"
+                "只返回 JSON。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "task": "generate_deepseek_source_answer",
+                    "required_output": {
+                        "source_answer": "中文 deepseek answer, grounded only in facts; no markdown table; concise but reviewable",
+                        "notes": "array of short notes about key grounding choices",
+                        "confidence": "0-1",
+                    },
+                    "style_requirements": [
+                        "像 ChatGPT Data Analysis，不是固定模板。",
+                        "数据类回答必须包含结论、依据/关键数值、口径或边界、可继续追问方向。",
+                        "无法回答类问题必须说明缺少什么和用户最小补充信息。",
+                        "清洗类问题必须说明不会直接修改原始数据，需要用户确认。",
+                    ],
+                    "payload": payload,
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    raw = llm_client.complete_json(messages, temperature=0.2)
+    answer_text = _sanitize_llm_standard_answer(raw.get("source_answer") or raw.get("standard_answer") or raw.get("answer") or "")
+    return {
+        "standard_answer": answer_text,
+        "source_answer": answer_text,
+        "notes": raw.get("notes", []) if isinstance(raw.get("notes"), list) else [],
+        "confidence": raw.get("confidence", 0.0),
+    }
+
+
+def _standard_answer_case_fact_hints(case: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "scoring_dimensions": case.get("scoring_dimensions", []),
+        "required_terms": case.get("required_terms", []),
+        "expected_numbers": case.get("expected_numbers", []),
+        "expected_facts": case.get("expected_facts", {}),
+        "technical_checks": case.get("technical_checks", []),
+    }
+
+
+def _load_formal_deepseek_reference_client() -> Any:
+    from data_agent_core.llm.client import load_llm_client_from_env
+
+    return load_llm_client_from_env()
+
+
+def _validate_formal_deepseek_reference_client(client: Any) -> None:
+    from data_agent_core.llm.client import MissingLLMConfigError, MockLLMClient
+
+    if isinstance(client, MockLLMClient):
+        raise MissingLLMConfigError("Mock LLM is not allowed for formal source-answer generation.")
+    config = getattr(client, "config", None)
+    provider = str(getattr(config, "provider", "") or "").strip().lower()
+    if provider != "deepseek":
+        raise MissingLLMConfigError(
+            f"Formal source-answer generation requires VDS_LLM_PROVIDER=deepseek, not provider={provider or 'unknown'}."
+        )
+
+
+def _mark_deterministic_standard_cases(cases: list[dict[str, Any]], *, reason: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    marked: list[dict[str, Any]] = []
+    for case in cases:
+        next_case = dict(case)
+        next_case["standard_answer_source"] = "deterministic_fallback"
+        next_case["reference_answer_label"] = reference_answer_label("deterministic_fallback")
+        next_case["source_answer"] = next_case["standard_answer"]
+        next_case["standard_answer_policy"] = (
+            "DETERMINISTIC FALLBACK ONLY: not a formal DeepSeek/browser GPT reference. "
+            "Use --source-answer-origin=deepseek or browser_gpt for acceptance scoring."
+        )
+        next_case["standard_answer_model"] = "deterministic"
+        next_case["standard_answer_notes"] = [reason]
+        next_case["standard_answer_confidence"] = 0.0
+        marked.append(next_case)
+    return (
+        marked,
+        {
+            "source": "deterministic_fallback",
+            "label": reference_answer_label("deterministic_fallback"),
+            "reason": reason,
+            "case_count": len(marked),
+            "policy": "Not valid as formal DeepSeek/browser GPT reference; smoke/debug only.",
+        },
+    )
+
+
+def _mark_external_standard_cases(
+    cases: list[dict[str, Any]],
+    standard_answers: dict[str, str],
+    *,
+    source: str,
+    model: str,
+    policy: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    marked: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for case in cases:
+        case_id = str(case.get("case_id") or "")
+        answer_text = str(standard_answers.get(case_id) or "").strip()
+        if not answer_text:
+            missing.append(case_id)
+            continue
+        next_case = dict(case)
+        next_case["standard_answer"] = answer_text
+        next_case["source_answer"] = answer_text
+        next_case["standard_answer_source"] = source
+        next_case["reference_answer_label"] = reference_answer_label(source)
+        next_case["standard_answer_model"] = model
+        next_case["standard_answer_policy"] = policy
+        next_case["standard_answer_notes"] = ["external_reference_import"]
+        next_case["standard_answer_confidence"] = None
+        marked.append(next_case)
+    if missing:
+        raise RuntimeError(
+            "External browser_gpt answer file is missing cases: " + ", ".join(missing[:12])
+        )
+    return (
+        marked,
+        {
+            "source": source,
+            "label": reference_answer_label(source),
+            "model": model,
+            "case_count": len(marked),
+            "policy": policy,
+        },
+    )
+
+
+def _standard_answer_fact_digest(facts: dict[str, Any]) -> dict[str, Any]:
+    tables = []
+    for table in facts.get("tables", [])[:8]:
+        tables.append(
+            {
+                "table_name": table.get("table_name"),
+                "source_file": table.get("source_file"),
+                "sheet": table.get("sheet"),
+                "row_count": table.get("row_count"),
+                "column_count": table.get("column_count"),
+                "columns": [
+                    {
+                        "name": column.get("name"),
+                        "type": column.get("type"),
+                        "semantic_hints": column.get("semantic_hints", []),
+                        "sample_values": column.get("sample_values", [])[:3],
+                    }
+                    for column in table.get("columns", [])[:24]
+                ],
+                "field_roles": table.get("field_roles", {}),
+                "quality_issues": table.get("quality_issues", [])[:10],
+                "missing": table.get("missing", [])[:8],
+                "numeric_flags": [
+                    {
+                        "column": item.get("column"),
+                        "negative_count": item.get("negative_count"),
+                        "zero_count": item.get("zero_count"),
+                        "high_outlier_count": item.get("high_outlier_count"),
+                        "min": item.get("min"),
+                        "max": item.get("max"),
+                        "avg": item.get("avg"),
+                    }
+                    for item in table.get("numeric", [])[:10]
+                ],
+                "temporal": table.get("temporal", [])[:8],
+                "categorical": [
+                    {
+                        "column": item.get("column"),
+                        "unique_count": item.get("unique_count"),
+                        "top_values": item.get("top_values", [])[:5],
+                    }
+                    for item in table.get("categorical", [])[:8]
+                ],
+                "analysis_suggestions": table.get("analysis_suggestions", [])[:6],
+                "cleaning_policy": {
+                    "rules": (table.get("cleaning_policy") or {}).get("rules", [])[:8],
+                    "rough_impacted_rows_sum": (table.get("cleaning_policy") or {}).get("rough_impacted_rows_sum"),
+                    "rough_impacted_rate_sum": (table.get("cleaning_policy") or {}).get("rough_impacted_rate_sum"),
+                    "requires_user_confirmation": (table.get("cleaning_policy") or {}).get("requires_user_confirmation"),
+                    "mutation_allowed": (table.get("cleaning_policy") or {}).get("mutation_allowed"),
+                },
+            }
+        )
+    return {
+        "dataset_name": facts.get("dataset_name"),
+        "table_count": facts.get("table_count"),
+        "total_rows": facts.get("total_rows"),
+        "dataset_wide_notes": facts.get("dataset_wide_notes", []),
+        "schema_compare": facts.get("schema_compare", {}),
+        "tables": tables,
+    }
+
+
+def _sanitize_llm_standard_answer(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    forbidden = ("chain_of_thought", "raw_prompt", "reasoning_trace", "trace.json", "task_id", "scorer", "api_key")
+    safe_lines = [line.rstrip() for line in text.splitlines() if not any(token in line.lower() for token in forbidden)]
+    return "\n".join(safe_lines).strip()
+
+
+def _llm_model_name(client: Any) -> str:
+    config = getattr(client, "config", None)
+    model = getattr(config, "model", "")
+    provider = getattr(config, "provider", "")
+    if provider or model:
+        return f"{provider}:{model}".strip(":")
+    return client.__class__.__name__
+
+
+def _llm_provider_name(client: Any) -> str:
+    config = getattr(client, "config", None)
+    return str(getattr(config, "provider", "") or "").strip().lower()
+
+
+def reference_answer_label(source: Any) -> str:
+    normalized = str(source or "").strip().lower()
+    if normalized.startswith("mixed_deepseek_reference"):
+        return "deepseek"
+    if normalized.startswith("mixed_browser_gpt_reference"):
+        return "gpt"
+    return REFERENCE_SOURCE_LABELS.get(normalized, normalized or "reference")
+
+
+def display_source_answer_origin(source: Any) -> str:
+    return reference_answer_label(source)
+
+
+def source_answer_artifact_prefix(generation: dict[str, Any] | None) -> str:
+    label = reference_answer_label((generation or {}).get("source"))
+    if label in {"gpt", "deepseek"}:
+        return f"{label}_answers"
+    if label == "deterministic_smoke":
+        return "deterministic_smoke_answers"
+    return "reference_answers"
+
+
+def _score_float(value: Any, *, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _profile_registered_table(con: duckdb.DuckDBPyConnection, view_name: str, table_name: str, path: Path, sheet: str | None) -> TableRef:
@@ -964,15 +1431,35 @@ def score_candidate_answers(
         text = str(answers.get(case["case_id"]) or "")
         missing_terms = [term for term in case["required_terms"] if term not in text]
         number_checks = [candidate_contains_number(text, check, thresholds.get("numeric_tolerance", 0.01)) for check in case["expected_numbers"]]
-        passed = bool(text) and not missing_terms and all(item["passed"] for item in number_checks)
+        unexpected_not_applicable = _contains_unexpected_not_applicable(text)
+        passed = bool(text) and not unexpected_not_applicable and not missing_terms and all(item["passed"] for item in number_checks)
         gpt_like_checks = gpt_like_style_checks(case, text)
         gpt_like_passed = all(item["passed"] for item in gpt_like_checks)
+        failure_reasons = []
+        if not text:
+            failure_reasons.append("empty_answer")
+        if unexpected_not_applicable:
+            failure_reasons.append(
+                "true_unsupported" if case.get("answerability") == "true_unsupported" else "capability_gap_unexpected_not_applicable"
+            )
+        if missing_terms:
+            failure_reasons.append("missing_required_terms")
+        if any(not item["passed"] for item in number_checks):
+            failure_reasons.append("number_mismatch")
+        if not gpt_like_passed:
+            failure_reasons.append("gpt_like_style_gap")
         details.append(
             {
                 "case_id": case["case_id"],
                 "category": case["category"],
+                "ae_group": case.get("ae_group"),
+                "difficulty_bucket": case.get("difficulty_bucket", "ordinary"),
+                "capability_family": case.get("capability_family", "unknown"),
+                "answerability": case.get("answerability", "answerable"),
                 "passed": passed,
                 "gpt_like_passed": gpt_like_passed,
+                "unexpected_not_applicable": unexpected_not_applicable,
+                "failure_reasons": failure_reasons,
                 "missing_terms": missing_terms,
                 "number_checks": number_checks,
                 "gpt_like_checks": gpt_like_checks,
@@ -980,6 +1467,12 @@ def score_candidate_answers(
         )
     passed_count = sum(1 for item in details if item["passed"])
     gpt_like_count = sum(1 for item in details if item["gpt_like_passed"])
+    bucket_summary = candidate_bucket_summary(details)
+    unexpected_not_applicable_count = sum(
+        1
+        for item in details
+        if item.get("unexpected_not_applicable") and item.get("answerability") != "true_unsupported"
+    )
     return {
         "candidate_path": str(candidate_path),
         "total": len(details),
@@ -987,6 +1480,14 @@ def score_candidate_answers(
         "pass_rate": _safe_div(passed_count, len(details)),
         "gpt_like_passed": gpt_like_count,
         "gpt_like_pass_rate": _safe_div(gpt_like_count, len(details)),
+        "unexpected_not_applicable_count": unexpected_not_applicable_count,
+        "acceptance_policy": acceptance_policy(),
+        "bucket_summary": bucket_summary,
+        "capability_failures": capability_failure_summary(details),
+        "acceptance_passed": (
+            unexpected_not_applicable_count == ANSWERABLE_CASE_NOT_APPLICABLE_LIMIT
+            and all(item["gate_passed"] for item in bucket_summary.values())
+        ),
         "details": details,
     }
 
@@ -1000,6 +1501,7 @@ def gpt_like_style_checks(case: dict[str, Any], text: str) -> list[dict[str, Any
         internal_marker_ok = any(token in stripped for token in ("不会展示", "不能展示", "只给用户可读", "不能把", "需要外部维表"))
     checks = [
         {"name": "non_empty", "passed": bool(stripped)},
+        {"name": "no_unexpected_not_applicable", "passed": not _contains_unexpected_not_applicable(stripped)},
         {"name": "not_raw_detail_dump", "passed": not _looks_like_detail_dump(stripped)},
         {"name": "concise_main_answer", "passed": len(stripped) <= max_len},
         {"name": "no_internal_artifact_markers", "passed": internal_marker_ok},
@@ -1016,6 +1518,63 @@ def gpt_like_style_checks(case: dict[str, Any], text: str) -> list[dict[str, Any
     elif route == "chat_without_dataset":
         checks.append({"name": "chat_no_file_boundary", "passed": any(token in stripped for token in ("没有上传文件", "上传文件后", "上传数据后", "没有数据", "支持多文件"))})
     return checks
+
+
+def _contains_unexpected_not_applicable(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return "not applicable" in lowered or bool(re.search(r"(^|[^a-z0-9])n/a([^a-z0-9]|$)", lowered)) or lowered == "na"
+
+
+def candidate_bucket_summary(details: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {}
+    for bucket in ("ordinary", "complex"):
+        bucket_rows = [
+            item
+            for item in details
+            if item.get("difficulty_bucket", "ordinary") == bucket and item.get("answerability") != "true_unsupported"
+        ]
+        threshold = COMPLEX_ACCEPTANCE_THRESHOLD if bucket == "complex" else ORDINARY_ACCEPTANCE_THRESHOLD
+        passed = sum(1 for item in bucket_rows if item.get("passed"))
+        gpt_like_passed = sum(1 for item in bucket_rows if item.get("gpt_like_passed"))
+        unexpected_na = sum(1 for item in bucket_rows if item.get("unexpected_not_applicable"))
+        pass_rate = _safe_div(passed, len(bucket_rows))
+        summary[bucket] = {
+            "total": len(bucket_rows),
+            "passed": passed,
+            "pass_rate": pass_rate,
+            "gpt_like_passed": gpt_like_passed,
+            "gpt_like_pass_rate": _safe_div(gpt_like_passed, len(bucket_rows)),
+            "unexpected_not_applicable_count": unexpected_na,
+            "required_pass_rate": threshold,
+            "gate_passed": pass_rate >= threshold and unexpected_na == ANSWERABLE_CASE_NOT_APPLICABLE_LIMIT,
+        }
+    return summary
+
+
+def capability_failure_summary(details: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {}
+    for item in details:
+        if item.get("passed") and item.get("gpt_like_passed") and not item.get("unexpected_not_applicable"):
+            continue
+        family = str(item.get("capability_family") or "unknown")
+        bucket = summary.setdefault(
+            family,
+            {
+                "total_failures": 0,
+                "unexpected_not_applicable_count": 0,
+                "case_ids": [],
+                "failure_reasons": {},
+            },
+        )
+        bucket["total_failures"] += 1
+        if item.get("unexpected_not_applicable"):
+            bucket["unexpected_not_applicable_count"] += 1
+        bucket["case_ids"].append(item.get("case_id"))
+        for reason in item.get("failure_reasons") or []:
+            bucket["failure_reasons"][reason] = bucket["failure_reasons"].get(reason, 0) + 1
+    return summary
 
 
 def build_comparison_rows(
@@ -1044,11 +1603,25 @@ def build_comparison_rows(
                 "case_id": case_id,
                 "ae_group": case["ae_group"],
                 "category": case["category"],
+                "difficulty_bucket": case.get("difficulty_bucket", "ordinary"),
+                "capability_family": case.get("capability_family", "unknown"),
+                "answerability": case.get("answerability", "answerable"),
+                "acceptance_threshold": case.get("acceptance_threshold", ORDINARY_ACCEPTANCE_THRESHOLD),
                 "question": case["question"],
                 "expected_route": case["expected_route"],
                 "standard_answer": case["standard_answer"],
+                "source_answer": case.get("source_answer") or case["standard_answer"],
+                "standard_answer_source": case.get("standard_answer_source", "unknown"),
+                "source_answer_origin": case.get("standard_answer_source", "unknown"),
+                "reference_answer_label": case.get("reference_answer_label") or reference_answer_label(case.get("standard_answer_source")),
+                "standard_answer_model": case.get("standard_answer_model", ""),
+                "standard_answer_policy": case.get("standard_answer_policy", ""),
+                "standard_answer_notes": case.get("standard_answer_notes", []),
+                "standard_answer_confidence": case.get("standard_answer_confidence"),
                 "candidate_answer": candidate_answer,
                 "comparison_status": status,
+                "unexpected_not_applicable": score.get("unexpected_not_applicable", False),
+                "failure_reasons": score.get("failure_reasons", []),
                 "missing_terms": score.get("missing_terms", []),
                 "number_checks": score.get("number_checks", []),
                 "gpt_like_checks": score.get("gpt_like_checks", []),
@@ -1057,16 +1630,29 @@ def build_comparison_rows(
     return rows
 
 
-def generate_vds_answers(cases: list[dict[str, Any]], files: list[Path], output_dir: Path, *, quick: bool = False) -> dict[str, str]:
+def generate_vds_answers(
+    cases: list[dict[str, Any]],
+    files: list[Path],
+    output_dir: Path,
+    *,
+    quick: bool = False,
+    answer_provider: str = "env",
+) -> tuple[dict[str, str], dict[str, Any]]:
     """Ask the local VDS service for every case and persist raw replies."""
 
     from backend.services.data_agent_service import DataAgentService
     from backend.storage.temp_file_store import TempFileStore
-    from data_agent_core.llm.client import MockLLMClient
+
+    llm_client, generation = _load_vds_candidate_llm_client(answer_provider)
+    if quick:
+        generation["formal_candidate_answers"] = False
+        generation.setdefault("warnings", []).append(
+            "quick_vds_answers samples files and may reuse representative responses; smoke only, not acceptance evidence."
+        )
 
     service = DataAgentService(
         file_store=TempFileStore(output_dir / "vds_storage"),
-        llm_client=MockLLMClient(),
+        llm_client=llm_client,
     )
     vds_files = _prepare_quick_vds_files(files, output_dir) if quick else files
     upload = service.upload_datasets(vds_files, original_filenames=_vds_original_filenames(files, vds_files, quick=quick))
@@ -1118,19 +1704,99 @@ def generate_vds_answers(cases: list[dict[str, Any]], files: list[Path], output_
                 "warnings": response.get("warnings", []),
                 "debug": _safe_debug(response.get("debug", {})),
                 "quick_reused": quick_reused,
+                "vds_answer_provider": generation.get("provider", "unknown"),
+                "vds_answer_model": generation.get("model", ""),
+                "formal_candidate_answer": bool(generation.get("formal_candidate_answers")),
             }
         )
+    reuse_summary = _candidate_answer_reuse_summary(rows)
+    if reuse_summary["duplicate_answer_group_count"]:
+        generation.setdefault("warnings", []).append(
+            "duplicate_candidate_answers_detected: inspect vds_answers.jsonl before using this run as demo evidence."
+        )
+    generation["answer_reuse_summary"] = reuse_summary
     write_jsonl(output_dir / "vds_answers.jsonl", rows)
     write_json(
         output_dir / "vds_answers.json",
         {
             "upload": upload,
             "answers": rows,
+            "candidate_answer_generation": generation,
             "quick_vds_answers": quick,
             "quick_vds_files": [str(path) for path in vds_files] if quick else [],
+            "formal_candidate_answers": bool(generation.get("formal_candidate_answers")) and not quick,
         },
     )
-    return answers
+    return answers, generation
+
+
+def _load_vds_candidate_llm_client(answer_provider: str) -> tuple[Any, dict[str, Any]]:
+    normalized = str(answer_provider or "env").strip().lower()
+    if normalized == "mock":
+        from data_agent_core.llm.client import MockLLMClient
+
+        client = MockLLMClient()
+        return (
+            client,
+            {
+                "provider": "mock",
+                "model": "MockLLMClient",
+                "formal_candidate_answers": False,
+                "warnings": ["mock candidate provider is smoke-only and can produce template-like repeated answers."],
+            },
+        )
+    if normalized != "env":
+        raise ValueError("vds answer provider must be one of: env, mock")
+
+    from data_agent_core.llm.client import MissingLLMConfigError, MockLLMClient, load_llm_client_from_env
+
+    try:
+        client = load_llm_client_from_env()
+    except MissingLLMConfigError as exc:
+        raise RuntimeError(
+            "Formal generated VDS answers require VDS_LLM_PROVIDER=deepseek or openai plus the matching API key. "
+            "Use --vds-answer-provider mock only for smoke checks."
+        ) from exc
+    if isinstance(client, MockLLMClient):
+        raise RuntimeError(
+            "VDS_LLM_PROVIDER=mock is not valid for formal generated VDS answers. "
+            "Use --vds-answer-provider mock only for smoke checks."
+        )
+    return (
+        client,
+        {
+            "provider": _llm_provider_name(client) or "env",
+            "model": _llm_model_name(client),
+            "formal_candidate_answers": True,
+            "warnings": [],
+        },
+    )
+
+
+def _candidate_answer_reuse_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        fingerprint = _candidate_answer_fingerprint(row.get("answer", ""))
+        if not fingerprint:
+            continue
+        grouped.setdefault(fingerprint, []).append(str(row.get("case_id") or ""))
+    duplicates = [
+        {"case_ids": case_ids, "count": len(case_ids)}
+        for case_ids in grouped.values()
+        if len(set(case_ids)) > 1
+    ]
+    return {
+        "duplicate_answer_group_count": len(duplicates),
+        "duplicate_answer_case_count": sum(item["count"] for item in duplicates),
+        "duplicate_answer_groups": duplicates[:20],
+    }
+
+
+def _candidate_answer_fingerprint(answer: Any) -> str:
+    text = re.sub(r"\s+", " ", str(answer or "").strip())
+    if not text:
+        return ""
+    return text[:2000]
 
 
 def _prepare_quick_vds_files(files: list[Path], output_dir: Path) -> list[Path]:
@@ -1270,8 +1936,92 @@ def ae_group_for_category(category: str) -> str:
     return mapping.get(category, "E_technical_review_guardrails")
 
 
+def acceptance_metadata_for_case(case_id: str, category: str) -> dict[str, Any]:
+    metadata = dict(CASE_ACCEPTANCE_METADATA.get(case_id) or {})
+    bucket = str(metadata.get("difficulty_bucket") or _default_difficulty_bucket(category))
+    threshold = COMPLEX_ACCEPTANCE_THRESHOLD if bucket == "complex" else ORDINARY_ACCEPTANCE_THRESHOLD
+    return {
+        "difficulty_bucket": bucket,
+        "capability_family": str(metadata.get("capability_family") or capability_family_for_category(category)),
+        "answerability": "answerable",
+        "acceptance_threshold": threshold,
+        "not_applicable_policy": "unexpected_not_applicable_zero_unless_true_unsupported",
+    }
+
+
+def _default_difficulty_bucket(category: str) -> str:
+    if category in {"adaptive_business", "general_to_analysis_routing", "cleaning_strategy"}:
+        return "complex"
+    return "ordinary"
+
+
+def capability_family_for_category(category: str) -> str:
+    mapping = {
+        "general_no_file": "safety_boundary",
+        "general_uploaded": "overview",
+        "ambiguous_user_questions": "broad_question_routing",
+        "basic_data_understanding": "field_mapping",
+        "quality_and_anomaly": "quality",
+        "analysis_readiness": "field_mapping",
+        "adaptive_business": "single_table_aggregation",
+        "general_to_analysis_routing": "broad_question_routing",
+        "technical_review_guardrails": "safety_boundary",
+        "cleaning_strategy": "quality",
+    }
+    return mapping.get(category, "unknown")
+
+
+def acceptance_policy() -> dict[str, Any]:
+    return {
+        "ordinary_required_pass_rate": ORDINARY_ACCEPTANCE_THRESHOLD,
+        "complex_required_pass_rate": COMPLEX_ACCEPTANCE_THRESHOLD,
+        "unexpected_not_applicable_required": ANSWERABLE_CASE_NOT_APPLICABLE_LIMIT,
+        "true_unsupported_policy": "Exclude only cases explicitly marked true_unsupported; generic gate cases are answerable by default.",
+        "reference_sources": ["deepseek_reference", "browser_gpt_reference"],
+        "smoke_only_sources": ["deterministic_fallback"],
+    }
+
+
 def num(label: str, value: Any, tolerance_abs: float | None = None, tolerance_rel: float = 0.01) -> dict[str, Any]:
     return {"label": label, "value": float(value), "tolerance_abs": 0.01 if tolerance_abs is None else tolerance_abs, "tolerance_rel": tolerance_rel}
+
+
+def load_external_standard_answers(path: Path) -> dict[str, str]:
+    if path.suffix.lower() == ".jsonl":
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return {
+            str(row.get("case_id") or row.get("id")): _external_source_answer_value(row)
+            for row in rows
+        }
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        if isinstance(data.get("cases"), list):
+            return {
+                str(row.get("case_id") or row.get("id")): _external_source_answer_value(row)
+                for row in data["cases"]
+            }
+        source_answer_rows = data.get("source_answers") if isinstance(data.get("source_answers"), list) else data.get("standard_answers")
+        if isinstance(source_answer_rows, list):
+            return {
+                str(row.get("case_id") or row.get("id")): _external_source_answer_value(row)
+                for row in source_answer_rows
+            }
+        return {str(key): str(value) for key, value in data.items()}
+    return {
+        str(row.get("case_id") or row.get("id")): _external_source_answer_value(row)
+        for row in data
+    }
+
+
+def _external_source_answer_value(row: dict[str, Any]) -> str:
+    return str(
+        row.get("source_answer")
+        or row.get("gpt_answer")
+        or row.get("deepseek_answer")
+        or row.get("standard_answer")
+        or row.get("answer")
+        or ""
+    )
 
 
 def load_candidate_answers(path: Path) -> dict[str, str]:
@@ -1294,8 +2044,15 @@ def candidate_contains_number(text: str, check: dict[str, Any], default_toleranc
     return {"label": check["label"], "expected": expected, "tolerance": tolerance, "passed": passed}
 
 
+def _is_formal_standard_source(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"deepseek_reference", "browser_gpt_reference"}
+
+
 def summary_markdown(run: dict[str, Any]) -> str:
     facts = run["facts"]
+    standard_generation = run.get("standard_answer_generation") or {}
+    source_label = reference_answer_label(standard_generation.get("source"))
+    candidate_generation = run.get("candidate_answer_generation") or {}
     ae_counts: dict[str, int] = {}
     for case in run["cases"]:
         ae_counts[case["ae_group"]] = ae_counts.get(case["ae_group"], 0) + 1
@@ -1307,11 +2064,17 @@ def summary_markdown(run: dict[str, Any]) -> str:
         f"- Tables: {facts['table_count']}",
         f"- Total rows: {_int(facts['total_rows'])}",
         f"- Cases: {len(run['cases'])}",
+        f"- Source answer label: {source_label}",
+        f"- Source answer origin: {display_source_answer_origin(standard_generation.get('source'))}",
+        f"- Source answer model: {standard_generation.get('model', 'n/a')}",
         f"- Git branch: {run['repo'].get('branch')}",
         f"- Git commit: {run['repo'].get('commit')}",
         "",
         "This is the required dataset-agnostic gate. Domain-specific packs run after it.",
+        "Formal source answers must be explicitly labeled as deepseek or gpt and grounded in computed source-file facts.",
     ]
+    if not _is_formal_standard_source(standard_generation.get("source")):
+        lines.append("Warning: this run does not contain all formal deepseek/gpt source answers and is not valid for formal acceptance scoring.")
     for table in facts["tables"]:
         lines.append(f"- {table['table_name']}: {_int(table['row_count'])} rows, {table['column_count']} columns, quality issues={len(table['quality_issues'])}")
     lines.extend(["", "## A-E Coverage"])
@@ -1329,37 +2092,125 @@ def summary_markdown(run: dict[str, Any]) -> str:
             [
                 "",
                 "## Candidate Score",
+                f"- VDS answer provider: {candidate_generation.get('provider', 'unknown')}",
+                f"- VDS answer model: {candidate_generation.get('model', 'n/a')}",
+                f"- Formal VDS answers: {candidate_generation.get('formal_candidate_answers', False)}",
                 f"- Exact term/number passed: {score['passed']} / {score['total']}",
                 f"- Exact pass rate: {_pct(score['pass_rate'])}",
                 f"- GPT-like style passed: {score.get('gpt_like_passed', 0)} / {score['total']}",
                 f"- GPT-like pass rate: {_pct(score.get('gpt_like_pass_rate', 0))}",
+                f"- Unexpected Not Applicable: {score.get('unexpected_not_applicable_count', 0)}",
+                f"- Acceptance gate passed: {score.get('acceptance_passed', False)}",
             ]
         )
+        bucket_summary = score.get("bucket_summary") or {}
+        if bucket_summary:
+            lines.extend(["", "## Acceptance Buckets"])
+            for bucket in ("ordinary", "complex"):
+                item = bucket_summary.get(bucket) or {}
+                lines.append(
+                    "- {bucket}: {passed}/{total} ({rate}), required={required}, unexpected Not Applicable={na}, gate={gate}".format(
+                        bucket=bucket,
+                        passed=item.get("passed", 0),
+                        total=item.get("total", 0),
+                        rate=_pct(item.get("pass_rate", 0)),
+                        required=_pct(item.get("required_pass_rate", 0)),
+                        na=item.get("unexpected_not_applicable_count", 0),
+                        gate=item.get("gate_passed", False),
+                    )
+                )
+        capability_failures = score.get("capability_failures") or {}
+        if capability_failures:
+            lines.extend(["", "## Main Failure Capability Families"])
+            for family, item in sorted(capability_failures.items(), key=lambda pair: pair[1].get("total_failures", 0), reverse=True)[:12]:
+                lines.append(
+                    f"- {family}: failures={item.get('total_failures', 0)}, unexpected Not Applicable={item.get('unexpected_not_applicable_count', 0)}, cases={', '.join(str(case_id) for case_id in item.get('case_ids', [])[:8])}"
+                )
+        if candidate_generation.get("warnings"):
+            lines.extend(["", "## Candidate Warnings"])
+            for warning in candidate_generation.get("warnings") or []:
+                lines.append(f"- {warning}")
     return "\n".join(lines) + "\n"
 
 
 def standard_answers_markdown(run: dict[str, Any]) -> str:
-    lines = ["# Generic Dataset Standard Answers", "", "这些答案由源文件画像生成，只用于离线评估。", ""]
+    standard_generation = run.get("standard_answer_generation") or {}
+    source_label = reference_answer_label(standard_generation.get("source"))
+    lines = [
+        f"# Generic Dataset {source_label} Answers",
+        "",
+        "这些回答必须明确标记为 deepseek 或 gpt，并且只能基于源文件画像和已计算事实；只用于离线评估，不会传入 VDS Agent。",
+        "",
+        f"- Source answer label: {source_label}",
+        f"- Source answer origin: {display_source_answer_origin(standard_generation.get('source'))}",
+        f"- Source answer model: {standard_generation.get('model', 'n/a')}",
+        f"- Policy: {standard_generation.get('policy', 'n/a')}",
+        "",
+    ]
     for case in run["cases"]:
-        lines.extend([f"## {case['case_id']} - {case['category']}", "", f"Question: {case['question']}", "", case["standard_answer"], ""])
+        lines.extend(
+            [
+                f"## {case['case_id']} - {case['category']}",
+                "",
+                f"Question: {case['question']}",
+                f"Answer label: {case.get('reference_answer_label') or reference_answer_label(case.get('standard_answer_source'))}",
+                f"Answer source: {display_source_answer_origin(case.get('standard_answer_source'))}",
+                f"Answer model: {case.get('standard_answer_model', 'n/a')}",
+                f"Answer policy: {case.get('standard_answer_policy', 'n/a')}",
+                "",
+                case["standard_answer"],
+                "",
+            ]
+        )
     return "\n".join(lines)
 
 
 def comparison_markdown(run: dict[str, Any]) -> str:
     has_candidate = bool(run.get("candidate_score"))
+    standard_generation = run.get("standard_answer_generation") or {}
+    source_label = reference_answer_label(standard_generation.get("source"))
+    source_answers_file = f"{source_answer_artifact_prefix(standard_generation)}.jsonl"
+    candidate_generation = run.get("candidate_answer_generation") or {}
     lines = [
         "# Generic Dataset Comparison",
         "",
         f"Dataset: {run['dataset_name']}",
+        f"Source answer label: {source_label}",
+        f"Source answer origin: {display_source_answer_origin(standard_generation.get('source'))}",
+        f"Source answer model: {standard_generation.get('model', 'n/a')}",
         "",
-        "本文件用于会议逐题对比：问题、预期路由、我的标准回复、VDS 实际回复、对比状态会放在一起。",
+        f"本文件用于会议逐题对比：问题、预期路由、{source_label} 回答、VDS 实际回复、对比状态会放在一起。",
     ]
+    if not _is_formal_standard_source(standard_generation.get("source")):
+        lines.append("注意：当前来源不是全量 deepseek/gpt 回答，不应用作正式验收口径。")
     if not has_candidate:
-        lines.append("当前未提供 VDS 实际回答，所以只列出我的标准回复；后续传入 `--candidate-answers` 后会自动填充对比结果。")
+        lines.append(f"当前未提供 VDS 实际回答，所以只列出 {source_label} 回答；后续传入 `--candidate-answers` 后会自动填充对比结果。")
     else:
         score = run["candidate_score"]
+        lines.append(f"VDS answer provider: {candidate_generation.get('provider', 'unknown')}")
+        lines.append(f"VDS answer model: {candidate_generation.get('model', 'n/a')}")
+        lines.append(f"Formal VDS answers: {candidate_generation.get('formal_candidate_answers', False)}")
+        if candidate_generation.get("warnings"):
+            lines.append("VDS answer warnings: " + "; ".join(str(item) for item in candidate_generation.get("warnings") or []))
         lines.append(f"VDS exact score: {score['passed']} / {score['total']} ({_pct(score['pass_rate'])})")
         lines.append(f"VDS GPT-like style gate: {score.get('gpt_like_passed', 0)} / {score['total']} ({_pct(score.get('gpt_like_pass_rate', 0))})")
+        lines.append(f"Unexpected Not Applicable: {score.get('unexpected_not_applicable_count', 0)}")
+        bucket_summary = score.get("bucket_summary") or {}
+        if bucket_summary:
+            lines.append(
+                "Acceptance buckets: "
+                + "; ".join(
+                    "{bucket} {passed}/{total} ({rate}) required {required} gate={gate}".format(
+                        bucket=bucket,
+                        passed=(bucket_summary.get(bucket) or {}).get("passed", 0),
+                        total=(bucket_summary.get(bucket) or {}).get("total", 0),
+                        rate=_pct((bucket_summary.get(bucket) or {}).get("pass_rate", 0)),
+                        required=_pct((bucket_summary.get(bucket) or {}).get("required_pass_rate", 0)),
+                        gate=(bucket_summary.get(bucket) or {}).get("gate_passed", False),
+                    )
+                    for bucket in ("ordinary", "complex")
+                )
+            )
     current_group = ""
     for row in run["comparison"]:
         if row["ae_group"] != current_group:
@@ -1371,11 +2222,17 @@ def comparison_markdown(run: dict[str, Any]) -> str:
                 "",
                 f"- Question: {row['question']}",
                 f"- Expected route: {row['expected_route']}",
+                f"- Difficulty bucket: {row.get('difficulty_bucket', 'ordinary')}",
+                f"- Capability family: {row.get('capability_family', 'unknown')}",
+                f"- Answerability: {row.get('answerability', 'answerable')}",
                 f"- Comparison status: {row['comparison_status']}",
+                f"- Answer label: {row.get('reference_answer_label') or reference_answer_label(row.get('standard_answer_source'))}",
+                f"- Answer source: {display_source_answer_origin(row.get('standard_answer_source'))}",
+                f"- Answer model: {row.get('standard_answer_model', 'n/a')}",
                 "",
-                "**我的标准回复**",
+                f"**{row.get('reference_answer_label') or reference_answer_label(row.get('standard_answer_source'))} 回答**",
                 "",
-                _comparison_answer_excerpt(row.get("standard_answer") or "", limit=1200, full_target="standard_answers.jsonl"),
+                _comparison_answer_excerpt(row.get("standard_answer") or "", limit=1200, full_target=source_answers_file),
                 "",
                 "**VDS 实际回复**",
                 "",
@@ -1383,7 +2240,7 @@ def comparison_markdown(run: dict[str, Any]) -> str:
                 "",
             ]
         )
-        if row.get("missing_terms") or row.get("number_checks"):
+        if row.get("missing_terms") or row.get("number_checks") or row.get("failure_reasons") or row.get("unexpected_not_applicable"):
             lines.extend(
                 [
                     "**对比细节**",
@@ -1391,6 +2248,8 @@ def comparison_markdown(run: dict[str, Any]) -> str:
                     f"- Missing terms: {', '.join(row.get('missing_terms') or []) or 'none'}",
                     f"- Number checks: {json.dumps(row.get('number_checks') or [], ensure_ascii=False)}",
                     f"- GPT-like checks: {json.dumps(row.get('gpt_like_checks') or [], ensure_ascii=False)}",
+                    f"- Unexpected Not Applicable: {row.get('unexpected_not_applicable', False)}",
+                    f"- Failure reasons: {', '.join(row.get('failure_reasons') or []) or 'none'}",
                     "",
                 ]
             )

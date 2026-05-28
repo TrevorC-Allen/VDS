@@ -17,6 +17,7 @@
 9. 中文优先是阶段门槛：中文问题、中文字段名、中文业务术语、中文日期/金额/百分比格式和中文最终回答必须作为主路径验收；英文能力必须保留回归，但不能替代中文验收。
 10. 禁止只用英文 Benchmark、英文 prompt 或英文字段证明能力完成；中英文能力都必须纳入可复现测试或明确记录阶段限制。
 11. GPT-like parity redline：凡是修改文件解析、字段画像、最终回答、Insight、图表/表格、过程流、代码 artifact、Workbench 布局样式或用户可见文案，退出阶段前必须对照 GPT / ChatGPT Data Analysis 同类结果或已冻结标准 GPT 参考结果。验收结论必须明确“GPT 会不会这样解析、这样组织、这样排版、这样回答”；差距很大时直接打回重写，不能用单测通过、mock 通过或 smoke 通过替代。
+12. 每次正式测试必须写 `docs/test-runs/*.md` 测试文档；没有测试文档的 API smoke、浏览器 smoke、benchmark 回归、LLM GPT-like gate、changelog audit 或修复后复测，都不能作为阶段退出或验收完成证据。
 
 ## Phase 1：核心算法 + 最小 API
 

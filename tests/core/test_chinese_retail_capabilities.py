@@ -17,6 +17,7 @@ from data_agent_core.executors.pandas_executor import execute_plan
 from data_agent_core.output.chart_planner import build_chart_spec
 from data_agent_core.output.chart_renderer import attach_rendered_chart
 from data_agent_core.output.response_builder import build_response, format_answer
+from data_agent_core.verifier.rule_checker import verify_execution
 
 
 class ChineseRetailCapabilitiesTest(unittest.TestCase):
@@ -132,6 +133,24 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.assertTrue(result.success, result.errors)
         return format_answer(result.value, logic.output_format)
 
+    def _logic_result(self, question: str, guidelines: str = ""):
+        logic = parse_generic_table_question(question, self.tables, guidelines)
+        result = execute_plan(build_analysis_plan(logic), {"tables": self.tables})
+        self.assertTrue(result.success, result.errors)
+        return logic, result, format_answer(result.value, logic.output_format)
+
+    def _verified_logic_result(self, question: str, guidelines: str = ""):
+        logic = parse_generic_table_question(question, self.tables, guidelines)
+        plan = build_analysis_plan(logic)
+        result = execute_plan(plan, {"tables": self.tables})
+        self.assertTrue(result.success, result.errors)
+        verification = verify_execution(
+            result,
+            plan=plan,
+            user_question=UserQuestion(dataset_id="retail_test", question=question, execution_mode="dual"),
+        )
+        return logic, result, verification, format_answer(result.value, logic.output_format)
+
     def test_distribution_ranking_uses_history_table_and_half_up_money(self) -> None:
         answer = self._answer("2026年5月历史分销金额最高的业代是谁？", "答案只返回业代姓名。")
         self.assertEqual(answer, "李四")
@@ -175,7 +194,7 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.assertEqual(answer, "80.00")
         self.tables["v_trd_dist_ord_dtl"] = original
 
-    def test_distribution_sum_not_applicable_is_true_unsupported_when_filtered_data_missing(self) -> None:
+    def test_distribution_sum_returns_zero_when_filtered_data_missing(self) -> None:
         original = self.tables["v_trd_dist_ord_dtl"]
         self.tables["v_trd_dist_ord_dtl"] = pd.concat(
             [
@@ -217,9 +236,9 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
             verification=VerificationResult(passed=True),
         )
 
-        self.assertEqual("Not Applicable", response.answer)
+        self.assertEqual("0.00", response.answer)
         self.assertTrue(response.success)
-        self.assertEqual("true_unsupported", response.debug["not_applicable_attribution"]["category"])
+        self.assertNotIn("not_applicable_attribution", response.debug)
         self.tables["v_trd_dist_ord_dtl"] = original
 
     def test_route_contract_product_quantity_uses_store_set_join(self) -> None:
@@ -416,6 +435,135 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.assertEqual("line", chart.chart_type)
         self.assertEqual(2, len(chart.series))
         self.assertTrue(chart.image_data_uri.startswith("data:image/svg+xml;base64,"))
+
+    def test_monthly_target_achievement_returns_each_month_and_threshold_months(self) -> None:
+        self.tables["v_trd_dist_ord_dtl"] = pd.DataFrame(
+            [
+                {"sign_time": "2026-01-05", "sign_amt": 50.0, "emp_name": "张三", "p_emp_name": "赵经理", "cust_code": "C1"},
+                {"sign_time": "2026-02-05", "sign_amt": 70.0, "emp_name": "张三", "p_emp_name": "赵经理", "cust_code": "C1"},
+                {"sign_time": "2026-03-05", "sign_amt": 130.0, "emp_name": "张三", "p_emp_name": "赵经理", "cust_code": "C1"},
+                {"sign_time": "2026-04-05", "sign_amt": 80.0, "emp_name": "张三", "p_emp_name": "赵经理", "cust_code": "C1"},
+                {"sign_time": "2026-05-05", "sign_amt": 40.0, "emp_name": "张三", "p_emp_name": "赵经理", "cust_code": "C1"},
+            ]
+        )
+        self.tables["ads_trd_dist_ord_target_emp_1m_df"] = pd.DataFrame(
+            [{"stat_month": ym, "emp_name": "张三", "p_emp_name": "赵经理", "target": 100.0} for ym in range(202601, 202606)]
+        )
+
+        logic, result, verification, answer = self._verified_logic_result("张三在2026年1月至5月每月分销目标达成率是多少？哪些月份达到或超过100%？")
+
+        self.assertEqual("retail_target_achievement_monthly", logic.operation)
+        self.assertTrue(verification.passed, verification.semantic_verification_notes)
+        self.assertEqual(5, len(result.rows))
+        self.assertIn("2026年3月 130.00%", answer)
+        self.assertIn("达到或超过100%的月份：2026年3月", answer)
+
+    def test_target_actual_monthly_comparison_returns_chartable_rows(self) -> None:
+        self.tables["v_trd_dist_ord_dtl"] = pd.DataFrame(
+            [
+                {"sign_time": "2026-01-05", "sign_amt": 50.0, "emp_name": "张三", "p_emp_name": "赵经理", "cust_code": "C1"},
+                {"sign_time": "2026-02-05", "sign_amt": 70.0, "emp_name": "张三", "p_emp_name": "赵经理", "cust_code": "C1"},
+                {"sign_time": "2026-03-05", "sign_amt": 130.0, "emp_name": "张三", "p_emp_name": "赵经理", "cust_code": "C1"},
+                {"sign_time": "2026-04-05", "sign_amt": 80.0, "emp_name": "张三", "p_emp_name": "赵经理", "cust_code": "C1"},
+                {"sign_time": "2026-05-05", "sign_amt": 40.0, "emp_name": "张三", "p_emp_name": "赵经理", "cust_code": "C1"},
+            ]
+        )
+        self.tables["ads_trd_dist_ord_target_emp_1m_df"] = pd.DataFrame(
+            [{"stat_month": ym, "emp_name": "张三", "p_emp_name": "赵经理", "target": 100.0} for ym in range(202601, 202606)]
+        )
+
+        logic, result, answer = self._logic_result("请展示张三2026年1月至5月分销目标与实际分销金额对比，生成柱折组合图。")
+
+        self.assertEqual("retail_target_actual_monthly_comparison", logic.operation)
+        self.assertEqual(["月份", "实际分销金额", "目标金额", "达成率"], result.columns)
+        self.assertEqual(5, len(result.rows))
+        self.assertIn("达成率最高月份为2026年3月", answer)
+
+    def test_distribution_monthly_mom_returns_growth_and_decline_months(self) -> None:
+        self.tables["v_trd_dist_ord_dtl"] = pd.DataFrame(
+            [
+                {"sign_time": "2026-01-05", "sign_amt": 100.0, "emp_name": "张三", "cust_code": "C1"},
+                {"sign_time": "2026-02-05", "sign_amt": 150.0, "emp_name": "张三", "cust_code": "C1"},
+                {"sign_time": "2026-03-05", "sign_amt": 90.0, "emp_name": "张三", "cust_code": "C1"},
+            ]
+        )
+
+        logic, result, answer = self._logic_result("2026年1月至3月历史分销金额环比是多少？哪个月增长最高，哪个月下滑最大？")
+
+        self.assertEqual("retail_distribution_monthly_mom", logic.operation)
+        self.assertEqual(3, len(result.rows))
+        self.assertIn("最高增长月份：2026年2月（50.00%）", answer)
+        self.assertIn("最大下滑月份：2026年3月（-40.00%）", answer)
+
+    def test_daily_progress_worst_employee_excludes_zero_actual_rows(self) -> None:
+        self.tables["v_trd_dist_ord_dtl_1d_rt"] = pd.DataFrame(
+            [
+                {"sign_time": "2026-05-19", "sign_amt": 10.0, "ord_status_name": "全部签收", "ctg_name": "天然水", "emp_name": "张三"},
+                {"sign_time": "2026-05-19", "sign_amt": 60.0, "ord_status_name": "全部签收", "ctg_name": "天然水", "emp_name": "李四"},
+            ]
+        )
+        self.tables["ads_trd_dist_ord_target_emp_1m_df"] = pd.DataFrame(
+            [
+                {"stat_month": 202605, "emp_name": "张三", "p_emp_name": "赵经理", "target": 2200.0},
+                {"stat_month": 202605, "emp_name": "李四", "p_emp_name": "赵经理", "target": 2200.0},
+                {"stat_month": 202605, "emp_name": "王五", "p_emp_name": "赵经理", "target": 2200.0},
+            ]
+        )
+
+        logic, result, answer = self._logic_result(
+            "以2026-05-19为业务日期，按2026年5月月目标除以当月分销天数折算日目标，哪位业代当天分销进度最落后？差距是多少？"
+        )
+
+        self.assertEqual("retail_daily_progress_worst_employee", logic.operation)
+        self.assertEqual("张三:10.00%,90.00%", answer)
+        self.assertEqual({"张三", "李四"}, {row["业代"] for row in result.rows})
+
+    def test_manager_daily_gap_contribution_uses_manager_and_employee_daily_targets(self) -> None:
+        self.tables["v_trd_dist_ord_dtl_1d_rt"] = pd.DataFrame(
+            [
+                {"sign_time": "2026-05-19", "sign_amt": 10.0, "ord_status_name": "全部签收", "ctg_name": "天然水", "emp_name": "张三", "mgr_name": "赵经理"},
+                {"sign_time": "2026-05-19", "sign_amt": 40.0, "ord_status_name": "全部签收", "ctg_name": "天然水", "emp_name": "李四", "mgr_name": "赵经理"},
+                {"sign_time": "2026-05-19", "sign_amt": 10.0, "ord_status_name": "全部签收", "ctg_name": "天然水", "emp_name": "王五", "mgr_name": "钱经理"},
+            ]
+        )
+        self.tables["ads_trd_dist_ord_target_emp_1m_df"] = pd.DataFrame(
+            [
+                {"stat_month": 202605, "emp_name": "张三", "p_emp_name": "赵经理", "target": 2200.0},
+                {"stat_month": 202605, "emp_name": "李四", "p_emp_name": "赵经理", "target": 2200.0},
+                {"stat_month": 202605, "emp_name": "王五", "p_emp_name": "钱经理", "target": 2200.0},
+            ]
+        )
+        self.tables["ads_trd_dist_ord_target_mgr_1m_df"] = pd.DataFrame(
+            [
+                {"stat_month": 202605, "mgr_name": "赵经理", "target_amt": 4400.0},
+                {"stat_month": 202605, "mgr_name": "钱经理", "target_amt": 2200.0},
+            ]
+        )
+
+        logic, result, verification, answer = self._verified_logic_result(
+            "以2026-05-19为业务日期，哪位主任的日目标缺口最大？下属中谁对缺口贡献最高，占比是多少？"
+        )
+
+        self.assertEqual("retail_manager_daily_gap_contribution", logic.operation)
+        self.assertTrue(verification.passed, verification.semantic_verification_notes)
+        self.assertEqual("赵经理:150.00;张三:60.00%", answer)
+        self.assertEqual(2, len(result.rows))
+
+    def test_distribution_topn_chart_returns_dimension_and_metric_rows(self) -> None:
+        self.tables["v_trd_dist_ord_dtl"] = pd.DataFrame(
+            [
+                {"sign_time": "2026-05-05", "sign_amt": 50.0, "emp_name": "张三", "cust_code": "C1", "sku_name": "绿茶SKU"},
+                {"sign_time": "2026-05-06", "sign_amt": 150.0, "emp_name": "张三", "cust_code": "C1", "sku_name": "红茶SKU"},
+                {"sign_time": "2026-05-07", "sign_amt": 90.0, "emp_name": "李四", "cust_code": "C2", "sku_name": "乌龙茶SKU"},
+            ]
+        )
+
+        logic, result, answer = self._logic_result("请生成2026年5月历史分销金额排名前2的SKU横向柱状图。")
+
+        self.assertEqual("retail_distribution_topn_chart", logic.operation)
+        self.assertEqual(["SKU", "分销金额"], result.columns)
+        self.assertEqual(2, len(result.rows))
+        self.assertIn("红茶SKU:150.00", answer)
 
 
 if __name__ == "__main__":

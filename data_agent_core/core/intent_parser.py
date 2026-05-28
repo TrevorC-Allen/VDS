@@ -1626,6 +1626,22 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             output_format=output_format | {"answer_type": "yes_no"},
         )
 
+    if _is_grouped_metric_display_question(lowered) and dimension:
+        aggregation = "count" if record_count_requested else _infer_aggregation(lowered, default="sum" if metric else "count")
+        return make_logic_form(
+            task_type="aggregation",
+            operation="aggregation",
+            metric=metric,
+            group_by=dimension,
+            parameters=_with_table_context({
+                "table": table_name,
+                "metric": metric,
+                "dimension": dimension,
+                "aggregation": aggregation,
+            }, table_context),
+            output_format=output_format | {"answer_type": "table"},
+        )
+
     if _is_ranking_question(lowered) and dimension:
         aggregation = "count" if record_count_requested else _infer_aggregation(lowered, default="sum" if metric else "count")
         return make_logic_form(
@@ -1712,6 +1728,9 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
     if not tables:
         raise ValueError("No parsed tables are available.")
     explicit_table = _explicit_table_match(question, tables)
+    union_context = None if explicit_table else _same_schema_union_context(question, tables)
+    if union_context is not None:
+        return union_context
     metric_table, metric = _best_metric_column(question, tables)
     primary_name = explicit_table or metric_table or _select_primary_table(tables)[0]
     primary_df = tables[primary_name]
@@ -1752,7 +1771,101 @@ def _with_table_context(params: dict[str, Any], table_context: dict[str, Any]) -
         enriched.setdefault("table_selection_reason", table_context["table_selection_reason"])
     if table_context.get("join_plan"):
         enriched.setdefault("join_plan", table_context["join_plan"])
+    if table_context.get("same_schema_union"):
+        enriched.setdefault("same_schema_union", table_context["same_schema_union"])
     return enriched
+
+
+def _same_schema_union_context(question: str, tables: dict[str, pd.DataFrame]) -> dict[str, Any] | None:
+    if len(tables) < 2 or not _question_can_use_same_schema_union(question):
+        return None
+    table_names = list(tables)
+    first_columns = [str(column) for column in tables[table_names[0]].columns]
+    first_signature = {_normalize_column_token(column) for column in first_columns}
+    if not first_signature:
+        return None
+    for table_name in table_names[1:]:
+        columns = [str(column) for column in tables[table_name].columns]
+        if {_normalize_column_token(column) for column in columns} != first_signature:
+            return None
+
+    frames = []
+    source_files: list[str] = []
+    for table_name in table_names:
+        df = tables[table_name].copy()
+        source_file = str(df.attrs.get("source_file") or table_name)
+        source_files.append(source_file)
+        frames.append(df)
+    union_df = pd.concat(frames, ignore_index=True, sort=False)
+    union_name = "__same_schema_union__"
+    union_metadata = {
+        "source_tables": table_names,
+        "source_files": source_files,
+        "row_counts": {table_name: int(len(tables[table_name])) for table_name in table_names},
+        "column_signature": first_columns,
+    }
+    metric = _find_metric_column(question, union_df)
+    dimension = _find_group_by_column(question, union_df) or _find_dimension_column(question, union_df, metric)
+    return {
+        "table_name": union_name,
+        "df": union_df,
+        "metric": metric,
+        "dimension": dimension,
+        "source_tables": table_names,
+        "join_plan": {},
+        "same_schema_union": union_metadata,
+        "table_selection_reason": _table_selection_reason(
+            question,
+            union_name,
+            metric,
+            dimension,
+            None,
+            {},
+        )
+        + "; same_schema_union",
+    }
+
+
+def _question_can_use_same_schema_union(question: str) -> bool:
+    lowered = question.lower()
+    if any(token in lowered for token in ("join", "merge", "关联", "连接", "合并字段", "关联键")):
+        return False
+    return any(
+        token in lowered
+        for token in (
+            "highest",
+            "lowest",
+            "top",
+            "bottom",
+            "max",
+            "min",
+            "total",
+            "sum",
+            "average",
+            "avg",
+            "mean",
+            "compare",
+            "comparison",
+            "by ",
+            "group",
+            "最高",
+            "最低",
+            "最多",
+            "最少",
+            "总",
+            "合计",
+            "平均",
+            "比较",
+            "对比",
+            "哪个",
+            "哪家",
+            "按",
+            "各",
+            "每",
+            "展示",
+            "图",
+        )
+    )
 
 
 def _explicit_table_match(question: str, tables: dict[str, pd.DataFrame]) -> str | None:
@@ -1768,11 +1881,17 @@ def _explicit_table_match(question: str, tables: dict[str, pd.DataFrame]) -> str
         score = 0
         for candidate in candidates:
             normalized = _normalize_text(candidate)
+            if _too_ambiguous_table_mention(normalized):
+                continue
             if normalized and normalized in lowered:
                 score = max(score, len(normalized))
         if score and (best is None or score > best[0]):
             best = (score, table_name)
     return None if best is None else best[1]
+
+
+def _too_ambiguous_table_mention(normalized: str) -> bool:
+    return len(normalized) < 2 and bool(re.fullmatch(r"[a-z0-9]", normalized))
 
 
 def _best_metric_column(question: str, tables: dict[str, pd.DataFrame]) -> tuple[str | None, str | None]:
@@ -2096,6 +2215,34 @@ def _is_filtering_question(lowered: str) -> bool:
 
 def _has_grouping_language(lowered: str) -> bool:
     return any(token in lowered for token in (" by ", "group", "per ", "each", "按", "各", "每"))
+
+
+def _is_grouped_metric_display_question(lowered: str) -> bool:
+    if not _has_grouping_language(lowered):
+        return False
+    return any(
+        token in lowered
+        for token in (
+            "show",
+            "display",
+            "visualize",
+            "chart",
+            "bar chart",
+            "line chart",
+            "展示",
+            "显示",
+            "生成",
+            "画",
+            "图",
+            "图表",
+            "柱状图",
+            "柱形图",
+            "条形图",
+            "折线图",
+            "饼图",
+            "可视化",
+        )
+    )
 
 
 def _is_row_count_question(lowered: str) -> bool:
@@ -2474,11 +2621,13 @@ def _infer_value_filters(question: str, df: pd.DataFrame, exclude: set[str | Non
         unique_values = [value for value in series.dropna().unique().tolist() if str(value)]
         if len(unique_values) > 50:
             continue
-        for value in sorted(unique_values, key=lambda item: len(str(item)), reverse=True):
-            text = str(value)
-            if text and _value_in_question(text, question, lowered):
-                filters[name] = value
-                break
+        matched = [
+            value
+            for value in sorted(unique_values, key=lambda item: len(str(item)), reverse=True)
+            if str(value) and _value_in_question(str(value), question, lowered)
+        ]
+        if len(matched) == 1:
+            filters[name] = matched[0]
     if filters:
         return filters
     for column in df.columns:

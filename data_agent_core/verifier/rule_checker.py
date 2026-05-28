@@ -218,6 +218,12 @@ def _verify_generalization_contract(
     if _asks_grouped_count(question) and logic.operation == "row_count":
         notes.append("Question asks for grouped counts, but the plan returns only a scalar row count.")
         return False, notes, {"action": "replace_operation", "to_operation": "aggregation", "aggregation": "count"}
+    if _asks_grouped_metric_visual(question) and logic.operation in {"detail_lookup", "row_count"}:
+        notes.append("Question asks for grouped metric output or a chart, but the plan returns detail rows or a scalar count.")
+        return False, notes, {"action": "replace_operation", "to_operation": "aggregation", "reason": "grouped_metric_chart_required"}
+    if _asks_multi_entity_comparison(question) and logic.filters:
+        notes.append("Question compares multiple named entities, but the plan collapsed scope into an implicit single-entity filter.")
+        return False, notes, {"action": "repair_filters", "reason": "multi_entity_scope_collapsed"}
     if _asks_count_metric(question) and not _count_metric_request_satisfied(logic, question):
         notes.append("Question asks for a count metric, but the plan uses a non-count metric definition.")
         return False, notes, {"action": "repair_metric_definition", "required_aggregation": "count"}
@@ -232,6 +238,10 @@ def _verify_generalization_contract(
     notes.extend(join_notes)
     if not join_passed:
         return False, notes, join_action
+    shape_passed, shape_notes, shape_action = _verify_requested_shape_contract(logic, question, primary)
+    notes.extend(shape_notes)
+    if not shape_passed:
+        return False, notes, shape_action
     output_passed, output_note = _verify_output_contract(logic.output_contract, primary.value)
     notes.append(output_note)
     if not output_passed:
@@ -307,10 +317,26 @@ def _verify_join_contract(
 ) -> tuple[bool, list[str], dict[str, object] | None]:
     params = getattr(logic, "parameters", {}) or {}
     join_plan = getattr(logic, "join_plan", None) or params.get("join_plan") or {}
+    same_schema_union = params.get("same_schema_union") or {}
     source_tables = list(getattr(logic, "source_tables", None) or params.get("source_tables") or [])
     notes: list[str] = []
 
     if len(source_tables) > 1 and not join_plan:
+        if isinstance(same_schema_union, dict) and same_schema_union:
+            summary = primary.debug.get("same_schema_union_summary") if isinstance(primary.debug, dict) else None
+            if not isinstance(summary, dict):
+                notes.append("Same-schema multi-file plan did not report union execution scope.")
+                return False, notes, {"action": "repair_executor_union_trace", "reason": "missing_same_schema_union_summary"}
+            expected = {str(item) for item in source_tables}
+            included = {str(item) for item in summary.get("source_tables") or []}
+            if not expected.issubset(included):
+                notes.append("Same-schema union did not include every planned source table.")
+                return False, notes, {"action": "repair_source_scope", "reason": "same_schema_union_missing_source"}
+            notes.append(f"Same-schema union verified across {len(included)} source tables.")
+            return True, notes, None
+        if _uses_schema_backed_internal_source_alignment(logic):
+            notes.append("Schema-backed business operation handles source alignment internally.")
+            return True, notes, None
         notes.append("Plan references multiple source tables but does not define a join plan.")
         return False, notes, {"action": "clarify_join_key", "reason": "multi_table_without_join_plan"}
     if not join_plan:
@@ -346,6 +372,52 @@ def _verify_join_contract(
     return True, notes, None
 
 
+def _verify_requested_shape_contract(
+    logic: Any,
+    question: str,
+    primary: ExecutionResult,
+) -> tuple[bool, list[str], dict[str, object] | None]:
+    if not _asks_grouped_metric_visual(question):
+        return True, [], None
+    params = getattr(logic, "parameters", {}) or {}
+    dimension = str(params.get("dimension") or params.get("group_by") or getattr(logic, "group_by", None) or "")
+    metric = str(params.get("metric") or getattr(logic, "metric", None) or "")
+    rows = _execution_rows(primary)
+    notes: list[str] = []
+    if not rows:
+        notes.append("Grouped metric/chart request returned no inspectable rows.")
+        return False, notes, {"action": "repair_result_shape", "reason": "missing_rows"}
+    sample_keys = set(rows[0])
+    if dimension and dimension not in sample_keys:
+        notes.append(f"Grouped metric/chart result is missing requested dimension column: {dimension}.")
+        return False, notes, {"action": "repair_result_shape", "required_column": dimension}
+    aggregation = str(params.get("aggregation") or "")
+    if aggregation != "count" and metric and metric not in sample_keys:
+        notes.append(f"Grouped metric/chart result is missing requested metric column: {metric}.")
+        return False, notes, {"action": "repair_result_shape", "required_column": metric}
+    notes.append("Grouped metric/chart result shape contains requested dimension and metric columns.")
+    return True, notes, None
+
+
+def _execution_rows(primary: ExecutionResult) -> list[dict[str, Any]]:
+    if primary.rows:
+        return [row for row in primary.rows if isinstance(row, dict)]
+    value = primary.value
+    if isinstance(value, list):
+        return [row for row in value if isinstance(row, dict)]
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
+def _uses_schema_backed_internal_source_alignment(logic: Any) -> bool:
+    operation = str(getattr(logic, "operation", "") or "")
+    if not operation.startswith("retail_"):
+        return False
+    capability = capability_for_operation(operation)
+    return capability.capability_family == "chinese_retail_business_metric"
+
+
 def _asks_named_dimension(question: str) -> bool:
     return any(
         token in question
@@ -374,6 +446,41 @@ def _dimension_looks_like_id(value: Any) -> bool:
 
 def _asks_grouped_count(question: str) -> bool:
     return _asks_count_metric(question) and any(token in question for token in (" by ", "group", "per ", "each", "按", "各", "每"))
+
+
+def _asks_grouped_metric_visual(question: str) -> bool:
+    grouped = any(token in question for token in (" by ", "group", "per ", "each", "按", "各", "每"))
+    visual_or_display = any(
+        token in question
+        for token in (
+            "show",
+            "display",
+            "visualize",
+            "chart",
+            "bar chart",
+            "line chart",
+            "展示",
+            "显示",
+            "生成",
+            "画",
+            "图",
+            "图表",
+            "柱状图",
+            "柱形图",
+            "条形图",
+            "折线图",
+            "饼图",
+            "可视化",
+        )
+    )
+    return grouped and visual_or_display
+
+
+def _asks_multi_entity_comparison(question: str) -> bool:
+    return (
+        any(token in question for token in ("哪个", "哪家", "which", "highest", "lowest", "最高", "最低", "最多", "最少", "比较", "对比"))
+        and any(token in question for token in ("和", "与", "及", "、", " and ", " vs ", " versus "))
+    )
 
 
 def _asks_count_metric(question: str) -> bool:

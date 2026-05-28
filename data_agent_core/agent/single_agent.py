@@ -15,9 +15,11 @@ from data_agent_core.core.capability_registry import coverage_summary_for_logic_
 from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
 from data_agent_core.core.file_parser import load_dabstep_context
 from data_agent_core.core.intent_parser import parse_generic_table_question, parse_question
+from data_agent_core.core.planner_guardrails import available_columns_by_table_from_context, validate_logic_form_with_guardrails
 from data_agent_core.executors import pandas_executor, sql_executor
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMStageResult, complete_stage_with_llm, plan_with_llm
+from data_agent_core.output.activity_trace import build_activity_trace_v2
 from data_agent_core.output.chart_planner import build_chart_spec
 from data_agent_core.output.chart_renderer import attach_rendered_chart
 from data_agent_core.output.insight_generator import generate_insight
@@ -239,6 +241,7 @@ class DataAnalysisAgent:
         response.reasoning_trace_view = trace.reasoning_trace_view
         trace.process_view_v2 = build_process_view_v2(trace, response)
         response.process_view_v2 = trace.process_view_v2
+        response.activity_trace_v2 = build_activity_trace_v2(trace, response)
         return response, trace
 
     def _context_summary(self) -> dict[str, Any]:
@@ -451,13 +454,11 @@ class DataAnalysisAgent:
     def _validated_logic_form(self, llm_logic_form: Any, guardrail_logic_form: Any) -> Any:
         """Use LLM planning with deterministic schema guardrails."""
 
-        if llm_logic_form.operation == guardrail_logic_form.operation:
-            merged = guardrail_logic_form
-            _merge_optional_contract_fields(merged, llm_logic_form)
-            for key, value in llm_logic_form.output_format.items():
-                merged.output_format.setdefault(key, value)
-            return merged
-        return guardrail_logic_form
+        return validate_logic_form_with_guardrails(
+            llm_logic_form,
+            guardrail_logic_form,
+            available_columns_by_table=available_columns_by_table_from_context(self.context),
+        )
 
     def _rule_column_mapping(self, logic_form: Any) -> dict[str, Any]:
         payments = self.context["payments"]
@@ -525,8 +526,8 @@ class DataAnalysisAgent:
             key_numbers=base.key_numbers,
             anomaly_findings=base.anomaly_findings,
             volatility_findings=base.volatility_findings,
-            suggestions=base.suggestions if base.suggestions else suggestions,
-            business_suggestions=base.business_suggestions if base.business_suggestions else suggestions,
+            suggestions=(base.suggestions if base.suggestions else suggestions)[:1],
+            business_suggestions=(base.business_suggestions if base.business_suggestions else suggestions)[:1],
             caveats=existing_caveats,
             next_questions=base.next_questions,
             evidence_rows=base.evidence_rows,
@@ -541,11 +542,15 @@ class DataAnalysisAgent:
         raw = stage.raw
         chart_type = raw.get("chart_type")
         if chart_type and chart_type != "none" and not _unsafe_chart_metric(str(raw.get("y") or "")):
+            x = raw.get("x") or rule_chart.x
+            y = raw.get("y") or rule_chart.y
+            if not _chart_fields_match_data(rule_chart.data, str(x or ""), str(y or ""), str(chart_type)):
+                return attach_rendered_chart(rule_chart)
             return attach_rendered_chart(
                 ChartSpec(
                     chart_type=str(chart_type),
-                    x=raw.get("x") or rule_chart.x,
-                    y=raw.get("y") or rule_chart.y,
+                    x=x,
+                    y=y,
                     title=raw.get("title") or rule_chart.title,
                     data=rule_chart.data,
                     reason=str(raw.get("reason") or raw.get("reasoning_summary") or rule_chart.reason),
@@ -779,6 +784,7 @@ class UploadedDatasetAgent(DataAnalysisAgent):
         response.reasoning_trace_view = trace.reasoning_trace_view
         trace.process_view_v2 = build_process_view_v2(trace, response)
         response.process_view_v2 = trace.process_view_v2
+        response.activity_trace_v2 = build_activity_trace_v2(trace, response)
         return response, trace
 
     def _context_summary(self) -> dict[str, Any]:
@@ -850,31 +856,12 @@ def _unsafe_chart_metric(column: str) -> bool:
     return any(token in lowered for token in ("reference", "psp", "bin", "编号", "代码", "流水", "卡号", "year", "hour", "minute", "day_of_year"))
 
 
-def _merge_optional_contract_fields(target: Any, source: Any) -> None:
-    for field_name in (
-        "metric_definition",
-        "numerator",
-        "denominator",
-        "entity_grain",
-        "time_window",
-        "candidate_set",
-        "output_contract",
-        "options",
-        "filters",
-        "parameters",
-        "source_tables",
-        "join_plan",
-        "output_format",
-    ):
-        source_value = getattr(source, field_name, None)
-        target_value = getattr(target, field_name, None)
-        if isinstance(source_value, dict) and isinstance(target_value, dict):
-            for key, value in source_value.items():
-                target_value.setdefault(key, value)
-        elif isinstance(source_value, list) and isinstance(target_value, list) and not target_value:
-            target_value.extend(source_value)
-    for field_name in ("metric", "group_by", "objective"):
-        if getattr(target, field_name, None) is None and getattr(source, field_name, None) is not None:
-            setattr(target, field_name, getattr(source, field_name))
-    if not getattr(target, "table_selection_reason", "") and getattr(source, "table_selection_reason", ""):
-        target.table_selection_reason = source.table_selection_reason
+def _chart_fields_match_data(data: list[dict[str, Any]], x: str, y: str, chart_type: str) -> bool:
+    if chart_type == "kpi":
+        return True
+    if not data:
+        return False
+    sample_keys = set(data[0])
+    if not x or not y:
+        return False
+    return x in sample_keys and y in sample_keys

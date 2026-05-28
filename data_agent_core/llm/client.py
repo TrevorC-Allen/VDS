@@ -51,9 +51,10 @@ class OpenAICompatibleChatClient:
         payload = {
             "model": self.config.model,
             "messages": messages,
-            "temperature": temperature,
             "response_format": {"type": "json_object"},
         }
+        if _supports_explicit_temperature(self.config.model):
+            payload["temperature"] = temperature
         payload_bytes = json.dumps(payload).encode("utf-8")
         attempts = max(1, self.config.max_retries + 1)
         for attempt_index in range(attempts):
@@ -172,6 +173,11 @@ _TRANSIENT_LLM_ERRORS = (
 
 def _is_retryable_http_status(status_code: int) -> bool:
     return status_code in {408, 409, 425, 429} or 500 <= status_code <= 599
+
+
+def _supports_explicit_temperature(model: str) -> bool:
+    normalized = str(model or "").strip().lower()
+    return not normalized.startswith("gpt-5")
 
 
 def _sleep_before_llm_retry(attempt_index: int, retry_backoff_seconds: float) -> None:

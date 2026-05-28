@@ -6,9 +6,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 from data_agent_core.agent.single_agent import UploadedDatasetAgent
+from data_agent_core.contracts.response_contracts import ChartSpec
 from data_agent_core.core.file_parser import parse_dataset_file
 from data_agent_core.llm.client import MockLLMClient
+from data_agent_core.llm.planner import LLMStageResult
 
 
 class UploadedTableAgentTest(unittest.TestCase):
@@ -54,6 +58,21 @@ class UploadedTableAgentTest(unittest.TestCase):
         rows = sorted(response.result["rows"], key=lambda row: row["city"])
         self.assertTrue(response.success)
         self.assertEqual(rows, [{"city": "Beijing", "sales": 150}, {"city": "Shanghai", "sales": 300}])
+
+    def test_llm_chart_override_cannot_reference_columns_missing_from_data(self) -> None:
+        agent = UploadedDatasetAgent({"sales": pd.DataFrame({"answer": [4]})}, "ds_test_chart_guard", llm_client=MockLLMClient())
+        rule_chart = ChartSpec(chart_type="kpi", data=[{"answer": 4}], encoding={"value": "answer"})
+        llm_stage = LLMStageResult(
+            stage_name="chart_planner",
+            raw={"chart_type": "bar", "x": "city", "y": "total_sales", "confidence": 0.9},
+            confidence=0.9,
+            reasoning_summary="Mocked unsafe chart override.",
+        )
+
+        chart = agent._chart_from_stage(rule_chart, llm_stage, trusted=True)
+
+        self.assertEqual("kpi", chart.chart_type)
+        self.assertEqual([{"answer": 4}], chart.data)
 
 
 if __name__ == "__main__":

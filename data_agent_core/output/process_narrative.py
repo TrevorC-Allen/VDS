@@ -16,6 +16,7 @@ PROCESS_VIEW_VERSION = "v2"
 PROCESS_MODES = {
     "chat",
     "dataset_overview",
+    "dataset_source_overview",
     "metric_lookup",
     "ranking_topn",
     "comparison_or_trend",
@@ -121,16 +122,24 @@ def build_chat_process_view(question: str, *, has_dataset: bool) -> dict[str, An
 
 def build_dataset_overview_process_view(
     *,
+    question: str = "",
     table_name: str,
     row_count: int,
     column_count: int,
     metric_column: str | None = None,
     dimension_column: str | None = None,
+    period_column: str | None = None,
     table_count: int | None = None,
     is_multi_table: bool = False,
+    question_kind: str = "overview",
+    table_summaries: list[dict[str, Any]] | None = None,
+    sample_columns: list[str] | None = None,
+    artifact_count: int = 0,
 ) -> dict[str, Any]:
     """Build a safe process view for deterministic dataset overview responses."""
 
+    table_summaries = table_summaries or []
+    sample_columns = sample_columns or []
     evidence = [f"主表：{table_name}", f"规模：{row_count} 行，{column_count} 列"]
     if table_count:
         evidence.insert(0, f"表数量：{table_count}")
@@ -138,42 +147,166 @@ def build_dataset_overview_process_view(
         evidence.append(f"关键数值字段：{metric_column}")
     if dimension_column:
         evidence.append(f"可下钻维度：{dimension_column}")
+    if period_column:
+        evidence.append(f"时间字段：{period_column}")
+    source_files = _overview_source_files(table_summaries)
+    table_role_evidence = _overview_table_role_evidence(table_summaries)
+    question_label = _overview_question_kind_label(question_kind)
+    summary = (
+        f"识别{question_label}、扫描{table_count or 1}张表、整理字段结构、生成Pandas复现代码、输出用户回答。"
+        if is_multi_table
+        else f"识别{question_label}、读取表画像、整理关键字段、生成Pandas复现代码、输出用户回答。"
+    )
     return _view(
-        summary="已按数据概览请求生成表画像和关键指标摘要。" if not is_multi_table else "已按多表概览请求生成表含义和关键字段摘要。",
+        summary=summary,
         mode="dataset_overview",
         steps=[
             _step(
-                title="识别概览请求",
-                summary="这类问题先看表规模、关键字段和可追问方向，而不是直接返回原始明细。",
-                evidence=["answer_type=overview"],
+                title="识别用户问题",
+                summary=f"用户问的是{question_label}，先走数据概览路径，不把它误判成明细查询或不可信 join。",
+                evidence=_compact_texts([f"问题：{question}", "answer_type=overview", f"question_kind={question_kind}"], limit=4),
                 source="service_route",
             ),
             _step(
-                title="读取表画像",
-                summary="已从上传数据中统计表数量、行列规模和字段结构。" if is_multi_table else "已从上传数据中选择主表并统计行列规模。",
-                evidence=evidence,
+                title="读取上传数据",
+                summary="已从上传文件生成可读表画像，先看表数量、行列规模和来源，不展示原始明细行。",
+                evidence=_compact_texts([*source_files, *evidence], limit=4),
                 source="deterministic_result",
             ),
             _step(
-                title="识别表类型和字段",
-                summary="已推断字段含义、数值指标、分类维度和布尔状态字段。",
-                evidence=["字段含义和分布由后端生成。"],
+                title="扫描字段结构",
+                summary="已按字段名、类型和样例分布识别时间字段、数值指标、分类维度和 ID/代码字段。",
+                evidence=_compact_texts([f"样例字段：{'、'.join(sample_columns[:8])}" if sample_columns else "", *evidence[-3:]], limit=4),
                 source="deterministic_result",
             ),
             _step(
-                title="执行概览代码",
-                summary="已生成安全 Python artifact，用于解释概览统计如何复现。",
-                evidence=["代码卡片只展示安全片段，不开放浏览器执行。"],
+                title="判断表的关系和用途" if is_multi_table else "判断表的业务用途",
+                summary="已区分事实/过程表、维表或说明表，并标记哪些关系需要业务主键确认。" if is_multi_table else "已根据字段角色判断这张表更像明细表、维表、目标表还是过程表。",
+                evidence=table_role_evidence or ["字段含义和表类型由后端画像生成。"],
+                caveats=["字段同名不等于可以直接 join。"] if is_multi_table else [],
+                source="deterministic_result",
+            ),
+            _step(
+                title="生成 Python / Pandas / SQL 复现代码",
+                summary="已生成安全代码卡片，用 Pandas 复现行列统计、字段画像和基础分布；代码只放在处理过程详情中。",
+                evidence=_compact_texts([f"artifact_count={artifact_count}" if artifact_count else "", "languages=python/sql", "library=pandas", "sql=readonly_reference"], limit=4),
                 source="execution_summary",
             ),
             _step(
-                title="生成概览报告",
-                summary="已整理为结构化 overview report、字段含义、分布、洞察和可追问方向。",
-                evidence=["前端只渲染后端报告契约。"],
+                title="组织回答内容",
+                summary="已按用户问法生成差异化主回答：看数据、讲主题、比区别、给分析建议或看质量，不复用同一段模板。",
+                evidence=["主回答不展示 raw rows。", "完整清单和代码留在结果表与过程详情。"],
+                caveats=["字段含义是安全推断，正式口径仍以业务说明为准。"],
                 source="response_contract",
             ),
         ],
     )
+
+
+def build_dataset_source_process_view(
+    *,
+    question: str,
+    source_count: int,
+    table_count: int,
+    knowledge_count: int,
+    source_names: list[str] | None = None,
+    artifact_count: int = 0,
+) -> dict[str, Any]:
+    """Build a safe process view for uploaded source/document overview responses."""
+
+    source_names = source_names or []
+    shown_sources = "、".join(source_names[:6])
+    summary = (
+        "识别来源文件问题、枚举上传来源、读取说明/规则文件、区分表格与知识文件、"
+        "整理用途说明、生成可复现读取代码、输出用户回答。"
+    )
+    return _view(
+        summary=summary,
+        mode="dataset_source_overview",
+        steps=[
+            _step(
+                title="识别用户问题",
+                summary="用户问的是上传文件用途和说明来源，先进入来源概览，不进入明细计算。",
+                evidence=_compact_texts([f"问题：{question}", "answer_type=overview", "message_intent=dataset_source_overview"], limit=4),
+                source="service_route",
+            ),
+            _step(
+                title="枚举上传来源",
+                summary="已从数据集存储层读取完整来源清单，区分可计算表、JSON 规则、Markdown/文本/文档说明。",
+                evidence=_compact_texts([f"来源文件数：{source_count}", f"表格文件数：{table_count}", f"说明/规则文件数：{knowledge_count}", shown_sources], limit=4),
+                source="deterministic_result",
+            ),
+            _step(
+                title="读取说明和规则内容",
+                summary="已读取 Markdown、TXT、JSON、YAML 等文本来源；Word/PDF/Pages 走可用文本抽取，抽不到正文时保留元数据和边界说明。",
+                evidence=_compact_texts(source_names, limit=5),
+                caveats=["扫描版 PDF 或不含明文预览的 Pages 文件可能需要先转换格式。"],
+                source="deterministic_result",
+            ),
+            _step(
+                title="判断文件用途",
+                summary="已把文件映射为事实表、维表、费率规则、商户属性或业务手册，避免只回答已解析的 CSV 表。",
+                evidence=["表格用于计算和字段画像。", "说明/规则文件用于解释字段、取值、费用口径和分析边界。"],
+                source="deterministic_result",
+            ),
+            _step(
+                title="生成 Python / Pandas / SQL 复现代码",
+                summary="已生成安全代码卡片，展示如何用 Pandas 枚举来源文件，并提供只读 SQL 来源清单口径做对照。",
+                evidence=_compact_texts([f"artifact_count={artifact_count}" if artifact_count else "", "languages=python/sql", "library=pandas", "sql=readonly_reference"], limit=4),
+                source="execution_summary",
+            ),
+            _step(
+                title="组织回答内容",
+                summary="主回答按用户追问聚焦“其他几个文件”的作用，同时在结果表保留完整来源清单。",
+                evidence=["返回来源概览回答。", "不展示原始明细行。"],
+                source="response_contract",
+            ),
+        ],
+    )
+
+
+def _overview_question_kind_label(kind: str) -> str:
+    labels = {
+        "difference": "文件/表差异",
+        "fields": "字段含义",
+        "content": "内容概览",
+        "story": "数据主题",
+        "analysis_suggestions": "分析建议",
+        "quality": "数据质量",
+        "shape": "行列规模",
+        "overview": "数据概览",
+    }
+    return labels.get(str(kind or ""), "数据概览")
+
+
+def _overview_source_files(table_summaries: list[dict[str, Any]]) -> list[str]:
+    values: list[str] = []
+    for item in table_summaries[:4]:
+        source = _clean_text(item.get("source_file") or item.get("table"), 80)
+        if source and source not in values:
+            values.append(f"来源：{source}")
+    return values
+
+
+def _overview_table_role_evidence(table_summaries: list[dict[str, Any]]) -> list[str]:
+    values: list[str] = []
+    for item in table_summaries[:4]:
+        table = _clean_text(item.get("table"), 60)
+        meaning = _clean_text(item.get("likely_meaning"), 100)
+        if table and meaning:
+            values.append(f"{table}：{meaning}")
+    return values[:4]
+
+
+def _compact_texts(values: list[Any], *, limit: int) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        text = _clean_text(value, 140)
+        if text and text not in result:
+            result.append(text)
+        if len(result) >= limit:
+            break
+    return result
 
 
 def process_view_monitor_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -182,6 +315,7 @@ def process_view_monitor_payload(payload: dict[str, Any]) -> dict[str, Any]:
     process_view = payload.get("process_view_v2") if isinstance(payload, dict) else None
     if not isinstance(process_view, dict):
         process_view = {}
+    activity_trace = payload.get("activity_trace_v2") if isinstance(payload, dict) else None
     return {
         "run_id": _clean_text(payload.get("run_id"), 80),
         "dataset_id": _clean_text(payload.get("dataset_id"), 80),
@@ -189,6 +323,7 @@ def process_view_monitor_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "answer_type": _clean_text(payload.get("answer_type"), 40),
         "execution_mode": _clean_text(payload.get("execution_mode"), 40),
         "process_view_v2": _safe_process_view(process_view),
+        "activity_trace_v2": _safe(activity_trace if isinstance(activity_trace, list) else [])[:12],
     }
 
 
@@ -205,6 +340,16 @@ def _steps_for_mode(mode: str, trace: dict[str, Any], response: dict[str, Any], 
             column_count=_safe_int(value.get("column_count")),
             metric_column=_clean_text(value.get("metric_column"), 80) or None,
             dimension_column=_clean_text(value.get("dimension_column"), 80) or None,
+        )["steps"]
+    if mode == "dataset_source_overview":
+        value = _first_dict(response.get("result", {}).get("value") if isinstance(response.get("result"), dict) else None)
+        return build_dataset_source_process_view(
+            question=str(response.get("question") or trace.get("question") or ""),
+            source_count=_safe_int(value.get("source_count")),
+            table_count=_safe_int(value.get("table_source_count")),
+            knowledge_count=_safe_int(value.get("knowledge_source_count")),
+            source_names=[str(value) for value in value.get("source_names") or []],
+            artifact_count=len(response.get("execution_artifacts") or []) if isinstance(response.get("execution_artifacts"), list) else 0,
         )["steps"]
 
     specialized_steps = _specialized_steps_for_operation(mode, trace, response, logic_form)
@@ -511,6 +656,7 @@ def _summary_for_mode(mode: str, trace: dict[str, Any], response: dict[str, Any]
     summaries = {
         "chat": "已识别为普通对话，直接生成安全回复。",
         "dataset_overview": "已按数据概览请求生成差异化过程摘要。",
+        "dataset_source_overview": "已按上传来源文件请求生成差异化过程摘要。",
         "metric_lookup": "已按指标查询问题生成差异化过程摘要。",
         "ranking_topn": "已按排名 / TopN 问题生成差异化过程摘要。",
         "comparison_or_trend": "已按对比 / 趋势问题生成差异化过程摘要。",
@@ -531,6 +677,8 @@ def _select_mode(trace: dict[str, Any], response: dict[str, Any], logic_form: di
     question = _lower(response.get("question") or trace.get("question"))
     if answer_type == "chat" or execution_mode == "chat":
         return "chat"
+    if operation == "dataset_source_overview":
+        return "dataset_source_overview"
     if answer_type == "overview" or operation == "dataset_overview":
         return "dataset_overview"
     if response.get("success") is False or operation == "not_applicable" or _first_dict(response.get("debug")).get("not_applicable_attribution"):

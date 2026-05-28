@@ -69,6 +69,27 @@ def message_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _http_status_for_response(response: dict[str, Any]) -> int:
+    if response.get("success") is not False:
+        return 200
+    errors = response.get("errors") if isinstance(response.get("errors"), list) else []
+    first_error = errors[0] if errors and isinstance(errors[0], dict) else {}
+    error_type = str(first_error.get("error_type") or "")
+    message = str(first_error.get("error_message") or "")
+    message_lower = message.lower()
+    if "dataset not found" in message_lower or "project not found" in message_lower:
+        return 404
+    if error_type in {
+        "FILE_PARSE_ERROR",
+        "LOGIC_FORM_ERROR",
+        "OUTPUT_CONTRACT_VALIDATION_FAILED",
+        "CHART_CONFIG_ERROR",
+        "CAPABILITY_GAP",
+    }:
+        return 422
+    return 500
+
+
 def benchmark_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Non-FastAPI helper mirroring POST /api/data-agent/benchmark/run."""
 
@@ -95,7 +116,7 @@ def create_conversation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def conversations_payload(limit: int = 50, project_id: str | None = None) -> dict[str, Any]:
+def conversations_payload(limit: int = 50, project_id: str | None = "") -> dict[str, Any]:
     """Non-FastAPI helper mirroring GET /api/data-agent/conversations."""
 
     return service.list_conversations(limit=limit, project_id=project_id)
@@ -162,7 +183,7 @@ def run_payload(payload: dict[str, Any]) -> dict[str, Any]:
 try:
     from fastapi import APIRouter, File, Form, UploadFile
     from pydantic import BaseModel
-    from starlette.responses import StreamingResponse
+    from starlette.responses import JSONResponse, StreamingResponse
 
     router = APIRouter(prefix="/api/data-agent", tags=["data-agent"])
 
@@ -329,8 +350,8 @@ try:
         )
 
     @router.post("/message")
-    def message(payload: MessagePayload) -> dict[str, Any]:
-        return service.respond_to_message(
+    def message(payload: MessagePayload) -> JSONResponse:
+        response = service.respond_to_message(
             question=payload.question,
             dataset_id=payload.dataset_id,
             conversation_id=payload.conversation_id,
@@ -344,6 +365,7 @@ try:
             user_rule_file_id=payload.user_rule_file_id,
             monitor_run_id=payload.monitor_run_id,
         )
+        return JSONResponse(content=response, status_code=_http_status_for_response(response))
 
     @router.post("/benchmark/run")
     def benchmark_run(payload: BenchmarkRunPayload) -> dict[str, Any]:
@@ -368,7 +390,7 @@ try:
         )
 
     @router.get("/conversations")
-    def conversations(limit: int = 50, project_id: str | None = None) -> dict[str, Any]:
+    def conversations(limit: int = 50, project_id: str | None = "") -> dict[str, Any]:
         return service.list_conversations(limit=limit, project_id=project_id)
 
     @router.get("/conversations/{conversation_id}")

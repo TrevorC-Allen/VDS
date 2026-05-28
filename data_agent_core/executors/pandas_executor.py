@@ -17,6 +17,9 @@ from data_agent_core.executors.chinese_retail_executor import execute_chinese_re
 from data_agent_core.executors.vds_bi_executor import execute_vds_bi_operation, is_vds_bi_operation
 
 
+NO_MATCHING_RECORDS = "没有匹配记录"
+
+
 def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult:
     """Execute an AnalysisPlan without reinterpreting the original question."""
 
@@ -304,10 +307,58 @@ def _analysis_dataframe(context: dict[str, Any], params: dict[str, Any]) -> pd.D
     if "payments" in context:
         return context["payments"]
     tables = context["tables"]
+    same_schema_union = params.get("same_schema_union")
+    if isinstance(same_schema_union, dict) and same_schema_union:
+        return _materialize_same_schema_union(tables, params, same_schema_union)
     join_plan = params.get("join_plan")
     if isinstance(join_plan, dict) and join_plan:
         return _materialize_join(tables, params, join_plan)
     return _table(tables, params.get("table"))
+
+
+def _materialize_same_schema_union(tables: dict[str, pd.DataFrame], params: dict[str, Any], union_plan: dict[str, Any]) -> pd.DataFrame:
+    """Concatenate same-schema source tables without inventing a join."""
+
+    source_tables = [str(table_name) for table_name in union_plan.get("source_tables") or [] if str(table_name)]
+    if not source_tables:
+        raise ValueError("Same-schema union requires source_tables.")
+    missing = [table_name for table_name in source_tables if table_name not in tables]
+    if missing:
+        raise ValueError("Same-schema union references unavailable table(s): " + ", ".join(missing))
+
+    first_columns = [str(column) for column in tables[source_tables[0]].columns]
+    first_signature = set(first_columns)
+    frames: list[pd.DataFrame] = []
+    row_counts: dict[str, int] = {}
+    source_files: dict[str, str] = {}
+    for table_name in source_tables:
+        df = tables[table_name]
+        columns = [str(column) for column in df.columns]
+        if set(columns) != first_signature:
+            raise ValueError("Same-schema union requires matching columns across source tables.")
+        frame = df.copy()
+        source_column = "__source_table"
+        if source_column not in frame.columns:
+            frame[source_column] = table_name
+        file_column = "__source_file"
+        source_file = str(df.attrs.get("source_file") or table_name)
+        if file_column not in frame.columns:
+            frame[file_column] = source_file
+        frames.append(frame)
+        row_counts[table_name] = int(len(df))
+        source_files[table_name] = source_file
+
+    union_df = pd.concat(frames, ignore_index=True, sort=False)
+    summary = {
+        "trusted": True,
+        "source_tables": source_tables,
+        "source_files": source_files,
+        "row_counts": row_counts,
+        "total_rows": int(len(union_df)),
+        "columns": first_columns,
+    }
+    params["_same_schema_union_summary"] = summary
+    return union_df
 
 
 def _materialize_join(tables: dict[str, pd.DataFrame], params: dict[str, Any], join_plan: dict[str, Any]) -> pd.DataFrame:
@@ -366,10 +417,9 @@ def _materialize_join(tables: dict[str, pd.DataFrame], params: dict[str, Any], j
 
 def _join_debug(params: dict[str, Any]) -> dict[str, Any]:
     join_plan = params.get("join_plan")
-    if not isinstance(join_plan, dict) or not join_plan:
-        return {}
-    debug = {
-        "join_plan": {
+    debug: dict[str, Any] = {}
+    if isinstance(join_plan, dict) and join_plan:
+        debug["join_plan"] = {
             key: join_plan.get(key)
             for key in (
                 "trusted",
@@ -386,7 +436,8 @@ def _join_debug(params: dict[str, Any]) -> dict[str, Any]:
             )
             if key in join_plan
         }
-    }
+    if isinstance(params.get("_same_schema_union_summary"), dict):
+        debug["same_schema_union_summary"] = params["_same_schema_union_summary"]
     if isinstance(params.get("_join_execution_summary"), dict):
         debug["join_execution_summary"] = params["_join_execution_summary"]
     return debug
@@ -407,6 +458,12 @@ def _join_warnings(params: dict[str, Any]) -> list[str]:
 
 
 def _execution_summary(operation: str, debug: dict[str, Any]) -> str:
+    if "same_schema_union_summary" in debug:
+        summary = debug["same_schema_union_summary"]
+        return (
+            f"Executed operation {operation} after concatenating "
+            f"{len(summary.get('source_tables') or [])} same-schema source tables."
+        )
     if "join_execution_summary" in debug:
         summary = debug["join_execution_summary"]
         return (
@@ -486,7 +543,9 @@ def _aggregate_series(data: pd.DataFrame, metric: str | None, aggregation: str) 
         return int(len(data))
     if metric not in data.columns:
         raise ValueError(f"Unknown metric column: {metric}")
-    series = data[metric]
+    series = pd.to_numeric(data[metric], errors="coerce")
+    if series.dropna().empty:
+        return 0.0
     if aggregation == "mean":
         return float(series.mean())
     if aggregation == "max":
@@ -521,7 +580,7 @@ def _top_count(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]
     group_by = str(params["group_by"])
     counts = data[group_by].value_counts(dropna=True)
     if counts.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     top_value = str(counts.index[0])
     options = params.get("options") or {}
     if options:
@@ -545,7 +604,7 @@ def _field_values(df: pd.DataFrame, params: dict[str, Any]) -> list[str]:
 def _missing_columns_choice(df: pd.DataFrame, params: dict[str, Any]) -> str:
     fields = [field for field in (params.get("fields") or []) if field in df.columns]
     if not fields:
-        return "Not Applicable"
+        return "未在上传表结构中找到候选字段"
     missing_fields = [
         field
         for field in fields
@@ -589,7 +648,7 @@ def _boolean_count_ratio(df: pd.DataFrame, filters: dict[str, Any], params: dict
     left_count = int((values == left_value).sum())
     right_count = int((values == right_value).sum())
     if right_count == 0:
-        return "Not Applicable"
+        return 0.0
     return left_count / right_count
 
 
@@ -604,13 +663,13 @@ def _metric_per_distinct_entity(df: pd.DataFrame, filters: dict[str, Any], param
     entity_present = data[~_null_mask(data[entity_field])]
     entity_count = int(entity_present[entity_field].nunique())
     if entity_count == 0:
-        return "Not Applicable"
+        return 0.0
     if is_row_count_metric:
         numerator = float(len(entity_present))
     elif aggregation == "mean":
         grouped_means = pd.to_numeric(entity_present[metric], errors="coerce").groupby(entity_present[entity_field]).mean().dropna()
         if grouped_means.empty:
-            return "Not Applicable"
+            return 0.0
         return float(grouped_means.mean())
     else:
         values = pd.to_numeric(entity_present[metric], errors="coerce").fillna(0)
@@ -663,10 +722,10 @@ def _top_outlier_group(df: pd.DataFrame, filters: dict[str, Any], params: dict[s
     mask = _outlier_mask(data, metric, params)
     outliers = data[mask]
     if outliers.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     counts = outliers.groupby(group_by, dropna=True).size().sort_values(ascending=False)
     if counts.empty:
-        return "Not Applicable"
+        return NO_MATCHING_RECORDS
     selected = counts.index[0]
     if isinstance(selected, (int, float)):
         return selected
@@ -775,7 +834,7 @@ def _outlier_target_percentage(df: pd.DataFrame, filters: dict[str, Any], params
         raise ValueError("outlier_target_percentage requires known metric and target columns.")
     outliers = data[_outlier_mask(data, metric, params)]
     if outliers.empty:
-        return "Not Applicable"
+        return 0.0
     return float(_bool_series(outliers[target]).mean() * 100)
 
 
@@ -789,7 +848,7 @@ def _outlier_rate_comparison(df: pd.DataFrame, filters: dict[str, Any], params: 
     outliers = data[mask]
     inliers = data[~mask]
     if outliers.empty or inliers.empty:
-        return "Not Applicable"
+        return "no"
     outlier_rate = float(_bool_series(outliers[target]).mean())
     inlier_rate = float(_bool_series(inliers[target]).mean())
     higher = outlier_rate > inlier_rate
@@ -807,7 +866,7 @@ def _correlation_threshold(df: pd.DataFrame, filters: dict[str, Any], params: di
     target_series = _bool_series(data[target]).astype(float)
     valid = pd.DataFrame({"metric": metric_series, "target": target_series}).dropna()
     if len(valid) < 2 or valid["metric"].nunique() < 2 or valid["target"].nunique() < 2:
-        return "Not Applicable"
+        return {"answer": "no", "correlation": 0.0, "threshold": float(params.get("threshold") or 0.5)}
     coefficient = float(valid["metric"].corr(valid["target"]))
     threshold = float(params.get("threshold") or 0.5)
     value = abs(coefficient) if params.get("absolute", True) else coefficient
@@ -846,7 +905,7 @@ def _worst_fraud_segment(df: pd.DataFrame, filters: dict[str, Any], params: dict
             )
             rows.append(row)
         if not rows:
-            return "Not Applicable"
+            return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
         rows.sort(key=lambda row: (-float(row["fraud_rate"]), tuple(str(row[dimension]) for dimension in dimensions)))
         selected = rows[0]
         values = [str(selected[dimension]) for dimension in dimensions]
@@ -876,7 +935,7 @@ def _worst_fraud_segment(df: pd.DataFrame, filters: dict[str, Any], params: dict
                 }
             )
     if not rows:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     rows.sort(key=lambda row: (-float(row["fraud_rate"]), row["segment"], row["value"]))
     selected = rows[0]
     return {
@@ -966,7 +1025,7 @@ def _null_check(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any
     if mode == "max_field":
         missing_by_field = data.apply(lambda column: int(_null_mask(column).sum()))
         if missing_by_field.empty:
-            return "Not Applicable"
+            return NO_MATCHING_RECORDS
         return str(missing_by_field.sort_values(ascending=False).index[0])
     if mode == "rate":
         return 0.0 if denominator == 0 else null_count / denominator * 100
@@ -988,7 +1047,7 @@ def _schema_field_lookup(df: pd.DataFrame, params: dict[str, Any]) -> str:
     for candidate in concept_fields.get(concept, ()):
         if candidate in df.columns:
             return candidate
-    return "Not Applicable"
+    return "未在上传表结构中找到匹配字段"
 
 
 def _rank_by_metric(df: pd.DataFrame, logic: Any) -> dict[str, Any]:
@@ -1010,7 +1069,7 @@ def _rank_by_metric(df: pd.DataFrame, logic: Any) -> dict[str, Any]:
     else:
         return {"answer": _top_count(df, logic.filters, {"group_by": group_by, "options": options}), "candidate_table": []}
     if not candidate_table:
-        return {"answer": "Not Applicable", "candidate_table": [], "metric": metric}
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": [], "metric": metric}
     candidate_table.sort(key=lambda row: row[metric_column], reverse=sort_desc)
     selected = candidate_table[0]
     selected_value = str(selected[group_by])
@@ -1109,7 +1168,7 @@ def _fraud_rate_comparison(df: pd.DataFrame, filters: dict[str, Any], params: di
     left_rate = _fraud_rate(data[data[dimension] == left_value])
     right_rate = _fraud_rate(data[data[dimension] == right_value])
     if left_rate is None or right_rate is None:
-        return "Not Applicable"
+        return "no"
     result = left_rate > right_rate if operator == "higher_than" else left_rate < right_rate
     return "yes" if result else "no"
 
@@ -1117,7 +1176,7 @@ def _fraud_rate_comparison(df: pd.DataFrame, filters: dict[str, Any], params: di
 def _fraud_rate_filtered(df: pd.DataFrame, filters: dict[str, Any]) -> float | str:
     data = _apply_dataframe_filters(df, filters)
     if data.empty:
-        return "Not Applicable"
+        return 0.0
     fraud_mask = _bool_series(data["has_fraudulent_dispute"])
     if "eur_amount" in data.columns:
         total_volume = float(pd.to_numeric(data["eur_amount"], errors="coerce").fillna(0).sum())
@@ -1132,7 +1191,7 @@ def _fraud_rate_fluctuation(df: pd.DataFrame, filters: dict[str, Any], params: d
     data = _apply_dataframe_filters(df, filters)
     group_by = str(params.get("group_by") or "")
     if data.empty:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     if group_by not in data.columns:
         raise ValueError("fraud_rate_fluctuation requires a known group_by column.")
     if "month" in data.columns:
@@ -1158,7 +1217,7 @@ def _fraud_rate_fluctuation(df: pd.DataFrame, filters: dict[str, Any], params: d
         std = float(pd.Series(rates).std(ddof=0))
         rows.append({group_by: str(value), "fraud_rate_std": std, "period_count": len(rates)})
     if not rows:
-        return "Not Applicable"
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     reverse = str(params.get("objective") or "maximum") != "minimum"
     rows.sort(key=lambda row: (float(row["fraud_rate_std"]), str(row[group_by])), reverse=reverse)
     selected = rows[0]
