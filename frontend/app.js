@@ -65,6 +65,9 @@ const state = {
   drawerResult: null,
   drawerTriggerSummary: null,
   activityDrawerAutoScroll: true,
+  activityDrawerCloseTimer: null,
+  activityDrawerScrollFrame: 0,
+  activityDrawerScrollTimeout: null,
   textDialogResolve: null,
   chatSearchQuery: "",
 };
@@ -2347,10 +2350,11 @@ function shouldRenderRows(rows, columns, result = {}) {
   const isOverview = result.answer_type === "overview" || result.execution_mode === "overview";
   const isCleaning = result.answer_type === "cleaning_simulation" || result.execution_mode === "cleaning_simulation";
   if (isOverview) {
-    const compactOverviewColumns = [
-      ["指标", "数值"],
-      ["表名", "来源", "行数", "列数", "可能含义", "关键字段"],
-    ];
+	    const compactOverviewColumns = [
+	      ["指标", "数值"],
+	      ["表名", "来源", "行数", "列数", "可能含义", "关键字段"],
+	      ["表名", "行数", "类型", "主要作用", "关键字段"],
+	    ];
     return rows.length <= 30 && compactOverviewColumns.some((allowed) => allowed.length === safeColumns.length && allowed.every((column, index) => column === safeColumns[index]));
   }
   if (isCleaning) {
@@ -2874,13 +2878,13 @@ function polarPoint(cx, cy, radius, angleDeg) {
 
 function renderInsight(insight, result = {}) {
   const hasInsightPayload = Boolean(insight && typeof insight === "object");
-  const suggestions = (insight?.business_suggestions || insight?.suggestions || []).filter(isUserFacingInsightText);
+  const suggestions = resolveInsightAdviceCandidates(insight);
   const findings = [...(insight?.anomaly_findings || []), ...(insight?.volatility_findings || [])]
     .map((item) => item?.message)
     .filter(isUserFacingInsightText);
   const caveats = (insight?.caveats || []).filter(isUserFacingInsightText);
   const nextQuestions = hasInsightPayload ? resolveInsightNextQuestions(insight?.next_questions || [], result).slice(0, 2) : [];
-  const summary = cleanInsightSummary(insight?.summary || "");
+  const summary = cleanInsightSummary(insight?.summary || "") || buildContextualInsightSummary(result);
   const primaryAdvice = pickInsightAdvice(suggestions, findings, caveats);
   const hasInsight = Boolean(summary || primaryAdvice || nextQuestions.length);
   el.insightPanel?.classList.toggle("hidden", !hasInsight);
@@ -2891,6 +2895,12 @@ function renderInsight(insight, result = {}) {
   }
   el.insightSummary.innerHTML = renderInsightBody(summary, primaryAdvice, nextQuestions);
   el.insightList.innerHTML = "";
+}
+
+function resolveInsightAdviceCandidates(insight = {}) {
+  const directSuggestions = [insight?.next_step, ...(Array.isArray(insight?.suggestions) ? insight.suggestions : [])].filter(isUserFacingInsightText);
+  const businessSuggestions = (Array.isArray(insight?.business_suggestions) ? insight.business_suggestions : []).filter(isUserFacingInsightText);
+  return uniqueStrings([...directSuggestions, ...businessSuggestions]);
 }
 
 function pickInsightAdvice(suggestions, findings, caveats) {
@@ -2970,6 +2980,31 @@ function buildContextualNextQuestions(result = {}) {
   return uniqueStrings(candidates.filter(isUserFacingInsightText));
 }
 
+function buildContextualInsightSummary(result = {}) {
+  const rows = resultRowsForSuggestions(result);
+  if (!rows.length) return "";
+  const columns = resultColumnsForSuggestions(result, rows);
+  const logic = result?.logic_form || {};
+  const parameters = logic.parameters && typeof logic.parameters === "object" ? logic.parameters : {};
+  const question = String(result?.question || "");
+  const operation = [logic.operation, logic.task_type, result?.debug?.operation, result?.answer_type].filter(Boolean).join(" ").toLowerCase();
+  const metric = firstText(logic.metric, parameters.metric, result?.chart?.y, firstNumericColumn(rows, columns), "");
+  const dimension = firstText(logic.group_by, parameters.dimension, parameters.group_by, chartDimension(result?.chart), firstDimensionColumn(rows, columns), "");
+  const firstRow = rows[0] || {};
+  if (looksLikeRankingQuestion(`${question} ${operation}`.toLowerCase()) && metric && dimension && firstRow[dimension] !== undefined && firstRow[metric] !== undefined) {
+    return `排名结果里第 1 位是 ${formatInsightValue(firstRow[dimension])}，${metric} 为 ${formatInsightValue(firstRow[metric])}。`;
+  }
+  return "";
+}
+
+function formatInsightValue(value) {
+  const number = Number(value);
+  if (value !== null && value !== "" && Number.isFinite(number)) {
+    return Math.abs(number) >= 1000 ? number.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) : String(Number(number.toFixed(2)));
+  }
+  return String(value ?? "-");
+}
+
 function resultRowsForSuggestions(result = {}) {
   const rows = result?.result?.rows;
   if (Array.isArray(rows)) return rowsWithoutContinuationPrompts(rows).filter((row) => row && typeof row === "object");
@@ -3038,13 +3073,26 @@ function renderInsightBody(summary, advice, nextQuestions) {
   if (summary) paragraphs.push(escapeHtml(summary));
   if (advice) {
     const parsed = parseInsightText(advice);
-    const headline = parsed.action || parsed.observation || advice;
-    if (headline) paragraphs.push(`<strong>下一步：</strong>${escapeHtml(headline)}`);
+    const action = isActionableInsightAdvice(parsed.action) ? parsed.action : "";
+    const fallback = isDistinctInsightText(parsed.observation, summary) ? parsed.observation : "";
+    const rawAdvice = isActionableInsightAdvice(advice) ? advice : "";
+    const headline = action || fallback || rawAdvice;
+    if (isDistinctInsightText(headline, summary)) paragraphs.push(`<strong>下一步：</strong>${escapeHtml(headline)}`);
   }
   if (nextQuestions.length) {
     paragraphs.push(`<strong>可继续问：</strong>${nextQuestions.map((question) => escapeHtml(question)).join("；")}`);
   }
   return paragraphs.map((paragraph) => `<p>${paragraph}</p>`).join("");
+}
+
+function isDistinctInsightText(text, summary = "") {
+  const value = String(text || "").trim();
+  if (!isUserFacingInsightText(value)) return false;
+  return normalizeInsightText(value) !== normalizeInsightText(summary);
+}
+
+function normalizeInsightText(text) {
+  return String(text || "").replace(/[，。；;,.!?！？\s]/g, "").trim();
 }
 
 function parseInsightText(text) {
@@ -3619,11 +3667,16 @@ function mergeActivityTraceNode(node) {
 }
 
 function openActivityDrawer(result = {}, triggerSummary = null) {
+  cancelActivityDrawerClose();
   state.drawerResult = result || state.latestActivityResult || {};
   state.drawerTriggerSummary = triggerSummary || null;
   state.activityDrawerAutoScroll = true;
   el.activityDrawer?.classList.remove("hidden");
   el.activityBackdrop?.classList.remove("hidden");
+  requestAnimationFrame(() => {
+    el.activityDrawer?.classList.add("is-active");
+    el.activityBackdrop?.classList.add("is-active");
+  });
   el.activityDrawer?.setAttribute("aria-hidden", "false");
   document.body.classList.add("activity-drawer-open");
   updateThinkingSummaryExpanded(true);
@@ -3631,13 +3684,26 @@ function openActivityDrawer(result = {}, triggerSummary = null) {
 }
 
 function closeActivityDrawer() {
-  el.activityDrawer?.classList.add("hidden");
-  el.activityBackdrop?.classList.add("hidden");
+  cancelActivityDrawerClose();
+  el.activityDrawer?.classList.remove("is-active");
+  el.activityBackdrop?.classList.remove("is-active");
   el.activityDrawer?.setAttribute("aria-hidden", "true");
   document.body.classList.remove("activity-drawer-open");
   updateThinkingSummaryExpanded(false);
   state.drawerTriggerSummary = null;
   state.activityDrawerAutoScroll = true;
+  state.activityDrawerCloseTimer = window.setTimeout(() => {
+    el.activityDrawer?.classList.add("hidden");
+    el.activityBackdrop?.classList.add("hidden");
+    state.activityDrawerCloseTimer = null;
+  }, 240);
+}
+
+function cancelActivityDrawerClose() {
+  if (state.activityDrawerCloseTimer) {
+    clearTimeout(state.activityDrawerCloseTimer);
+    state.activityDrawerCloseTimer = null;
+  }
 }
 
 function handleThinkingSummaryClick(event) {
@@ -3696,11 +3762,42 @@ function isActivityDrawerNearLatest() {
 
 function scrollActivityDrawerToLatest() {
   if (!el.activityDrawerList || !isActivityDrawerVisible()) return;
-  requestAnimationFrame(() => {
+  if (state.activityDrawerScrollFrame) {
+    cancelAnimationFrame(state.activityDrawerScrollFrame);
+    state.activityDrawerScrollFrame = 0;
+  }
+  if (state.activityDrawerScrollTimeout) {
+    clearTimeout(state.activityDrawerScrollTimeout);
+    state.activityDrawerScrollTimeout = null;
+  }
+  const scrollToLatestNode = (behavior = "auto") => {
     if (!el.activityDrawerList || !isActivityDrawerVisible()) return;
-    el.activityDrawerList.scrollTop = el.activityDrawerList.scrollHeight;
+    const sectionLists = el.activityDrawerList.querySelectorAll(".activity-section-list");
+    const latestList = sectionLists.length ? sectionLists[sectionLists.length - 1] : null;
+    const latestNode = latestList?.lastElementChild;
+    if (latestNode instanceof HTMLElement) {
+      latestNode.scrollIntoView({ block: "end", behavior });
+      const listRect = el.activityDrawerList.getBoundingClientRect();
+      const nodeRect = latestNode.getBoundingClientRect();
+      const delta = nodeRect.bottom - listRect.bottom;
+      if (Math.abs(delta) > 1) {
+        el.activityDrawerList.scrollTop += delta;
+      }
+    } else {
+      el.activityDrawerList.scrollTop = el.activityDrawerList.scrollHeight;
+    }
     state.activityDrawerAutoScroll = true;
+  };
+  state.activityDrawerScrollFrame = requestAnimationFrame(() => {
+    state.activityDrawerScrollFrame = requestAnimationFrame(() => {
+      scrollToLatestNode();
+      state.activityDrawerScrollFrame = 0;
+    });
   });
+  state.activityDrawerScrollTimeout = window.setTimeout(() => {
+    scrollToLatestNode();
+    state.activityDrawerScrollTimeout = null;
+  }, 180);
 }
 
 function handleActivityDrawerScroll() {
@@ -5210,11 +5307,71 @@ function cleanInsightSummary(summary) {
 }
 
 function isUserFacingInsightText(text) {
-  const value = String(text || "");
+  const value = String(text || "").trim();
   if (!value.trim()) return false;
-  return !["数据质量", "高严重度", "quality_report", "verification", "warnings", "errors", "join trace", "Join / Verification"].some((token) =>
+  if (!/[\u3400-\u9fff]/.test(value)) return false;
+  if (
+    ["数据质量", "高严重度", "quality_report", "verification", "warnings", "errors", "join trace", "Join / Verification"].some((token) =>
     value.includes(token),
-  );
+    )
+  ) {
+    return false;
+  }
+  return !looksLikeEnglishProseLeak(value);
+}
+
+function isActionableInsightAdvice(text) {
+  const value = String(text || "").trim();
+  if (!isUserFacingInsightText(value)) return false;
+  return /下一步|继续|先|按|比较|查看|检查|复核|确认|拆分|下钻|分析|生成|列出|看|追踪|对比|补充|选择|找出/.test(value);
+}
+
+function looksLikeEnglishProseLeak(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const segments = value
+    .split(/[；;。！？!?]\s*|(?:观察|风险|边界|依据|建议|下一步)[:：]/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  return (segments.length ? segments : [value]).some((segment) => segmentLooksLikeEnglishProseLeak(segment));
+}
+
+function segmentLooksLikeEnglishProseLeak(segment) {
+  const cjkCount = (segment.match(/[\u3400-\u9fff]/g) || []).length;
+  const latinWords = segment.match(/[A-Za-z][A-Za-z_'-]*/g) || [];
+  if (!latinWords.length) return false;
+  const proseTokens = new Set([
+    "are",
+    "based",
+    "by",
+    "compare",
+    "countries",
+    "country",
+    "data",
+    "followed",
+    "full",
+    "include",
+    "includes",
+    "is",
+    "leading",
+    "next",
+    "not",
+    "only",
+    "present",
+    "ranked",
+    "ranking",
+    "result",
+    "results",
+    "show",
+    "shows",
+    "step",
+    "the",
+    "this",
+    "that",
+  ]);
+  const proseCount = latinWords.filter((word) => proseTokens.has(word.toLowerCase().replace(/^_+|_+$/g, ""))).length;
+  if (cjkCount === 0) return proseCount >= 2 || (latinWords.length >= 5 && proseCount >= 1);
+  return proseCount >= 3 && cjkCount < 6;
 }
 
 function stringifyIssue(issue) {

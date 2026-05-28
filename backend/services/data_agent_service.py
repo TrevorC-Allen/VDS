@@ -949,6 +949,8 @@ class DataAgentService:
                 ),
                 question=question,
                 guidelines=(
+                    "All user-facing fields must be written in Chinese. Field names, country codes, and metric names may stay as-is, "
+                    "but do not write English prose in display_answer, summary, next_step, or next_questions. "
                     "Keep Chinese concise and GPT-like. Be specific to the uploaded tables and verified result. "
                     "Avoid numbered bullets in display_answer so it reads natural and does not introduce unverified numbers."
                 ),
@@ -988,6 +990,20 @@ class DataAgentService:
         summary = _llm_text(raw.get("summary") or raw.get("display_summary"))
         next_step = _llm_text(raw.get("next_step") or raw.get("recommendation"))
         next_questions = _llm_text_list(raw.get("next_questions"), limit=2)
+        rejected_language_fields: list[str] = []
+        if display_answer and not _is_chinese_user_facing_text(display_answer):
+            display_answer = ""
+            rejected_language_fields.append("display_answer")
+        if summary and not _is_chinese_user_facing_text(summary):
+            summary = ""
+            rejected_language_fields.append("summary")
+        if next_step and (not _is_chinese_user_facing_text(next_step) or not _is_actionable_next_step_text(next_step)):
+            next_step = ""
+            rejected_language_fields.append("next_step")
+        filtered_next_questions = [item for item in next_questions if _is_chinese_user_facing_text(item)]
+        if len(filtered_next_questions) != len(next_questions):
+            next_questions = filtered_next_questions
+            rejected_language_fields.append("next_questions")
         answer_updated = False
         answer_update_source = ""
         if _is_safe_llm_display_answer(display_answer, response):
@@ -1024,6 +1040,7 @@ class DataAgentService:
                 "updated_summary": bool(summary),
                 "updated_next_step": bool(next_step),
                 "next_question_count": len(next_questions),
+                "rejected_language_fields": rejected_language_fields,
             }
         )
         debug["llm_presentation"] = meta
@@ -1181,7 +1198,12 @@ class DataAgentService:
             },
         )
         if not dataset_id:
-            response = self.chat_without_dataset(question=cleaned_question, agent_mode=agent_mode, monitor_run_id=monitor_run_id)
+            response = self.chat_without_dataset(
+                question=cleaned_question,
+                agent_mode=agent_mode,
+                user_rule_file_id=user_rule_file_id,
+                monitor_run_id=monitor_run_id,
+            )
             _ensure_activity_trace_v2(response)
             _attach_project_metadata(response, project_context)
             _attach_message_timing(response, started_at=started_at, started_perf=started_perf)
@@ -1196,11 +1218,12 @@ class DataAgentService:
                 owner_context=owner_context,
             )
         intent = classify_workbench_message(cleaned_question, has_dataset=True)
-        if intent == "chat":
+        if _is_rule_context_inspection_question(cleaned_question) or intent == "chat":
             response = self.chat_with_dataset(
                 dataset_id=dataset_id,
                 question=cleaned_question,
                 agent_mode=agent_mode,
+                user_rule_file_id=user_rule_file_id,
                 monitor_run_id=monitor_run_id,
             )
         elif intent == "cleaning_guidance":
@@ -2085,6 +2108,7 @@ class DataAgentService:
         *,
         question: str,
         agent_mode: str = "multi_agent",
+        user_rule_file_id: str = "",
         monitor_run_id: str = "",
     ) -> dict[str, Any]:
         """Return a VDS assistant reply when no dataset has been uploaded yet."""
@@ -2114,6 +2138,7 @@ class DataAgentService:
                 ),
             )
 
+        user_rule_contexts, user_rule_context = self._user_rule_contexts(user_rule_file_id=user_rule_file_id)
         response = to_json_ready(
             {
                 "response_version": RESPONSE_VERSION,
@@ -2147,9 +2172,38 @@ class DataAgentService:
                 "process_view_v2": build_chat_process_view(cleaned_question, has_dataset=False),
                 "warnings": [],
                 "errors": [],
-                "debug": {"agent_mode": "chat_without_dataset", "requires_dataset": False},
+                "debug": {"agent_mode": "chat_without_dataset", "requires_dataset": False, "user_rule_context": user_rule_context},
             }
         )
+        if _is_rule_context_inspection_question(cleaned_question):
+            response["answer"] = _user_rule_context_answer(user_rule_contexts)
+            response["verification"]["notes"] = ["No dataset was required; answered from uploaded user analysis rule files."]
+            response["reasoning_trace_view"] = [
+                {
+                    "step_id": "intent",
+                    "name": "理解问题",
+                    "status": "completed",
+                    "summary": "用户在查看当前启用的规则文件，不需要上传数据集或进入数据计算链路。",
+                },
+                {
+                    "step_id": "rule_context",
+                    "name": "读取规则文件",
+                    "status": "completed",
+                    "summary": f"已读取 {len(user_rule_contexts)} 个 user_analysis 规则文件，只展示规则内容摘要，不把规则当作数据表分析。",
+                },
+            ]
+            response["debug"]["answered_from_user_rule_context"] = bool(user_rule_contexts)
+            _ensure_activity_trace_v2(response)
+            emit_monitor_event(
+                monitor_run_id,
+                "workflow_completed",
+                title="规则上下文回复完成",
+                summary="已从当前启用的用户规则文件直接回复。",
+                stage="chat",
+                status="completed",
+                payload=process_view_monitor_payload(response),
+            )
+            return response
         response = self._apply_direct_llm_chat(
             response,
             question=cleaned_question,
@@ -2173,6 +2227,7 @@ class DataAgentService:
         dataset_id: str,
         question: str,
         agent_mode: str = "multi_agent",
+        user_rule_file_id: str = "",
         monitor_run_id: str = "",
     ) -> dict[str, Any]:
         """Return an ordinary assistant reply while keeping dataset context available."""
@@ -2216,6 +2271,10 @@ class DataAgentService:
                 ),
             )
 
+        user_rule_contexts, user_rule_context = self._user_rule_contexts(
+            user_rule_file_id=user_rule_file_id,
+            dataset_id=dataset_id,
+        )
         response = to_json_ready(
             {
                 "response_version": RESPONSE_VERSION,
@@ -2249,9 +2308,43 @@ class DataAgentService:
                 "process_view_v2": build_chat_process_view(cleaned_question, has_dataset=True),
                 "warnings": [],
                 "errors": [],
-                "debug": {"agent_mode": "chat_with_dataset", "requires_dataset": False, "message_intent": "chat"},
+                "debug": {
+                    "agent_mode": "chat_with_dataset",
+                    "requires_dataset": False,
+                    "message_intent": "chat",
+                    "user_rule_context": user_rule_context,
+                },
             }
         )
+        if _is_rule_context_inspection_question(cleaned_question):
+            response["answer"] = _user_rule_context_answer(user_rule_contexts)
+            response["verification"]["notes"] = ["No data calculation was required; answered from uploaded user analysis rule files."]
+            response["reasoning_trace_view"] = [
+                {
+                    "step_id": "intent",
+                    "name": "理解问题",
+                    "status": "completed",
+                    "summary": "用户在查看当前数据上下文绑定的规则文件，本次不需要执行数据计算。",
+                },
+                {
+                    "step_id": "rule_context",
+                    "name": "读取规则文件",
+                    "status": "completed",
+                    "summary": f"已读取 {len(user_rule_contexts)} 个 user_analysis 规则文件，并保留当前 dataset 上下文。",
+                },
+            ]
+            response["debug"]["answered_from_user_rule_context"] = bool(user_rule_contexts)
+            _ensure_activity_trace_v2(response)
+            emit_monitor_event(
+                monitor_run_id,
+                "workflow_completed",
+                title="规则上下文回复完成",
+                summary="已从当前启用的用户规则文件直接回复。",
+                stage="chat",
+                status="completed",
+                payload=process_view_monitor_payload(response),
+            )
+            return response
         response = self._apply_direct_llm_chat(
             response,
             question=cleaned_question,
@@ -2670,6 +2763,63 @@ def _public_rule_context(rule_context: dict[str, Any]) -> dict[str, Any]:
         "rule_scope": rule_context.get("rule_scope"),
         "warnings": list(rule_context.get("warnings") or []),
     }
+
+
+def _is_rule_context_inspection_question(question: str) -> bool:
+    compact = str(question or "").lower().replace(" ", "")
+    if "rule" in compact and any(token in compact for token in ("show", "list", "what", "content", "enabled", "uploaded")):
+        return True
+    if "规则" not in compact:
+        return False
+    return any(
+        token in compact
+        for token in (
+            "规则是什么",
+            "看规则",
+            "查看规则",
+            "规则内容",
+            "规则文件",
+            "已启用规则",
+            "启用的规则",
+            "上传的规则",
+            "有哪些规则",
+            "规则列表",
+            "我要看",
+        )
+    )
+
+
+def _user_rule_context_answer(rule_contexts: list[dict[str, Any]]) -> str:
+    if not rule_contexts:
+        return "当前没有启用用户分析规则文件。"
+    lines = [f"当前启用了 {len(rule_contexts)} 个用户分析规则文件："]
+    for index, context in enumerate(rule_contexts, start=1):
+        file_name = str(context.get("file_name") or context.get("file_id") or f"规则文件 {index}")
+        scope = str(context.get("rule_scope") or USER_ANALYSIS_RULE_SCOPE)
+        excerpt = _rule_context_excerpt(context)
+        lines.append(f"{index}. {file_name}（scope: {scope}）")
+        if excerpt:
+            lines.append(f"   内容摘要：{excerpt}")
+        warnings = [str(item) for item in context.get("warnings") or [] if str(item).strip()]
+        if warnings:
+            lines.append("   解析提示：" + "；".join(warnings[:2]))
+    lines.append("这些规则只作为本轮分析/回答的约束和口径上下文，不会被当成数据表参与字段画像或计算。")
+    return "\n".join(lines)
+
+
+def _rule_context_excerpt(rule_context: dict[str, Any]) -> str:
+    parsed = rule_context.get("parsed_rule")
+    raw_text = str(rule_context.get("raw_text") or "").strip()
+    if isinstance(parsed, dict) and str(parsed.get("raw_text") or "").strip():
+        text = str(parsed.get("raw_text") or "")
+    elif raw_text:
+        text = raw_text
+    elif parsed:
+        text = json_dumps_compact(parsed)
+    else:
+        text = ""
+    text = " ".join(line.strip() for line in str(text).splitlines() if line.strip())
+    return _truncate_for_llm(text, 500)
 
 
 def _user_rule_guidelines(rule_context: dict[str, Any]) -> str:
@@ -3178,6 +3328,7 @@ def _overview_shape_for_llm(report: Any) -> dict[str, Any]:
                     "table": item.get("table"),
                     "rows": item.get("row_count"),
                     "columns": item.get("column_count"),
+                    "table_type": item.get("table_type"),
                     "meaning": item.get("likely_meaning"),
                     "key_fields": list(item.get("key_fields") or [])[:6],
                 }
@@ -3252,6 +3403,79 @@ def _llm_text(value: Any, limit: int = 240) -> str:
     return text if len(text) <= limit else text[:limit].rstrip() + "..."
 
 
+def _is_chinese_user_facing_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if not re.search(r"[\u3400-\u9fff]", value):
+        return False
+    return not _looks_like_english_prose_leak(value)
+
+
+def _is_actionable_next_step_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    return bool(
+        re.search(
+            r"下一步|继续|先|按|比较|查看|检查|复核|确认|拆分|下钻|分析|生成|列出|看|追踪|对比|补充|选择|找出",
+            value,
+        )
+    )
+
+
+def _looks_like_english_prose_leak(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    segments = [
+        segment.strip()
+        for segment in re.split(r"[；;。！？!?]\s*|(?:观察|风险|边界|依据|建议|下一步)[:：]", value)
+        if segment.strip()
+    ] or [value]
+    return any(_segment_looks_like_english_prose_leak(segment) for segment in segments)
+
+
+def _segment_looks_like_english_prose_leak(text: str) -> bool:
+    cjk_count = len(re.findall(r"[\u3400-\u9fff]", text))
+    latin_words = re.findall(r"[A-Za-z][A-Za-z_'-]*", text)
+    if not latin_words:
+        return False
+    prose_tokens = {
+        "are",
+        "based",
+        "by",
+        "compare",
+        "countries",
+        "country",
+        "data",
+        "followed",
+        "full",
+        "include",
+        "includes",
+        "is",
+        "leading",
+        "next",
+        "not",
+        "only",
+        "present",
+        "ranked",
+        "ranking",
+        "result",
+        "results",
+        "show",
+        "shows",
+        "step",
+        "the",
+        "this",
+        "that",
+    }
+    prose_count = sum(1 for word in latin_words if word.lower().strip("_'") in prose_tokens)
+    if cjk_count == 0:
+        return prose_count >= 2 or (len(latin_words) >= 5 and prose_count >= 1)
+    return prose_count >= 3 and cjk_count < 6
+
+
 def _is_safe_direct_chat_answer(text: str) -> bool:
     if not text:
         return False
@@ -3309,7 +3533,24 @@ def _is_safe_llm_display_answer(text: str, response: dict[str, Any]) -> bool:
         return False
     if _looks_like_raw_detail_dump(text):
         return False
+    if not _overview_table_types_preserved(text, response):
+        return False
     return _display_answer_numbers_are_grounded(text, response)
+
+
+def _overview_table_types_preserved(text: str, response: dict[str, Any]) -> bool:
+    report = response.get("overview_report")
+    if not isinstance(report, dict) or report.get("overview_scope") != "multi_table":
+        return True
+    table_types = {
+        str(item.get("table_type") or "").strip()
+        for item in report.get("tables_summary") or []
+        if isinstance(item, dict) and str(item.get("table_type") or "").strip()
+    }
+    required = {label for label in table_types if label in {"可计算事实表", "维表", "说明或元数据表", "规则/知识来源"}}
+    if len(required) <= 1:
+        return True
+    return all(label in text for label in required)
 
 
 def _compose_summary_prefaced_answer(original_answer: Any, summary: str) -> str:

@@ -32,12 +32,15 @@ def build_response(
 
     canonical_answer = canonicalize_final_answer(execution_result.value, plan.logic_form.output_format)
     answer = canonical_answer.answer
+    semantic_failure_answer = _semantic_failure_answer(user_question, plan, verification)
+    if semantic_failure_answer is not None:
+        answer = semantic_failure_answer
     display_result = {"columns": execution_result.columns, "rows": execution_result.rows, "value": execution_result.value}
     ranking_display_answer = _vds_current_metric_top_answer(plan, execution_result)
-    if ranking_display_answer is not None:
+    if semantic_failure_answer is None and ranking_display_answer is not None:
         answer = ranking_display_answer
     overview_display = _overview_display_payload(user_question.question, plan, execution_result)
-    if overview_display is not None:
+    if semantic_failure_answer is None and overview_display is not None:
         answer = overview_display["answer"]
         display_result = {
             "columns": overview_display["columns"],
@@ -137,6 +140,63 @@ def format_answer(value: Any, output_format: dict[str, Any]) -> str:
     return canonicalize_final_answer(value, output_format).answer
 
 
+def _semantic_failure_answer(user_question: UserQuestion, plan: AnalysisPlan, verification: VerificationResult) -> str | None:
+    if verification.passed:
+        return None
+    action = verification.correction_action if isinstance(verification.correction_action, dict) else {}
+    action_name = str(action.get("action") or "")
+    if action_name not in {"clarify_join_key", "repair_table_selection_or_join", "repair_dimension_binding", "repair_metric_definition"}:
+        return None
+    logic = plan.logic_form
+    params = logic.parameters or {}
+    join_plan = logic.join_plan or params.get("join_plan") or {}
+    if isinstance(join_plan, dict) and join_plan and action_name in {"clarify_join_key", "repair_table_selection_or_join"}:
+        left_table = str(join_plan.get("left_table") or params.get("table") or "左表")
+        right_table = str(join_plan.get("right_table") or "右表")
+        left_key = str(join_plan.get("left_key") or "待确认字段")
+        right_key = str(join_plan.get("right_key") or "待确认字段")
+        reason = str(join_plan.get("reason") or action.get("reason") or "")
+        overlap = join_plan.get("overlap_rate")
+        risk = "，且存在多对多风险" if join_plan.get("many_to_many_risk") else ""
+        overlap_text = f"，当前键值重叠率约 {float(overlap):.0%}" if isinstance(overlap, (int, float)) else ""
+        reason_text = f"；原因是 {reason}" if reason else ""
+        return (
+            "这个问题需要先确认跨表关联，不能直接把单表结果当成城市口径。"
+            f"建议检查关联键：{left_table}.{left_key} -> {right_table}.{right_key}{overlap_text}{risk}{reason_text}。"
+            "确认后我才能按城市汇总销售额。"
+        )
+    if action_name == "repair_dimension_binding":
+        requested = "、".join(str(item) for item in action.get("requested_dimensions") or []) or "用户点名维度"
+        actual = str(action.get("actual_dimension") or params.get("dimension") or "")
+        if action.get("missing_dimension"):
+            requested_label = _semantic_dimension_label(requested)
+            available = [str(item) for item in action.get("available_columns") or [] if str(item)]
+            available_text = "；当前可用字段包括：" + "、".join(available[:8]) if available else ""
+            return f"当前上传表结构里没有可用于“{requested_label}”的字段，不能把其他字段替代成该口径来回答{available_text}。"
+        requested_label = _semantic_dimension_label(requested)
+        actual_label = _semantic_dimension_label(actual) if actual else "其他维度"
+        return f"这个问题点名要按 {requested_label} 分析，但当前计划绑定到了 {actual_label}，所以不能把这个结果标记为成功。"
+    if action_name == "repair_metric_definition":
+        if "利润率" in user_question.question or "margin" in user_question.question.lower():
+            return "这个问题问的是利润率，必须按 profit / sales 这类分子/分母口径计算；当前计划没有可靠的派生指标口径，所以不能用销售额或利润额直接排名。"
+    return None
+
+
+def _semantic_dimension_label(value: str) -> str:
+    labels = {
+        "product": "产品",
+        "category": "品类",
+        "store": "门店",
+        "city": "城市",
+        "channel": "渠道",
+        "customer": "客户",
+        "month": "月份",
+        "time": "时间",
+    }
+    parts = [labels.get(item.strip(), item.strip()) for item in value.split("、") if item.strip()]
+    return "、".join(parts) if parts else value
+
+
 def _vds_current_metric_top_answer(plan: AnalysisPlan, execution_result: ExecutionResult) -> str | None:
     logic = plan.logic_form
     if logic.operation != "vds_current_filtered_metric_top":
@@ -181,6 +241,8 @@ def _value_filters_phrase(filters: Any) -> str:
 
 
 def _overview_display_payload(question: str, plan: AnalysisPlan, execution_result: ExecutionResult) -> dict[str, Any] | None:
+    if not execution_result.success:
+        return None
     rows = _result_rows(execution_result)
     if not rows or not _looks_like_overview_question(question):
         return None

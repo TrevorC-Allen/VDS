@@ -569,6 +569,8 @@ def native_sql_support_for_logic_form(logic_form: Any, *, available_columns: Ite
     operation = _operation_from_logic_form(logic_form)
     if _has_join_plan(logic_form):
         return False
+    if _has_derived_metric(logic_form):
+        return False
     if not is_native_sql_operation(operation):
         return False
     if operation == "field_values" and available_columns is not None:
@@ -588,6 +590,8 @@ def coverage_summary_for_logic_form(logic_form: Any, *, available_columns: Itera
     reason = ""
     if _has_join_plan(logic_form):
         reason = "Current native SQL path does not materialize uploaded-table join plans."
+    elif _has_derived_metric(logic_form):
+        reason = "Current native SQL path does not materialize uploaded-table derived ratio metrics."
     elif sql_support == SQL_SUPPORT_SHARED_RULE_ENGINE:
         reason = "Current native SQL path does not cover shared rule-engine operations."
     elif sql_support == SQL_SUPPORT_UNSUPPORTED:
@@ -628,3 +632,11 @@ def _has_join_plan(logic_form: Any) -> bool:
     else:
         join_plan = getattr(logic_form, "join_plan", None) or (getattr(logic_form, "parameters", {}) or {}).get("join_plan")
     return bool(join_plan)
+
+
+def _has_derived_metric(logic_form: Any) -> bool:
+    if isinstance(logic_form, Mapping):
+        derived_metric = (logic_form.get("parameters") or {}).get("derived_metric")
+    else:
+        derived_metric = (getattr(logic_form, "parameters", {}) or {}).get("derived_metric")
+    return bool(derived_metric)

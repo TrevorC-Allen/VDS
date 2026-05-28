@@ -15,6 +15,8 @@ Every formal test run must write a test-run document under `docs/test-runs/`. A 
 5. Frontend tests may verify rendering only. The frontend must not calculate metrics, joins, rankings, cleaning rules, benchmark scores, or chart semantics.
 6. Chinese questions, Chinese field names, Chinese business wording, and Chinese final answers are primary acceptance paths. English compatibility remains required but cannot replace Chinese validation.
 7. Any fix or claimed improvement must map to a reusable capability family and must not depend on current screenshots, fixed field values, fixed prompts, benchmark task ids, or current sample-specific errors.
+8. Semantic correctness outranks presentation. `success=true`, empty errors, a nice overview, or GPT-like prose cannot hide a wrong metric, wrong dimension, wrong join, or wrong derived formula.
+9. 已修能力不得下降 / non-regression: fixes to overview or answer templates must not regress file targeting, join, charts, cleaning boundaries, Project context, or previously fixed GPT-like output.
 
 ## Automation
 
@@ -59,6 +61,15 @@ The judge also returns:
 - `required_followup`
 
 Deterministic assertions run before the LLM judge and cannot be overruled by the LLM judge. Examples: expected `answer_type`, required terms, forbidden terms, `Not Applicable`, and obvious internal artifact leakage.
+
+Required semantic assertions for Phase 12 correctness hardening:
+
+- named-file product ranking: `qa_store_b.csv里面哪个产品销售额最高？` must use only `qa_store_b.csv` and return the product, not the store.
+- profit-margin ranking: `哪个城市利润率最高？` must use a derived ratio such as `sum(profit)/sum(sales)`, not raw sales or raw profit.
+- trusted join: `orders(customer_id,sales)` + `customers(customer_id,city)` must join on `customer_id` before city aggregation when the key is trustworthy.
+- untrusted join: when key overlap or relationship is unsafe, the main answer must name the candidate key and risk instead of returning success.
+- overview: knowledge base / table description / data structure workbooks must be classified as metadata or knowledge sources, even when parsed as spreadsheet tables.
+- simple Top1: short answers must remove audit noise while preserving correctness and source scope.
 
 ## Changelog Audit
 

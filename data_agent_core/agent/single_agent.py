@@ -6,6 +6,7 @@ import time
 import uuid
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import UserQuestion
@@ -514,9 +515,10 @@ class DataAnalysisAgent:
             else InsightResult(summary=str(answer or ""))
         )
         raw = stage.raw
-        suggestions = raw.get("suggestions") if isinstance(raw.get("suggestions"), list) else []
-        caveats = raw.get("caveats") if isinstance(raw.get("caveats"), list) else []
-        summary = str(raw.get("summary") or base.summary or answer or "")
+        suggestions = _filter_chinese_user_facing_list(raw.get("suggestions") if isinstance(raw.get("suggestions"), list) else [])
+        caveats = _filter_chinese_user_facing_list(raw.get("caveats") if isinstance(raw.get("caveats"), list) else [])
+        raw_summary = str(raw.get("summary") or "")
+        summary = raw_summary if _is_chinese_user_facing_text(raw_summary) else str(base.summary or answer or "")
         existing_caveats = list(base.caveats)
         for caveat in caveats:
             if caveat not in existing_caveats:
@@ -854,6 +856,76 @@ def _unsafe_chart_metric(column: str) -> bool:
     if compact in {"id", "ids", "number", "cardnumber"} or compact.endswith("id") or compact.endswith("ids"):
         return True
     return any(token in lowered for token in ("reference", "psp", "bin", "编号", "代码", "流水", "卡号", "year", "hour", "minute", "day_of_year"))
+
+
+def _filter_chinese_user_facing_list(values: list[Any]) -> list[str]:
+    cleaned: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and _is_chinese_user_facing_text(text):
+            cleaned.append(text)
+    return cleaned
+
+
+def _is_chinese_user_facing_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if not re.search(r"[\u3400-\u9fff]", value):
+        return False
+    return not _looks_like_english_prose_leak(value)
+
+
+def _looks_like_english_prose_leak(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    segments = [
+        segment.strip()
+        for segment in re.split(r"[；;。！？!?]\s*|(?:观察|风险|边界|依据|建议|下一步)[:：]", value)
+        if segment.strip()
+    ] or [value]
+    return any(_segment_looks_like_english_prose_leak(segment) for segment in segments)
+
+
+def _segment_looks_like_english_prose_leak(text: str) -> bool:
+    cjk_count = len(re.findall(r"[\u3400-\u9fff]", text))
+    latin_words = re.findall(r"[A-Za-z][A-Za-z_'-]*", text)
+    if not latin_words:
+        return False
+    prose_tokens = {
+        "are",
+        "based",
+        "by",
+        "compare",
+        "countries",
+        "country",
+        "data",
+        "followed",
+        "full",
+        "include",
+        "includes",
+        "is",
+        "leading",
+        "next",
+        "not",
+        "only",
+        "present",
+        "ranked",
+        "ranking",
+        "result",
+        "results",
+        "show",
+        "shows",
+        "step",
+        "the",
+        "this",
+        "that",
+    }
+    prose_count = sum(1 for word in latin_words if word.lower().strip("_'") in prose_tokens)
+    if cjk_count == 0:
+        return prose_count >= 2 or (len(latin_words) >= 5 and prose_count >= 1)
+    return prose_count >= 3 and cjk_count < 6
 
 
 def _chart_fields_match_data(data: list[dict[str, Any]], x: str, y: str, chart_type: str) -> bool:

@@ -218,6 +218,16 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn(".answer-source-list", css)
         self.assertIn(".answer-source-icon.spreadsheet", css)
 
+    def test_workbench_insight_next_step_prefers_actionable_advice(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function resolveInsightAdviceCandidates", js)
+        self.assertIn("const directSuggestions = [insight?.next_step", js)
+        self.assertIn("return uniqueStrings([...directSuggestions, ...businessSuggestions])", js)
+        self.assertIn("function isDistinctInsightText", js)
+        self.assertIn("normalizeInsightText(value) !== normalizeInsightText(summary)", js)
+        self.assertIn("const rawAdvice = isActionableInsightAdvice(advice) ? advice : \"\"", js)
+
     def test_workbench_suppresses_raw_detail_rows_for_general_questions(self) -> None:
         js = Path("frontend/app.js").read_text(encoding="utf-8")
         css = Path("frontend/styles.css").read_text(encoding="utf-8")
@@ -331,6 +341,21 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertNotIn("!state.datasetId || !question", js)
         self.assertNotIn('state.datasetId ? "/api/data-agent/analyze"', js)
         self.assertIn("当前没有上传数据，我会直接回复可讨论的部分，不编造业务结论。", js)
+
+    def test_workbench_filters_english_insight_leaks_from_history(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function looksLikeEnglishProseLeak", js)
+        self.assertIn("function segmentLooksLikeEnglishProseLeak", js)
+        self.assertIn("function isActionableInsightAdvice", js)
+        self.assertIn("function buildContextualInsightSummary", js)
+        self.assertIn("排名结果里第 1 位是", js)
+        self.assertIn('if (!/[\\u3400-\\u9fff]/.test(value)) return false;', js)
+        self.assertIn("(?:观察|风险|边界|依据|建议|下一步)", js)
+        self.assertIn('"ranking"', js)
+        self.assertIn('"countries"', js)
+        self.assertIn("proseCount >= 2", js)
+        self.assertIn("isActionableInsightAdvice(parsed.action)", js)
 
     def test_workbench_keeps_dataset_filename_out_of_topbar(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")

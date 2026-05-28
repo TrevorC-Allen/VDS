@@ -80,7 +80,7 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
     if op == "filtering":
         return _filtering(_analysis_dataframe(context, params), params)
     if op == "aggregation":
-        return _aggregation_dataframe(_analysis_dataframe(context, params), params)
+        return _aggregation_dataframe(_analysis_dataframe(context, params), filters, params)
     if op == "ranking":
         return _ranking_dataframe(_analysis_dataframe(context, params), params)
     if op == "row_count":
@@ -362,13 +362,17 @@ def _materialize_same_schema_union(tables: dict[str, pd.DataFrame], params: dict
 
 
 def _materialize_join(tables: dict[str, pd.DataFrame], params: dict[str, Any], join_plan: dict[str, Any]) -> pd.DataFrame:
-    """Materialize a trusted two-table join for uploaded-table analysis."""
+    """Materialize trusted uploaded-table joins for analysis."""
 
     if not join_plan.get("trusted"):
         reason = str(join_plan.get("reason") or "Join plan is not trusted.")
         raise ValueError(f"Join required but not trusted: {reason}")
     if join_plan.get("many_to_many_risk"):
         raise ValueError("Join required but many-to-many risk is present; ask for join-key clarification.")
+
+    steps = join_plan.get("steps")
+    if isinstance(steps, list) and steps:
+        return _materialize_join_steps(tables, params, steps)
 
     left_table = str(join_plan.get("left_table") or params.get("table") or "")
     right_table = str(join_plan.get("right_table") or "")
@@ -415,6 +419,83 @@ def _materialize_join(tables: dict[str, pd.DataFrame], params: dict[str, Any], j
     return joined
 
 
+def _materialize_join_steps(tables: dict[str, pd.DataFrame], params: dict[str, Any], steps: list[Any]) -> pd.DataFrame:
+    normalized_steps = [step for step in steps if isinstance(step, dict)]
+    if not normalized_steps:
+        raise ValueError("Join steps are empty.")
+    first_left = str(normalized_steps[0].get("left_table") or params.get("table") or "")
+    if first_left not in tables:
+        raise ValueError("Join steps reference a base table that is not available.")
+
+    joined = tables[first_left].copy()
+    summaries: list[dict[str, Any]] = []
+    for step in normalized_steps:
+        if not step.get("trusted"):
+            reason = str(step.get("reason") or "Join step is not trusted.")
+            raise ValueError(f"Join required but not trusted: {reason}")
+        if step.get("many_to_many_risk"):
+            raise ValueError("Join required but a join step has many-to-many risk; ask for join-key clarification.")
+        right_table = str(step.get("right_table") or "")
+        left_key = str(step.get("left_key") or "")
+        right_key = str(step.get("right_key") or "")
+        if right_table not in tables:
+            raise ValueError("Join step references a right table that is not available.")
+        if left_key not in joined.columns or right_key not in tables[right_table].columns:
+            raise ValueError("Join step references a key column that is not available.")
+
+        right = tables[right_table]
+        relationship = str(step.get("relationship") or "many_to_one")
+        validate = {"one_to_one": "1:1", "many_to_one": "m:1"}.get(relationship)
+        if validate is None:
+            raise ValueError(f"Unsupported join relationship for controlled executor: {relationship}")
+
+        right_keys = set(right[right_key].dropna().astype(str))
+        left_key_series = joined[left_key].dropna().astype(str)
+        unmatched_keys = sorted(set(left_key_series) - right_keys)
+        before_rows = int(len(joined))
+        joined = joined.merge(
+            right,
+            how=str(step.get("join_type") or "left"),
+            left_on=left_key,
+            right_on=right_key,
+            suffixes=("", f"__{right_table}"),
+            validate=validate,
+        )
+        summaries.append(
+            {
+                "trusted": True,
+                "left_table": str(step.get("left_table") or first_left),
+                "right_table": right_table,
+                "left_key": left_key,
+                "right_key": right_key,
+                "join_type": str(step.get("join_type") or "left"),
+                "relationship": relationship,
+                "left_rows": before_rows,
+                "right_rows": int(len(right)),
+                "joined_rows": int(len(joined)),
+                "unmatched_left_key_count": int(len(unmatched_keys)),
+                "unmatched_left_keys_sample": unmatched_keys[:10],
+            }
+        )
+
+    params["_join_execution_summary"] = {
+        "trusted": True,
+        "left_table": summaries[0]["left_table"],
+        "right_table": summaries[-1]["right_table"],
+        "left_key": summaries[0]["left_key"],
+        "right_key": summaries[0]["right_key"],
+        "join_type": "left",
+        "relationship": "multi_step",
+        "left_rows": summaries[0]["left_rows"],
+        "right_rows": summaries[-1]["right_rows"],
+        "joined_rows": int(len(joined)),
+        "unmatched_left_key_count": int(sum(step["unmatched_left_key_count"] for step in summaries)),
+        "unmatched_left_keys_sample": [key for step in summaries for key in step["unmatched_left_keys_sample"]][:10],
+        "steps": summaries,
+    }
+    return joined
+
+
 def _join_debug(params: dict[str, Any]) -> dict[str, Any]:
     join_plan = params.get("join_plan")
     debug: dict[str, Any] = {}
@@ -433,6 +514,7 @@ def _join_debug(params: dict[str, Any]) -> dict[str, Any]:
                 "overlap_rate",
                 "many_to_many_risk",
                 "reason",
+                "steps",
             )
             if key in join_plan
         }
@@ -466,6 +548,11 @@ def _execution_summary(operation: str, debug: dict[str, Any]) -> str:
         )
     if "join_execution_summary" in debug:
         summary = debug["join_execution_summary"]
+        if isinstance(summary.get("steps"), list) and summary.get("steps"):
+            return (
+                f"Executed operation {operation} after materializing "
+                f"{len(summary.get('steps') or [])} trusted join step(s)."
+            )
         return (
             f"Executed operation {operation} after joining "
             f"{summary.get('left_table')} to {summary.get('right_table')}."
@@ -496,7 +583,14 @@ def _aggregation(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> Any
     return _aggregate_series(data, None if metric is None else str(metric), aggregation)
 
 
-def _aggregation_dataframe(data: pd.DataFrame, params: dict[str, Any]) -> Any:
+def _aggregation_dataframe(data: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> Any:
+    data = _apply_dataframe_filters(data, filters)
+    derived_metric = params.get("derived_metric")
+    if isinstance(derived_metric, dict) and derived_metric:
+        dimension = params.get("dimension")
+        if dimension:
+            return _aggregate_derived_ratio_grouped(data, str(dimension), derived_metric)
+        return _aggregate_derived_ratio(data, derived_metric)
     metric = params.get("metric")
     dimension = params.get("dimension")
     aggregation = str(params.get("aggregation") or "sum")
@@ -514,16 +608,49 @@ def _ranking_dataframe(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[
     dimension = params.get("dimension")
     if not dimension:
         raise ValueError("Ranking requires a dimension column.")
-    rows = _aggregate_grouped(
-        data,
-        str(dimension),
-        None if params.get("metric") is None else str(params.get("metric")),
-        str(params.get("aggregation") or "sum"),
-    )
+    derived_metric = params.get("derived_metric")
+    if isinstance(derived_metric, dict) and derived_metric:
+        rows = _aggregate_derived_ratio_grouped(data, str(dimension), derived_metric)
+    else:
+        rows = _aggregate_grouped(
+            data,
+            str(dimension),
+            None if params.get("metric") is None else str(params.get("metric")),
+            str(params.get("aggregation") or "sum"),
+        )
     metric_column = next((key for key in rows[0] if key != str(dimension)), "value") if rows else "value"
     reverse = str(params.get("sort_order") or "desc") == "desc"
     rows.sort(key=lambda row: row.get(metric_column), reverse=reverse)
     return rows[: int(params.get("limit") or 1)]
+
+
+def _aggregate_derived_ratio_grouped(data: pd.DataFrame, dimension: str, derived_metric: dict[str, Any]) -> list[dict[str, Any]]:
+    numerator = str(derived_metric.get("numerator") or "")
+    denominator = str(derived_metric.get("denominator") or "")
+    metric_name = str(derived_metric.get("name") or "ratio")
+    if dimension not in data.columns:
+        raise ValueError(f"Unknown dimension column: {dimension}")
+    if numerator not in data.columns or denominator not in data.columns:
+        raise ValueError("Derived ratio metric requires numerator and denominator columns.")
+    working = data[[dimension, numerator, denominator]].copy()
+    working[numerator] = pd.to_numeric(working[numerator], errors="coerce")
+    working[denominator] = pd.to_numeric(working[denominator], errors="coerce")
+    grouped = working.groupby(dimension, dropna=True)[[numerator, denominator]].sum().reset_index()
+    grouped[metric_name] = grouped.apply(
+        lambda row: 0.0 if float(row[denominator] or 0) == 0 else float(row[numerator]) / float(row[denominator]),
+        axis=1,
+    )
+    return grouped[[dimension, metric_name]].to_dict(orient="records")
+
+
+def _aggregate_derived_ratio(data: pd.DataFrame, derived_metric: dict[str, Any]) -> float:
+    numerator = str(derived_metric.get("numerator") or "")
+    denominator = str(derived_metric.get("denominator") or "")
+    if numerator not in data.columns or denominator not in data.columns:
+        raise ValueError("Derived ratio metric requires numerator and denominator columns.")
+    numerator_sum = float(pd.to_numeric(data[numerator], errors="coerce").sum())
+    denominator_sum = float(pd.to_numeric(data[denominator], errors="coerce").sum())
+    return 0.0 if denominator_sum == 0 else numerator_sum / denominator_sum
 
 
 def _aggregate_grouped(data: pd.DataFrame, dimension: str, metric: str | None, aggregation: str) -> list[dict[str, Any]]:

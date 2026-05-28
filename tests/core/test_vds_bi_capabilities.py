@@ -6,11 +6,13 @@ import unittest
 
 import pandas as pd
 
+from data_agent_core.contracts.analysis_contracts import UserQuestion
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.core.intent_parser import parse_generic_table_question
 from data_agent_core.executors.pandas_executor import execute_plan
 from data_agent_core.llm.client import MockLLMClient
 from data_agent_core.llm.planner import complete_stage_with_llm
+from data_agent_core.verifier.rule_checker import verify_execution
 
 
 class VdsBiCapabilitiesTest(unittest.TestCase):
@@ -54,6 +56,52 @@ class VdsBiCapabilitiesTest(unittest.TestCase):
         self.assertEqual("项目类别", filtered_logic.parameters["filter_column"])
         self.assertEqual("品类A", filtered_logic.parameters["filter_value"])
         self.assertEqual("A店", filtered["candidate_table"][0]["门店名称"])
+
+    def test_group_top_entities_verifier_accepts_outer_group_and_inner_entity(self) -> None:
+        tables = {
+            "sales": pd.DataFrame(
+                [
+                    {"门店名称": "A店", "区域": "华东", "是否本周/上周": "本周", "销售额": 100.0, "AT_row": 50.0},
+                    {"门店名称": "B店", "区域": "华东", "是否本周/上周": "本周", "销售额": 200.0, "AT_row": 70.0},
+                    {"门店名称": "C店", "区域": "华北", "是否本周/上周": "本周", "销售额": 120.0, "AT_row": 60.0},
+                    {"门店名称": "D店", "区域": "华北", "是否本周/上周": "本周", "销售额": 90.0, "AT_row": 40.0},
+                ]
+            )
+        }
+        question = "本周各区域AT最高的Top1门店分别是谁？"
+        logic = parse_generic_table_question(question, tables)
+        plan = build_analysis_plan(logic)
+        result = execute_plan(plan, {"tables": tables})
+        verification = verify_execution(result, plan=plan, user_question=UserQuestion(dataset_id="vds_bi", question=question))
+
+        self.assertEqual("vds_group_top_entities", logic.operation)
+        self.assertEqual("区域", logic.parameters["group_by"])
+        self.assertEqual("门店名称", logic.parameters["entity"])
+        self.assertTrue(result.success, result.errors)
+        self.assertTrue(verification.passed, verification.semantic_verification_notes)
+
+    def test_period_delta_profit_margin_verifier_accepts_vds_ratio_metric(self) -> None:
+        tables = {
+            "sales": pd.DataFrame(
+                [
+                    {"门店名称": "A店", "是否本周/上周": "本周", "销售额": 100.0, "利润": 20.0},
+                    {"门店名称": "A店", "是否本周/上周": "上周", "销售额": 100.0, "利润": 50.0},
+                    {"门店名称": "B店", "是否本周/上周": "本周", "销售额": 100.0, "利润": 40.0},
+                    {"门店名称": "B店", "是否本周/上周": "上周", "销售额": 100.0, "利润": 45.0},
+                ]
+            )
+        }
+        question = "本周利润率下降最多的Top2门店？"
+        logic = parse_generic_table_question(question, tables)
+        plan = build_analysis_plan(logic)
+        result = execute_plan(plan, {"tables": tables})
+        verification = verify_execution(result, plan=plan, user_question=UserQuestion(dataset_id="vds_bi", question=question))
+
+        self.assertEqual("vds_period_delta_top", logic.operation)
+        self.assertEqual("PM_row", logic.parameters["metric"])
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual("A店", result.value["candidate_table"][0]["门店名称"])
+        self.assertTrue(verification.passed, verification.semantic_verification_notes)
 
     def test_growth_count_share_and_threshold_count_are_generic(self) -> None:
         _, count_share = self._execute("本周PSD较上周增长的门店数量和占比？")

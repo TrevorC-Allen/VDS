@@ -74,6 +74,26 @@ class UploadedTableAgentTest(unittest.TestCase):
         self.assertEqual("kpi", chart.chart_type)
         self.assertEqual([{"answer": 4}], chart.data)
 
+    def test_llm_insight_stage_filters_english_user_facing_text(self) -> None:
+        agent = UploadedDatasetAgent({"sales": pd.DataFrame({"answer": [4]})}, "ds_test_insight_guard", llm_client=MockLLMClient())
+        llm_stage = LLMStageResult(
+            stage_name="insight_generator",
+            raw={
+                "summary": "The result shows NL leading by eur_amount.",
+                "suggestions": ["The result includes only 8 countries, not a full top 10."],
+                "caveats": ["Compare the top countries by eur_amount."],
+            },
+            confidence=0.8,
+            reasoning_summary="Mocked English insight leakage.",
+        )
+
+        insight = agent._insight_from_stage("第 1 位是 NL。", True, llm_stage)
+
+        self.assertEqual("第 1 位是 NL。", insight.summary)
+        self.assertEqual([], insight.suggestions)
+        self.assertEqual([], insight.business_suggestions)
+        self.assertEqual([], insight.caveats)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,22 @@
 
 ## Backlog
 
+### Phase 12 Correctness + GPT-like Hardening
+
+目标：修复普通上传表链路中“答案看起来成功但语义错算”的问题，并同步收敛 overview / details 体验。重点是文件点名与维度绑定、利润率派生指标、可信 join、untrusted join 澄清、overview 表角色和简单 Top1 减噪。
+
+影响模块：data_agent_core/core、data_agent_core/executors、data_agent_core/verifier、data_agent_core/output、backend/services、frontend、tests/backend、tests/core、tests/architecture、docs。
+
+优先级：P0/P1，阶段：Phase 12 后续 correctness + GPT-like hardening。
+
+验收标准：`success=true` 不能绕过语义错算；产品问题不能按门店聚合；利润率必须用派生 ratio 或澄清；可信 join 才能执行，不可信 join 必须说明候选关联键和风险；overview 结果表包含 `表名 / 行数 / 类型 / 主要作用 / 关键字段`；简单 Top1 回答不输出固定审计噪声。
+
+风险：不能把当前 `qa_store_b.csv`、当前字段值、当前截图或当前测试样例做成特调；不能为了 overview 模板效果牺牲已修多文件、join、图表、清洗、Project 或 GPT-like 回答能力；已修能力不得下降。
+
+泛化验证方式：用中英文语义别名、同族合成表、错误 plan verifier 负例、service message 测试、overview metadata 表测试和 `scripts/run_tests.py` 做 non-regression；正式体验验证必须写 `docs/test-runs/*.md`。
+
+状态：2026-05-28 已完成首轮代码落点和 focused/service 测试；全量门禁与浏览器 runtime 验证以本轮 `docs/test-runs` 和 `CHANGELOG_AI.md` 记录为准。
+
 ### DABstep 核心算法 MVP
 
 目标：支持把 payments.csv 作为业务数据库表，把 manual.md / fees.json / merchant_data.json 作为文档和规则知识库，运行 DABstep 前 10 题核心算法测试。

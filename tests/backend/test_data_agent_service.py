@@ -55,6 +55,24 @@ class SummaryOnlyPresentationLLMClient(PresentationLLMClient):
         return super().complete_json(messages, temperature=temperature)
 
 
+class EnglishInsightPresentationLLMClient(PresentationLLMClient):
+    def complete_json(self, messages: list[dict[str, str]], temperature: float = 0.0) -> dict[str, object]:
+        payload = json.loads(messages[-1]["content"])
+        stage_name = str(payload.get("stage_name") or "")
+        self.stage_names.append(stage_name)
+        self.temperatures.append(temperature)
+        if stage_name == "fast_path_presentation":
+            return {
+                "display_answer": "已根据后端验证结果整理，首要结论可以继续围绕国家或地区维度下钻。",
+                "summary": "The top 10 ranking of eur_amount by ip_country shows NL leading.",
+                "next_step": "The result includes only 8 countries, not a full top 10.",
+                "next_questions": ["Compare the top countries by eur_amount?", "Which country is leading?"],
+                "confidence": 0.74,
+                "reasoning_summary": "Mocked English leakage from presentation LLM.",
+            }
+        return super().complete_json(messages, temperature=temperature)
+
+
 class DirectChatLLMClient(MockLLMClient):
     def __init__(self) -> None:
         self.stage_names: list[str] = []
@@ -374,6 +392,67 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertTrue(with_rule["debug"]["user_rule_context"]["enabled"])
         self.assertEqual(rule["file_id"], with_rule["debug"]["user_rule_context"]["file_id"])
         self.assertEqual(rule["file_id"], with_rule["debug"]["user_rule_context"]["files"][0]["file_id"])
+
+    def test_message_without_dataset_can_inspect_enabled_user_rule_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rule_path = root / "analysis_rules.md"
+            rule_path.write_text("金额保留两位小数；回答必须说明规则来源。", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            rule = service.upload_dataset(
+                rule_path,
+                original_filename="analysis_rules.md",
+                file_role="rule",
+                rule_scope="user_analysis",
+            )
+            response = service.respond_to_message(
+                question="规则是什么，我要看",
+                user_rule_file_id=rule["file_id"],
+            )
+
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("chat", response["answer_type"])
+        self.assertEqual("chat_without_dataset", response["debug"]["agent_mode"])
+        self.assertTrue(response["debug"]["user_rule_context"]["enabled"])
+        self.assertTrue(response["debug"]["answered_from_user_rule_context"])
+        self.assertIn("analysis_rules.md", response["answer"])
+        self.assertIn("金额保留两位小数", response["answer"])
+        self.assertIn("不会被当成数据表", response["answer"])
+        self.assertNotIn("当前没有上传数据", response["answer"])
+
+    def test_message_with_dataset_can_inspect_bound_user_rule_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            rule_path = root / "manual.md"
+            csv_path.write_text("city,sales\nShanghai,100\n", encoding="utf-8")
+            rule_path.write_text("sales 表示成交销售额，城市维度来自 city。", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(
+                [csv_path, rule_path],
+                original_filenames=["sales.csv", "manual.md"],
+            )
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="看一下启用的规则文件",
+            )
+
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("chat_with_dataset", response["debug"]["agent_mode"])
+        self.assertTrue(response["debug"]["user_rule_context"]["enabled"])
+        self.assertTrue(response["debug"]["user_rule_context"]["auto_bound"])
+        self.assertTrue(response["debug"]["answered_from_user_rule_context"])
+        self.assertIn("manual.md", response["answer"])
+        self.assertIn("成交销售额", response["answer"])
+        self.assertNotIn("当前数据已经上传", response["answer"])
 
     def test_json_array_user_analysis_rule_uploads_and_applies_to_context(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1158,6 +1237,43 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertIn("updated_answer=True", json.dumps(response["process_view_v2"], ensure_ascii=False))
         self.assertIn("调用LLM整理表达", response["process_view_v2"]["summary"])
 
+    def test_fast_presentation_rejects_english_insight_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "payments.csv"
+            csv_path.write_text(
+                "ip_country,eur_amount\n"
+                "NL,100\n"
+                "IT,90\n"
+                "BE,80\n",
+                encoding="utf-8",
+            )
+            llm_client = EnglishInsightPresentationLLMClient()
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=llm_client,
+            )
+
+            upload = service.upload_dataset(csv_path, original_filename="payments.csv")
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="看一下这个数据",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertIn("fast_path_presentation", llm_client.stage_names)
+        presentation_debug = response["debug"]["llm_presentation"]
+        self.assertTrue(presentation_debug["updated_answer"])
+        self.assertEqual("display_answer", presentation_debug["answer_update_source"])
+        self.assertIn("summary", presentation_debug["rejected_language_fields"])
+        self.assertIn("next_step", presentation_debug["rejected_language_fields"])
+        self.assertIn("next_questions", presentation_debug["rejected_language_fields"])
+        insight_payload = json.dumps(response["insight"], ensure_ascii=False)
+        self.assertNotIn("The top 10 ranking", insight_payload)
+        self.assertNotIn("not a full top 10", insight_payload)
+        self.assertNotIn("Compare the top countries", insight_payload)
+
     def test_fast_dataset_overview_prefaces_answer_when_llm_only_returns_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1233,7 +1349,7 @@ class DataAgentServiceTest(unittest.TestCase):
             self.assertEqual("overview", response["answer_type"])
             self.assertEqual("multi_table_dataset_overview", response["debug"]["operation"])
             self.assertEqual(["orders.csv", "customers.csv"], [item["file_name"] for item in response["source_references"]])
-            self.assertEqual(["表名", "来源", "行数", "列数", "可能含义", "关键字段"], response["result"]["columns"])
+            self.assertEqual(["表名", "行数", "类型", "主要作用", "关键字段"], response["result"]["columns"])
             payload = json.dumps(response, ensure_ascii=False)
             self.assertIn("orders", response["answer"])
             self.assertIn("customers", response["answer"])
@@ -1244,6 +1360,56 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertIn("关键字段", field_response["answer"])
         self.assertIn("建议分析方向", story_response["answer"])
         self.assertNotEqual(field_response["answer"], story_response["answer"])
+
+    def test_multi_table_overview_classifies_metadata_workbooks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            orders_path = root / "订单明细.csv"
+            glossary_path = root / "数据表结构&表说明.xlsx"
+            knowledge_path = root / "初版知识库.xlsx"
+            orders_path.write_text(
+                "order_id,customer_id,sales\n"
+                "O1,C1,100\n"
+                "O2,C2,120\n",
+                encoding="utf-8",
+            )
+            pd.DataFrame(
+                {
+                    "表名": ["订单明细"],
+                    "字段名": ["sales"],
+                    "字段含义": ["销售额，按订单金额汇总"],
+                }
+            ).to_excel(glossary_path, index=False)
+            pd.DataFrame(
+                {
+                    "主题": ["销售额口径"],
+                    "说明": ["销售额按签收订单金额汇总，城市来自客户维表"],
+                }
+            ).to_excel(knowledge_path, index=False)
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+
+            upload = service.upload_datasets(
+                [orders_path, glossary_path, knowledge_path],
+                original_filenames=["订单明细.csv", "数据表结构&表说明.xlsx", "初版知识库.xlsx"],
+            )
+            response = service.respond_to_message(dataset_id=upload["dataset_id"], question="看一下这几个文件")
+            source_response = service.respond_to_message(dataset_id=upload["dataset_id"], question="这些文件分别是什么用途？")
+
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("multi_table_dataset_overview", response["debug"]["operation"])
+        rows_by_name = {row["表名"]: row for row in response["result"]["rows"]}
+        self.assertEqual("可计算事实表", rows_by_name["订单明细"]["类型"])
+        self.assertEqual("说明或元数据表", rows_by_name["数据表结构&表说明"]["类型"])
+        self.assertEqual("说明或元数据表", rows_by_name["初版知识库"]["类型"])
+        self.assertIn("说明或元数据表", response["answer"])
+        self.assertTrue(source_response["success"], source_response.get("errors"))
+        self.assertEqual("dataset_source_overview", source_response["debug"]["operation"])
+        source_payload = json.dumps(source_response, ensure_ascii=False)
+        self.assertIn("说明或元数据表", source_payload)
+        self.assertIn("说明或元数据表", source_response["answer"])
+        self.assertNotIn("初版知识库.xlsx（表格数据", source_response["answer"])
+        self.assertNotIn("数据表结构&表说明.xlsx（表格数据", source_response["answer"])
+        self.assertNotIn("0 个说明/规则来源", source_response["answer"])
 
     def test_multi_table_browse_questions_are_distinct_overview_not_not_applicable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

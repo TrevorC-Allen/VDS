@@ -22,8 +22,8 @@ def build_dataset_source_overview_response(
     """Build a user-facing overview of all uploaded table and knowledge files."""
 
     sources = _normalize_sources(source_manifest.get("sources") or [])
-    table_sources = [item for item in sources if item.get("source_type") == "table"]
-    knowledge_sources = [item for item in sources if item.get("source_type") != "table"]
+    table_sources = [item for item in sources if item.get("source_type") == "table" and not _is_metadata_table_source(item)]
+    knowledge_sources = [item for item in sources if item.get("source_type") != "table" or _is_metadata_table_source(item)]
     result_rows = _source_result_rows(sources)
     answer = _source_answer(question, sources, table_sources, knowledge_sources)
     source_names = [str(item.get("file_name")) for item in sources if item.get("file_name")]
@@ -138,27 +138,29 @@ def _normalize_sources(raw_sources: list[Any]) -> list[dict[str, Any]]:
         if not file_name or file_name in seen:
             continue
         seen.add(file_name)
-        result.append(
-            {
-                "file_name": file_name,
-                "source_type": str(raw.get("source_type") or "source"),
-                "source_role": str(raw.get("source_role") or ""),
-                "purpose": str(raw.get("purpose") or ""),
-                "read_status": str(raw.get("read_status") or "unknown"),
-                "table_name": str(raw.get("table_name") or ""),
-                "row_count": raw.get("row_count"),
-                "column_count": raw.get("column_count"),
-                "key_fields": [str(value) for value in raw.get("key_fields") or []],
-                "content_summary": str(raw.get("content_summary") or ""),
-                "content_excerpt": str(raw.get("content_excerpt") or ""),
-            }
-        )
+        source_item = {
+            "file_name": file_name,
+            "source_type": str(raw.get("source_type") or "source"),
+            "source_role": str(raw.get("source_role") or ""),
+            "purpose": str(raw.get("purpose") or ""),
+            "read_status": str(raw.get("read_status") or "unknown"),
+            "table_name": str(raw.get("table_name") or ""),
+            "row_count": raw.get("row_count"),
+            "column_count": raw.get("column_count"),
+            "key_fields": [str(value) for value in raw.get("key_fields") or []],
+            "content_summary": str(raw.get("content_summary") or ""),
+            "content_excerpt": str(raw.get("content_excerpt") or ""),
+        }
+        source_item["source_category"] = _type_label(source_item)
+        source_item["purpose_label"] = _purpose_label(source_item)
+        result.append(source_item)
     return sorted(result, key=_source_sort_key)
 
 
 def _source_sort_key(item: dict[str, Any]) -> tuple[int, str]:
-    type_order = {"table": 0, "knowledge": 1, "rule": 2}
-    return (type_order.get(str(item.get("source_type")), 3), str(item.get("file_name") or ""))
+    type_order = {"table": 0, "metadata_table": 1, "knowledge": 2, "rule": 3}
+    source_type = "metadata_table" if _is_metadata_table_source(item) else str(item.get("source_type"))
+    return (type_order.get(source_type, 4), str(item.get("file_name") or ""))
 
 
 def _source_answer(
@@ -187,7 +189,7 @@ def _source_answer(
         lines.append("其他说明/规则文件的作用是：")
         for item in knowledge_sources[:8]:
             lines.append(
-                f"- {item['file_name']}：{item.get('purpose') or item.get('source_role') or '补充业务说明'}"
+                f"- {item['file_name']}：{_purpose_label(item) or '补充业务说明'}"
                 f" 读取状态：{_read_status_label(item.get('read_status'))}；{_summary_or_excerpt(item)}"
             )
     else:
@@ -204,7 +206,7 @@ def _source_result_rows(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "文件": item.get("file_name"),
                 "类型": _type_label(item),
-                "用途": item.get("purpose") or item.get("source_role"),
+                "用途": _purpose_label(item),
                 "读取状态": _read_status_label(item.get("read_status")),
                 "关键内容": _summary_or_excerpt(item, limit=220),
             }
@@ -213,6 +215,8 @@ def _source_result_rows(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _type_label(item: dict[str, Any]) -> str:
+    if _is_metadata_table_source(item):
+        return "说明或元数据表"
     source_type = str(item.get("source_type") or "")
     if source_type == "table":
         return "表格数据"
@@ -221,6 +225,49 @@ def _type_label(item: dict[str, Any]) -> str:
     if source_type == "rule":
         return "规则文件"
     return "来源文件"
+
+
+def _purpose_label(item: dict[str, Any]) -> str:
+    if _is_metadata_table_source(item):
+        return "说明或元数据表，用于解释字段含义、业务规则和分析口径，不作为事实明细直接汇总。"
+    return str(item.get("purpose") or item.get("source_role") or "")
+
+
+def _is_metadata_table_source(item: dict[str, Any]) -> bool:
+    if str(item.get("source_type") or "") != "table":
+        return False
+    text = " ".join(
+        str(value or "")
+        for value in (
+            item.get("file_name"),
+            item.get("table_name"),
+            item.get("purpose"),
+            item.get("source_role"),
+            item.get("content_summary"),
+            item.get("content_excerpt"),
+            " ".join(str(field) for field in item.get("key_fields") or []),
+        )
+    ).lower()
+    return any(
+        token in text
+        for token in (
+            "knowledge",
+            "glossary",
+            "schema",
+            "dictionary",
+            "metadata",
+            "manual",
+            "readme",
+            "知识库",
+            "表说明",
+            "数据结构",
+            "字段说明",
+            "字段含义",
+            "数据字典",
+            "口径",
+            "规则",
+        )
+    )
 
 
 def _read_status_label(value: Any) -> str:
