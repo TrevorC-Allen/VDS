@@ -35,9 +35,10 @@ WEIGHTS = {
     "text_framework_alignment": 0.17,
 }
 
-ANSWER_LABELS = {
-    "standard": "Reference 标准回复",
-    "candidate": "VDS 实际回复",
+REFERENCE_SOURCE_LABELS = {
+    "deepseek_reference": "deepseek",
+    "browser_gpt_reference": "gpt",
+    "deterministic_fallback": "deterministic_smoke",
 }
 
 TEXT_FRAMEWORK_PASS_MIN = 7.0
@@ -255,8 +256,10 @@ def load_comparison_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def normalize_row(row: dict[str, Any], index: int) -> dict[str, Any]:
-    standard = row.get("standard_answer") or row.get("reference_answer") or row.get("answer_a") or ""
+    standard = row.get("source_answer") or row.get("standard_answer") or row.get("reference_answer") or row.get("answer_a") or ""
     candidate = row.get("candidate_answer") or row.get("vds_answer") or row.get("answer_b") or row.get("actual_answer") or ""
+    source_origin = row.get("source_answer_origin") or row.get("standard_answer_source")
+    reference_label = row.get("reference_answer_label") or row.get("standard_answer_label") or reference_answer_label(source_origin)
     return {
         "case_id": str(row.get("case_id") or f"row_{index:03d}"),
         "ae_group": str(row.get("ae_group") or ""),
@@ -264,7 +267,8 @@ def normalize_row(row: dict[str, Any], index: int) -> dict[str, Any]:
         "difficulty_bucket": str(row.get("difficulty_bucket") or infer_difficulty_bucket(row)),
         "capability_family": str(row.get("capability_family") or infer_capability_family(row)),
         "answerability": str(row.get("answerability") or "answerable"),
-        "standard_answer_source": str(row.get("standard_answer_source") or "unknown"),
+        "standard_answer_source": str(source_origin or "unknown"),
+        "reference_answer_label": str(reference_label or "reference"),
         "standard_answer_model": str(row.get("standard_answer_model") or ""),
         "question": str(row.get("question") or ""),
         "expected_route": str(row.get("expected_route") or row.get("route") or ""),
@@ -277,6 +281,27 @@ def normalize_row(row: dict[str, Any], index: int) -> dict[str, Any]:
         "number_checks": list(row.get("number_checks") or []),
         "gpt_like_checks": list(row.get("gpt_like_checks") or []),
     }
+
+
+def reference_answer_label(source: Any) -> str:
+    normalized = str(source or "").strip().lower()
+    if normalized.startswith("mixed_deepseek_reference"):
+        return "deepseek"
+    if normalized.startswith("mixed_browser_gpt_reference"):
+        return "gpt"
+    return REFERENCE_SOURCE_LABELS.get(normalized, normalized or "reference")
+
+
+def dominant_reference_label(rows: list[dict[str, Any]]) -> str:
+    labels = [str(row.get("reference_answer_label") or reference_answer_label(row.get("standard_answer_source")) or "reference") for row in rows]
+    unique = {label for label in labels if label}
+    if len(unique) == 1:
+        return labels[0]
+    return "gpt/deepseek"
+
+
+def reference_heading(label: str) -> str:
+    return f"**{label or 'reference'} 回答**"
 
 
 def infer_difficulty_bucket(row: dict[str, Any]) -> str:
@@ -327,7 +352,8 @@ def parse_comparison_markdown(text: str) -> list[dict[str, Any]]:
     for part in parts:
         if not part.strip():
             continue
-        has_answer_pair = "**我的标准回复**" in part and "**VDS 实际回复**" in part
+        reference_marker, reference_label = _reference_answer_marker(part)
+        has_answer_pair = bool(reference_marker) and "**VDS 实际回复**" in part
         group_match = re.search(r"^##\s+(.+)$", part, re.M)
         if group_match and not has_answer_pair:
             current_group = group_match.group(1).strip()
@@ -340,10 +366,11 @@ def parse_comparison_markdown(text: str) -> list[dict[str, Any]]:
         difficulty_bucket = _first_markdown_value(body, "Difficulty bucket")
         capability_family = _first_markdown_value(body, "Capability family")
         answerability = _first_markdown_value(body, "Answerability")
-        standard_source = _first_markdown_value(body, "Standard source")
-        standard_model = _first_markdown_value(body, "Standard model")
+        standard_source = _first_markdown_value(body, "Answer source") or _first_markdown_value(body, "Standard source")
+        standard_model = _first_markdown_value(body, "Answer model") or _first_markdown_value(body, "Standard model")
+        answer_label = _first_markdown_value(body, "Answer label") or reference_label or reference_answer_label(standard_source)
         status = _first_markdown_value(body, "Comparison status")
-        standard = _between(body, "**我的标准回复**", "**VDS 实际回复**")
+        standard = _between(body, reference_marker, "**VDS 实际回复**")
         candidate = _between_any(body, "**VDS 实际回复**", ["**对比细节**", "\n## "])
         rows.append(
             {
@@ -356,6 +383,7 @@ def parse_comparison_markdown(text: str) -> list[dict[str, Any]]:
                 "capability_family": capability_family,
                 "answerability": answerability,
                 "standard_answer_source": standard_source,
+                "reference_answer_label": answer_label,
                 "standard_answer_model": standard_model,
                 "comparison_status": status,
                 "standard_answer": standard,
@@ -363,6 +391,17 @@ def parse_comparison_markdown(text: str) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _reference_answer_marker(text: str) -> tuple[str, str]:
+    for label in ("gpt", "deepseek", "deterministic_smoke", "deterministic smoke", "reference"):
+        marker = f"**{label} 回答**"
+        if marker in text:
+            return marker, label.replace(" ", "_")
+    old_marker = "**我的标准回复**"
+    if old_marker in text:
+        return old_marker, "reference"
+    return "", ""
 
 
 def _first_markdown_value(text: str, label: str) -> str:
@@ -422,6 +461,7 @@ def score_row(row: dict[str, Any], *, min_acceptable: float) -> dict[str, Any]:
         "capability_family": row.get("capability_family", "unknown"),
         "answerability": row.get("answerability", "answerable"),
         "standard_answer_source": row.get("standard_answer_source", "unknown"),
+        "reference_answer_label": row.get("reference_answer_label") or reference_answer_label(row.get("standard_answer_source")),
         "standard_answer_model": row.get("standard_answer_model", ""),
         "question": row.get("question", ""),
         "expected_route": row.get("expected_route", ""),
@@ -429,6 +469,7 @@ def score_row(row: dict[str, Any], *, min_acceptable: float) -> dict[str, Any]:
         "unexpected_not_applicable": contains_unexpected_not_applicable(candidate),
         "failure_reasons": list(row.get("failure_reasons") or []),
         "source_answers": {
+            "reference_answer_label": row.get("reference_answer_label") or reference_answer_label(row.get("standard_answer_source")),
             "standard_answer": standard,
             "candidate_answer": candidate,
         },
@@ -447,7 +488,7 @@ def score_row_with_llm(row: dict[str, Any], llm_client: Any, *, min_acceptable: 
     response = llm_client.complete_json(llm_judge_messages(row), temperature=0.0)
     pair_similarity = clamp10(float(response.get("pair_similarity", 0.0)))
     expected_route = str(row.get("expected_route", ""))
-    standard_score = llm_answer_score(response.get("standard", {}), min_acceptable=min_acceptable, expected_route=expected_route)
+    standard_score = llm_answer_score(response.get("reference", response.get("standard", {})), min_acceptable=min_acceptable, expected_route=expected_route)
     candidate_score = llm_answer_score(response.get("candidate", {}), min_acceptable=min_acceptable, expected_route=expected_route)
     standard_score = force_not_applicable_failure_if_needed(standard_score, row["standard_answer"])
     candidate_score = force_not_applicable_failure_if_needed(candidate_score, row["candidate_answer"])
@@ -465,6 +506,7 @@ def score_row_with_llm(row: dict[str, Any], llm_client: Any, *, min_acceptable: 
         "capability_family": row.get("capability_family", "unknown"),
         "answerability": row.get("answerability", "answerable"),
         "standard_answer_source": row.get("standard_answer_source", "unknown"),
+        "reference_answer_label": row.get("reference_answer_label") or reference_answer_label(row.get("standard_answer_source")),
         "standard_answer_model": row.get("standard_answer_model", ""),
         "question": row.get("question", ""),
         "expected_route": row.get("expected_route", ""),
@@ -472,6 +514,7 @@ def score_row_with_llm(row: dict[str, Any], llm_client: Any, *, min_acceptable: 
         "unexpected_not_applicable": contains_unexpected_not_applicable(row["candidate_answer"]),
         "failure_reasons": list(row.get("failure_reasons") or []),
         "source_answers": {
+            "reference_answer_label": row.get("reference_answer_label") or reference_answer_label(row.get("standard_answer_source")),
             "standard_answer": row["standard_answer"],
             "candidate_answer": row["candidate_answer"],
         },
@@ -534,6 +577,7 @@ def score_value(value: Any) -> float:
 
 
 def llm_judge_messages(row: dict[str, Any]) -> list[dict[str, str]]:
+    source_label = row.get("reference_answer_label") or reference_answer_label(row.get("standard_answer_source"))
     payload = {
         "case_id": row.get("case_id", ""),
         "question": row.get("question", ""),
@@ -542,21 +586,22 @@ def llm_judge_messages(row: dict[str, Any]) -> list[dict[str, str]]:
         "difficulty_bucket": row.get("difficulty_bucket", "ordinary"),
         "capability_family": row.get("capability_family", "unknown"),
         "answerability": row.get("answerability", "answerable"),
-        "standard_answer_source": row.get("standard_answer_source", "unknown"),
-        "standard_answer_model": row.get("standard_answer_model", ""),
+        "source_answer_label": source_label,
+        "source_answer_origin": row.get("standard_answer_source", "unknown"),
+        "source_answer_model": row.get("standard_answer_model", ""),
         "comparison_status_from_exact_checker": row.get("comparison_status", ""),
         "missing_terms_from_exact_checker": row.get("missing_terms", []),
         "number_checks_from_exact_checker": row.get("number_checks", []),
-        "standard_answer": truncate_for_llm(row.get("standard_answer", "")),
+        "source_answer": truncate_for_llm(row.get("standard_answer", "")),
         "candidate_answer": truncate_for_llm(row.get("candidate_answer", "")),
     }
     system = (
-        "你是 VDS 回答质量的严格 LLM judge。你需要分别评价 standard_answer 和 candidate_answer，"
-        "这里的 standard_answer 是带来源标记的 reference，可能是 deepseek_reference 或 browser_gpt_reference；candidate_answer 是 VDS 实际回复。"
-        "不要把 reference 当作唯一措辞，也不要把 deepseek_reference 冒充 GPT API；但要以网页端 ChatGPT Data Analysis 的质量为标尺。"
+        "你是 VDS 回答质量的严格 LLM judge。你需要分别评价 source_answer 和 candidate_answer，"
+        "source_answer_label 会标明它来自 gpt 网页端人工导入或 deepseek API；candidate_answer 是 VDS 实际回复。"
+        "不要把 deepseek 冒充 GPT API；但要以网页端 ChatGPT Data Analysis 的质量为标尺。"
         "如果两个回答事实正确、跟随问题、安全边界清楚，表达不同可以接受；"
         "但数据类回答如果只是短句、字段清单、泛泛建议、没有结论/依据/口径/下一步，不能因为没有事实错误就给高分。"
-        "如果 candidate_answer 看起来比 standard_answer 更好，可以给更高维度分；但不要自行放行，脚本会要求人工复核。"
+        "如果 candidate_answer 看起来比 source_answer 更好，可以给更高维度分；但不要自行放行，脚本会要求人工复核。"
         "当前 VDS 还没达到 GPT 水平，所以 candidate 优于 reference 的判断要保守。"
         "只返回 JSON，不要返回 Markdown。"
     )
@@ -565,14 +610,14 @@ def llm_judge_messages(row: dict[str, Any]) -> list[dict[str, str]]:
         "- semantic_similarity: 两个回答在核心语义和结论上的相似度。不同措辞可接受。\n"
         "- factuality: 是否包含可由题目/上下文支持的事实、数字和口径；明显乱报数字要低分。\n"
         "- instruction_following: 是否回答了原问题，并符合 expected_route。\n"
-        "- truthfulness: 是否避免编造、过度确定、泄露 raw prompt/trace/scorer/标准答案等内部物。\n"
+        "- truthfulness: 是否避免编造、过度确定、泄露 raw prompt/trace/scorer/源答案等内部物。\n"
         "- completeness: 对用户复核是否足够完整；缺少关键结论、证据、边界或下一步要低分，不要奖励无关长篇。\n\n"
         "- text_framework_alignment: 对数据类回答，是否有网页端 GPT-like 文字层级：核心结论、简要结论、口径说明、下一步。"
         "没有这些模块时最高 4.5；只有零散字段/数值时最高 5.5；接近 GPT 网页端组织方式才给 8+。\n\n"
         "返回格式必须是：\n"
         "{\n"
         '  "pair_similarity": 0-10,\n'
-        '  "standard": {"semantic_similarity": 0-10, "factuality": 0-10, "instruction_following": 0-10, "truthfulness": 0-10, "completeness": 0-10, "text_framework_alignment": 0-10, "issues": [], "notes": []},\n'
+        '  "reference": {"semantic_similarity": 0-10, "factuality": 0-10, "instruction_following": 0-10, "truthfulness": 0-10, "completeness": 0-10, "text_framework_alignment": 0-10, "issues": [], "notes": []},\n'
         '  "candidate": {"semantic_similarity": 0-10, "factuality": 0-10, "instruction_following": 0-10, "truthfulness": 0-10, "completeness": 0-10, "text_framework_alignment": 0-10, "issues": [], "notes": []},\n'
         '  "verdict": {"reason": "一句中文理由"}\n'
         "}\n\n"
@@ -851,12 +896,19 @@ def verdict_reason(label: str) -> str:
         "both_acceptable_similarity_or_quality": "两个回答都达到基本质量线；表述不同也可接受。",
         "close_call": "两边分差小，但至少一个回答没有稳定过可接受线，需要人工看一眼。",
         "candidate_higher_needs_human_review": "VDS 回复分数更高；按当前阶段保守处理，需要人工确认不是过度乐观。",
-        "standard_higher": "标准回复明显更稳，VDS 回复需要修正或补充。",
+        "standard_higher": "gpt/deepseek 源回答明显更稳，VDS 回复需要修正或补充。",
     }
     return reasons[label]
 
 
+def display_verdict_label(label: str) -> str:
+    if label == "standard_higher":
+        return "source_higher"
+    return label
+
+
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    source_label = dominant_reference_label(rows)
     standard_totals = [row["answers"]["standard"]["total_score"] for row in rows]
     candidate_totals = [row["answers"]["candidate"]["total_score"] for row in rows]
     verdict_counts: dict[str, int] = {}
@@ -871,8 +923,11 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     )
     return {
         "case_count": len(rows),
+        "source_answer_label": source_label,
+        "source_average_total": round(statistics.mean(standard_totals), 2),
         "standard_average_total": round(statistics.mean(standard_totals), 2),
         "candidate_average_total": round(statistics.mean(candidate_totals), 2),
+        "source_acceptable_count": sum(1 for row in rows if row["answers"]["standard"]["acceptable"]),
         "standard_acceptable_count": sum(1 for row in rows if row["answers"]["standard"]["acceptable"]),
         "candidate_acceptable_count": sum(1 for row in rows if row["answers"]["candidate"]["acceptable"]),
         "candidate_acceptance_rate": round(
@@ -895,6 +950,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "verdict_counts": verdict_counts,
         "needs_human_review_count": sum(1 for row in rows if row["verdict"]["needs_human_review"]),
         "dimension_averages": {
+            "source": average_dimensions(rows, "standard"),
             "standard": average_dimensions(rows, "standard"),
             "candidate": average_dimensions(rows, "candidate"),
         },
@@ -961,6 +1017,7 @@ def average_dimensions(rows: list[dict[str, Any]], role: str) -> dict[str, float
 
 def score_markdown(result: dict[str, Any]) -> str:
     summary = result["summary"]
+    source_label = summary.get("source_answer_label") or dominant_reference_label(result["rows"])
     candidate_acceptable_count = summary.get("candidate_acceptable_count", 0)
     candidate_acceptance_rate = summary.get(
         "candidate_acceptance_rate",
@@ -976,14 +1033,14 @@ def score_markdown(result: dict[str, Any]) -> str:
         "## Summary",
         "",
         f"- Cases: {summary['case_count']}",
-        f"- {ANSWER_LABELS['standard']} average total: {summary['standard_average_total']}",
-        f"- {ANSWER_LABELS['candidate']} average total: {summary['candidate_average_total']}",
+        f"- {source_label} average total: {summary['standard_average_total']}",
+        f"- VDS candidate average total: {summary['candidate_average_total']}",
         f"- VDS candidate acceptable: {candidate_acceptable_count} / {summary['case_count']} ({candidate_acceptance_rate:.2%})",
         f"- Unexpected Not Applicable: {summary.get('unexpected_not_applicable_count', 0)}",
         f"- Acceptance gate passed: {summary.get('acceptance_passed', False)}",
         f"- Average pair similarity: {summary['average_pair_similarity']}",
         f"- Needs human review: {summary['needs_human_review_count']}",
-        f"- Verdict counts: {json.dumps(summary['verdict_counts'], ensure_ascii=False)}",
+        f"- Verdict counts: {json.dumps(display_verdict_counts(summary['verdict_counts']), ensure_ascii=False)}",
         "",
         "## Acceptance Buckets",
         "",
@@ -1014,7 +1071,7 @@ def score_markdown(result: dict[str, Any]) -> str:
             "",
             "## Cases",
             "",
-            "| case_id | standard | candidate | similarity | verdict |",
+            f"| case_id | {source_label} | VDS candidate | similarity | verdict |",
             "| --- | ---: | ---: | ---: | --- |",
         ]
     )
@@ -1025,13 +1082,14 @@ def score_markdown(result: dict[str, Any]) -> str:
                 standard=row["answers"]["standard"]["total_score"],
                 candidate=row["answers"]["candidate"]["total_score"],
                 similarity=row["pair_similarity"],
-                verdict=row["verdict"]["label"],
+                verdict=display_verdict_label(row["verdict"]["label"]),
             )
         )
     lines.extend(["", "## Review Notes", ""])
     for row in result["rows"]:
         if not row["verdict"]["needs_human_review"] and not row["answers"]["candidate"]["issues"]:
             continue
+        row_source_label = row.get("reference_answer_label") or reference_answer_label(row.get("standard_answer_source"))
         lines.extend(
             [
                 f"### {row['case_id']}",
@@ -1041,13 +1099,13 @@ def score_markdown(result: dict[str, Any]) -> str:
                 f"- Difficulty bucket: {row.get('difficulty_bucket', 'ordinary')}",
                 f"- Capability family: {row.get('capability_family', 'unknown')}",
                 f"- Unexpected Not Applicable: {row.get('unexpected_not_applicable', False)}",
-                f"- Verdict: {row['verdict']['label']} ({row['verdict']['reason']})",
-                f"- Standard dimensions: {json.dumps(row['answers']['standard']['dimensions'], ensure_ascii=False)}",
+                f"- Verdict: {display_verdict_label(row['verdict']['label'])} ({row['verdict']['reason']})",
+                f"- {row_source_label} dimensions: {json.dumps(row['answers']['standard']['dimensions'], ensure_ascii=False)}",
                 f"- Candidate dimensions: {json.dumps(row['answers']['candidate']['dimensions'], ensure_ascii=False)}",
-                f"- Candidate issues: {', '.join(row['answers']['candidate']['issues']) or 'none'}",
-                f"- Candidate notes: {', '.join(row['answers']['candidate']['notes']) or 'none'}",
+                f"- Candidate issues: {display_text_items(row['answers']['candidate']['issues'], row_source_label)}",
+                f"- Candidate notes: {display_text_items(row['answers']['candidate']['notes'], row_source_label)}",
                 "",
-                "**我的标准回复**",
+                reference_heading(row_source_label),
                 "",
                 markdown_answer_block(row.get("source_answers", {}).get("standard_answer") or ""),
                 "",
@@ -1065,6 +1123,24 @@ def markdown_answer_block(text: str) -> str:
     if not value:
         return "_空回复_"
     return "```text\n" + value.replace("```", "'''") + "\n```"
+
+
+def display_verdict_counts(counts: dict[str, int]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for label, count in counts.items():
+        display = display_verdict_label(label)
+        result[display] = result.get(display, 0) + count
+    return result
+
+
+def display_text_items(items: list[Any], source_label: str) -> str:
+    texts = [display_source_word(str(item), source_label) for item in items if str(item).strip()]
+    return ", ".join(texts) or "none"
+
+
+def display_source_word(text: str, source_label: str) -> str:
+    label = source_label or "source"
+    return re.sub(r"reference", label, text, flags=re.IGNORECASE)
 
 
 def expected_numbers_from_row(row: dict[str, Any]) -> list[dict[str, float]]:

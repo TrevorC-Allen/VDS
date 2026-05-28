@@ -307,10 +307,58 @@ def _analysis_dataframe(context: dict[str, Any], params: dict[str, Any]) -> pd.D
     if "payments" in context:
         return context["payments"]
     tables = context["tables"]
+    same_schema_union = params.get("same_schema_union")
+    if isinstance(same_schema_union, dict) and same_schema_union:
+        return _materialize_same_schema_union(tables, params, same_schema_union)
     join_plan = params.get("join_plan")
     if isinstance(join_plan, dict) and join_plan:
         return _materialize_join(tables, params, join_plan)
     return _table(tables, params.get("table"))
+
+
+def _materialize_same_schema_union(tables: dict[str, pd.DataFrame], params: dict[str, Any], union_plan: dict[str, Any]) -> pd.DataFrame:
+    """Concatenate same-schema source tables without inventing a join."""
+
+    source_tables = [str(table_name) for table_name in union_plan.get("source_tables") or [] if str(table_name)]
+    if not source_tables:
+        raise ValueError("Same-schema union requires source_tables.")
+    missing = [table_name for table_name in source_tables if table_name not in tables]
+    if missing:
+        raise ValueError("Same-schema union references unavailable table(s): " + ", ".join(missing))
+
+    first_columns = [str(column) for column in tables[source_tables[0]].columns]
+    first_signature = set(first_columns)
+    frames: list[pd.DataFrame] = []
+    row_counts: dict[str, int] = {}
+    source_files: dict[str, str] = {}
+    for table_name in source_tables:
+        df = tables[table_name]
+        columns = [str(column) for column in df.columns]
+        if set(columns) != first_signature:
+            raise ValueError("Same-schema union requires matching columns across source tables.")
+        frame = df.copy()
+        source_column = "__source_table"
+        if source_column not in frame.columns:
+            frame[source_column] = table_name
+        file_column = "__source_file"
+        source_file = str(df.attrs.get("source_file") or table_name)
+        if file_column not in frame.columns:
+            frame[file_column] = source_file
+        frames.append(frame)
+        row_counts[table_name] = int(len(df))
+        source_files[table_name] = source_file
+
+    union_df = pd.concat(frames, ignore_index=True, sort=False)
+    summary = {
+        "trusted": True,
+        "source_tables": source_tables,
+        "source_files": source_files,
+        "row_counts": row_counts,
+        "total_rows": int(len(union_df)),
+        "columns": first_columns,
+    }
+    params["_same_schema_union_summary"] = summary
+    return union_df
 
 
 def _materialize_join(tables: dict[str, pd.DataFrame], params: dict[str, Any], join_plan: dict[str, Any]) -> pd.DataFrame:
@@ -369,10 +417,9 @@ def _materialize_join(tables: dict[str, pd.DataFrame], params: dict[str, Any], j
 
 def _join_debug(params: dict[str, Any]) -> dict[str, Any]:
     join_plan = params.get("join_plan")
-    if not isinstance(join_plan, dict) or not join_plan:
-        return {}
-    debug = {
-        "join_plan": {
+    debug: dict[str, Any] = {}
+    if isinstance(join_plan, dict) and join_plan:
+        debug["join_plan"] = {
             key: join_plan.get(key)
             for key in (
                 "trusted",
@@ -389,7 +436,8 @@ def _join_debug(params: dict[str, Any]) -> dict[str, Any]:
             )
             if key in join_plan
         }
-    }
+    if isinstance(params.get("_same_schema_union_summary"), dict):
+        debug["same_schema_union_summary"] = params["_same_schema_union_summary"]
     if isinstance(params.get("_join_execution_summary"), dict):
         debug["join_execution_summary"] = params["_join_execution_summary"]
     return debug
@@ -410,6 +458,12 @@ def _join_warnings(params: dict[str, Any]) -> list[str]:
 
 
 def _execution_summary(operation: str, debug: dict[str, Any]) -> str:
+    if "same_schema_union_summary" in debug:
+        summary = debug["same_schema_union_summary"]
+        return (
+            f"Executed operation {operation} after concatenating "
+            f"{len(summary.get('source_tables') or [])} same-schema source tables."
+        )
     if "join_execution_summary" in debug:
         summary = debug["join_execution_summary"]
         return (

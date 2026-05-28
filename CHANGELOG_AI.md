@@ -68,6 +68,97 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-28 10:39 CST
+
+### 本次目标
+
+修复普通上传表分析链路中两个最高优先级错答：分组柱状图请求不能退成行数/明细且仍验证通过；同结构多文件问题不能只看第一份文件。同时收紧 `/api/data-agent/message` 错误状态码，并提供唯一测试入口，避免默认 unittest discover 误导。
+
+### 修改文件
+
+- backend/routers/data_agent.py
+- data_agent_core/agent/single_agent.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/verifier/rule_checker.py
+- scripts/run_tests.py
+- tests/backend/test_data_agent_api_status.py
+- tests/backend/test_data_agent_message_semantics.py
+- tests/core/test_phase8_multitable_capabilities.py
+- tests/core/test_uploaded_table_agent.py
+- README.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 对“按维度展示指标 / 生成柱状图”等分组可视化问题，确定性 parser 直接生成 grouped aggregation，避免落到 `detail_lookup` 或 row count。
+- 对未显式限定单个文件的同结构多文件分析，新增 same-schema union 计划：按相同字段纵向 concat 后再做聚合 / 排名，并在执行 debug 中记录 source tables、source files、row counts 和 total rows。
+- 修复短表名误命中：`a.csv` / `b.csv` 这类一字符表名不会因为问题里出现 `A店` / `B店` 就被误判为显式表选择。
+- 隐式过滤规则改为多值命中时不折叠成单个过滤条件，避免 `A店和B店` 被压成只看 `A店`。
+- Verifier 新增语义验收：分组图表请求必须包含请求维度和指标列；多实体比较不能被单实体 filter 吞掉；same-schema union 必须报告并覆盖所有计划 source tables。
+- LLM chart planner 覆盖规则收紧：LLM 返回的 x/y 字段必须存在于 rule chart data 中，否则保留规则图表，避免 `x=city/y=total_sales` 但 data 只有 `{answer: 4}` 的无效 schema。
+- `/api/data-agent/message` 在 FastAPI 路由层按错误体返回 HTTP 状态码：不存在 dataset / project 为 404，解析/逻辑/输出契约类业务错误为 422，未知错误为 500；helper 函数仍保留原业务错误体。
+- 新增 `scripts/run_tests.py` 作为唯一推荐 unittest 入口，默认设置 repo root top-level 和 `VDS_LLM_PROVIDER=mock`。
+- README 同步记录 same-schema union / 图表语义验收边界，并把 Core Test 改为脚本入口。
+
+### 测试方式
+
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.core.test_phase8_multitable_capabilities tests.core.test_uploaded_table_agent tests.backend.test_data_agent_api_status tests.backend.test_data_agent_message_semantics -v`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile data_agent_core/core/intent_parser.py data_agent_core/executors/pandas_executor.py data_agent_core/executors/sql_executor.py data_agent_core/verifier/rule_checker.py data_agent_core/agent/single_agent.py backend/routers/data_agent.py scripts/run_tests.py tests/core/test_phase8_multitable_capabilities.py tests/core/test_uploaded_table_agent.py tests/backend/test_data_agent_api_status.py tests/backend/test_data_agent_message_semantics.py`
+- `VDS_LLM_PROVIDER=mock` service probe：临时上传 4 行 city/sales CSV 后通过 `respond_to_message` 验证上海 240、北京 280 和 bar chart；临时上传 a.csv / b.csv 后验证 B店 170、source_tables 为 `["a", "b"]`。
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 scripts/run_tests.py`
+- `git diff --check`
+
+### 测试结果
+
+- focused tests：17 tests OK，1 个 FastAPI TestClient 测试因 bundled runtime 缺 `httpx` 按预期 skip；同文件内已通过直接调用 route function 验证 `JSONResponse.status_code == 404`。
+- Python 编译通过。
+- service probe 通过：分组柱状图返回 aggregated rows 和可用 chart data；同结构多文件返回 B店 170，verification passed，source_tables 覆盖 a / b。
+- 唯一测试入口全量通过：Ran 309 tests in 86.522s，OK，skipped=1。
+- `git diff --check` 通过。
+
+### 遗留问题
+
+- 当前仅覆盖同结构多文件的纵向 union；字段不同或需要业务主键关联的多表问题仍必须走 Phase 8 join plan / join-key 风险校验。
+- bundled runtime 缺 `httpx`，所以 TestClient 级 HTTP 测试 skip；本轮已通过路由函数直接验证 JSONResponse 状态码。
+
+### 是否影响主流程
+
+是。影响普通上传表 `/message` 分析链路的解析、执行、验证、图表和错误状态码。
+
+### 是否涉及 Benchmark
+
+否。没有改 benchmark runner、标准答案、scorer 或 benchmark 独立接口；新增测试使用合成同族样例验证通用能力。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是。same-schema union 和语义验收属于 planner / executor / verifier 之间的稳定契约，后续多 Agent 承载层必须保留这些边界。
+
+### 是否修改核心数据契约
+
+是。`LogicForm.parameters` / execution debug 增加 same-schema union 元数据，用于证明多文件 source scope；未改变最终 `result.rows` / `chart.data` 的既有字段形态。
+
+### 是否修改 API 契约
+
+是。`POST /api/data-agent/message` 失败响应不再一律 HTTP 200，错误体保持原结构。
+
+### 是否新增或修改错误类型
+
+否。复用现有 `FILE_PARSE_ERROR`、`LOGIC_FORM_ERROR`、`OUTPUT_CONTRACT_VALIDATION_FAILED` 等错误类型。
+
+### 是否新增或修改运行追踪逻辑
+
+是。执行 debug 增加 `same_schema_union_summary`，用于审计同结构多文件是否全部纳入；不记录 raw Chain of Thought。
+
+### 是否已同步 README
+
+是。
+
 2026-05-27 12:15 CST
 
 ### 本次目标

@@ -15,6 +15,7 @@
 - 当前工作目标已推进到 DAB Hard Recovery v2：先用 Phase 10 after-fix full real report 重新生成 all-450 Easy/Hard proxy observation，再按 Fee / ACI / format / verifier 能力族修复；旧 all-450 proxy hard `75.40%` 只保留为历史风险样本，不代表当前 after-fix 口径。
 - 最新 after-fix proxy observation：`outputs/dabstep_all_1_450_proxy_after_phase10_20260524/all_1_to_450_public_proxy_observation_after_fix.json`，total `420/450 = 93.33%`，Easy `71/72 = 98.61%`，Hard `349/378 = 92.33%`。这是本地 task_scores 后验 proxy，不是 official hidden accuracy；外部 Easy `95` / Hard `84` 只作为提交反馈目标线。
 - Phase 8 已完成 8A-8E：多文件 dataset 装配、`POST /api/data-agent/upload-batch`、问题到表精准路由、多表 join plan、Pandas join materialize、Verifier join 风险校验、trace / debug join 证据均已落地。
+- Phase 8 Guardrail 已补上同结构多文件 union 和图表语义验收：当用户对多份同结构 CSV / Excel 提问且未显式限定单个文件时，分析链路会先按相同字段安全 concat，再执行聚合、排名或图表；当用户明确要求“按维度展示指标 / 生成柱状图”等分组图表时，结果必须包含请求的维度列和指标列，不能用行数、明细行或缺字段 chart schema 冒充验证通过。该能力仅覆盖同结构文件的纵向合并；字段不同或需要业务主键关联时仍走 Phase 8 join plan / join-key 风险校验。
 - Phase 9 已完成首版 workbench：`/workbench` 挂载静态前端，支持单/多文件上传、DAB context 规则包上传、无文件直接对话、问题提交、结果表格、用户可读分析过程、历史回看和单页会话内历史重命名；前端不实现指标公式、join、规则解析或数据计算。
 - Workbench 和 backend 已新增规则上传链路：普通上传默认 `file_role=dataset`；用户分析规则可以通过 API 显式上传为 `file_role=rule, rule_scope=user_analysis`，也可以和 dataset 一起在 Workbench 上传后自动绑定为 user analysis knowledge；Benchmark 规则仍必须显式上传为 `file_role=rule, rule_scope=benchmark`，只能通过独立 `/api/data-agent/benchmark/run` 使用，不进入普通 Chat 上下文。主界面不再展示高级 Rule Mode / Benchmark 控件。
 - Phase 10 已完成首版结果体验增强：后端生成 `chart`、`insight`、`quality_report`、`reasoning_trace_view` 和 `process_view_v2` 稳定字段；`process_view_v2` 会按 chat、概览、指标、TopN、趋势、多表、诊断和需澄清场景生成差异化安全过程叙事，并在占比等问题中展示安全的筛选口径、表选择、分子/分母依据，不展示完整 Chain of Thought、raw reasoning tokens、raw prompt、API key、task_id、标准答案或 proxy / scorer 信息。
@@ -74,7 +75,7 @@ API key 只允许通过环境变量提供，不写入仓库、文档、trace 或
 
 ## External Agent API
 
-外部系统如果已经有 JSON 表格数据，可以直接调用 `POST /api/data-agent/run`，不必先走文件上传。该接口属于 Phase 1 Backend API Shell 扩展，只负责把 inline tables 转成临时 dataset，然后复用现有 Phase 6+ 默认多 Agent 分析链路。
+外部系统如果已经有 JSON 表格数据，可以直接调用 `POST /api/data-agent/run`，不必先走文件上传。该接口属于 Phase 1 Backend API Shell 扩展，只负责把 inline tables 转成临时 dataset，然后复用当前默认多 Agent 分析链路。
 
 最小请求示例：
 
@@ -118,10 +119,16 @@ Phase 11 已启动可恢复会话式体验：`/api/data-agent/message` 返回并
 
 ## Core Test
 
-当前可用 Codex bundled Python 运行完整核心测试：
+当前唯一推荐测试入口是仓库脚本；脚本会自动设置 repo root 为 unittest top-level，并默认使用 mock LLM，避免直接运行 `python -m unittest discover -s tests` 时因包 top-level 不正确产生误导性的 import error。
 
 ```bash
-VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -t . -p 'test*.py'
+/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 scripts/run_tests.py
+```
+
+如需传递 unittest 参数，可把参数追加到脚本后，例如：
+
+```bash
+/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 scripts/run_tests.py tests.core.test_phase8_multitable_capabilities -v
 ```
 
 当前可用 mock LLM 跑 DABstep public all 1-450 执行覆盖，验证多 Agent 链路、trace 和能力路由：

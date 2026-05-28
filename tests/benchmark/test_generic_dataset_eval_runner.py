@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -12,6 +13,7 @@ from scripts.run_generic_dataset_eval import (
     build_comparison_rows,
     comparison_markdown,
     gpt_like_style_checks,
+    _load_vds_candidate_llm_client,
     score_candidate_answers,
 )
 
@@ -97,9 +99,19 @@ class GenericDatasetEvalRunnerTest(unittest.TestCase):
         self.assertIn("case_fact_hints", sent_payload)
         self.assertNotIn("deterministic template should not be sent", sent_payload)
 
-    def test_gpt_source_is_not_deepseek_alias(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "not a DeepSeek alias"):
-            apply_standard_answer_source([self._case()], self._facts(), source="gpt", llm_client=FakeDeepSeekReferenceClient())
+    def test_gpt_source_means_browser_gpt_import_not_deepseek_alias(self) -> None:
+        cases, generation = apply_standard_answer_source(
+            [self._case()],
+            self._facts(),
+            source="gpt",
+            external_standard_answers={"generic_uploaded_001": "网页端 GPT 回答。"},
+            llm_client=FakeDeepSeekReferenceClient(),
+        )
+
+        self.assertEqual(cases[0]["standard_answer"], "网页端 GPT 回答。")
+        self.assertEqual(cases[0]["standard_answer_source"], "browser_gpt_reference")
+        self.assertEqual(cases[0]["reference_answer_label"], "gpt")
+        self.assertEqual(generation["label"], "gpt")
 
     def test_browser_gpt_source_requires_complete_external_answers(self) -> None:
         cases, generation = apply_standard_answer_source(
@@ -122,7 +134,7 @@ class GenericDatasetEvalRunnerTest(unittest.TestCase):
         self.assertEqual(generation["source"], "deterministic_fallback")
 
     def test_llm_standard_source_rejects_openai_provider(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "DeepSeek standard answers are required"):
+        with self.assertRaisesRegex(RuntimeError, "DeepSeek source answers are required"):
             apply_standard_answer_source(
                 [self._case()],
                 self._facts(),
@@ -137,10 +149,11 @@ class GenericDatasetEvalRunnerTest(unittest.TestCase):
         rows = build_comparison_rows(cases, candidate_answers={}, candidate_score=None)
 
         self.assertEqual(rows[0]["standard_answer_source"], "deepseek_reference")
+        self.assertEqual(rows[0]["reference_answer_label"], "deepseek")
         self.assertEqual(rows[0]["standard_answer_model"], "deepseek:deepseek-chat")
         self.assertEqual(rows[0]["difficulty_bucket"], "ordinary")
         self.assertEqual(rows[0]["capability_family"], "overview")
-        self.assertIn("DeepSeek reference answer", rows[0]["standard_answer_policy"])
+        self.assertIn("DeepSeek answer", rows[0]["standard_answer_policy"])
 
     def test_score_candidate_answers_reports_acceptance_buckets_and_not_applicable(self) -> None:
         ordinary = self._case()
@@ -198,8 +211,64 @@ class GenericDatasetEvalRunnerTest(unittest.TestCase):
 
         self.assertIn("已截断", markdown)
         self.assertIn("vds_answers.jsonl", markdown)
-        self.assertIn("standard_answers.jsonl", markdown)
+        self.assertIn("reference_answers.jsonl", markdown)
         self.assertLess(markdown.count("WHITE HANGING HEART T-LIGHT HOLDER"), 25)
+
+    def test_comparison_markdown_uses_gpt_or_deepseek_answer_heading(self) -> None:
+        base_row = {
+            "ae_group": "B_uploaded_general_data_understanding",
+            "case_id": "generic_uploaded_002",
+            "category": "general_uploaded",
+            "question": "这个数据主要讲什么？",
+            "expected_route": "dataset_overview",
+            "comparison_status": "failed",
+            "standard_answer": "源回答",
+            "candidate_answer": "VDS 回答",
+            "missing_terms": [],
+            "number_checks": [],
+        }
+        gpt_md = comparison_markdown(
+            {
+                "dataset_name": "demo",
+                "standard_answer_generation": {"source": "browser_gpt_reference", "model": "browser_gpt_manual"},
+                "candidate_score": None,
+                "comparison": [{**base_row, "standard_answer_source": "browser_gpt_reference", "reference_answer_label": "gpt"}],
+            }
+        )
+        deepseek_md = comparison_markdown(
+            {
+                "dataset_name": "demo",
+                "standard_answer_generation": {"source": "deepseek_reference", "model": "deepseek:deepseek-chat"},
+                "candidate_score": None,
+                "comparison": [{**base_row, "standard_answer_source": "deepseek_reference", "reference_answer_label": "deepseek"}],
+            }
+        )
+
+        self.assertIn("**gpt 回答**", gpt_md)
+        self.assertIn("**deepseek 回答**", deepseek_md)
+        self.assertNotIn("**我的标准回复**", gpt_md + deepseek_md)
+
+    def test_mock_candidate_provider_is_smoke_only(self) -> None:
+        _client, generation = _load_vds_candidate_llm_client("mock")
+
+        self.assertFalse(generation["formal_candidate_answers"])
+        self.assertEqual(generation["provider"], "mock")
+        self.assertIn("smoke-only", generation["warnings"][0])
+
+    def test_env_candidate_provider_rejects_mock_env(self) -> None:
+        previous = os.environ.get("VDS_LLM_PROVIDER")
+        os.environ["VDS_LLM_PROVIDER"] = "mock"
+        self.addCleanup(self._restore_env, "VDS_LLM_PROVIDER", previous)
+
+        with self.assertRaisesRegex(RuntimeError, "not valid for formal generated VDS answers"):
+            _load_vds_candidate_llm_client("env")
+
+    @staticmethod
+    def _restore_env(key: str, value: str | None) -> None:
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
     def test_gpt_like_checks_reject_compact_value_sequence_dump(self) -> None:
         checks = gpt_like_style_checks(

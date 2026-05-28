@@ -60,7 +60,7 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
     if op == "not_applicable":
         return "Not Applicable"
 
-    df = context["payments"] if "payments" in context else _table(context["tables"], plan.logic_form.parameters.get("table"))
+    df = context["payments"] if "payments" in context else _analysis_dataframe(context, plan.logic_form.parameters)
     conn = sqlite3.connect(":memory:")
     try:
         df.to_sql("analysis_table", conn, index=False)
@@ -122,6 +122,34 @@ def _table(tables: dict[str, Any], name: str | None = None) -> Any:
     if not tables:
         raise ValueError("No tables available for SQL execution.")
     return max(tables.values(), key=lambda df: (len(df), len(df.columns)))
+
+
+def _analysis_dataframe(context: dict[str, Any], params: dict[str, Any]) -> Any:
+    tables = context["tables"]
+    same_schema_union = params.get("same_schema_union")
+    if isinstance(same_schema_union, dict) and same_schema_union:
+        return _materialize_same_schema_union(tables, same_schema_union)
+    return _table(tables, params.get("table"))
+
+
+def _materialize_same_schema_union(tables: dict[str, Any], union_plan: dict[str, Any]) -> Any:
+    source_tables = [str(table_name) for table_name in union_plan.get("source_tables") or [] if str(table_name)]
+    if not source_tables:
+        raise ValueError("Same-schema union requires source_tables.")
+    missing = [table_name for table_name in source_tables if table_name not in tables]
+    if missing:
+        raise ValueError("Same-schema union references unavailable table(s): " + ", ".join(missing))
+    first_columns = [str(column) for column in tables[source_tables[0]].columns]
+    first_signature = set(first_columns)
+    frames = []
+    for table_name in source_tables:
+        df = tables[table_name]
+        if {str(column) for column in df.columns} != first_signature:
+            raise ValueError("Same-schema union requires matching columns across source tables.")
+        frames.append(df)
+    import pandas as pd
+
+    return pd.concat(frames, ignore_index=True, sort=False)
 
 
 def _top_count_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> Any:

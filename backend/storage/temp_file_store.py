@@ -1459,9 +1459,10 @@ def _parse_rule_text(raw_text: str, *, suffix: str, rule_scope: str) -> tuple[An
 
 def _validate_rule_payload(parsed_rule: Any, *, rule_scope: str) -> None:
     if rule_scope == USER_ANALYSIS_RULE_SCOPE:
-        if isinstance(parsed_rule, dict):
-            return
-        raise ValueError("User analysis rule must parse to a JSON/YAML object or raw text object.")
+        # User analysis rules are advisory context. The original raw text is
+        # always stored, so JSON/YAML arrays or scalars can still constrain the
+        # analysis chain without being treated as benchmark definitions.
+        return
     if not isinstance(parsed_rule, dict):
         raise ValueError("Benchmark rule must parse to a JSON/YAML object.")
     questions = parsed_rule.get("questions") or parsed_rule.get("test_questions") or parsed_rule.get("cases")

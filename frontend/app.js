@@ -2,6 +2,10 @@ const MONITOR_RUN_INDEX_KEY = "vds-monitor-runs";
 const ACTIVE_MONITOR_RUN_KEY = "vds-active-monitor-run";
 const PROJECT_PANEL_COLLAPSED_KEY = "vds-project-panel-collapsed";
 const MAX_MONITOR_RUN_RECORDS = 80;
+const DEFAULT_QUESTION_PLACEHOLDER = "向 VDS 提问，例如：哪个城市订单金额最高？";
+const ATTACHED_FILE_QUESTION_PLACEHOLDER = "有问题，尽管问";
+const CONTINUATION_PROMPT_LABELS = ["可继续提问", "可继续问", "继续提问", "后续提问", "后续问题"];
+const RULE_FILE_STATUS_TONES = ["empty", "pending", "ready", "error"];
 const ACTIVITY_EVENT_TYPES = [
   "monitor_connected",
   "message_requested",
@@ -78,6 +82,7 @@ const el = {
   chatSearchCloseButton: document.querySelector("#chat-search-close-button"),
   chatSearchResults: document.querySelector("#chat-search-results"),
   fileInput: document.querySelector("#file-input"),
+  composer: document.querySelector(".composer"),
   composerFileTray: document.querySelector("#composer-file-tray"),
   fileStatusWrap: document.querySelector("#file-status-wrap"),
   fileSummary: document.querySelector("#file-summary"),
@@ -226,8 +231,8 @@ function updateFileSummary() {
   if (!files.length) {
     state.hasPendingUpload = false;
     state.fileRecords = [];
-    el.fileSummary.textContent = "选择文件";
-    el.fileDetail.textContent = "数据文件和规则文件支持多选";
+    el.fileSummary.textContent = "查看文件";
+    el.fileDetail.textContent = "未附加";
     el.uploadButton.disabled = true;
     renderFilePanel();
     updateRunButton();
@@ -235,8 +240,8 @@ function updateFileSummary() {
   }
   state.hasPendingUpload = true;
   state.fileRecords = files.map((file) => fileRecordFromFile(file, "pending"));
-  el.fileSummary.textContent = `${files.length} 个文件已附加`;
-  el.fileDetail.textContent = "点击查看文件";
+  el.fileSummary.textContent = "查看文件";
+  el.fileDetail.textContent = `${files.length} 个文件待发送`;
   el.uploadButton.disabled = false;
   renderFilePanel();
   updateRunButton();
@@ -248,11 +253,11 @@ function applyRestoredFileRecords(profile) {
   el.uploadButton.disabled = true;
   renderFilePanel();
   if (state.fileRecords.length) {
-    el.fileSummary.textContent = `${state.fileRecords.length} 个文件已就绪`;
-    el.fileDetail.textContent = "点击查看文件";
+    el.fileSummary.textContent = "查看文件";
+    el.fileDetail.textContent = `${state.fileRecords.length} 个文件已就绪`;
   } else {
-    el.fileSummary.textContent = "文件信息不可用";
-    el.fileDetail.textContent = "需重新上传后继续分析";
+    el.fileSummary.textContent = "查看文件";
+    el.fileDetail.textContent = "文件信息不可用";
   }
   updateRunButton();
 }
@@ -262,8 +267,8 @@ function clearRestoredFileRecords() {
   state.fileRecords = [];
   el.uploadButton.disabled = true;
   renderFilePanel();
-  el.fileSummary.textContent = state.datasetId ? "文件信息不可用" : "选择文件";
-  el.fileDetail.textContent = state.datasetId ? "需重新上传后继续分析" : "数据文件和规则文件支持多选";
+  el.fileSummary.textContent = "查看文件";
+  el.fileDetail.textContent = state.datasetId ? "文件信息不可用" : "未附加";
   updateRunButton();
 }
 
@@ -299,10 +304,18 @@ function handleGlobalKeydown(event) {
 
 function renderFilePanel() {
   const records = state.fileRecords || [];
+  const hasRecords = Boolean(records.length);
+  const showComposerFiles = state.hasPendingUpload && hasRecords;
   el.fileSummary.disabled = !records.length;
-  el.fileStatusWrap?.classList.toggle("hidden", !records.length);
+  el.fileStatusWrap?.classList.toggle("hidden", !hasRecords);
+  el.composer?.classList.toggle("has-files", showComposerFiles);
+  if (el.questionInput) {
+    const placeholder = showComposerFiles ? ATTACHED_FILE_QUESTION_PLACEHOLDER : DEFAULT_QUESTION_PLACEHOLDER;
+    el.questionInput.dataset.placeholder = placeholder;
+    el.questionInput.setAttribute("aria-label", placeholder);
+  }
   if (el.filePanelCount) el.filePanelCount.textContent = String(records.length);
-  renderComposerFileTray(records);
+  renderComposerFileTray(showComposerFiles ? records : []);
   if (!records.length) {
     closeFilePanel();
     if (el.filePanelList) el.filePanelList.innerHTML = "";
@@ -334,19 +347,16 @@ function renderComposerFileTray(records) {
   el.composerFileTray.innerHTML = records
     .map(
       (file) => `
-        <button class="composer-file-card" type="button" title="点击查看文件">
+        <div class="composer-file-card" role="listitem" title="${escapeHtml(file.name)}">
           <span class="composer-file-icon" aria-hidden="true"></span>
           <span class="composer-file-copy">
             <strong title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</strong>
             <span>${escapeHtml(fileCardTypeText(file))}</span>
           </span>
-        </button>
+        </div>
       `,
     )
     .join("");
-  el.composerFileTray.querySelectorAll(".composer-file-card").forEach((button) => {
-    button.addEventListener("click", toggleFilePanel);
-  });
 }
 
 function fileCardTypeText(file) {
@@ -478,8 +488,13 @@ function fileStatusText(status) {
 
 const RULE_FILE_EMPTY_HINT = "可选：上传规则文件可以补充语义模型、指标口径和计算方法";
 
-function setRuleFileStatus(message) {
-  if (el.ruleFileStatus) el.ruleFileStatus.textContent = message;
+function setRuleFileStatus(message, tone = "empty") {
+  if (!el.ruleFileStatus) return;
+  const safeTone = RULE_FILE_STATUS_TONES.includes(tone) ? tone : "empty";
+  el.ruleFileStatus.textContent = message;
+  el.ruleFileStatus.title = message;
+  el.ruleFileStatus.classList.remove(...RULE_FILE_STATUS_TONES.map((item) => `is-${item}`));
+  el.ruleFileStatus.classList.add(`is-${safeTone}`);
 }
 
 function updateRuleMode() {
@@ -489,7 +504,7 @@ function updateRuleMode() {
     state.userRuleFileId = "";
     state.hasPendingRuleUpload = false;
     if (el.ruleFileInput) el.ruleFileInput.value = "";
-    setRuleFileStatus(RULE_FILE_EMPTY_HINT);
+    setRuleFileStatus(RULE_FILE_EMPTY_HINT, "empty");
   }
   updateRunButton();
   updateBenchmarkButtons();
@@ -526,7 +541,10 @@ function updateRuleFileSummary() {
       : "上传语义模型、指标口径或计算方法规则，后续分析会基于此规则";
   }
   const pendingText = files.length === 1 ? `待上传：${files[0].name}` : `待上传：${files.length} 个规则文件`;
-  setRuleFileStatus(files.length ? pendingText : (state.userRuleFileId ? "规则文件已启用" : RULE_FILE_EMPTY_HINT));
+  setRuleFileStatus(
+    files.length ? pendingText : (state.userRuleFileId ? "规则文件已启用" : RULE_FILE_EMPTY_HINT),
+    files.length ? "pending" : (state.userRuleFileId ? "ready" : "empty"),
+  );
   updateRunButton();
 }
 
@@ -534,7 +552,7 @@ async function uploadUserRule() {
   const files = selectedRuleFiles();
   if (!files.length) return null;
   setApiStatus("idle", files.length === 1 ? "上传规则中" : `上传 ${files.length} 个规则文件中`);
-  setRuleFileStatus(files.length === 1 ? `上传中：${files[0].name}` : `上传中：${files.length} 个规则文件`);
+  setRuleFileStatus(files.length === 1 ? `上传中：${files[0].name}` : `上传中：${files.length} 个规则文件`, "pending");
   if (el.ruleUploadButton) el.ruleUploadButton.disabled = true;
   try {
     const payload = new FormData();
@@ -562,6 +580,7 @@ async function uploadUserRule() {
       files.length === 1
         ? `${result.file_name || uploadedFiles[0]?.file_name || "规则文件"} 已启用`
         : `${uploadedFileIds.length || files.length} 个规则文件已启用`,
+      "ready",
     );
     setApiStatus("ready", files.length === 1 ? "规则文件已启用" : "规则文件已启用");
     updateBenchmarkButtons();
@@ -571,7 +590,7 @@ async function uploadUserRule() {
     state.hasPendingRuleUpload = false;
     state.ruleModeEnabled = false;
     if (el.ruleFileInput) el.ruleFileInput.value = "";
-    setRuleFileStatus(`规则上传失败：${String(error.message || error)}`);
+    setRuleFileStatus(`规则上传失败：${String(error.message || error)}`, "error");
     setApiStatus("error", "规则上传失败");
     return null;
   } finally {
@@ -659,6 +678,7 @@ async function uploadFiles() {
       state.selectedTable = profile.tables?.[0]?.table_name || "";
     }
     state.fileRecords = buildReadyFileRecords(files, profile);
+    state.hasPendingUpload = false;
     await loadProjects();
     if (state.projectId) {
       await loadProjectWorkspace(state.projectId);
@@ -676,9 +696,8 @@ async function uploadFiles() {
           : "数据集已就绪"
         : "项目共享文件已添加",
     );
-    state.hasPendingUpload = false;
-    el.fileSummary.textContent = `${files.length} 个文件已就绪`;
-    el.fileDetail.textContent = "点击查看文件";
+    el.fileSummary.textContent = "查看文件";
+    el.fileDetail.textContent = `${files.length} 个文件已就绪`;
     return profile;
   } catch (error) {
     setApiStatus("error", "上传失败");
@@ -687,8 +706,8 @@ async function uploadFiles() {
     state.selectedTable = "";
     state.hasPendingUpload = true;
     state.fileRecords = files.map((file) => fileRecordFromFile(file, "failed"));
-    el.fileSummary.textContent = `${files.length} 个文件上传失败`;
-    el.fileDetail.textContent = "点击查看文件";
+    el.fileSummary.textContent = "查看文件";
+    el.fileDetail.textContent = `${files.length} 个文件上传失败`;
     renderFilePanel();
     return null;
   } finally {
@@ -2246,7 +2265,8 @@ function renderResult(result, options = {}) {
   if (result.dataset_id) {
     state.datasetId = result.dataset_id;
   }
-  const rows = result.result?.rows || [];
+  const rawRows = result.result?.rows || [];
+  const rows = rowsWithoutContinuationPrompts(rawRows);
   const columns = result.result?.columns || [];
   const isChat = result.answer_type === "chat" || result.debug?.agent_mode === "chat_without_dataset" || result.debug?.agent_mode === "chat_with_dataset";
   const isOverviewShaped = Boolean(result.debug?.user_experience_shaping?.applied);
@@ -2293,6 +2313,32 @@ function renderRows(rows, columns, result = {}) {
       </tbody>
     </table>
   `;
+}
+
+function rowsWithoutContinuationPrompts(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((row) => !isContinuationPromptRow(row));
+}
+
+function isContinuationPromptRow(row = {}) {
+  if (!row || typeof row !== "object") return false;
+  const entries = Object.entries(row);
+  if (!entries.length) return false;
+  return entries.some(([column, value], index) => {
+    if (isContinuationPromptLabel(column)) return true;
+    if (!isContinuationPromptLabel(value)) return false;
+    return index === 0 || isRowDescriptorColumn(column);
+  });
+}
+
+function isContinuationPromptLabel(value) {
+  const compact = String(value ?? "").replace(/[：:；;\s]/g, "");
+  return CONTINUATION_PROMPT_LABELS.some((label) => compact === label);
+}
+
+function isRowDescriptorColumn(column) {
+  const compact = String(column || "").replace(/\s+/g, "").toLowerCase();
+  return ["指标", "项目", "类型", "类别", "说明", "label", "name", "category", "type"].includes(compact);
 }
 
 function shouldRenderRows(rows, columns, result = {}) {
@@ -2926,7 +2972,7 @@ function buildContextualNextQuestions(result = {}) {
 
 function resultRowsForSuggestions(result = {}) {
   const rows = result?.result?.rows;
-  if (Array.isArray(rows)) return rows.filter((row) => row && typeof row === "object");
+  if (Array.isArray(rows)) return rowsWithoutContinuationPrompts(rows).filter((row) => row && typeof row === "object");
   const chartData = result?.chart?.data;
   if (Array.isArray(chartData)) return chartData.filter((row) => row && typeof row === "object");
   return [];

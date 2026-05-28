@@ -38,6 +38,11 @@ MISSING_MARKERS = {"", "na", "n/a", "null", "none", "nan", "-", "--", "未知", 
 ORDINARY_ACCEPTANCE_THRESHOLD = 1.0
 COMPLEX_ACCEPTANCE_THRESHOLD = 0.9
 ANSWERABLE_CASE_NOT_APPLICABLE_LIMIT = 0
+REFERENCE_SOURCE_LABELS = {
+    "deepseek_reference": "deepseek",
+    "browser_gpt_reference": "gpt",
+    "deterministic_fallback": "deterministic_smoke",
+}
 
 CASE_ACCEPTANCE_METADATA: dict[str, dict[str, Any]] = {
     "generic_general_001": {"difficulty_bucket": "ordinary", "capability_family": "safety_boundary"},
@@ -90,7 +95,7 @@ class TableRef:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run dataset-agnostic VDS evaluation standard-answer generation.")
+    parser = argparse.ArgumentParser(description="Run dataset-agnostic VDS evaluation source-answer generation.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--files", nargs="+", required=True, help="CSV/XLSX/JSON/Parquet files to profile.")
     parser.add_argument("--table-names", nargs="*", help="Optional display names matching --files.")
@@ -105,21 +110,34 @@ def main() -> None:
     parser.add_argument(
         "--quick-vds-answers",
         action="store_true",
-        help="Reuse representative overview/cleaning answers for fast smoke comparisons on large files.",
+        help="Smoke only: sample large files and reuse representative cleaning answers. Not valid for acceptance scoring.",
     )
     parser.add_argument(
+        "--vds-answer-provider",
+        choices=("env", "mock"),
+        default=os.environ.get("VDS_CANDIDATE_ANSWER_PROVIDER", "env"),
+        help=(
+            "Provider for generated VDS candidate answers. Default env loads VDS_LLM_PROVIDER and rejects mock. "
+            "Use mock only for local script smoke checks."
+        ),
+    )
+    parser.add_argument(
+        "--source-answer-origin",
         "--standard-answer-source",
+        dest="standard_answer_source",
         choices=("deepseek", "browser_gpt", "llm", "gpt", "deterministic", "auto"),
         default=os.environ.get("VDS_STANDARD_ANSWER_SOURCE", "deepseek"),
         help=(
-            "Source for standard_answer. Default deepseek. llm is a legacy alias for deepseek; "
-            "gpt is not treated as a DeepSeek alias. Use browser_gpt with --standard-answers-file for manually captured browser references. "
+            "Source answer origin. Default deepseek. llm is a legacy alias for deepseek; "
+            "gpt means manually captured browser GPT answers and requires --source-answers-file; "
             "Use deterministic only for local smoke/debug; auto tries DeepSeek and records deterministic fallback if no LLM is configured."
         ),
     )
     parser.add_argument(
+        "--source-answers-file",
         "--standard-answers-file",
-        help="JSON/JSONL mapping for browser_gpt references. Required when --standard-answer-source=browser_gpt.",
+        dest="standard_answers_file",
+        help="JSON/JSONL mapping for manually captured browser GPT answers. Required when --source-answer-origin=browser_gpt or gpt.",
     )
     parser.add_argument("--print-summary", action="store_true")
     args = parser.parse_args()
@@ -149,9 +167,16 @@ def main() -> None:
     )
     candidate_score = None
     candidate_answers: dict[str, str] = {}
+    candidate_generation: dict[str, Any] | None = None
     if args.generate_vds_answers:
         quick_vds = args.quick_vds_answers or os.environ.get("VDS_GENERIC_EVAL_QUICK") == "1"
-        candidate_answers = generate_vds_answers(cases, files, output_dir, quick=quick_vds)
+        candidate_answers, candidate_generation = generate_vds_answers(
+            cases,
+            files,
+            output_dir,
+            quick=quick_vds,
+            answer_provider=args.vds_answer_provider,
+        )
         candidate_score = score_candidate_answers(cases, candidate_answers, config["thresholds"], output_dir / "vds_answers.jsonl")
     elif args.candidate_answers:
         candidate_path = _resolve_path(args.candidate_answers)
@@ -170,20 +195,28 @@ def main() -> None:
         "facts": facts,
         "cases": cases,
         "standard_answer_generation": standard_generation,
+        "candidate_answer_generation": candidate_generation,
         "comparison": comparison_rows,
         "candidate_score": candidate_score,
         "acceptance_policy": acceptance_policy(),
         "note": (
-            "Standard answers are generated as explicitly labeled DeepSeek references or imported browser GPT references "
+            "Source answers are generated as explicitly labeled deepseek answers or imported browser GPT answers "
             "from source-file facts after case definition and are offline-only."
         ),
     }
     write_json(output_dir / "summary.json", run)
+    source_prefix = source_answer_artifact_prefix(standard_generation)
     write_json(output_dir / "standard_answers.json", {"cases": cases})
     write_jsonl(output_dir / "standard_answers.jsonl", cases)
+    if source_prefix != "standard_answers":
+        write_json(output_dir / f"{source_prefix}.json", {"cases": cases})
+        write_jsonl(output_dir / f"{source_prefix}.jsonl", cases)
     write_json(output_dir / "comparison.json", {"comparison": comparison_rows})
     write_jsonl(output_dir / "comparison.jsonl", comparison_rows)
-    (output_dir / "standard_answers.md").write_text(standard_answers_markdown(run), encoding="utf-8")
+    source_answers_md = standard_answers_markdown(run)
+    (output_dir / "standard_answers.md").write_text(source_answers_md, encoding="utf-8")
+    if source_prefix != "standard_answers":
+        (output_dir / f"{source_prefix}.md").write_text(source_answers_md, encoding="utf-8")
     (output_dir / "comparison.md").write_text(comparison_markdown(run), encoding="utf-8")
     summary_md = summary_markdown(run)
     (output_dir / "summary.md").write_text(summary_md, encoding="utf-8")
@@ -359,24 +392,21 @@ def apply_standard_answer_source(
     if normalized == "llm":
         normalized = "deepseek"
     if normalized == "gpt":
-        raise RuntimeError(
-            "standard-answer-source=gpt is not a DeepSeek alias. GPT API reference is currently unavailable; "
-            "use --standard-answer-source deepseek or --standard-answer-source browser_gpt with --standard-answers-file."
-        )
+        normalized = "browser_gpt"
     if normalized not in {"deepseek", "browser_gpt", "deterministic", "auto"}:
-        raise ValueError("standard answer source must be one of: deepseek, browser_gpt, llm, gpt, deterministic, auto")
+        raise ValueError("source answer origin must be one of: deepseek, browser_gpt, llm, gpt, deterministic, auto")
     if normalized == "deterministic":
         return _mark_deterministic_standard_cases(cases, reason="explicit_deterministic_source")
     if normalized == "browser_gpt":
         if external_standard_answers is None:
-            raise RuntimeError("--standard-answer-source browser_gpt requires --standard-answers-file.")
+            raise RuntimeError("--source-answer-origin browser_gpt/gpt requires --source-answers-file.")
         return _mark_external_standard_cases(
             cases,
             external_standard_answers,
             source="browser_gpt_reference",
             model="browser_gpt_manual",
             policy=(
-                "Browser GPT reference answer imported from a human-captured external file; "
+                "Browser GPT answer imported from a human-captured external file; "
                 "offline evaluation only, never passed into VDS agent execution."
             ),
         )
@@ -388,8 +418,8 @@ def apply_standard_answer_source(
         if normalized == "auto":
             return _mark_deterministic_standard_cases(cases, reason=f"llm_unavailable:{type(exc).__name__}:{str(exc)[:180]}")
         raise RuntimeError(
-            "DeepSeek standard answers are required. Set VDS_LLM_PROVIDER=deepseek and DEEPSEEK_API_KEY "
-            "or pass --standard-answer-source deterministic only for smoke/debug runs."
+            "DeepSeek source answers are required. Set VDS_LLM_PROVIDER=deepseek and DEEPSEEK_API_KEY "
+            "or pass --source-answer-origin deterministic only for smoke/debug runs."
         ) from exc
 
     provider_source = "deepseek_reference"
@@ -403,20 +433,22 @@ def apply_standard_answer_source(
                 generated = {"standard_answer": case["standard_answer"], "notes": [f"deterministic fallback after {type(exc).__name__}: {str(exc)[:160]}"], "confidence": 0.0}
                 failures.append({"case_id": case["case_id"], "error": f"{type(exc).__name__}: {str(exc)[:300]}"})
             else:
-                raise RuntimeError(f"DeepSeek standard answer failed for {case['case_id']}: {type(exc).__name__}: {str(exc)[:300]}") from exc
+                raise RuntimeError(f"DeepSeek source answer failed for {case['case_id']}: {type(exc).__name__}: {str(exc)[:300]}") from exc
         next_case = dict(case)
         next_case["standard_answer"] = str(generated.get("standard_answer") or "").strip()
         if not next_case["standard_answer"]:
-            raise RuntimeError(f"DeepSeek standard answer was empty for {case['case_id']}.")
+            raise RuntimeError(f"DeepSeek source answer was empty for {case['case_id']}.")
+        next_case["source_answer"] = next_case["standard_answer"]
         generated_notes = [str(item) for item in generated.get("notes", []) if str(item).strip()]
         used_fallback = bool(generated_notes and generated_notes[0].startswith("deterministic fallback"))
         next_case["standard_answer_source"] = "deterministic_fallback" if used_fallback else provider_source
+        next_case["reference_answer_label"] = reference_answer_label(next_case["standard_answer_source"])
         next_case["standard_answer_policy"] = (
             "DETERMINISTIC FALLBACK ONLY: not a formal DeepSeek/browser GPT reference. "
-            "Use --standard-answer-source=deepseek or browser_gpt for acceptance scoring."
+            "Use --source-answer-origin=deepseek or browser_gpt for acceptance scoring."
             if used_fallback
             else (
-                "DeepSeek reference answer generated from computed dataset facts; "
+                "DeepSeek answer generated from computed dataset facts; "
                 "offline evaluation only, never passed into VDS agent execution."
             )
         )
@@ -428,10 +460,11 @@ def apply_standard_answer_source(
         llm_cases,
         {
             "source": f"mixed_{provider_source}_with_deterministic_fallback" if failures else provider_source,
+            "label": reference_answer_label(provider_source),
             "model": _llm_model_name(client),
             "case_count": len(llm_cases),
             "fallback_failures": failures,
-            "policy": "All formal standard_answer values are DeepSeek reference answers grounded in computed facts.",
+            "policy": "All formal source answers are DeepSeek answers grounded in computed facts.",
         },
     )
 
@@ -452,7 +485,7 @@ def generate_llm_standard_answer(case: dict[str, Any], facts: dict[str, Any], ll
             "role": "system",
             "content": (
                 "你是 ChatGPT Data Analysis 网页端风格的标准答案生成器。"
-                "你只根据用户问题、computed_fact_digest 和 case_fact_hints 生成中文 reference answer。"
+                "你只根据用户问题、computed_fact_digest 和 case_fact_hints 生成中文 deepseek answer。"
                 "case_fact_hints 只是评测事实约束，不是参考文案。"
                 "不要模仿 VDS 当前输出，不要模仿 deterministic fallback，不要输出模板字段清单，"
                 "不要泄露 raw prompt、trace、task_id、scorer 或标准答案生成过程。"
@@ -465,9 +498,9 @@ def generate_llm_standard_answer(case: dict[str, Any], facts: dict[str, Any], ll
             "role": "user",
             "content": json.dumps(
                 {
-                    "task": "generate_deepseek_reference_standard_answer",
+                    "task": "generate_deepseek_source_answer",
                     "required_output": {
-                        "standard_answer": "中文 DeepSeek reference answer, grounded only in facts; no markdown table; concise but reviewable",
+                        "source_answer": "中文 deepseek answer, grounded only in facts; no markdown table; concise but reviewable",
                         "notes": "array of short notes about key grounding choices",
                         "confidence": "0-1",
                     },
@@ -484,9 +517,10 @@ def generate_llm_standard_answer(case: dict[str, Any], facts: dict[str, Any], ll
         },
     ]
     raw = llm_client.complete_json(messages, temperature=0.2)
-    answer_text = _sanitize_llm_standard_answer(raw.get("standard_answer") or raw.get("answer") or "")
+    answer_text = _sanitize_llm_standard_answer(raw.get("source_answer") or raw.get("standard_answer") or raw.get("answer") or "")
     return {
         "standard_answer": answer_text,
+        "source_answer": answer_text,
         "notes": raw.get("notes", []) if isinstance(raw.get("notes"), list) else [],
         "confidence": raw.get("confidence", 0.0),
     }
@@ -512,12 +546,12 @@ def _validate_formal_deepseek_reference_client(client: Any) -> None:
     from data_agent_core.llm.client import MissingLLMConfigError, MockLLMClient
 
     if isinstance(client, MockLLMClient):
-        raise MissingLLMConfigError("Mock LLM is not allowed for formal standard-answer generation.")
+        raise MissingLLMConfigError("Mock LLM is not allowed for formal source-answer generation.")
     config = getattr(client, "config", None)
     provider = str(getattr(config, "provider", "") or "").strip().lower()
     if provider != "deepseek":
         raise MissingLLMConfigError(
-            f"Formal standard-answer generation requires VDS_LLM_PROVIDER=deepseek, not provider={provider or 'unknown'}."
+            f"Formal source-answer generation requires VDS_LLM_PROVIDER=deepseek, not provider={provider or 'unknown'}."
         )
 
 
@@ -526,9 +560,11 @@ def _mark_deterministic_standard_cases(cases: list[dict[str, Any]], *, reason: s
     for case in cases:
         next_case = dict(case)
         next_case["standard_answer_source"] = "deterministic_fallback"
+        next_case["reference_answer_label"] = reference_answer_label("deterministic_fallback")
+        next_case["source_answer"] = next_case["standard_answer"]
         next_case["standard_answer_policy"] = (
             "DETERMINISTIC FALLBACK ONLY: not a formal DeepSeek/browser GPT reference. "
-            "Use --standard-answer-source=deepseek or browser_gpt for acceptance scoring."
+            "Use --source-answer-origin=deepseek or browser_gpt for acceptance scoring."
         )
         next_case["standard_answer_model"] = "deterministic"
         next_case["standard_answer_notes"] = [reason]
@@ -538,6 +574,7 @@ def _mark_deterministic_standard_cases(cases: list[dict[str, Any]], *, reason: s
         marked,
         {
             "source": "deterministic_fallback",
+            "label": reference_answer_label("deterministic_fallback"),
             "reason": reason,
             "case_count": len(marked),
             "policy": "Not valid as formal DeepSeek/browser GPT reference; smoke/debug only.",
@@ -563,7 +600,9 @@ def _mark_external_standard_cases(
             continue
         next_case = dict(case)
         next_case["standard_answer"] = answer_text
+        next_case["source_answer"] = answer_text
         next_case["standard_answer_source"] = source
+        next_case["reference_answer_label"] = reference_answer_label(source)
         next_case["standard_answer_model"] = model
         next_case["standard_answer_policy"] = policy
         next_case["standard_answer_notes"] = ["external_reference_import"]
@@ -571,12 +610,13 @@ def _mark_external_standard_cases(
         marked.append(next_case)
     if missing:
         raise RuntimeError(
-            "External browser_gpt standard answer file is missing cases: " + ", ".join(missing[:12])
+            "External browser_gpt answer file is missing cases: " + ", ".join(missing[:12])
         )
     return (
         marked,
         {
             "source": source,
+            "label": reference_answer_label(source),
             "model": model,
             "case_count": len(marked),
             "policy": policy,
@@ -668,6 +708,28 @@ def _llm_model_name(client: Any) -> str:
 def _llm_provider_name(client: Any) -> str:
     config = getattr(client, "config", None)
     return str(getattr(config, "provider", "") or "").strip().lower()
+
+
+def reference_answer_label(source: Any) -> str:
+    normalized = str(source or "").strip().lower()
+    if normalized.startswith("mixed_deepseek_reference"):
+        return "deepseek"
+    if normalized.startswith("mixed_browser_gpt_reference"):
+        return "gpt"
+    return REFERENCE_SOURCE_LABELS.get(normalized, normalized or "reference")
+
+
+def display_source_answer_origin(source: Any) -> str:
+    return reference_answer_label(source)
+
+
+def source_answer_artifact_prefix(generation: dict[str, Any] | None) -> str:
+    label = reference_answer_label((generation or {}).get("source"))
+    if label in {"gpt", "deepseek"}:
+        return f"{label}_answers"
+    if label == "deterministic_smoke":
+        return "deterministic_smoke_answers"
+    return "reference_answers"
 
 
 def _score_float(value: Any, *, default: float) -> float:
@@ -1548,7 +1610,10 @@ def build_comparison_rows(
                 "question": case["question"],
                 "expected_route": case["expected_route"],
                 "standard_answer": case["standard_answer"],
+                "source_answer": case.get("source_answer") or case["standard_answer"],
                 "standard_answer_source": case.get("standard_answer_source", "unknown"),
+                "source_answer_origin": case.get("standard_answer_source", "unknown"),
+                "reference_answer_label": case.get("reference_answer_label") or reference_answer_label(case.get("standard_answer_source")),
                 "standard_answer_model": case.get("standard_answer_model", ""),
                 "standard_answer_policy": case.get("standard_answer_policy", ""),
                 "standard_answer_notes": case.get("standard_answer_notes", []),
@@ -1565,16 +1630,29 @@ def build_comparison_rows(
     return rows
 
 
-def generate_vds_answers(cases: list[dict[str, Any]], files: list[Path], output_dir: Path, *, quick: bool = False) -> dict[str, str]:
+def generate_vds_answers(
+    cases: list[dict[str, Any]],
+    files: list[Path],
+    output_dir: Path,
+    *,
+    quick: bool = False,
+    answer_provider: str = "env",
+) -> tuple[dict[str, str], dict[str, Any]]:
     """Ask the local VDS service for every case and persist raw replies."""
 
     from backend.services.data_agent_service import DataAgentService
     from backend.storage.temp_file_store import TempFileStore
-    from data_agent_core.llm.client import MockLLMClient
+
+    llm_client, generation = _load_vds_candidate_llm_client(answer_provider)
+    if quick:
+        generation["formal_candidate_answers"] = False
+        generation.setdefault("warnings", []).append(
+            "quick_vds_answers samples files and may reuse representative responses; smoke only, not acceptance evidence."
+        )
 
     service = DataAgentService(
         file_store=TempFileStore(output_dir / "vds_storage"),
-        llm_client=MockLLMClient(),
+        llm_client=llm_client,
     )
     vds_files = _prepare_quick_vds_files(files, output_dir) if quick else files
     upload = service.upload_datasets(vds_files, original_filenames=_vds_original_filenames(files, vds_files, quick=quick))
@@ -1626,19 +1704,99 @@ def generate_vds_answers(cases: list[dict[str, Any]], files: list[Path], output_
                 "warnings": response.get("warnings", []),
                 "debug": _safe_debug(response.get("debug", {})),
                 "quick_reused": quick_reused,
+                "vds_answer_provider": generation.get("provider", "unknown"),
+                "vds_answer_model": generation.get("model", ""),
+                "formal_candidate_answer": bool(generation.get("formal_candidate_answers")),
             }
         )
+    reuse_summary = _candidate_answer_reuse_summary(rows)
+    if reuse_summary["duplicate_answer_group_count"]:
+        generation.setdefault("warnings", []).append(
+            "duplicate_candidate_answers_detected: inspect vds_answers.jsonl before using this run as demo evidence."
+        )
+    generation["answer_reuse_summary"] = reuse_summary
     write_jsonl(output_dir / "vds_answers.jsonl", rows)
     write_json(
         output_dir / "vds_answers.json",
         {
             "upload": upload,
             "answers": rows,
+            "candidate_answer_generation": generation,
             "quick_vds_answers": quick,
             "quick_vds_files": [str(path) for path in vds_files] if quick else [],
+            "formal_candidate_answers": bool(generation.get("formal_candidate_answers")) and not quick,
         },
     )
-    return answers
+    return answers, generation
+
+
+def _load_vds_candidate_llm_client(answer_provider: str) -> tuple[Any, dict[str, Any]]:
+    normalized = str(answer_provider or "env").strip().lower()
+    if normalized == "mock":
+        from data_agent_core.llm.client import MockLLMClient
+
+        client = MockLLMClient()
+        return (
+            client,
+            {
+                "provider": "mock",
+                "model": "MockLLMClient",
+                "formal_candidate_answers": False,
+                "warnings": ["mock candidate provider is smoke-only and can produce template-like repeated answers."],
+            },
+        )
+    if normalized != "env":
+        raise ValueError("vds answer provider must be one of: env, mock")
+
+    from data_agent_core.llm.client import MissingLLMConfigError, MockLLMClient, load_llm_client_from_env
+
+    try:
+        client = load_llm_client_from_env()
+    except MissingLLMConfigError as exc:
+        raise RuntimeError(
+            "Formal generated VDS answers require VDS_LLM_PROVIDER=deepseek or openai plus the matching API key. "
+            "Use --vds-answer-provider mock only for smoke checks."
+        ) from exc
+    if isinstance(client, MockLLMClient):
+        raise RuntimeError(
+            "VDS_LLM_PROVIDER=mock is not valid for formal generated VDS answers. "
+            "Use --vds-answer-provider mock only for smoke checks."
+        )
+    return (
+        client,
+        {
+            "provider": _llm_provider_name(client) or "env",
+            "model": _llm_model_name(client),
+            "formal_candidate_answers": True,
+            "warnings": [],
+        },
+    )
+
+
+def _candidate_answer_reuse_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        fingerprint = _candidate_answer_fingerprint(row.get("answer", ""))
+        if not fingerprint:
+            continue
+        grouped.setdefault(fingerprint, []).append(str(row.get("case_id") or ""))
+    duplicates = [
+        {"case_ids": case_ids, "count": len(case_ids)}
+        for case_ids in grouped.values()
+        if len(set(case_ids)) > 1
+    ]
+    return {
+        "duplicate_answer_group_count": len(duplicates),
+        "duplicate_answer_case_count": sum(item["count"] for item in duplicates),
+        "duplicate_answer_groups": duplicates[:20],
+    }
+
+
+def _candidate_answer_fingerprint(answer: Any) -> str:
+    text = re.sub(r"\s+", " ", str(answer or "").strip())
+    if not text:
+        return ""
+    return text[:2000]
 
 
 def _prepare_quick_vds_files(files: list[Path], output_dir: Path) -> list[Path]:
@@ -1832,26 +1990,38 @@ def load_external_standard_answers(path: Path) -> dict[str, str]:
     if path.suffix.lower() == ".jsonl":
         rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
         return {
-            str(row.get("case_id") or row.get("id")): str(row.get("standard_answer") or row.get("answer") or "")
+            str(row.get("case_id") or row.get("id")): _external_source_answer_value(row)
             for row in rows
         }
     data = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(data, dict):
         if isinstance(data.get("cases"), list):
             return {
-                str(row.get("case_id") or row.get("id")): str(row.get("standard_answer") or row.get("answer") or "")
+                str(row.get("case_id") or row.get("id")): _external_source_answer_value(row)
                 for row in data["cases"]
             }
-        if isinstance(data.get("standard_answers"), list):
+        source_answer_rows = data.get("source_answers") if isinstance(data.get("source_answers"), list) else data.get("standard_answers")
+        if isinstance(source_answer_rows, list):
             return {
-                str(row.get("case_id") or row.get("id")): str(row.get("standard_answer") or row.get("answer") or "")
-                for row in data["standard_answers"]
+                str(row.get("case_id") or row.get("id")): _external_source_answer_value(row)
+                for row in source_answer_rows
             }
         return {str(key): str(value) for key, value in data.items()}
     return {
-        str(row.get("case_id") or row.get("id")): str(row.get("standard_answer") or row.get("answer") or "")
+        str(row.get("case_id") or row.get("id")): _external_source_answer_value(row)
         for row in data
     }
+
+
+def _external_source_answer_value(row: dict[str, Any]) -> str:
+    return str(
+        row.get("source_answer")
+        or row.get("gpt_answer")
+        or row.get("deepseek_answer")
+        or row.get("standard_answer")
+        or row.get("answer")
+        or ""
+    )
 
 
 def load_candidate_answers(path: Path) -> dict[str, str]:
@@ -1881,6 +2051,8 @@ def _is_formal_standard_source(value: Any) -> bool:
 def summary_markdown(run: dict[str, Any]) -> str:
     facts = run["facts"]
     standard_generation = run.get("standard_answer_generation") or {}
+    source_label = reference_answer_label(standard_generation.get("source"))
+    candidate_generation = run.get("candidate_answer_generation") or {}
     ae_counts: dict[str, int] = {}
     for case in run["cases"]:
         ae_counts[case["ae_group"]] = ae_counts.get(case["ae_group"], 0) + 1
@@ -1892,16 +2064,17 @@ def summary_markdown(run: dict[str, Any]) -> str:
         f"- Tables: {facts['table_count']}",
         f"- Total rows: {_int(facts['total_rows'])}",
         f"- Cases: {len(run['cases'])}",
-        f"- Standard answer source: {standard_generation.get('source', 'unknown')}",
-        f"- Standard answer model: {standard_generation.get('model', 'n/a')}",
+        f"- Source answer label: {source_label}",
+        f"- Source answer origin: {display_source_answer_origin(standard_generation.get('source'))}",
+        f"- Source answer model: {standard_generation.get('model', 'n/a')}",
         f"- Git branch: {run['repo'].get('branch')}",
         f"- Git commit: {run['repo'].get('commit')}",
         "",
         "This is the required dataset-agnostic gate. Domain-specific packs run after it.",
-        "Formal standard answers must be explicitly sourced as DeepSeek reference or browser GPT reference grounded in computed source-file facts.",
+        "Formal source answers must be explicitly labeled as deepseek or gpt and grounded in computed source-file facts.",
     ]
     if not _is_formal_standard_source(standard_generation.get("source")):
-        lines.append("Warning: this run does not contain all formal reference answers and is not valid for formal acceptance scoring.")
+        lines.append("Warning: this run does not contain all formal deepseek/gpt source answers and is not valid for formal acceptance scoring.")
     for table in facts["tables"]:
         lines.append(f"- {table['table_name']}: {_int(table['row_count'])} rows, {table['column_count']} columns, quality issues={len(table['quality_issues'])}")
     lines.extend(["", "## A-E Coverage"])
@@ -1919,6 +2092,9 @@ def summary_markdown(run: dict[str, Any]) -> str:
             [
                 "",
                 "## Candidate Score",
+                f"- VDS answer provider: {candidate_generation.get('provider', 'unknown')}",
+                f"- VDS answer model: {candidate_generation.get('model', 'n/a')}",
+                f"- Formal VDS answers: {candidate_generation.get('formal_candidate_answers', False)}",
                 f"- Exact term/number passed: {score['passed']} / {score['total']}",
                 f"- Exact pass rate: {_pct(score['pass_rate'])}",
                 f"- GPT-like style passed: {score.get('gpt_like_passed', 0)} / {score['total']}",
@@ -1950,18 +2126,24 @@ def summary_markdown(run: dict[str, Any]) -> str:
                 lines.append(
                     f"- {family}: failures={item.get('total_failures', 0)}, unexpected Not Applicable={item.get('unexpected_not_applicable_count', 0)}, cases={', '.join(str(case_id) for case_id in item.get('case_ids', [])[:8])}"
                 )
+        if candidate_generation.get("warnings"):
+            lines.extend(["", "## Candidate Warnings"])
+            for warning in candidate_generation.get("warnings") or []:
+                lines.append(f"- {warning}")
     return "\n".join(lines) + "\n"
 
 
 def standard_answers_markdown(run: dict[str, Any]) -> str:
     standard_generation = run.get("standard_answer_generation") or {}
+    source_label = reference_answer_label(standard_generation.get("source"))
     lines = [
-        "# Generic Dataset Reference Standard Answers",
+        f"# Generic Dataset {source_label} Answers",
         "",
-        "这些标准回复必须明确标记为 DeepSeek reference 或 browser GPT reference，并且只能基于源文件画像和已计算事实；只用于离线评估，不会传入 VDS Agent。",
+        "这些回答必须明确标记为 deepseek 或 gpt，并且只能基于源文件画像和已计算事实；只用于离线评估，不会传入 VDS Agent。",
         "",
-        f"- Standard answer source: {standard_generation.get('source', 'unknown')}",
-        f"- Standard answer model: {standard_generation.get('model', 'n/a')}",
+        f"- Source answer label: {source_label}",
+        f"- Source answer origin: {display_source_answer_origin(standard_generation.get('source'))}",
+        f"- Source answer model: {standard_generation.get('model', 'n/a')}",
         f"- Policy: {standard_generation.get('policy', 'n/a')}",
         "",
     ]
@@ -1971,9 +2153,10 @@ def standard_answers_markdown(run: dict[str, Any]) -> str:
                 f"## {case['case_id']} - {case['category']}",
                 "",
                 f"Question: {case['question']}",
-                f"Standard source: {case.get('standard_answer_source', 'unknown')}",
-                f"Standard model: {case.get('standard_answer_model', 'n/a')}",
-                f"Standard policy: {case.get('standard_answer_policy', 'n/a')}",
+                f"Answer label: {case.get('reference_answer_label') or reference_answer_label(case.get('standard_answer_source'))}",
+                f"Answer source: {display_source_answer_origin(case.get('standard_answer_source'))}",
+                f"Answer model: {case.get('standard_answer_model', 'n/a')}",
+                f"Answer policy: {case.get('standard_answer_policy', 'n/a')}",
                 "",
                 case["standard_answer"],
                 "",
@@ -1985,21 +2168,30 @@ def standard_answers_markdown(run: dict[str, Any]) -> str:
 def comparison_markdown(run: dict[str, Any]) -> str:
     has_candidate = bool(run.get("candidate_score"))
     standard_generation = run.get("standard_answer_generation") or {}
+    source_label = reference_answer_label(standard_generation.get("source"))
+    source_answers_file = f"{source_answer_artifact_prefix(standard_generation)}.jsonl"
+    candidate_generation = run.get("candidate_answer_generation") or {}
     lines = [
         "# Generic Dataset Comparison",
         "",
         f"Dataset: {run['dataset_name']}",
-        f"Standard answer source: {standard_generation.get('source', 'unknown')}",
-        f"Standard answer model: {standard_generation.get('model', 'n/a')}",
+        f"Source answer label: {source_label}",
+        f"Source answer origin: {display_source_answer_origin(standard_generation.get('source'))}",
+        f"Source answer model: {standard_generation.get('model', 'n/a')}",
         "",
-        "本文件用于会议逐题对比：问题、预期路由、DeepSeek reference 标准回复、VDS 实际回复、对比状态会放在一起。",
+        f"本文件用于会议逐题对比：问题、预期路由、{source_label} 回答、VDS 实际回复、对比状态会放在一起。",
     ]
     if not _is_formal_standard_source(standard_generation.get("source")):
-        lines.append("注意：当前 standard_answer 不是全量 DeepSeek reference，不应用作正式验收口径。")
+        lines.append("注意：当前来源不是全量 deepseek/gpt 回答，不应用作正式验收口径。")
     if not has_candidate:
-        lines.append("当前未提供 VDS 实际回答，所以只列出 DeepSeek reference 标准回复；后续传入 `--candidate-answers` 后会自动填充对比结果。")
+        lines.append(f"当前未提供 VDS 实际回答，所以只列出 {source_label} 回答；后续传入 `--candidate-answers` 后会自动填充对比结果。")
     else:
         score = run["candidate_score"]
+        lines.append(f"VDS answer provider: {candidate_generation.get('provider', 'unknown')}")
+        lines.append(f"VDS answer model: {candidate_generation.get('model', 'n/a')}")
+        lines.append(f"Formal VDS answers: {candidate_generation.get('formal_candidate_answers', False)}")
+        if candidate_generation.get("warnings"):
+            lines.append("VDS answer warnings: " + "; ".join(str(item) for item in candidate_generation.get("warnings") or []))
         lines.append(f"VDS exact score: {score['passed']} / {score['total']} ({_pct(score['pass_rate'])})")
         lines.append(f"VDS GPT-like style gate: {score.get('gpt_like_passed', 0)} / {score['total']} ({_pct(score.get('gpt_like_pass_rate', 0))})")
         lines.append(f"Unexpected Not Applicable: {score.get('unexpected_not_applicable_count', 0)}")
@@ -2034,12 +2226,13 @@ def comparison_markdown(run: dict[str, Any]) -> str:
                 f"- Capability family: {row.get('capability_family', 'unknown')}",
                 f"- Answerability: {row.get('answerability', 'answerable')}",
                 f"- Comparison status: {row['comparison_status']}",
-                f"- Standard source: {row.get('standard_answer_source', 'unknown')}",
-                f"- Standard model: {row.get('standard_answer_model', 'n/a')}",
+                f"- Answer label: {row.get('reference_answer_label') or reference_answer_label(row.get('standard_answer_source'))}",
+                f"- Answer source: {display_source_answer_origin(row.get('standard_answer_source'))}",
+                f"- Answer model: {row.get('standard_answer_model', 'n/a')}",
                 "",
-                "**我的标准回复**",
+                f"**{row.get('reference_answer_label') or reference_answer_label(row.get('standard_answer_source'))} 回答**",
                 "",
-                _comparison_answer_excerpt(row.get("standard_answer") or "", limit=1200, full_target="standard_answers.jsonl"),
+                _comparison_answer_excerpt(row.get("standard_answer") or "", limit=1200, full_target=source_answers_file),
                 "",
                 "**VDS 实际回复**",
                 "",

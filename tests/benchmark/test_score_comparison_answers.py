@@ -243,10 +243,47 @@ class ScoreComparisonAnswersTest(unittest.TestCase):
         )
 
         self.assertIn("- Question: 你好", markdown)
-        self.assertIn("**我的标准回复**", markdown)
+        self.assertIn("**reference 回答**", markdown)
+        self.assertNotIn("**我的标准回复**", markdown)
         self.assertIn("当前没有上传文件", markdown)
         self.assertIn("**VDS 实际回复**", markdown)
         self.assertIn("上传数据后", markdown)
+
+    def test_review_markdown_uses_deepseek_label_when_source_is_deepseek(self) -> None:
+        row = {
+            "case_id": "generic_uploaded_001",
+            "question": "看一下这个数据。",
+            "expected_route": "dataset_overview",
+            "standard_answer_source": "deepseek_reference",
+            "reference_answer_label": "deepseek",
+            "standard_answer": "deepseek 回答。",
+            "candidate_answer": "VDS 回答。",
+            "comparison_status": "failed",
+            "missing_terms": [],
+            "number_checks": [],
+        }
+        scored = score_row(row, min_acceptable=75.0)
+        scored["verdict"]["needs_human_review"] = True
+        markdown = score_markdown(
+            {
+                "source": "comparison.json",
+                "generated_at": "2026-05-26T00:00:00",
+                "summary": {
+                    "case_count": 1,
+                    "source_answer_label": "deepseek",
+                    "standard_average_total": scored["answers"]["standard"]["total_score"],
+                    "candidate_average_total": scored["answers"]["candidate"]["total_score"],
+                    "average_pair_similarity": scored["pair_similarity"],
+                    "needs_human_review_count": 1,
+                    "verdict_counts": {scored["verdict"]["label"]: 1},
+                },
+                "rows": [scored],
+            }
+        )
+
+        self.assertIn("- deepseek average total:", markdown)
+        self.assertIn("**deepseek 回答**", markdown)
+        self.assertNotIn("**我的标准回复**", markdown)
 
     def test_loads_existing_markdown_shape(self) -> None:
         markdown = """# Generic Dataset Comparison
@@ -280,6 +317,37 @@ class ScoreComparisonAnswersTest(unittest.TestCase):
         self.assertEqual(rows[0]["case_id"], "generic_general_001")
         self.assertIn("当前没有上传文件", rows[0]["standard_answer"])
         self.assertIn("上传数据后", rows[0]["candidate_answer"])
+
+    def test_loads_gpt_markdown_shape(self) -> None:
+        markdown = """# Generic Dataset Comparison
+
+## B_uploaded_general_data_understanding
+
+### generic_uploaded_001 - general_uploaded
+
+- Question: 看一下这个数据。
+- Expected route: dataset_overview
+- Answer label: gpt
+- Answer source: browser_gpt_reference
+- Comparison status: passed
+
+**gpt 回答**
+
+网页端 GPT 回答。
+
+**VDS 实际回复**
+
+VDS 回答。
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "comparison.md"
+            path.write_text(markdown, encoding="utf-8")
+            rows = load_comparison_rows(path)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["reference_answer_label"], "gpt")
+        self.assertEqual(rows[0]["standard_answer_source"], "browser_gpt_reference")
+        self.assertIn("网页端 GPT 回答", rows[0]["standard_answer"])
 
     def test_markdown_loader_does_not_swallow_next_group_heading(self) -> None:
         markdown = """# Generic Dataset Comparison

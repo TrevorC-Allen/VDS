@@ -194,6 +194,9 @@ def _overview_core(context: _FrameContext) -> str:
 
 
 def _cleaning_core(context: _FrameContext) -> str:
+    original = _original_points(context, limit=1)
+    if original:
+        return original[0]
     value = _as_dict(context.result.get("value"))
     impacted = value.get("estimated_impacted_rows")
     rate = value.get("estimated_impacted_rate")
@@ -376,11 +379,12 @@ def _cleaning_conclusions(context: _FrameContext) -> list[str]:
     impacted = value.get("estimated_impacted_rows")
     rows = context.rows
     rules = _short_join([str(_first_existing(row, ("规则", "rule")) or "") for row in rows[:4]], limit=4)
-    return [
+    fallback = [
         f"缺失、重复、异常或类型问题会先作为质量信号标记，估算影响 {_format_plain_value(impacted or 0)} 行，不能简单说数据完全正常",
         f"建议清洗规则包括 {rules or '缺失/重复/异常/类型检查'}，需要优先人工确认的直接清洗影响约 {_format_plain_value(direct or 0)} 行",
         "我不会直接修改原始数据，不能覆盖原始文件；删除、填充、覆盖或导出清洗后数据都需要用户确认，必须等用户明确确认",
     ]
+    return _merge_points(_original_points(context, limit=2), fallback, limit=3)
 
 
 def _cleaning_suggestion_text(value: Any) -> str:

@@ -49,6 +49,14 @@ def build_cleaning_guidance_response(
         answer = _quality_summary_answer(profiles)
         answer_type = "cleaning_simulation"
         execution_mode = "cleaning_simulation"
+    elif question_kind == "anomaly_rules":
+        answer = _anomaly_rule_answer(profiles, direct_action_rows, direct_action_rate)
+        answer_type = "cleaning_simulation"
+        execution_mode = "cleaning_simulation"
+    elif question_kind == "conclusion_change":
+        answer = _conclusion_change_answer(profiles, direct_action_rows, direct_action_rate)
+        answer_type = "cleaning_simulation"
+        execution_mode = "cleaning_simulation"
     elif question_kind == "cleaning_impact":
         answer = _cleaning_impact_answer(profiles, direct_action_rows, direct_action_rate)
         answer_type = "cleaning_simulation"
@@ -78,7 +86,7 @@ def build_cleaning_guidance_response(
         "answer": answer,
         "logic_form": {
             "task_type": "cleaning_guidance",
-            "operation": "cleaning_policy" if not boundary else "cleaning_boundary",
+            "operation": question_kind if not boundary else "cleaning_boundary",
             "parameters": {"table_count": len(profiles), "simulation_only": True},
             "source_tables": [profile["table"] for profile in profiles],
             "output_format": {"answer_type": answer_type},
@@ -144,7 +152,7 @@ def build_cleaning_guidance_response(
                     "title": "识别清洗意图",
                     "summary": "问题涉及清洗策略、影响行数/比例或是否修改原始数据。",
                     "status": "completed",
-                    "evidence": ["operation=cleaning_policy", "simulation_only=true"],
+                    "evidence": [f"operation={question_kind if not boundary else 'cleaning_boundary'}", "simulation_only=true"],
                     "assumptions": [],
                     "caveats": [],
                     "confidence": 0.9,
@@ -177,7 +185,7 @@ def build_cleaning_guidance_response(
         "debug": {
             "agent_mode": agent_mode,
             "message_intent": "cleaning_guidance",
-            "operation": "cleaning_policy" if not boundary else "cleaning_boundary",
+            "operation": question_kind if not boundary else "cleaning_boundary",
             "source_tables": [profile["table"] for profile in profiles],
             "user_experience_shaping": {
                 "applied": True,
@@ -294,13 +302,49 @@ def _cleaning_question_kind(question: str) -> str:
         return "temporal_quality"
     if any(token in compact for token in ("数值字段", "负值", "0值", "零值", "极端值", "离群值")):
         return "numeric_quality"
-    if any(token in compact for token in ("如果先处理", "删除明显异常", "核心指标会受什么影响", "结论会不会变")):
+    if any(token in compact for token in ("异常规则", "数量", "占比", "样例说明")) and any(token in compact for token in ("异常", "规则", "样例")):
+        return "anomaly_rules"
+    if "结论会不会变" in compact or "会不会变" in compact:
+        return "conclusion_change"
+    if any(token in compact for token in ("如果先处理", "删除明显异常", "核心指标会受什么影响")):
         return "cleaning_impact"
     if "缺失" in compact and any(token in compact for token in ("哪些字段", "字段有缺失", "缺失最多")):
         return "missing_fields"
     if any(token in compact for token in ("哪里有问题", "正常吗", "能不能用", "数据质量", "明显的数据质量问题")):
         return "quality_summary"
     return "cleaning_policy"
+
+
+def _anomaly_rule_answer(profiles: list[dict[str, Any]], direct_action_rows: int, direct_action_rate: str) -> str:
+    rules = _top_cleaning_rules(profiles, limit=8)
+    if not rules:
+        return (
+            "异常规则扫描没有命中明显重复、缺失、负值、极端值或日期解析问题；"
+            "样例需要结合具体业务阈值或让用户指定规则后再抽取，不能凭空编造异常样例。"
+        )
+    rule_text = "；".join(
+        f"{item['table']} 的 {item['rule']}：{item['affected_rows']:,} 行，占 {item['affected_rate']}"
+        for item in rules
+    )
+    return (
+        f"异常规则、数量和占比按当前通用规则汇总如下：{rule_text}。"
+        f"需优先人工确认的异常/重复/无法解析信号合计约 {direct_action_rows:,} 行（{direct_action_rate}）。"
+        "样例层面我不会直接展开原始明细行；如果你确认要看样例，我可以在下一步给出脱敏或截断后的代表行。"
+    )
+
+
+def _conclusion_change_answer(profiles: list[dict[str, Any]], direct_action_rows: int, direct_action_rate: str) -> str:
+    impacted_tables = [
+        f"{profile['table']} 约 {int(profile.get('direct_action_rows') or 0):,} 行（{_safe_rate(int(profile.get('direct_action_rows') or 0), int(profile.get('row_count') or 0))}）"
+        for profile in profiles
+    ]
+    return (
+        "先处理明显异常后，结论是否会变不能只看清洗规则本身，要看核心指标是否依赖这些异常行。"
+        + f" 当前需优先确认的异常/重复/无法解析信号约 {direct_action_rows:,} 行（{direct_action_rate}），"
+        + "分表影响是："
+        + "；".join(impacted_tables)
+        + "。建议先做清洗前后指标对比，再判断趋势、排名或占比结论是否改变；不会直接修改原始数据。"
+    )
 
 
 def _quality_summary_answer(profiles: list[dict[str, Any]]) -> str:
@@ -360,7 +404,7 @@ def _cleaning_impact_answer(profiles: list[dict[str, Any]], direct_action_rows: 
         for profile in profiles
     ]
     return (
-        "这类追问应走 cleaning_simulation，只模拟清洗前后可能变化，不直接改原始数据。"
+        "删除明显异常行对核心指标的影响应走 cleaning_simulation，只模拟清洗前后可能变化，不直接改原始数据。"
         + " ".join(parts)
         + f" 总计约 {direct_action_rows:,} 行（{direct_action_rate}）。这只是规则命中数求和，不能当作去重后的精确删除行数。"
         + "任何删除、填充或覆盖都需要用户确认，不能覆盖原始文件。"

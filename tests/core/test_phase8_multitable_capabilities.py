@@ -13,8 +13,10 @@ from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.contracts.analysis_contracts import UserQuestion
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.core.intent_parser import parse_generic_table_question
+from data_agent_core.core.logic_form import make_logic_form
 from data_agent_core.executors.pandas_executor import execute_plan
 from data_agent_core.llm.client import MockLLMClient
+from data_agent_core.output.chart_planner import build_chart_spec
 from data_agent_core.verifier.rule_checker import verify_execution
 
 
@@ -119,6 +121,83 @@ class Phase8MultiTableCapabilityTest(unittest.TestCase):
         self.assertEqual([{"city": "Shanghai", "sales": 300}], executed["result"].value)
         self.assertEqual(["sales"], executed["logic"].source_tables)
         self.assertEqual({}, executed["logic"].join_plan)
+
+    def test_grouped_chart_request_aggregates_instead_of_returning_detail_rows(self) -> None:
+        tables = {"sales": pd.DataFrame({"city": ["上海", "北京", "上海", "北京"], "sales": [100, 120, 140, 160]})}
+        executed = _execute("按城市展示销售额，生成柱状图。", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="按城市展示销售额，生成柱状图。"),
+        )
+        chart = build_chart_spec(plan=executed["plan"], execution_result=executed["result"], verification_passed=verification.passed)
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("aggregation", executed["logic"].operation)
+        rows_by_city = {row["city"]: row["sales"] for row in executed["result"].value}
+        self.assertEqual({"上海": 240, "北京": 280}, rows_by_city)
+        self.assertTrue(verification.passed, verification.issues)
+        self.assertEqual("bar", chart.chart_type)
+        self.assertEqual("city", chart.x)
+        self.assertEqual("sales", chart.y)
+        self.assertEqual(rows_by_city, {row["city"]: row["sales"] for row in chart.data})
+
+    def test_same_schema_multi_file_question_unions_all_sources_before_ranking(self) -> None:
+        tables = {
+            "a": pd.DataFrame({"门店": ["A店"], "产品": ["苹果"], "sales": [150]}),
+            "b": pd.DataFrame({"门店": ["B店"], "产品": ["苹果"], "sales": [170]}),
+        }
+        tables["a"].attrs["source_file"] = "a.csv"
+        tables["b"].attrs["source_file"] = "b.csv"
+        executed = _execute("A店和B店哪个门店总销售额最高？", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="A店和B店哪个门店总销售额最高？"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("ranking", executed["logic"].operation)
+        self.assertEqual(["a", "b"], executed["logic"].source_tables)
+        self.assertEqual([{"门店": "B店", "sales": 170}], executed["result"].value)
+        self.assertTrue(verification.passed, verification.issues)
+        self.assertEqual(["a", "b"], executed["result"].debug["same_schema_union_summary"]["source_tables"])
+
+    def test_verifier_rejects_multi_entity_question_collapsed_to_single_filter(self) -> None:
+        table = pd.DataFrame({"门店": ["A店"], "产品": ["苹果"], "sales": [150]})
+        logic = parse_generic_table_question("A店和B店哪个门店总销售额最高？", {"a": table}, "")
+        plan = build_analysis_plan(logic)
+        result = execute_plan(plan, {"tables": {"a": table}, "primary_table": "a"})
+        verification = verify_execution(
+            result,
+            plan=plan,
+            user_question=UserQuestion(dataset_id="ds_phase8", question="A店和B店哪个门店总销售额最高？"),
+        )
+
+        self.assertTrue(result.success, result.errors)
+        self.assertFalse(verification.passed)
+        self.assertEqual("repair_filters", verification.correction_action["action"])
+
+    def test_verifier_rejects_chart_request_returning_scalar_row_count(self) -> None:
+        table = pd.DataFrame({"city": ["上海", "北京", "上海", "北京"], "sales": [100, 120, 140, 160]})
+        logic = make_logic_form(
+            task_type="aggregation",
+            operation="row_count",
+            parameters={"table": "sales"},
+            output_format={"answer_type": "number"},
+        )
+        plan = build_analysis_plan(logic)
+        result = execute_plan(plan, {"tables": {"sales": table}, "primary_table": "sales"})
+        verification = verify_execution(
+            result,
+            plan=plan,
+            user_question=UserQuestion(dataset_id="ds_phase8", question="按城市展示销售额，生成柱状图。"),
+        )
+
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual(4, result.value)
+        self.assertFalse(verification.passed)
+        self.assertEqual("replace_operation", verification.correction_action["action"])
 
 
 def _orders_and_customers() -> dict[str, pd.DataFrame]:

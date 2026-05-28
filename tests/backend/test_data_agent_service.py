@@ -375,6 +375,49 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual(rule["file_id"], with_rule["debug"]["user_rule_context"]["file_id"])
         self.assertEqual(rule["file_id"], with_rule["debug"]["user_rule_context"]["files"][0]["file_id"])
 
+    def test_json_array_user_analysis_rule_uploads_and_applies_to_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            rule_path = root / "analysis_rules.json"
+            csv_path.write_text("city,sales\nShanghai,100\nBeijing,150\n", encoding="utf-8")
+            rule_path.write_text(
+                json.dumps(["回答必须使用中文。", {"rounding": "金额保留两位小数"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(csv_path, original_filename="sales.csv")
+            rule = service.upload_dataset(
+                rule_path,
+                original_filename="analysis_rules.json",
+                file_role="rule",
+                rule_scope="user_analysis",
+            )
+            guidelines, context = service._guidelines_with_user_rule(
+                "",
+                user_rule_file_id=rule["file_id"],
+                dataset_id=upload["dataset_id"],
+            )
+            response = service.analyze_dataset(
+                dataset_id=upload["dataset_id"],
+                question="Which city has the highest sales?",
+                execution_mode="dual",
+                user_rule_file_id=rule["file_id"],
+            )
+
+        self.assertTrue(rule["success"], rule.get("errors"))
+        self.assertEqual("rule", rule["file_role"])
+        self.assertEqual("user_analysis", rule["rule_scope"])
+        self.assertIn("回答必须使用中文", guidelines)
+        self.assertIn("金额保留两位小数", guidelines)
+        self.assertTrue(context["enabled"])
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual(rule["file_id"], response["debug"]["user_rule_context"]["file_id"])
+
     def test_auto_bound_rule_file_uploaded_with_dataset_applies_to_analysis_context(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1195,7 +1238,7 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertTrue(policy["debug"]["user_experience_shaping"]["applied"])
         self.assertTrue(anomaly_policy["success"])
         self.assertEqual("cleaning_simulation", anomaly_policy["answer_type"])
-        self.assertIn("建议清洗规则", anomaly_policy["answer"])
+        self.assertIn("异常规则", anomaly_policy["answer"])
         self.assertNotEqual("0", str(anomaly_policy["answer"]).strip())
         self.assertTrue(boundary["success"])
         self.assertEqual("chat", boundary["answer_type"])
@@ -1239,6 +1282,47 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertIn("指标=", roles["answer"])
         self.assertIn("ID=", roles["answer"])
         self.assertEqual(5, len({schema["answer"], quality["answer"], numeric["answer"], temporal["answer"], roles["answer"]}))
+
+    def test_quality_and_cleaning_questions_keep_question_specific_answers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "retail.csv"
+            csv_path.write_text(
+                "InvoiceNo,StockCode,Description,Quantity,InvoiceDate,UnitPrice,CustomerID,Country\n"
+                "536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,6,2026-01-01,2.55,17850,United Kingdom\n"
+                "536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,6,2026-01-01,2.55,17850,United Kingdom\n"
+                "536366,22633,HAND WARMER UNION JACK,-1,bad-date,1.85,,United Kingdom\n"
+                "536367,22632,HAND WARMER RED POLKA DOT,10000,2026-01-03,0,13047,United Kingdom\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(csv_path, original_filename="retail.csv")
+            questions = [
+                "这个数据正常吗？",
+                "有没有明显的数据质量问题？",
+                "给我异常规则、数量、占比和样例说明。",
+                "如果先处理明显异常，结论会不会变？",
+                "如果删除明显异常行，核心指标会受什么影响？",
+                "给出建议清洗规则、影响行数、影响比例，并说明是否需要用户确认。",
+            ]
+            responses = [
+                service.respond_to_message(dataset_id=upload["dataset_id"], question=question)
+                for question in questions
+            ]
+
+        answers = [str(response["answer"]) for response in responses]
+        self.assertEqual(len(questions), len(set(answers)))
+        self.assertIn("不能简单说", answers[0])
+        self.assertIn("完全正常", answers[0])
+        self.assertIn("数据质量问题", answers[1])
+        self.assertIn("规则", answers[2])
+        self.assertIn("清洗前后", answers[3])
+        self.assertIn("核心指标", answers[4])
+        self.assertIn("建议清洗规则", answers[5])
 
     def test_raw_detail_exit_guard_replaces_agent_csv_dump_with_overview(self) -> None:
         rows = [

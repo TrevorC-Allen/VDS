@@ -542,11 +542,15 @@ class DataAnalysisAgent:
         raw = stage.raw
         chart_type = raw.get("chart_type")
         if chart_type and chart_type != "none" and not _unsafe_chart_metric(str(raw.get("y") or "")):
+            x = raw.get("x") or rule_chart.x
+            y = raw.get("y") or rule_chart.y
+            if not _chart_fields_match_data(rule_chart.data, str(x or ""), str(y or ""), str(chart_type)):
+                return attach_rendered_chart(rule_chart)
             return attach_rendered_chart(
                 ChartSpec(
                     chart_type=str(chart_type),
-                    x=raw.get("x") or rule_chart.x,
-                    y=raw.get("y") or rule_chart.y,
+                    x=x,
+                    y=y,
                     title=raw.get("title") or rule_chart.title,
                     data=rule_chart.data,
                     reason=str(raw.get("reason") or raw.get("reasoning_summary") or rule_chart.reason),
@@ -850,3 +854,14 @@ def _unsafe_chart_metric(column: str) -> bool:
     if compact in {"id", "ids", "number", "cardnumber"} or compact.endswith("id") or compact.endswith("ids"):
         return True
     return any(token in lowered for token in ("reference", "psp", "bin", "编号", "代码", "流水", "卡号", "year", "hour", "minute", "day_of_year"))
+
+
+def _chart_fields_match_data(data: list[dict[str, Any]], x: str, y: str, chart_type: str) -> bool:
+    if chart_type == "kpi":
+        return True
+    if not data:
+        return False
+    sample_keys = set(data[0])
+    if not x or not y:
+        return False
+    return x in sample_keys and y in sample_keys

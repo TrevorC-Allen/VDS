@@ -2562,11 +2562,56 @@ p {
   box-shadow: 0 18px 50px rgba(15, 23, 42, 0.12);
 }
 
+.composer.has-files {
+  display: grid;
+  grid-template-columns: 34px auto minmax(180px, 1fr) 36px;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 8px;
+  padding: 10px 10px 8px;
+}
+
+.composer.has-files .composer-file-tray {
+  grid-column: 1 / -1;
+}
+
+.composer.has-files .composer-input {
+  grid-row: 2;
+  grid-column: 3;
+  min-height: 36px;
+  max-height: 92px;
+  border-left: 1px solid #d1d5db;
+  padding: 6px 10px 6px 12px;
+  color: #111827;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.composer.has-files .composer-input.is-empty::before {
+  color: #6b7280;
+  font-weight: 450;
+  -webkit-text-fill-color: #6b7280;
+}
+
+.composer.has-files .composer-actions {
+  display: contents;
+}
+
+.composer.has-files .upload-controls {
+  display: contents;
+}
+
+.composer.has-files .button.primary {
+  grid-row: 2;
+  grid-column: 4;
+  margin-right: 0;
+}
+
 .composer-file-tray {
   display: flex;
   gap: 8px;
   overflow-x: auto;
-  padding: 10px 12px 0;
+  padding: 0;
   scrollbar-width: none;
 }
 
@@ -2576,9 +2621,9 @@ p {
 
 .composer-file-card {
   display: inline-flex;
-  min-width: 220px;
-  max-width: 320px;
-  flex: 0 0 260px;
+  min-width: 190px;
+  max-width: 250px;
+  flex: 0 0 min(250px, calc((100% - 16px) / 3));
   align-items: center;
   gap: 10px;
   border: 1px solid #e5e7eb;
@@ -2586,7 +2631,7 @@ p {
   padding: 8px 10px;
   background: #fff;
   color: #111827;
-  cursor: pointer;
+  cursor: default;
   text-align: left;
 }
 
@@ -2716,7 +2761,7 @@ ms-editor-squiggler,
 
 .topbar-file-status {
   flex: 0 1 auto;
-  max-width: min(300px, 28vw);
+  max-width: min(230px, 24vw);
 }
 
 .visually-hidden {
@@ -2759,6 +2804,10 @@ ms-editor-squiggler,
   font-weight: 640;
 }
 
+.data-file-button::before {
+  content: none;
+}
+
 .data-file-button:hover {
   border-color: var(--accent-dark);
   background: var(--accent-dark);
@@ -2767,6 +2816,55 @@ ms-editor-squiggler,
 .data-file-button svg {
   width: 16px;
   height: 16px;
+}
+
+.composer.has-files .data-file-button {
+  grid-row: 2;
+  grid-column: 1;
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  border-color: transparent;
+  padding: 0;
+  background: transparent;
+  color: #374151;
+  font-size: 0;
+}
+
+.composer.has-files .data-file-button:hover {
+  border-color: transparent;
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.composer.has-files .data-file-button svg,
+.composer.has-files .data-file-button span {
+  display: none;
+}
+
+.composer.has-files .data-file-button::before {
+  content: "+";
+  font-size: 25px;
+  font-weight: 300;
+  line-height: 1;
+}
+
+.composer.has-files .rule-file-button {
+  grid-row: 2;
+  grid-column: 2;
+  min-height: 32px;
+  border: 1px solid #e5e7eb;
+  padding: 5px 10px;
+  background: #fff;
+  color: #4b5563;
+  font-weight: 560;
+  white-space: nowrap;
+}
+
+.composer.has-files .rule-file-button:hover {
+  border-color: #d1d5db;
+  background: #f9fafb;
+  color: #111827;
 }
 
 .rule-file-button {
@@ -2802,6 +2900,47 @@ ms-editor-squiggler,
   white-space: nowrap;
 }
 
+.rule-file-status.is-pending,
+.rule-file-status.is-ready {
+  max-width: min(460px, 100%);
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.rule-file-status.is-pending {
+  color: #92400e;
+}
+
+.rule-file-status.is-ready {
+  color: #166534;
+}
+
+.rule-file-status.is-error {
+  display: block;
+  flex: 1 0 100%;
+  max-width: none;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #fff1f2;
+  color: #991b1b;
+  font-weight: 560;
+  line-height: 1.35;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.composer.has-files .rule-file-status {
+  grid-row: 3;
+  grid-column: 1 / -1;
+}
+
+.composer.has-files .rule-file-status.is-empty {
+  display: none;
+}
+
 .file-status {
   display: flex;
   min-width: 0;
@@ -2821,6 +2960,7 @@ ms-editor-squiggler,
   padding: 0;
   background: transparent;
   color: #374151;
+  font-size: 12px;
   font-weight: 540;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2845,7 +2985,7 @@ ms-editor-squiggler,
 
 .topbar-file-status .file-status {
   min-height: 28px;
-  gap: 5px;
+  gap: 6px;
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 4px 10px;
@@ -2853,13 +2993,15 @@ ms-editor-squiggler,
 }
 
 .topbar-file-status .file-summary-button {
-  max-width: 150px;
+  max-width: none;
+  color: #1f2937;
   font-weight: 620;
 }
 
 .topbar-file-status #file-detail {
-  max-width: 72px;
+  max-width: 92px;
   color: #6b7280;
+  font-size: 11px;
 }
 
 .file-panel {
@@ -3881,8 +4023,29 @@ select {
     flex-basis: 100%;
   }
 
+  .composer.has-files .upload-controls {
+    flex-basis: auto;
+  }
+
+  .composer.has-files .rule-file-button {
+    display: none;
+  }
+
+  .composer.has-files {
+    grid-template-columns: 34px minmax(0, 1fr) 36px;
+  }
+
+  .composer.has-files .composer-input {
+    grid-column: 2;
+  }
+
+  .composer.has-files .button.primary {
+    grid-column: 3;
+  }
+
   .composer-file-card {
-    flex-basis: min(260px, calc(100vw - 56px));
+    min-width: 210px;
+    flex-basis: min(250px, calc(100vw - 56px));
   }
 
   .rule-file-status {
