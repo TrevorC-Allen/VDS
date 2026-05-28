@@ -368,6 +368,17 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
             self.assertEqual([100, 200], engine.applicable_fee_ids_for_merchant_period("SyntheticMerchant", year=2023, month=1))
             self.assertEqual([100, 200], engine.fee_ids_for_filters(card_scheme="GlobalCard"))
 
+    def test_applicable_fee_ids_parser_falls_back_to_payments_merchants(self) -> None:
+        payments = pd.DataFrame({"merchant": ["Rafa_AI", "OtherMerchant"]})
+        logic = parse_question(
+            "What were the applicable Fee IDs for Rafa_AI in December 2023?",
+            context={"payments": payments},
+        )
+
+        self.assertEqual("applicable_fee_ids", logic.operation)
+        self.assertEqual("Rafa_AI", logic.filters["merchant"])
+        self.assertEqual(12, logic.filters["month"])
+
     def test_row_and_distinct_count_work_for_english_and_chinese_questions(self) -> None:
         table = pd.DataFrame(
             [

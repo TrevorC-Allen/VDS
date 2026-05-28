@@ -449,6 +449,142 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertTrue(response["debug"]["user_rule_context"]["auto_bound"])
         self.assertEqual(upload["auto_bound_user_rule_file_ids"][0], response["debug"]["user_rule_context"]["files"][0]["file_id"])
 
+    def test_bound_fee_rule_files_enable_fee_id_lookup_for_uploaded_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payments_path = root / "payments.csv"
+            fees_path = root / "fees.json"
+            merchant_data_path = root / "merchant_data.json"
+            manual_path = root / "manual.md"
+            payments_path.write_text(
+                "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,"
+                "has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+                "Rafa_AI,2023,335,11,15,18.55,true,false,false,D,GlobalCard,GR,NL\n",
+                encoding="utf-8",
+            )
+            fees_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "ID": 10,
+                            "card_scheme": "GlobalCard",
+                            "account_type": ["H"],
+                            "capture_delay": None,
+                            "monthly_fraud_level": None,
+                            "monthly_volume": None,
+                            "merchant_category_code": [],
+                            "is_credit": None,
+                            "aci": ["D"],
+                            "fixed_amount": 0.10,
+                            "rate": 0,
+                            "intracountry": None,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            merchant_data_path.write_text(
+                json.dumps([{"merchant": "Rafa_AI", "account_type": "H", "capture_delay": "manual", "merchant_category_code": 5411}]),
+                encoding="utf-8",
+            )
+            manual_path.write_text("Fee rules for demo validation.", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(payments_path, original_filename="payments.csv")
+            dataset_id = upload["dataset_id"]
+            for path in (fees_path, merchant_data_path, manual_path):
+                rule = service.upload_dataset(
+                    path,
+                    original_filename=path.name,
+                    file_role="rule",
+                    rule_scope="user_analysis",
+                    bind_dataset_id=dataset_id,
+                )
+                self.assertTrue(rule["success"], rule.get("errors"))
+            response = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="What is the fee ID or IDs that apply to account_type = H and aci = D?",
+                execution_mode="pandas",
+            )
+
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("fee_ids_for_filters", response["logic_form"]["operation"])
+        self.assertEqual([10], response["result"]["value"])
+        self.assertIn("10", response["answer"])
+        self.assertTrue(response["debug"]["rule_augmented_fee_context"])
+        self.assertIn("查看这些 Fee ID", response["insight"]["next_step"])
+
+    def test_bound_fee_rule_files_enable_applicable_fee_ids_lookup_for_uploaded_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payments_path = root / "payments.csv"
+            fees_path = root / "fees.json"
+            merchant_data_path = root / "merchant_data.json"
+            manual_path = root / "manual.md"
+            payments_path.write_text(
+                "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,"
+                "has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+                "Rafa_AI,2023,335,11,15,18.55,true,false,false,D,GlobalCard,GR,NL\n",
+                encoding="utf-8",
+            )
+            fees_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "ID": 10,
+                            "card_scheme": "GlobalCard",
+                            "account_type": ["H"],
+                            "capture_delay": None,
+                            "monthly_fraud_level": None,
+                            "monthly_volume": None,
+                            "merchant_category_code": [],
+                            "is_credit": None,
+                            "aci": ["D"],
+                            "fixed_amount": 0.10,
+                            "rate": 0,
+                            "intracountry": None,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            merchant_data_path.write_text(
+                json.dumps([{"merchant": "Rafa_AI", "account_type": "H", "capture_delay": "manual", "merchant_category_code": 5411}]),
+                encoding="utf-8",
+            )
+            manual_path.write_text("Fee rules for demo validation.", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(payments_path, original_filename="payments.csv")
+            dataset_id = upload["dataset_id"]
+            for path in (fees_path, merchant_data_path, manual_path):
+                rule = service.upload_dataset(
+                    path,
+                    original_filename=path.name,
+                    file_role="rule",
+                    rule_scope="user_analysis",
+                    bind_dataset_id=dataset_id,
+                )
+                self.assertTrue(rule["success"], rule.get("errors"))
+            response = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="What were the applicable Fee IDs for Rafa_AI in December 2023?",
+                execution_mode="pandas",
+            )
+
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("applicable_fee_ids", response["logic_form"]["operation"])
+        self.assertEqual([10], response["result"]["value"])
+        self.assertIn("10", response["answer"])
+        self.assertTrue(response["debug"]["rule_augmented_fee_context"])
+        self.assertIn("展开这些 Fee ID", response["insight"]["next_step"])
+
     def test_benchmark_rule_runs_only_through_benchmark_service(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

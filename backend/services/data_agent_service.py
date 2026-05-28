@@ -10,6 +10,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from backend.schemas.data_agent_schema import (
     BENCHMARK_RULE_SCOPE,
     DATASET_FILE_EXTENSIONS,
@@ -30,6 +32,9 @@ from backend.storage.project_store import ProjectStore, build_project_context
 from backend.storage.temp_file_store import StoredRuleFile, TempFileStore, _read_source_text
 from data_agent_core.agent.single_agent import DataAnalysisAgent, UploadedDatasetAgent
 from data_agent_core.benchmark.evaluator import question_scorer
+from data_agent_core.contracts.analysis_contracts import UserQuestion
+from data_agent_core.core.analysis_planner import build_analysis_plan
+from data_agent_core.core.intent_parser import parse_question
 from data_agent_core.core.message_intent import (
     classify_workbench_message,
     is_cleaning_guidance_question,
@@ -37,17 +42,21 @@ from data_agent_core.core.message_intent import (
     is_dataset_source_question,
 )
 from data_agent_core.core.file_parser import parse_dataset_file
+from data_agent_core.core.file_parser import load_dabstep_context
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import FILE_PARSE_ERROR, LOGIC_FORM_ERROR
+from data_agent_core.executors import pandas_executor
 from data_agent_core.llm.client import LLMClient, MissingLLMConfigError, load_llm_client_from_env
 from data_agent_core.llm.planner import complete_stage_with_llm
 from data_agent_core.output.activity_trace import build_activity_trace_v2
 from data_agent_core.output.cleaning_guidance import build_cleaning_guidance_response
 from data_agent_core.output.dataset_overview import build_dataset_overview_response
 from data_agent_core.output.process_narrative import build_chat_process_view, process_view_monitor_payload
+from data_agent_core.output.response_builder import build_response
 from data_agent_core.output.source_overview import build_dataset_source_overview_response
 from data_agent_core.output.text_answer_framework import apply_text_answer_framework
 from data_agent_core.tracing.live_monitor import emit_monitor_event
+from data_agent_core.verifier.rule_checker import verify_execution
 from multi_agent_workflows.end_to_end_data_analysis_workflow import DataAnalysisMultiAgentWorkflow
 
 
@@ -264,11 +273,15 @@ class DataAgentService:
             )
 
         try:
-            guidelines, user_rule_context = self._guidelines_with_user_rule(
-                guidelines,
+            user_rule_contexts, user_rule_context = self._user_rule_contexts(
                 user_rule_file_id=user_rule_file_id,
                 dataset_id=dataset_id,
             )
+            if user_rule_contexts:
+                guidelines = _combine_guidelines(
+                    guidelines,
+                    *[_user_rule_guidelines(context) for context in user_rule_contexts],
+                )
         except Exception as exc:  # noqa: BLE001 - normalized API error.
             return error_response(
                 dataset_id=dataset_id,
@@ -309,6 +322,15 @@ class DataAgentService:
             profile = self.file_store.get_profile(dataset_id)
             dataset_kind = self.file_store.get_dataset_kind(dataset_id)
             analysis_context = self.file_store.get_analysis_context(dataset_id)
+            rule_augmented_context = None
+            if dataset_kind != "dabstep_context":
+                rule_augmented_context = self._build_user_rule_fee_context(
+                    dataset_id=dataset_id,
+                    tables=tables,
+                    user_rule_file_id=user_rule_file_id,
+                )
+                if rule_augmented_context is not None:
+                    analysis_context = rule_augmented_context
             source_manifest = self.file_store.get_dataset_sources(dataset_id)
             emit_monitor_event(
                 monitor_run_id,
@@ -319,6 +341,43 @@ class DataAgentService:
                 status="completed",
                 payload={"dataset_id": dataset_id, "table_count": len(tables)},
             )
+            fee_rule_response = self._try_rule_backed_fee_id_analysis(
+                run_id=run_id,
+                dataset_id=dataset_id,
+                question=question,
+                guidelines=guidelines,
+                execution_mode=execution_mode,
+                agent_mode=agent_mode,
+                tables=tables,
+                profile=profile,
+                user_rule_contexts=user_rule_contexts,
+                user_rule_context=user_rule_context,
+            )
+            if fee_rule_response is not None:
+                _ensure_activity_trace_v2(fee_rule_response)
+                emit_monitor_event(
+                    monitor_run_id,
+                    "answer_outline_ready",
+                    title="Fee ID 回答已生成",
+                    summary="已用当前启用的费用规则文件和 payments 表执行 Fee ID 查询。",
+                    stage="fee_rule",
+                    status="completed" if fee_rule_response.get("success") else "failed",
+                    payload={
+                        "run_id": fee_rule_response.get("run_id"),
+                        "dataset_id": dataset_id,
+                        "answer_type": fee_rule_response.get("answer_type"),
+                    },
+                )
+                emit_monitor_event(
+                    monitor_run_id,
+                    "workflow_completed",
+                    title="Fee ID 查询完成",
+                    summary="本次问题命中 rule-backed fee analysis 路径，未把规则文件当作普通数据表分析。",
+                    stage="fee_rule",
+                    status="completed" if fee_rule_response.get("success") else "failed",
+                    payload=process_view_monitor_payload(fee_rule_response),
+                )
+                return to_json_ready(fee_rule_response)
             semantic_route = self._route_dataset_message(
                 question=question,
                 profile=profile,
@@ -472,7 +531,10 @@ class DataAgentService:
                         "execution_mode": execution_mode,
                     },
                 )
-                if dataset_kind == "dabstep_context":
+                context_dir = analysis_context.get("context_dir") if isinstance(analysis_context, dict) else None
+                if context_dir is not None and "payments" in (analysis_context or {}):
+                    agent = DataAnalysisAgent(context_dir=context_dir, dataset_id=dataset_id, llm_client=self.llm_client)
+                elif dataset_kind == "dabstep_context":
                     context_dir = self.file_store.get_context_dir(dataset_id)
                     if context_dir is None:
                         raise ValueError("DABstep context files are not available for single_agent analysis.")
@@ -495,6 +557,19 @@ class DataAgentService:
                         "answer_type": response.answer_type,
                         "process_view_v2": response.process_view_v2,
                     },
+                )
+            elif analysis_context is not None and "payments" in analysis_context and "context_dir" in analysis_context:
+                agent = DataAnalysisMultiAgentWorkflow(
+                    dataset_id=dataset_id,
+                    context=analysis_context,
+                    dataset_profile=profile,
+                    llm_client=self.llm_client,
+                )
+                response, trace = agent.analyze(
+                    question=question,
+                    guidelines=guidelines,
+                    execution_mode=execution_mode,
+                    monitor_run_id=monitor_run_id,
                 )
             elif dataset_kind == "dabstep_context" and analysis_context is not None:
                 agent = DataAnalysisMultiAgentWorkflow(
@@ -529,9 +604,12 @@ class DataAgentService:
             payload["debug"]["agent_mode"] = agent_mode
             payload["debug"]["dataset_kind"] = dataset_kind
             payload["debug"]["user_rule_context"] = user_rule_context
+            if rule_augmented_context is not None:
+                payload["debug"]["rule_augmented_fee_context"] = True
+                payload["debug"]["effective_context_kind"] = "user_rule_fee_context"
             if monitor_run_id:
                 payload["debug"]["monitor_run_id"] = monitor_run_id
-            if dataset_kind == "dabstep_context":
+            if dataset_kind == "dabstep_context" or rule_augmented_context is not None:
                 payload["debug"]["knowledge_files"] = ["manual.md", "fees.json", "merchant_data.json"]
             payload = _suppress_raw_detail_answer(
                 payload,
@@ -601,6 +679,94 @@ class DataAgentService:
                     suggested_fix="Check that the question references columns present in the uploaded dataset.",
                 ),
             )
+
+    def _try_rule_backed_fee_id_analysis(
+        self,
+        *,
+        run_id: str,
+        dataset_id: str,
+        question: str,
+        guidelines: str,
+        execution_mode: str,
+        agent_mode: str,
+        tables: dict[str, Any],
+        profile: Any,
+        user_rule_contexts: list[dict[str, Any]],
+        user_rule_context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Answer Fee ID questions from enabled rule files instead of the plain payments table."""
+
+        if not _looks_like_fee_id_question(question):
+            return None
+        context_payload = _materialize_rule_backed_fee_context(
+            self.file_store.root,
+            dataset_id=dataset_id,
+            tables=tables,
+            user_rule_contexts=user_rule_contexts,
+        )
+        if context_payload is None:
+            return None
+        context = context_payload["context"]
+        logic_form = parse_question(question, guidelines, context)
+        if logic_form.operation not in FEE_ID_RULE_OPERATIONS:
+            return None
+
+        plan = build_analysis_plan(logic_form)
+        execution_result = pandas_executor.execute_plan(plan, context)
+        user_question = UserQuestion(
+            dataset_id=dataset_id,
+            question=question,
+            execution_mode=execution_mode,
+            guidelines=guidelines,
+        )
+        verification = verify_execution(execution_result, plan=plan, user_question=user_question)
+        response = build_response(
+            run_id=run_id,
+            user_question=user_question,
+            plan=plan,
+            execution_result=execution_result,
+            verification=verification,
+            debug={
+                "agent_mode": agent_mode,
+                "dataset_kind": "uploaded_tables_with_user_fee_rules",
+                "operation": logic_form.operation,
+                "source_tables": [context_payload["payments_table"]],
+                "logical_source_tables": list(logic_form.source_tables or ["payments"]),
+                "knowledge_files": context_payload["knowledge_files"],
+                "user_rule_context": user_rule_context,
+                "rule_augmented_fee_context": True,
+                "rule_backed_fee_analysis": {
+                    "applied": True,
+                    "payments_table": context_payload["payments_table"],
+                    "rule_files": context_payload["knowledge_files"],
+                    "context_dir": str(context_payload["context_dir"]),
+                },
+            },
+        )
+        payload = response.to_dict()
+        payload["debug"]["user_rule_context"] = user_rule_context
+        payload["debug"]["rule_backed_fee_analysis"]["answer_count"] = _fee_id_answer_count(execution_result.value)
+        _shape_fee_id_result_table(payload, execution_result.value)
+        _attach_source_references(payload, profile=profile)
+        _append_rule_source_references(payload, user_rule_contexts, context_payload["knowledge_files"])
+        payload["insight"] = _fee_id_insight(
+            operation=logic_form.operation,
+            value=execution_result.value,
+            filters=logic_form.filters,
+        )
+        payload["reasoning_trace_view"] = _fee_id_reasoning_trace(
+            operation=logic_form.operation,
+            execution_success=execution_result.success,
+            verification_passed=verification.passed,
+            rule_files=context_payload["knowledge_files"],
+        )
+        payload["process_view_v2"] = _fee_id_process_view(
+            operation=logic_form.operation,
+            execution_success=execution_result.success,
+            verification_passed=verification.passed,
+            answer_count=_fee_id_answer_count(execution_result.value),
+        )
+        return payload
 
     def _route_dataset_message(
         self,
@@ -1227,12 +1393,32 @@ class DataAgentService:
     ) -> tuple[str, dict[str, Any]]:
         """Append explicit and auto-bound user analysis rules to guidelines."""
 
+        contexts, context_payload = self._user_rule_contexts(
+            user_rule_file_id=user_rule_file_id,
+            dataset_id=dataset_id,
+        )
+        if not contexts:
+            return guidelines, context_payload
+        return (
+            _combine_guidelines(guidelines, *[_user_rule_guidelines(context) for context in contexts]),
+            context_payload,
+        )
+
+    def _user_rule_contexts(
+        self,
+        *,
+        user_rule_file_id: str = "",
+        dataset_id: str = "",
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Load explicit and auto-bound user rule contexts without treating them as datasets."""
+
         rule_ids: list[str] = _split_rule_file_ids(user_rule_file_id)
-        for file_id in self.file_store.get_bound_rule_file_ids(dataset_id, rule_scope=USER_ANALYSIS_RULE_SCOPE):
-            if file_id not in rule_ids:
-                rule_ids.append(file_id)
+        if dataset_id:
+            for file_id in self.file_store.get_bound_rule_file_ids(dataset_id, rule_scope=USER_ANALYSIS_RULE_SCOPE):
+                if file_id not in rule_ids:
+                    rule_ids.append(file_id)
         if not rule_ids:
-            return guidelines, {"enabled": False}
+            return [], {"enabled": False}
         contexts = [
             self.file_store.get_rule_context(file_id, expected_scope=USER_ANALYSIS_RULE_SCOPE)
             for file_id in rule_ids
@@ -1245,10 +1431,46 @@ class DataAgentService:
         }
         if public_contexts:
             context_payload.update(public_contexts[0])
-        return (
-            _combine_guidelines(guidelines, *[_user_rule_guidelines(context) for context in contexts]),
-            context_payload,
-        )
+        return contexts, context_payload
+
+    def _build_user_rule_fee_context(
+        self,
+        *,
+        dataset_id: str,
+        tables: dict[str, pd.DataFrame],
+        user_rule_file_id: str = "",
+    ) -> dict[str, Any] | None:
+        """Promote bound fee-rule files plus a payments-like table into executable fee context."""
+
+        contexts, _ = self._user_rule_contexts(user_rule_file_id=user_rule_file_id, dataset_id=dataset_id)
+        if not contexts:
+            return None
+        fees_context = _rule_context_by_name(contexts).get("fees.json")
+        if fees_context is None:
+            return None
+        payments_table = _select_fee_context_table(tables)
+        if payments_table is None:
+            return None
+
+        payments_export = payments_table.copy()
+        if "hour_of_day" not in payments_export.columns:
+            payments_export["hour_of_day"] = 0
+        if "minute_of_hour" not in payments_export.columns:
+            payments_export["minute_of_hour"] = 0
+        if "has_fraudulent_dispute" not in payments_export.columns:
+            payments_export["has_fraudulent_dispute"] = False
+        if "is_refused_by_adyen" not in payments_export.columns:
+            payments_export["is_refused_by_adyen"] = False
+
+        context_dir = self.file_store.datasets_root / dataset_id / "user_rule_fee_context"
+        context_dir.mkdir(parents=True, exist_ok=True)
+        payments_export.to_csv(context_dir / "payments.csv", index=False)
+        _write_rule_context_json_file(fees_context, context_dir / "fees.json", fallback=[])
+        _write_rule_context_json_file(_rule_context_by_name(contexts).get("merchant_data.json"), context_dir / "merchant_data.json", fallback=[])
+        _write_rule_context_text_file(_rule_context_by_name(contexts).get("manual.md"), context_dir / "manual.md", fallback="Uploaded fee-rule context.")
+        _write_merchant_category_codes_csv(_rule_context_by_name(contexts).get("merchant_data.json"), context_dir / "merchant_category_codes.csv")
+        _write_acquirer_countries_csv(payments_export, context_dir / "acquirer_countries.csv")
+        return load_dabstep_context(context_dir)
 
     def create_conversation(
         self,
@@ -2464,6 +2686,251 @@ def _user_rule_guidelines(rule_context: dict[str, Any]) -> str:
         "do not treat the rule file as a dataset.\n"
         + raw_text
     )
+
+
+def _rule_context_by_name(contexts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    mapping: dict[str, dict[str, Any]] = {}
+    for context in contexts:
+        name = Path(str(context.get("file_name") or "")).name.lower()
+        if name and name not in mapping:
+            mapping[name] = context
+    return mapping
+
+
+def _select_fee_context_table(tables: dict[str, pd.DataFrame]) -> pd.DataFrame | None:
+    preferred = tables.get("payments")
+    if _looks_like_fee_context_table(preferred):
+        return preferred.copy()
+    for table in tables.values():
+        if _looks_like_fee_context_table(table):
+            return table.copy()
+    return None
+
+
+def _looks_like_fee_context_table(table: Any) -> bool:
+    if not isinstance(table, pd.DataFrame) or table.empty:
+        return False
+    required = {
+        "merchant",
+        "year",
+        "day_of_year",
+        "eur_amount",
+        "is_credit",
+        "aci",
+        "card_scheme",
+        "issuing_country",
+        "acquirer_country",
+    }
+    columns = {str(column) for column in table.columns}
+    return required.issubset(columns)
+
+
+def _write_rule_context_json_file(rule_context: dict[str, Any] | None, path: Path, *, fallback: Any) -> None:
+    parsed = None if rule_context is None else rule_context.get("parsed_rule")
+    payload = fallback if parsed is None else to_json_ready(parsed)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_rule_context_text_file(rule_context: dict[str, Any] | None, path: Path, *, fallback: str) -> None:
+    text = str((rule_context or {}).get("raw_text") or fallback).strip() or fallback
+    path.write_text(text + ("\n" if not text.endswith("\n") else ""), encoding="utf-8")
+
+
+def _write_merchant_category_codes_csv(rule_context: dict[str, Any] | None, path: Path) -> None:
+    rows = (rule_context or {}).get("parsed_rule")
+    values: list[int] = []
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict) and isinstance(row.get("merchant_category_code"), int):
+                values.append(int(row["merchant_category_code"]))
+    lines = ["mcc,description"]
+    lines.extend(f"{value},{value}" for value in sorted(set(values)))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_acquirer_countries_csv(payments: pd.DataFrame, path: Path) -> None:
+    values = sorted(
+        {
+            str(value)
+            for value in payments.get("acquirer_country", pd.Series(dtype=str)).dropna().astype(str).tolist()
+            if str(value)
+        }
+    )
+    lines = ["country_code,country"]
+    lines.extend(f"{value},{value}" for value in values)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+FEE_ID_RULE_OPERATIONS = {"fee_ids_for_filters", "applicable_fee_ids"}
+
+
+def _looks_like_fee_id_question(question: str) -> bool:
+    lowered = str(question or "").lower()
+    if "fee id" not in lowered:
+        return False
+    return (
+        ("account_type" in lowered and "aci" in lowered)
+        or "applicable fee ids" in lowered
+        or "fee ids applicable" in lowered
+    )
+
+
+def _materialize_rule_backed_fee_context(
+    storage_root: str | Path,
+    *,
+    dataset_id: str,
+    tables: dict[str, pd.DataFrame],
+    user_rule_contexts: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    payments = _select_fee_context_table(tables)
+    if payments is None:
+        return None
+    contexts_by_name = _rule_context_by_name(user_rule_contexts)
+    fees_context = contexts_by_name.get("fees.json")
+    if fees_context is None:
+        return None
+
+    if "hour_of_day" not in payments.columns:
+        payments["hour_of_day"] = 0
+    if "minute_of_hour" not in payments.columns:
+        payments["minute_of_hour"] = 0
+    if "has_fraudulent_dispute" not in payments.columns:
+        payments["has_fraudulent_dispute"] = False
+    if "is_refused_by_adyen" not in payments.columns:
+        payments["is_refused_by_adyen"] = False
+
+    context_dir = Path(storage_root) / "datasets" / dataset_id / "rule_backed_fee_context"
+    context_dir.mkdir(parents=True, exist_ok=True)
+    payments.to_csv(context_dir / "payments.csv", index=False)
+    _write_rule_context_json_file(fees_context, context_dir / "fees.json", fallback=[])
+    _write_rule_context_json_file(contexts_by_name.get("merchant_data.json"), context_dir / "merchant_data.json", fallback=[])
+    _write_rule_context_text_file(contexts_by_name.get("manual.md"), context_dir / "manual.md", fallback="Uploaded fee-rule context.")
+    _write_merchant_category_codes_csv(contexts_by_name.get("merchant_data.json"), context_dir / "merchant_category_codes.csv")
+    _write_acquirer_countries_csv(payments, context_dir / "acquirer_countries.csv")
+    knowledge_files = [
+        name
+        for name in ("fees.json", "merchant_data.json", "manual.md")
+        if contexts_by_name.get(name) is not None
+    ]
+    return {
+        "context": load_dabstep_context(context_dir),
+        "context_dir": context_dir,
+        "payments_table": "payments",
+        "knowledge_files": knowledge_files,
+    }
+
+
+def _fee_id_answer_count(value: Any) -> int:
+    if isinstance(value, (list, tuple, set)):
+        return len(value)
+    if value in (None, "", []):
+        return 0
+    return 1
+
+
+def _shape_fee_id_result_table(payload: dict[str, Any], value: Any) -> None:
+    items = list(value) if isinstance(value, (list, tuple, set)) else ([] if value in (None, "") else [value])
+    payload["answer_type"] = "list"
+    payload["result"] = {
+        "columns": ["fee_id"],
+        "rows": [{"fee_id": item} for item in items],
+        "value": items,
+    }
+
+
+def _append_rule_source_references(payload: dict[str, Any], contexts: list[dict[str, Any]], knowledge_files: list[str]) -> None:
+    source_references = payload.setdefault("source_references", [])
+    existing_names = {str(item.get("file_name") or "") for item in source_references if isinstance(item, dict)}
+    contexts_by_name = _rule_context_by_name(contexts)
+    for name in knowledge_files:
+        if name in existing_names:
+            continue
+        context = contexts_by_name.get(name)
+        if context is None:
+            continue
+        source_references.append(
+            {
+                "file_name": name,
+                "source_type": "rule",
+                "source_role": "规则/知识来源",
+                "read_status": "read",
+                "purpose": "费用规则或商户规则上下文",
+                "content_summary": _rule_context_excerpt(context),
+            }
+        )
+
+
+def _fee_id_insight(*, operation: str, value: Any, filters: dict[str, Any]) -> dict[str, Any]:
+    count = _fee_id_answer_count(value)
+    if operation == "fee_ids_for_filters":
+        account_type = filters.get("account_type")
+        aci = filters.get("aci")
+        scope = "、".join(f"{key}={value}" for key, value in (("account_type", account_type), ("aci", aci)) if value)
+        summary = (
+            f"当前筛选条件{('（' + scope + '）') if scope else ''}下没有匹配的 Fee ID。"
+            if count == 0
+            else f"当前筛选条件{('（' + scope + '）') if scope else ''}下匹配到 {count} 个 Fee ID。"
+        )
+        next_step = "查看这些 Fee ID 的具体规则条件，重点核对空列表通配、account_type、aci、card_scheme 和地区条件。"
+        questions = ["这些 Fee ID 的规则条件分别是什么？", "如果再限定 card_scheme，Fee ID 会剩哪些？"]
+    else:
+        merchant = str(filters.get("merchant") or "目标商户")
+        summary = f"{merchant} 在当前时间范围内没有匹配的 Fee ID。" if count == 0 else f"{merchant} 在当前时间范围内匹配到 {count} 个 Fee ID。"
+        next_step = "展开这些 Fee ID 对应的规则条件，核对交易月份、商户属性、ACI、卡组织和月度门槛为什么命中。"
+        questions = ["这些 Fee ID 分别对应哪些规则条件？", "这些 Fee ID 按 card_scheme 如何分布？"]
+    return {
+        "summary": summary,
+        "next_step": next_step,
+        "business_suggestions": [f"观察：{summary}；依据：后端已使用启用规则文件执行费用规则引擎；建议：{next_step}"],
+        "suggestions": [next_step],
+        "next_questions": questions,
+        "caveats": [],
+        "confidence": 0.9,
+    }
+
+
+def _fee_id_reasoning_trace(*, operation: str, execution_success: bool, verification_passed: bool, rule_files: list[str]) -> list[dict[str, Any]]:
+    return [
+        {
+            "step_id": "rule_context",
+            "name": "读取规则上下文",
+            "status": "completed",
+            "summary": f"已读取规则文件：{', '.join(rule_files) if rule_files else '无'}。",
+        },
+        {
+            "step_id": "fee_rule_execution",
+            "name": "执行 Fee ID 查询",
+            "status": "completed" if execution_success else "failed",
+            "summary": f"操作={operation}，执行{'成功' if execution_success else '失败'}，校验{'通过' if verification_passed else '未通过'}。",
+        },
+    ]
+
+
+def _fee_id_process_view(*, operation: str, execution_success: bool, verification_passed: bool, answer_count: int) -> dict[str, Any]:
+    return {
+        "mode": "rule_backed_fee_query",
+        "summary": f"已使用费用规则路径执行 {operation}，返回 {answer_count} 个 Fee ID。",
+        "steps": [
+            {
+                "title": "读取规则文件",
+                "source": "rule_context",
+                "status": "completed",
+                "summary": "已把启用的费用规则文件与 payments 表组合成可执行上下文。",
+            },
+            {
+                "title": "执行 Fee ID 查询",
+                "source": "pandas_executor",
+                "status": "completed" if execution_success else "failed",
+                "summary": f"operation={operation}，命中 {answer_count} 个结果。",
+            },
+            {
+                "title": "结果校验",
+                "source": "verifier",
+                "status": "completed" if verification_passed else "failed",
+                "summary": "已检查执行成功状态和输出契约。",
+            },
+        ],
+    }
 
 
 def _combine_guidelines(*parts: str) -> str:

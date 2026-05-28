@@ -140,10 +140,21 @@ def _extract_day_of_year(question: str) -> int | None:
 
 
 def _extract_merchant(question: str, context: dict[str, Any]) -> str | None:
+    names: list[str] = []
     merchants = context.get("merchant_data") or []
-    names = [row["merchant"] for row in merchants if isinstance(row, dict) and "merchant" in row]
-    for name in sorted(names, key=len, reverse=True):
-        if name in question:
+    names.extend(str(row["merchant"]) for row in merchants if isinstance(row, dict) and "merchant" in row)
+    payments = context.get("payments")
+    if payments is None:
+        tables = context.get("tables") or {}
+        for table in tables.values():
+            if isinstance(table, pd.DataFrame) and "merchant" in table.columns:
+                payments = table
+                break
+    if isinstance(payments, pd.DataFrame) and "merchant" in payments.columns:
+        names.extend(str(value) for value in payments["merchant"].dropna().astype(str).unique().tolist())
+    lowered = question.lower()
+    for name in sorted({candidate for candidate in names if candidate}, key=len, reverse=True):
+        if name in question or name.lower() in lowered:
             return name
     return None
 
