@@ -41,6 +41,7 @@ def parse_chinese_retail_question(
     output_format = {"guidelines": guidelines}
     year, month = _extract_year_month(question, tables)
     business_date = _extract_date(question) or _infer_business_date(tables)
+    date_start, date_end = _extract_date_range(question)
     if business_date and (year is None or month is None):
         year, month = business_date.year, business_date.month
     ym = year * 100 + month if year and month else None
@@ -48,6 +49,7 @@ def parse_chinese_retail_question(
     person = _extract_person(question, tables)
     product = _extract_product(question, tables)
     start_ym, end_ym = _extract_year_month_range(question)
+    ym_mentions = _extract_year_month_mentions(question)
 
     if "主任" in question and "日目标缺口" in question and ("下属" in question or "贡献" in question):
         return make_logic_form(
@@ -87,7 +89,7 @@ def parse_chinese_retail_question(
             operation="retail_target_actual_monthly_comparison",
             parameters={"person": person, "start_ym": start_ym, "end_ym": end_ym, "role": _person_role(question, person, tables)},
             source_tables=["v_trd_dist_ord_dtl", "ads_trd_dist_ord_target_emp_1m_df", "ads_trd_dist_ord_target_mgr_1m_df"],
-            output_format=output_format | {"answer_type": "text"},
+            output_format=output_format | {"answer_type": "text", "chart_type": "combo_column_line"},
         )
 
     if start_ym and end_ym and "分销目标达成率" in question:
@@ -117,6 +119,42 @@ def parse_chinese_retail_question(
             output_format=output_format | {"answer_type": "text"},
         )
 
+    if _asks_for_chart(question) and "各业代" in question and "历史分销金额趋势" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_employee_distribution_monthly_trend",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym, "limit": _extract_limit(question, default=5)},
+            source_tables=["v_trd_dist_ord_dtl"],
+            output_format=output_format | {"answer_type": "text", "chart_type": "line"},
+        )
+
+    if "拜访记录" in question and ("一周分布" in question or "星期几" in question):
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_visit_weekday_distribution",
+            parameters={"ym": ym},
+            source_tables=["v_chl_visit_dtl"],
+            output_format=output_format | {"answer_type": "text", "chart_type": "bar"},
+        )
+
+    if _asks_for_chart(question) and "线路计划客户数" in question and ("每日趋势" in question or "每天" in question):
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_route_plan_daily_trend",
+            parameters={"start_date": _date_text(date_start), "end_date": _date_text(date_end or business_date)},
+            source_tables=["v_chl_route_plan_cust_cnt_1d_df"],
+            output_format=output_format | {"answer_type": "text", "chart_type": "line"},
+        )
+
+    if _asks_for_chart(question) and "线路计划客户数排名" in question and "业代" in question:
+        return make_logic_form(
+            task_type="ranking",
+            operation="retail_route_plan_employee_count_ranking",
+            parameters={"ym": ym},
+            source_tables=["v_chl_route_plan_cust_cnt_1d_df"],
+            output_format=output_format | {"answer_type": "text", "chart_type": "horizontal_bar"},
+        )
+
     if _asks_for_chart(question) and "品类" in question and "历史分销金额" in question and ("趋势" in question or "结构" in question):
         return make_logic_form(
             task_type="trend",
@@ -126,13 +164,92 @@ def parse_chinese_retail_question(
             output_format=output_format | {"answer_type": "text"},
         )
 
-    if _asks_for_chart(question) and "历史分销金额" in question and ("SKU" in question or "sku" in question.lower()) and _is_ranking_question(question):
+    if _asks_for_chart(question) and "检查结果分布" in question and "陈列活动" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_display_status_monthly_distribution",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym},
+            source_tables=["v_mkt_dsp_actv_mi"],
+            output_format=output_format | {"answer_type": "text", "chart_type": "stacked_column"},
+        )
+
+    if _asks_for_chart(question) and "确认金额最高" in question and "品类" in question and "陈列活动" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_display_confirm_amount_category_monthly_top",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym, "limit": _extract_limit(question, default=5)},
+            source_tables=["v_mkt_dsp_actv_mi"],
+            output_format=output_format | {"answer_type": "text", "chart_type": "stacked_area"},
+        )
+
+    if _asks_for_chart(question) and "合约店" in question and "非合约店" in question and "数量变化" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_contract_customer_monthly_structure",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym},
+            source_tables=["终端客户月度维表"],
+            output_format=output_format | {"answer_type": "text", "chart_type": "stacked_column"},
+        )
+
+    if _asks_for_chart(question) and "冰柜客户数量趋势" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_freezer_customer_monthly_trend",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym},
+            source_tables=["终端客户月度维表"],
+            output_format=output_format | {"answer_type": "text", "chart_type": "line"},
+        )
+
+    if _asks_for_chart(question) and "平均冰柜门数" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_freezer_door_average_monthly_trend",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym},
+            source_tables=["终端客户月度维表"],
+            output_format=output_format | {"answer_type": "text", "chart_type": "line"},
+        )
+
+    if _asks_for_chart(question) and "记录数最高" in question and "品牌" in question and "SKU检查通过率" in question:
+        return make_logic_form(
+            task_type="ranking",
+            operation="retail_sku_check_brand_pass_rate_top",
+            parameters={"ym": ym, "limit": _extract_limit(question, default=8)},
+            source_tables=["v_chl_jc_cust_sku_mi"],
+            output_format=output_format | {"answer_type": "text", "chart_type": "horizontal_bar"},
+        )
+
+    if _asks_for_chart(question) and "签收金额占比" in question and ("实时订单表" in question or "各品类" in question):
+        return make_logic_form(
+            task_type="composition",
+            operation="retail_today_category_amount_share",
+            parameters={"date": _date_text(business_date)},
+            source_tables=["v_trd_dist_ord_dtl_1d_rt"],
+            output_format=output_format | {"answer_type": "text", "chart_type": "donut"},
+        )
+
+    if _asks_for_chart(question) and "陈列执行次数" in question and "执行组数" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_display_execution_monthly_dual_trend",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym},
+            source_tables=["v_mkt_dsp_execute_mi"],
+            output_format=output_format | {"answer_type": "text", "chart_type": "dual_axis_line"},
+        )
+
+    if _asks_for_chart(question) and "历史分销金额" in question and _is_ranking_question(question):
         return make_logic_form(
             task_type="ranking",
             operation="retail_distribution_topn_chart",
-            parameters={"ym": ym, "dimension": "sku_name", "metric": "sign_amt", "limit": _extract_limit(question, default=10)},
+            parameters={
+                "ym": ym,
+                "start_ym": start_ym,
+                "end_ym": end_ym,
+                "dimension": _distribution_dimension(question),
+                "metric": "sign_amt",
+                "limit": _extract_limit(question, default=10),
+            },
             source_tables=["v_trd_dist_ord_dtl"],
-            output_format=output_format | {"answer_type": "text"},
+            output_format=output_format | {"answer_type": "text", "chart_type": "horizontal_bar" if _prefers_horizontal_bar(question) else "bar"},
         )
 
     if "稽查门店SKU分析" in question and "记录数最多" in question and "品类" in question:
@@ -322,6 +439,88 @@ def parse_chinese_retail_question(
             task_type="ranking",
             operation="retail_active_sku_top",
             parameters={"ym": ym, "limit": _extract_limit(question, default=1)},
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if ("同比" in question or ("相比" in question and len(ym_mentions) >= 2)) and "历史分销" in question:
+        comparison_ym = ym_mentions[1] if len(ym_mentions) >= 2 else None
+        return make_logic_form(
+            task_type="comparison",
+            operation="retail_distribution_monthly_yoy_compare",
+            parameters={"current_ym": ym_mentions[0] if ym_mentions else ym, "comparison_ym": comparison_ym},
+            source_tables=["v_trd_dist_ord_dtl"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if product and "周期趋势" in question and "历史分销金额" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_category_distribution_periodic_trend",
+            parameters={"product": product, "start_ym": start_ym or ym, "end_ym": end_ym or ym},
+            source_tables=["v_trd_dist_ord_dtl"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "累计历史分销金额最高" in question and "品类" in question:
+        return make_logic_form(
+            task_type="ranking",
+            operation="retail_category_three_month_rank",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym, "limit": _extract_limit(question, default=5)},
+            source_tables=["v_trd_dist_ord_dtl"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "主任目标金额" in question and "高于上月" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_manager_target_monthly_change",
+            parameters={"person": person, "start_ym": start_ym or ym, "end_ym": end_ym or ym},
+            source_tables=["ads_trd_dist_ord_target_mgr_1m_df"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "合约店数量" in question and "连续上升" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_contract_customer_monthly_trend",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym},
+            source_tables=["终端客户月度维表"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "冰柜客户数" in question and "较上月变化" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_freezer_customer_monthly_change",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym},
+            source_tables=["终端客户月度维表"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "不合格率" in question and "整体平均" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_display_unqualified_rate_monthly",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym},
+            source_tables=["v_mkt_dsp_actv_mi"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "各可用月份" in question and "SKU检查通过率" in question:
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_sku_check_monthly_pass_rate",
+            parameters={},
+            source_tables=["v_chl_jc_cust_sku_mi"],
+            output_format=output_format | {"answer_type": "text"},
+        )
+
+    if "完成了分销目标" in question and "哪些月份" in question:
+        return make_logic_form(
+            task_type="detail_lookup",
+            operation="retail_employee_target_reached_monthly",
+            parameters={"start_ym": start_ym or ym, "end_ym": end_ym or ym},
+            source_tables=["v_trd_dist_ord_dtl", "ads_trd_dist_ord_target_emp_1m_df"],
             output_format=output_format | {"answer_type": "text"},
         )
 
@@ -536,6 +735,27 @@ def _extract_date(question: str) -> date | None:
     return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
+def _extract_date_range(question: str) -> tuple[date | None, date | None]:
+    matches = re.findall(r"(20\d{2})-(\d{1,2})-(\d{1,2})", question)
+    if not matches:
+        return None, None
+    parsed = [date(int(year), int(month), int(day)) for year, month, day in matches[:2]]
+    if len(parsed) == 1:
+        return parsed[0], parsed[0]
+    return parsed[0], parsed[1]
+
+
+def _extract_year_month_mentions(question: str) -> list[int]:
+    mentions: list[int] = []
+    for year, month in re.findall(r"(20\d{2})\s*年\s*(\d{1,2})\s*月", question):
+        mentions.append(int(year) * 100 + int(month))
+    for year, month in re.findall(r"(20\d{2})-(\d{1,2})-\d{1,2}", question):
+        ym_value = int(year) * 100 + int(month)
+        if ym_value not in mentions:
+            mentions.append(ym_value)
+    return mentions
+
+
 def _infer_business_date(tables: dict[str, pd.DataFrame]) -> date | None:
     for names, required, column in (
         (("v_trd_dist_ord_dtl_1d_rt",), TODAY_REQUIRED_COLUMNS, "sign_time"),
@@ -601,7 +821,14 @@ def _asks_for_chart(question: str) -> bool:
     return any(token in question for token in ("展示", "生成", "图", "趋势", "可视化", "折线", "柱状", "多折线", "堆叠"))
 
 
+def _prefers_horizontal_bar(question: str) -> bool:
+    compact = question.replace(" ", "").lower()
+    return any(token in compact for token in ("横向柱状图", "横向柱图", "水平柱状图", "horizontalbar"))
+
+
 def _distribution_dimension(question: str) -> str:
+    if "渠道" in question:
+        return "channel_name"
     if "主任" in question:
         return "p_emp_name"
     if "品类" in question:

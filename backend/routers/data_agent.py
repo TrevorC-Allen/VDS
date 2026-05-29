@@ -7,6 +7,7 @@ file parsing, analysis, verification, and response building to the service/core.
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
 import tempfile
 from datetime import datetime, timezone
@@ -46,6 +47,7 @@ def chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return service.chat_without_dataset(
         question=str(payload.get("question") or ""),
         agent_mode=str(payload.get("agent_mode") or "multi_agent"),
+        user_rule_file_id=str(payload.get("user_rule_file_id") or ""),
         monitor_run_id=str(payload.get("monitor_run_id") or ""),
     )
 
@@ -79,6 +81,8 @@ def _http_status_for_response(response: dict[str, Any]) -> int:
     message_lower = message.lower()
     if "dataset not found" in message_lower or "project not found" in message_lower:
         return 404
+    if error_type in {"VERIFICATION_FAILED", "PANDAS_EXECUTION_ERROR"} and response.get("answer"):
+        return 200
     if error_type in {
         "FILE_PARSE_ERROR",
         "LOGIC_FORM_ERROR",
@@ -116,10 +120,10 @@ def create_conversation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def conversations_payload(limit: int = 50, project_id: str | None = "") -> dict[str, Any]:
+def conversations_payload(limit: int = 50, offset: int = 0, project_id: str | None = "") -> dict[str, Any]:
     """Non-FastAPI helper mirroring GET /api/data-agent/conversations."""
 
-    return service.list_conversations(limit=limit, project_id=project_id)
+    return service.list_conversations(limit=limit, offset=offset, project_id=project_id)
 
 
 def conversation_payload(conversation_id: str) -> dict[str, Any]:
@@ -152,10 +156,51 @@ def create_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def projects_payload(limit: int = 50) -> dict[str, Any]:
+def projects_payload(limit: int = 50, offset: int = 0) -> dict[str, Any]:
     """Non-FastAPI helper mirroring GET /api/data-agent/projects."""
 
-    return service.list_projects(limit=limit)
+    return service.list_projects(limit=limit, offset=offset)
+
+
+def monitor_summary_payload(monitor_run_id: str = GLOBAL_MONITOR_RUN_ID) -> dict[str, Any]:
+    """Non-FastAPI helper mirroring GET /api/data-agent/monitor/summary."""
+
+    run_id = normalize_monitor_run_id(monitor_run_id) or GLOBAL_MONITOR_RUN_ID
+    history = live_run_monitor.history(run_id)
+    latest = history[-1] if history else {}
+    status_counts: dict[str, int] = {}
+    stage_counts: dict[str, int] = {}
+    for event in history:
+        status = str(event.get("status") or "unknown")
+        stage = str(event.get("stage") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+    return {
+        "success": True,
+        "monitor_run_id": run_id,
+        "total": len(history),
+        "latest_event_type": str(latest.get("event_type") or ""),
+        "latest_event_at": str(latest.get("created_at") or ""),
+        "status_counts": status_counts,
+        "stage_counts": stage_counts,
+    }
+
+
+def monitor_health_payload(monitor_run_id: str = GLOBAL_MONITOR_RUN_ID) -> dict[str, Any]:
+    """Non-FastAPI helper mirroring GET /api/data-agent/monitor/health."""
+
+    run_id = normalize_monitor_run_id(monitor_run_id) or GLOBAL_MONITOR_RUN_ID
+    history = live_run_monitor.history(run_id)
+    latest = history[-1] if history else {}
+    return {
+        "success": True,
+        "status": "ok",
+        "monitor_run_id": run_id,
+        "transport": "in_memory_sse",
+        "event_count": len(history),
+        "latest_event_type": str(latest.get("event_type") or ""),
+        "latest_event_at": str(latest.get("created_at") or ""),
+    }
 
 
 def profile_payload(dataset_id: str) -> dict[str, Any]:
@@ -390,8 +435,8 @@ try:
         )
 
     @router.get("/conversations")
-    def conversations(limit: int = 50, project_id: str | None = "") -> dict[str, Any]:
-        return service.list_conversations(limit=limit, project_id=project_id)
+    def conversations(limit: int = 50, offset: int = 0, project_id: str | None = "") -> dict[str, Any]:
+        return service.list_conversations(limit=limit, offset=offset, project_id=project_id)
 
     @router.get("/conversations/{conversation_id}")
     def conversation(conversation_id: str) -> dict[str, Any]:
@@ -422,8 +467,8 @@ try:
         )
 
     @router.get("/projects")
-    def projects(limit: int = 50) -> dict[str, Any]:
-        return service.list_projects(limit=limit)
+    def projects(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        return service.list_projects(limit=limit, offset=offset)
 
     @router.get("/projects/{project_id}")
     def project(project_id: str) -> dict[str, Any]:
@@ -567,6 +612,14 @@ try:
                 "X-Accel-Buffering": "no",
             },
         )
+
+    @router.get("/monitor/summary")
+    def monitor_summary(monitor_run_id: str = GLOBAL_MONITOR_RUN_ID) -> dict[str, Any]:
+        return monitor_summary_payload(monitor_run_id)
+
+    @router.get("/monitor/health")
+    def monitor_health(monitor_run_id: str = GLOBAL_MONITOR_RUN_ID) -> dict[str, Any]:
+        return monitor_health_payload(monitor_run_id)
 
 except ImportError:
     router = None

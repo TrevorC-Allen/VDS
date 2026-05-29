@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+import math
 from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan
@@ -81,6 +82,9 @@ def _key_numbers(result: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str
 
 
 def _summary(question: str, key_numbers: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    multi_series = _multi_series_trend_summary(rows)
+    if multi_series:
+        return multi_series
     if rows:
         return f"结果已通过校验，当前最值得看的是这 {len(rows)} 条结果背后的异常、波动或维度差异。"
     if key_numbers.get("answer_value") is not None:
@@ -329,6 +333,61 @@ def _dedupe_questions(candidates: list[str]) -> list[str]:
     return result
 
 
+def _multi_series_trend_summary(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+    columns = [str(column) for column in rows[0].keys()]
+    time_column = _time_column(columns)
+    if not time_column:
+        return ""
+    series_columns = [column for column in columns if column != time_column and len(_numeric_values(rows, column)) >= 2 and not _looks_like_identifier(column)]
+    if len(series_columns) < 2:
+        return ""
+    profiles = []
+    for column in series_columns:
+        values = [_to_float(row.get(column)) for row in rows]
+        numeric_values = [value for value in values if value is not None]
+        if len(numeric_values) < 2:
+            continue
+        peak_index, peak_value = max(((index, value) for index, value in enumerate(values) if value is not None), key=lambda item: item[1])
+        leader_count = 0
+        for row in rows:
+            valid_values = [_to_float(row.get(name)) for name in series_columns]
+            current = _to_float(row.get(column))
+            if current is not None and any(value is not None for value in valid_values):
+                best = max(value for value in valid_values if value is not None)
+                if math.isclose(current, best, rel_tol=1e-9, abs_tol=1e-9):
+                    leader_count += 1
+        last_change = None
+        if values[-2] is not None and values[-1] is not None:
+            last_change = values[-1] - values[-2]
+        profiles.append(
+            {
+                "column": column,
+                "total": sum(numeric_values),
+                "leader_count": leader_count,
+                "peak_index": peak_index,
+                "peak_value": peak_value,
+                "last_change": last_change,
+            }
+        )
+    if len(profiles) < 2:
+        return ""
+    leader = max(profiles, key=lambda item: item["total"])
+    leader_text = f"{leader['column']} 持续领先" if leader["leader_count"] == len(rows) else f"{leader['column']} 整体领先"
+    parts = [leader_text]
+    growth_candidates = [item for item in profiles if item.get("last_change") not in {None, 0}]
+    if growth_candidates:
+        growth = max(growth_candidates, key=lambda item: float(item.get("last_change") or float("-inf")))
+        if float(growth.get("last_change") or 0.0) > 0:
+            parts.append(f"{growth['column']} 在 {rows[-1].get(time_column)} 跃升明显")
+    peak_candidates = [item for item in profiles if item["column"] != leader["column"]]
+    if peak_candidates:
+        peak = max(peak_candidates, key=lambda item: item["peak_value"])
+        parts.append(f"{peak['column']} 在 {rows[int(peak['peak_index'])].get(time_column)} 达到阶段峰值")
+    return "；".join(parts[:3]) + "。"
+
+
 def _numeric_columns(rows: list[dict[str, Any]], columns: list[str] | None = None) -> list[str]:
     if not rows:
         return []
@@ -369,6 +428,11 @@ def _time_column(columns: list[str]) -> str | None:
         if any(token in lowered for token in ("date", "day", "month", "year", "week", "time", "日期", "时间", "月份", "年份", "周")):
             return column
     return None
+
+
+def _looks_like_identifier(column: str) -> bool:
+    lowered = column.lower()
+    return any(token in lowered for token in ("id", "code", "编号", "编码", "序号", "订单号"))
 
 
 def _as_dict(value: Any) -> dict[str, Any]:

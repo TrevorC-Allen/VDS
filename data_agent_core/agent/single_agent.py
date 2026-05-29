@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import UserQuestion
+from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.contracts.response_contracts import ChartSpec, FinalResponse, InsightResult
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.core.capability_registry import coverage_summary_for_logic_form
@@ -441,7 +444,7 @@ class DataAnalysisAgent:
                 "trusted_result": bool(verification.passed),
             },
             required_output={
-                "chart_type": "bar | line | pie | donut | histogram | box | scatter | none",
+                "chart_type": "bar | horizontal_bar | line | combo_column_line | pie | donut | histogram | box | scatter | none",
                 "x": "field name or null",
                 "y": "field name or null",
                 "title": "string or null",
@@ -514,9 +517,12 @@ class DataAnalysisAgent:
             else InsightResult(summary=str(answer or ""))
         )
         raw = stage.raw
-        suggestions = raw.get("suggestions") if isinstance(raw.get("suggestions"), list) else []
-        caveats = raw.get("caveats") if isinstance(raw.get("caveats"), list) else []
-        summary = str(raw.get("summary") or base.summary or answer or "")
+        suggestions = _filter_chinese_user_facing_list(raw.get("suggestions") if isinstance(raw.get("suggestions"), list) else [])
+        caveats = _filter_chinese_user_facing_list(raw.get("caveats") if isinstance(raw.get("caveats"), list) else [])
+        raw_summary = str(raw.get("summary") or "")
+        summary = str(base.summary or answer or "")
+        if _is_chinese_user_facing_text(raw_summary) and not _under_covers_multi_series_trend(raw_summary, execution_result):
+            summary = raw_summary
         existing_caveats = list(base.caveats)
         for caveat in caveats:
             if caveat not in existing_caveats:
@@ -541,6 +547,8 @@ class DataAnalysisAgent:
             return rule_chart
         raw = stage.raw
         chart_type = raw.get("chart_type")
+        if _should_preserve_rule_chart(rule_chart, chart_type):
+            return attach_rendered_chart(rule_chart)
         if chart_type and chart_type != "none" and not _unsafe_chart_metric(str(raw.get("y") or "")):
             x = raw.get("x") or rule_chart.x
             y = raw.get("y") or rule_chart.y
@@ -856,6 +864,76 @@ def _unsafe_chart_metric(column: str) -> bool:
     return any(token in lowered for token in ("reference", "psp", "bin", "编号", "代码", "流水", "卡号", "year", "hour", "minute", "day_of_year"))
 
 
+def _filter_chinese_user_facing_list(values: list[Any]) -> list[str]:
+    cleaned: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and _is_chinese_user_facing_text(text):
+            cleaned.append(text)
+    return cleaned
+
+
+def _is_chinese_user_facing_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if not re.search(r"[\u3400-\u9fff]", value):
+        return False
+    return not _looks_like_english_prose_leak(value)
+
+
+def _looks_like_english_prose_leak(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    segments = [
+        segment.strip()
+        for segment in re.split(r"[；;。！？!?]\s*|(?:观察|风险|边界|依据|建议|下一步)[:：]", value)
+        if segment.strip()
+    ] or [value]
+    return any(_segment_looks_like_english_prose_leak(segment) for segment in segments)
+
+
+def _segment_looks_like_english_prose_leak(text: str) -> bool:
+    cjk_count = len(re.findall(r"[\u3400-\u9fff]", text))
+    latin_words = re.findall(r"[A-Za-z][A-Za-z_'-]*", text)
+    if not latin_words:
+        return False
+    prose_tokens = {
+        "are",
+        "based",
+        "by",
+        "compare",
+        "countries",
+        "country",
+        "data",
+        "followed",
+        "full",
+        "include",
+        "includes",
+        "is",
+        "leading",
+        "next",
+        "not",
+        "only",
+        "present",
+        "ranked",
+        "ranking",
+        "result",
+        "results",
+        "show",
+        "shows",
+        "step",
+        "the",
+        "this",
+        "that",
+    }
+    prose_count = sum(1 for word in latin_words if word.lower().strip("_'") in prose_tokens)
+    if cjk_count == 0:
+        return prose_count >= 2 or (len(latin_words) >= 5 and prose_count >= 1)
+    return prose_count >= 3 and cjk_count < 6
+
+
 def _chart_fields_match_data(data: list[dict[str, Any]], x: str, y: str, chart_type: str) -> bool:
     if chart_type == "kpi":
         return True
@@ -865,3 +943,39 @@ def _chart_fields_match_data(data: list[dict[str, Any]], x: str, y: str, chart_t
     if not x or not y:
         return False
     return x in sample_keys and y in sample_keys
+
+
+def _under_covers_multi_series_trend(summary: str, execution_result: Any) -> bool:
+    rows = execution_result.rows if isinstance(execution_result, ExecutionResult) else []
+    if not rows:
+        return False
+    columns = list(rows[0].keys())
+    time_column = next((column for column in columns if re.search(r"month|date|week|time|月份|日期|周", str(column), re.I)), None)
+    if not time_column:
+        return False
+    series_columns = [
+        str(column)
+        for column in columns
+        if column != time_column and any(_coerce_float(row.get(column)) is not None for row in rows)
+    ]
+    if len(series_columns) < 2:
+        return False
+    mentioned = sum(1 for column in series_columns if str(column) and str(column) in summary)
+    return mentioned < min(2, len(series_columns))
+
+
+def _should_preserve_rule_chart(rule_chart: ChartSpec, chart_type: Any) -> bool:
+    requested = str(chart_type or "").strip()
+    if not requested:
+        return False
+    if rule_chart.selection_reason in {"combo_target_actual_rate", "explicit_horizontal_ranking"} and requested != rule_chart.chart_type:
+        return True
+    return False
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None

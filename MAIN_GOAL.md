@@ -42,7 +42,8 @@
 28. Phase 10 已作为 Phase 9 之后的正式结果体验阶段完成首版：Visualization, Insight, Data Quality and Safe Process View。后端稳定生成 `chart`、`insight`、`quality_report`、`reasoning_trace_view` 和 `process_view_v2`；前端只把图表、洞察和安全过程摘要转成用户可读体验，可展示后端已脱敏的筛选口径、表选择、分子/分母 evidence chips，不展示后端质量报告、warnings/errors、verification 细节、join trace，不实现核心计算、异常规则、清洗动作或完整 Chain of Thought。
 29. Phase 11 已作为 Phase 10 之后的正式阶段：Conversation Isolation and Session Persistence。首个轻量实现已落地：每轮 `/message` 可写入 `conversation_id` 对应的本地 JSON 会话，历史 Chat 可载入旧消息并持久化重命名；后续继续补 URL 会话恢复、多窗口同步、真实登录和租户隔离。
 30. Phase 12 已作为 Phase 11 之后的正式体验收敛阶段：GPT-like General Answer, Insight and Activity Stream。首轮已实现 `overview_report`、增强 Insight、安全 `execution_artifacts`、dataset overview 活动流、语义图表规划防线和规则文件自动绑定；真实 `127.0.0.1:8001/workbench` smoke 已确认 general、Insight、过程流和代码卡片可见，前端仍只负责渲染。
-31. Phase 13 已完成首个落点：Project Workspace / Shared Files / Project Memory。已新增 Project Store、Project Sources、Project Memory、project-scoped conversations 和 GPT-like Workbench Project UI，把共享文件、项目说明、项目内记忆和项目 Chat 放进同一后端上下文边界；Project 不是左侧历史过滤器，左侧最近历史必须保持全局可见，项目内聊天 / 来源列表由主区域项目主页单独展示。
+31. Phase 12 后续 correctness + GPT-like hardening 已作为当前硬化目标：语义正确性优先于模板效果，`success=true` 不能掩盖语义错算；点名文件、点名维度、利润率派生指标、可信 join、untrusted join 澄清、overview 表角色和简单 Top1 减噪都必须有 non-regression 测试守护，已修能力不得下降。
+32. Phase 13 已完成首个落点：Project Workspace / Shared Files / Project Memory。已新增 Project Store、Project Sources、Project Memory、project-scoped conversations 和 GPT-like Workbench Project UI，把共享文件、项目说明、项目内记忆和项目 Chat 放进同一后端上下文边界；Project 不是左侧历史过滤器，左侧最近历史必须保持全局可见，项目内聊天 / 来源列表由主区域项目主页单独展示。
 
 ## 统一 Phase 状态表
 
@@ -68,7 +69,8 @@
 20. Phase 10：Visualization, Insight, Data Quality and Safe Process View，已完成 ChartSpec v2、InsightResult v2、DataQualityReport、safe `reasoning_trace_view`、`process_view_v2` 和 workbench 渲染。自动清洗不属于 Phase 10，后续必须开新 Phase 并要求用户确认。
 21. Phase 11：Conversation Isolation and Session Persistence，状态为 First implementation landed。当前新增 `conversation_id` 会话层、本地 JSON conversation store、历史续聊载入和重命名持久化；GPT-like 小号浅灰单行过程摘要 + 点击展开详情已作为 Workbench UX hardening 先行落地。真实登录、鉴权和多租户隔离仍是后续工作。
 22. Phase 12：GPT-like General Answer / Insight / Activity Stream，状态为 First implementation landed。该阶段不修改 Phase 10 / Phase 11 的已完成语义，专门收敛 overview report、enhanced insight、execution artifacts、activity process view、semantic chart planning 和规则文件自动绑定。
-23. Phase 13：Project Workspace / Shared Files / Project Memory，状态为 First implementation landed。该阶段新增 project-only memory 和共享文件上下文层；共享文件复用既有 upload / rule / dataset store，前端只渲染后端 Project 契约，不实现检索、join、聚合、评分或数据清洗。Workbench Project UX 必须保持 GPT-like：左侧全局最近历史不因进入 Project 消失，右侧主区域展示 Project 标题、项目内新聊天入口、聊天 / 来源 tabs 和 project-scoped 列表。
+23. Phase 12 后续 correctness + GPT-like hardening，状态为 in progress。该阶段不重开前端大改，优先修语义正确性：文件点名与维度绑定、利润率派生 ratio、可信 join / untrusted join 澄清、overview 表角色和简单回答减噪；任何修复必须证明旧的多文件、join、chart、overview 和 GPT-like 回答能力 non-regression。
+24. Phase 13：Project Workspace / Shared Files / Project Memory，状态为 First implementation landed。该阶段新增 project-only memory 和共享文件上下文层；共享文件复用既有 upload / rule / dataset store，前端只渲染后端 Project 契约，不实现检索、join、聚合、评分或数据清洗。Workbench Project UX 必须保持 GPT-like：左侧全局最近历史不因进入 Project 消失，右侧主区域展示 Project 标题、项目内新聊天入口、聊天 / 来源 tabs 和 project-scoped 列表。
 
 ## 当前实现状态
 
@@ -220,6 +222,8 @@ Microsoft Agent Framework 是多 Agent 编排的候选承载框架，但不是�
 17. 在本轮把 provider-native adapter 作为生产默认链路、接入真实 OpenAI / DeepSeek 网络调用、启用 DeepSeek thinking mode 工具回填或 OpenAI Responses API 专有 reasoning 循环
 18. 在 Phase 10 自动修改、清洗或覆盖用户上传的原始数据；当前只输出质量问题和清洗建议
 19. 在 API、debug、trace 或前端展示完整 Chain of Thought、raw reasoning tokens、raw prompt、API key 或 hidden benchmark answer
+20. 用 `success=true`、空 errors、模板化回答或漂亮 overview 掩盖指标、维度、join、派生口径等语义错算
+21. 让已修复的多文件路由、join、图表聚合、overview、清洗边界、Project 或 GPT-like 回答能力下降；已修能力不得下降 / non-regression 是硬门槛
 
 ## 核心工作流
 

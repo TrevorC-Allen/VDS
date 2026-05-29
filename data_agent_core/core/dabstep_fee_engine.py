@@ -498,9 +498,13 @@ class DabstepFeeEngine:
     ) -> float:
         """Return total fee delta when a fee rule rate changes."""
 
-        old = self.total_fees(merchant, year=year, month=month)
-        new = self.total_fees(merchant, year=year, month=month, fee_rate_overrides={fee_id: new_rate})
-        return new - old
+        return self._rounded_period_fee_delta(
+            merchant,
+            year=year,
+            month=month,
+            old_kwargs={},
+            new_kwargs={"fee_rate_overrides": {fee_id: new_rate}},
+        )
 
     def mcc_change_delta(
         self,
@@ -512,14 +516,13 @@ class DabstepFeeEngine:
     ) -> float:
         """Return total fee delta when merchant MCC changes before the period."""
 
-        old = self.total_fees(merchant, year=year, month=month)
-        new = self.total_fees(
+        return self._rounded_period_fee_delta(
             merchant,
             year=year,
             month=month,
-            merchant_category_code_override=new_mcc,
+            old_kwargs={},
+            new_kwargs={"merchant_category_code_override": new_mcc},
         )
-        return new - old
 
     def card_scheme_steering(
         self,
@@ -637,7 +640,7 @@ class DabstepFeeEngine:
         *,
         year: int,
         month: int | None,
-        allowed_acis: tuple[str, ...] = ECOMMERCE_ACIS,
+        allowed_acis: tuple[str, ...] = ("D", "E"),
     ) -> tuple[str, float, dict[str, float]]:
         """Return lower-cost alternative ACI for fraudulent ecommerce transactions."""
 
@@ -695,28 +698,25 @@ class DabstepFeeEngine:
         on benchmark task IDs, answer pools, or fixed candidate results.
         """
 
-        schemes = (card_scheme,) if card_scheme else self.card_schemes
         candidates: dict[str, dict[str, Any]] = {}
         for aci in allowed_acis:
-            totals: list[float] = []
-            fee_ids: list[int] = []
-            for scheme in schemes:
-                try:
-                    total, ids = self.total_fee_for_rule_filters(
-                        transaction_value=transaction_value,
-                        card_scheme=scheme,
-                        aci=aci,
-                        is_credit=is_credit,
-                    )
-                except ValueError:
-                    continue
-                totals.append(total)
-                fee_ids.extend(ids)
-            if totals:
+            matched_rules = [
+                rule
+                for rule in self.rules
+                if rule.aci
+                and aci in rule.aci
+                and (card_scheme is None or rule.card_scheme == card_scheme)
+            ]
+            if is_credit is None:
+                matched_rules = [rule for rule in matched_rules if self.rule_matches_filters(rule, card_scheme=card_scheme)]
+            else:
+                # For explicit credit/debit ACI questions, do not mix in generic ACI fallback rules.
+                matched_rules = [rule for rule in matched_rules if rule.is_credit is not None and rule.is_credit == is_credit]
+            if matched_rules:
                 candidates[aci] = {
                     "aci": aci,
-                    "fee": sum(totals) / len(totals),
-                    "matched_fee_ids": sorted(set(fee_ids)),
+                    "fee": sum(rule.fee_for_amount(transaction_value) for rule in matched_rules) / len(matched_rules),
+                    "matched_fee_ids": sorted({rule.fee_id for rule in matched_rules}),
                 }
         if not candidates:
             raise ValueError("No ACI fee candidates available.")
@@ -744,25 +744,20 @@ class DabstepFeeEngine:
             raise ValueError("No MCC candidates available in fee rules.")
         candidates: list[dict[str, Any]] = []
         for mcc in mcc_values:
-            totals: list[float] = []
-            fee_ids: list[int] = []
-            for scheme in self.card_schemes:
-                try:
-                    total, ids = self.total_fee_for_rule_filters(
-                        transaction_value=transaction_value,
-                        card_scheme=scheme,
-                        merchant_category_code=mcc,
-                    )
-                except ValueError:
-                    continue
-                totals.append(total)
-                fee_ids.extend(ids)
-            if totals:
+            matched_rules = [
+                rule
+                for rule in self.rules
+                if self.rule_matches_filters(
+                    rule,
+                    merchant_category_code=mcc,
+                )
+            ]
+            if matched_rules:
                 candidates.append(
                     {
                         "merchant_category_code": str(mcc),
-                        "fee": sum(totals) / len(totals),
-                        "matched_fee_ids": sorted(set(fee_ids)),
+                        "fee": sum(rule.fee_for_amount(transaction_value) for rule in matched_rules) / len(matched_rules),
+                        "matched_fee_ids": sorted({rule.fee_id for rule in matched_rules}),
                     }
                 )
         if not candidates:
@@ -779,6 +774,27 @@ class DabstepFeeEngine:
         ]
         selected.sort()
         return selected, selected_fee, candidates
+
+    def _rounded_period_fee_delta(
+        self,
+        merchant: str,
+        *,
+        year: int,
+        month: int | None,
+        old_kwargs: dict[str, Any],
+        new_kwargs: dict[str, Any],
+    ) -> float:
+        if month is not None:
+            old = round(self.total_fees(merchant, year=year, month=month, **old_kwargs), 2)
+            new = round(self.total_fees(merchant, year=year, month=month, **new_kwargs), 2)
+            return new - old
+        months = sorted({int(row["month"]) for row in self.payments if row["merchant"] == merchant and row["year"] == year})
+        delta = 0.0
+        for current_month in months:
+            old = round(self.total_fees(merchant, year=year, month=current_month, **old_kwargs), 2)
+            new = round(self.total_fees(merchant, year=year, month=current_month, **new_kwargs), 2)
+            delta += new - old
+        return delta
 
     def fee_factor_direction(self, *, objective: str = "cheaper_when_increased") -> list[str]:
         """Return general fee-rule factors whose direction tends to reduce cost.

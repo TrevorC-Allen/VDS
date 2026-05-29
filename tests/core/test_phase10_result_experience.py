@@ -10,9 +10,10 @@ import pandas as pd
 
 from backend.services.data_agent_service import DataAgentService
 from backend.storage.temp_file_store import TempFileStore
-from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm
+from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm, UserQuestion
 from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.contracts.response_contracts import ChartSpec
+from data_agent_core.contracts.verification_contracts import VerificationResult
 from data_agent_core.core.data_quality import build_data_quality_report
 from data_agent_core.llm.client import MockLLMClient
 from data_agent_core.output.activity_trace import build_activity_trace_v2
@@ -22,6 +23,7 @@ from data_agent_core.output.execution_artifacts import build_execution_artifacts
 from data_agent_core.output.insight_generator import generate_insight
 from data_agent_core.output.process_narrative import build_process_view_v2, process_view_monitor_payload
 from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
+from data_agent_core.output.response_builder import build_response
 from data_agent_core.tracing.live_monitor import sanitize_monitor_payload
 from data_agent_core.tracing.run_trace import RunTrace
 
@@ -60,6 +62,50 @@ class Phase10ResultExperienceTest(unittest.TestCase):
 
         scalar_result = ExecutionResult(backend="pandas", success=True, value=42, columns=["answer"], rows=[{"answer": 42}])
         self.assertEqual("kpi", build_chart_spec(plan=ranking_plan, execution_result=scalar_result, verification_passed=True).chart_type)
+
+    def test_chart_planner_emits_combo_chart_for_target_actual_with_rate(self) -> None:
+        plan = AnalysisPlan(
+            plan_id="plan_combo",
+            logic_form=LogicForm(
+                task_type="trend",
+                operation="retail_target_actual_monthly_comparison",
+                output_format={"chart_type": "combo_column_line"},
+            ),
+        )
+        result = ExecutionResult(
+            backend="pandas",
+            success=True,
+            columns=["月份", "实际分销金额", "目标金额", "达成率"],
+            rows=[
+                {"月份": "2026年1月", "实际分销金额": 50000.0, "目标金额": 70000.0, "达成率": 71.43},
+                {"月份": "2026年2月", "实际分销金额": 82000.0, "目标金额": 76000.0, "达成率": 107.89},
+            ],
+        )
+
+        chart = build_chart_spec(plan=plan, execution_result=result, verification_passed=True)
+
+        self.assertEqual("combo_column_line", chart.chart_type)
+        self.assertEqual("月份", chart.x)
+        self.assertEqual(["实际分销金额", "目标金额"], chart.encoding["y_left"])
+        self.assertEqual(["达成率"], chart.encoding["y_right"])
+        self.assertEqual(["bar", "bar", "line"], [series["type"] for series in chart.series])
+
+    def test_chart_planner_respects_explicit_horizontal_bar_request(self) -> None:
+        plan = AnalysisPlan(
+            plan_id="plan_horizontal",
+            logic_form=LogicForm(
+                task_type="ranking",
+                operation="retail_distribution_topn_chart",
+                output_format={"chart_type": "horizontal_bar"},
+            ),
+        )
+        rows = [{"SKU": f"超长SKU-{index}", "分销金额": float(100 - index)} for index in range(10)]
+        result = ExecutionResult(backend="pandas", success=True, columns=["SKU", "分销金额"], rows=rows)
+
+        chart = build_chart_spec(plan=plan, execution_result=result, verification_passed=True)
+
+        self.assertEqual("horizontal_bar", chart.chart_type)
+        self.assertEqual("explicit_horizontal_ranking", chart.selection_reason)
 
     def test_chart_planner_prefers_table_for_payment_detail_rows(self) -> None:
         plan = AnalysisPlan(
@@ -214,6 +260,34 @@ class Phase10ResultExperienceTest(unittest.TestCase):
 
         self.assertTrue(rendered.image_data_uri.startswith("data:image/svg+xml;base64,"))
         self.assertEqual("python_svg", rendered.render_engine)
+
+    def test_response_builder_attaches_display_rows_with_formatted_numbers(self) -> None:
+        response = build_response(
+            run_id="run_display_rows",
+            user_question=UserQuestion(dataset_id="ds_display_rows", question="请展示目标和达成率"),
+            plan=AnalysisPlan(
+                plan_id="plan_display_rows",
+                logic_form=LogicForm(
+                    task_type="trend",
+                    operation="retail_target_actual_monthly_comparison",
+                    output_format={"answer_type": "text", "decimals": 2},
+                ),
+            ),
+            execution_result=ExecutionResult(
+                backend="pandas",
+                success=True,
+                columns=["月份", "实际分销金额", "目标金额", "达成率"],
+                rows=[{"月份": "2026年5月", "实际分销金额": 99020.96399999999, "目标金额": 256900.48692, "达成率": 32.42676508344031}],
+                value={"answer": "已生成结果"},
+            ),
+            verification=VerificationResult(passed=True),
+        )
+
+        display_rows = response.result["display_rows"]
+
+        self.assertEqual("99,020.96", display_rows[0]["实际分销金额"])
+        self.assertEqual("256,900.49", display_rows[0]["目标金额"])
+        self.assertEqual("32.43%", display_rows[0]["达成率"])
 
     def test_insight_generator_reports_anomaly_and_suggestion_from_verified_rows(self) -> None:
         result = ExecutionResult(

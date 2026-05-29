@@ -221,9 +221,13 @@ def _verify_generalization_contract(
     if _asks_grouped_metric_visual(question) and logic.operation in {"detail_lookup", "row_count"}:
         notes.append("Question asks for grouped metric output or a chart, but the plan returns detail rows or a scalar count.")
         return False, notes, {"action": "replace_operation", "to_operation": "aggregation", "reason": "grouped_metric_chart_required"}
-    if _asks_multi_entity_comparison(question) and logic.filters:
+    if _asks_multi_entity_comparison(question) and logic.filters and not _filter_scope_preserves_multi_entity(question, logic.filters):
         notes.append("Question compares multiple named entities, but the plan collapsed scope into an implicit single-entity filter.")
         return False, notes, {"action": "repair_filters", "reason": "multi_entity_scope_collapsed"}
+    semantic_binding_passed, semantic_binding_notes, semantic_binding_action = _verify_requested_metric_dimension_binding(logic, question, primary)
+    notes.extend(semantic_binding_notes)
+    if not semantic_binding_passed:
+        return False, notes, semantic_binding_action
     if _asks_count_metric(question) and not _count_metric_request_satisfied(logic, question):
         notes.append("Question asks for a count metric, but the plan uses a non-count metric definition.")
         return False, notes, {"action": "repair_metric_definition", "required_aggregation": "count"}
@@ -247,6 +251,187 @@ def _verify_generalization_contract(
     if not output_passed:
         return False, notes, {"action": "repair_output_contract", "expected": logic.output_contract}
     return True, notes, None
+
+
+DIMENSION_CONCEPT_ALIASES = {
+    "product": ("product", "sku", "item", "产品", "商品", "品名"),
+    "category": ("category", "ctg", "类别", "品类", "类目"),
+    "store": ("store", "shop", "branch", "门店", "店铺"),
+    "city": ("city", "城市", "市"),
+    "channel": ("channel", "渠道", "通路"),
+    "customer": ("customer", "cust", "client", "客户", "终端"),
+    "month": ("month", "stat_month", "ym", "年月", "月份"),
+    "time": ("date", "day", "week", "period", "日期", "时间", "周期"),
+}
+
+METRIC_CONCEPT_ALIASES = {
+    "sales": ("sales", "sale", "revenue", "amount", "销售额", "销售金额", "销售", "收入", "金额", "订单金额"),
+    "profit": ("profit", "gross_profit", "grossprofit", "利润", "毛利"),
+}
+
+
+def _verify_requested_metric_dimension_binding(
+    logic: Any,
+    question: str,
+    primary: ExecutionResult,
+) -> tuple[bool, list[str], dict[str, object] | None]:
+    params = getattr(logic, "parameters", {}) or {}
+    notes: list[str] = []
+    dimension_fields = _semantic_dimension_fields(logic)
+    requested_dimensions = _requested_dimension_concepts(question)
+    schema_backed_semantics = _uses_schema_backed_semantic_binding(logic)
+    if _card_scheme_steering_uses_temporal_scope_filters(logic, requested_dimensions):
+        notes.append("Card scheme steering uses month/year language as filter scope, not as a grouped output dimension.")
+        return True, notes, None
+    if requested_dimensions and schema_backed_semantics:
+        notes.append("Schema-backed business operation handles dimension semantic binding internally.")
+    elif requested_dimensions and not dimension_fields:
+        params = getattr(logic, "parameters", {}) or {}
+        if not params.get("strict_missing_dimension_guard"):
+            notes.append(
+                f"Question mentions dimension {requested_dimensions}, but strict missing-dimension guard is disabled for this complex plan."
+            )
+            return True, notes, None
+        available = [str(item) for item in params.get("available_columns") or []]
+        notes.append(f"Question requests dimension {requested_dimensions}, but the plan did not bind a dimension field.")
+        return False, notes, {
+            "action": "repair_dimension_binding",
+            "requested_dimensions": requested_dimensions,
+            "actual_dimension": "",
+            "missing_dimension": True,
+            "available_columns": available,
+        }
+    elif requested_dimensions and dimension_fields:
+        matched_dimensions = [
+            field
+            for field in dimension_fields
+            if any(_column_matches_concept(field, concept, DIMENSION_CONCEPT_ALIASES) for concept in requested_dimensions)
+        ]
+        if not matched_dimensions:
+            notes.append(f"Question requests dimension {requested_dimensions}, but plan uses dimension {dimension_fields[0]}.")
+            return False, notes, {
+                "action": "repair_dimension_binding",
+                "requested_dimensions": requested_dimensions,
+                "actual_dimension": dimension_fields[0],
+            }
+        rows = _execution_rows(primary)
+        if rows and not any(field in rows[0] for field in matched_dimensions):
+            notes.append(f"Question requests dimension {matched_dimensions[0]}, but execution rows do not contain it.")
+            return False, notes, {"action": "repair_result_shape", "required_column": matched_dimensions[0]}
+
+    if _asks_profit_margin(question):
+        if _logic_uses_schema_backed_profit_margin(logic):
+            notes.append("Schema-backed business ratio metric verified for profit margin/rate.")
+            return True, notes, None
+        derived_metric = params.get("derived_metric")
+        if not isinstance(derived_metric, dict) or not derived_metric:
+            raw_metric = str(params.get("metric") or getattr(logic, "metric", None) or "")
+            notes.append(f"Question asks for profit margin/rate, but plan uses raw metric {raw_metric or 'none'}.")
+            return False, notes, {
+                "action": "repair_metric_definition",
+                "required_metric": "profit_margin_ratio",
+                "reason": "profit_margin_requires_profit_divided_by_sales",
+            }
+        metric_name = str(derived_metric.get("name") or "")
+        numerator = str(derived_metric.get("numerator") or "")
+        denominator = str(derived_metric.get("denominator") or "")
+        if not metric_name or not numerator or not denominator:
+            notes.append("Derived profit margin metric is missing name, numerator, or denominator.")
+            return False, notes, {"action": "repair_metric_definition", "required_metric": "profit_margin_ratio"}
+        rows = _execution_rows(primary)
+        if rows and metric_name not in rows[0]:
+            notes.append(f"Derived metric result does not expose requested metric column: {metric_name}.")
+            return False, notes, {"action": "repair_result_shape", "required_column": metric_name}
+        notes.append(f"Profit margin metric verified as {numerator}/{denominator}.")
+    return True, notes, None
+
+
+def _semantic_dimension_fields(logic: Any) -> list[str]:
+    params = getattr(logic, "parameters", {}) or {}
+    operation = str(getattr(logic, "operation", "") or "")
+    ordered_keys = ["dimension"]
+    if operation == "vds_group_top_entities":
+        ordered_keys.extend(["entity", "group_by"])
+    else:
+        ordered_keys.extend(["entity", "entity_field", "primary_entity_field", "group_by"])
+    raw_fields = [params.get(key) for key in ordered_keys]
+    raw_fields.append(getattr(logic, "group_by", None))
+    entity_grain = getattr(logic, "entity_grain", {}) or {}
+    if isinstance(entity_grain, dict):
+        raw_fields.extend(
+            [
+                entity_grain.get("dimension"),
+                entity_grain.get("field"),
+                entity_grain.get("entity_field"),
+                entity_grain.get("group_by"),
+            ]
+        )
+    fields: list[str] = []
+    for field in raw_fields:
+        text = str(field or "")
+        if text in {"__table__", "__row__", "__record__"}:
+            continue
+        if text and text not in fields:
+            fields.append(text)
+    return fields
+
+
+def _logic_uses_schema_backed_profit_margin(logic: Any) -> bool:
+    operation = str(getattr(logic, "operation", "") or "")
+    capability = capability_for_operation(operation)
+    if capability.capability_family != "vds_period_comparison":
+        return False
+    params = getattr(logic, "parameters", {}) or {}
+    metric = str(params.get("metric") or getattr(logic, "metric", "") or "")
+    normalized = _normalize_token(metric).upper().removesuffix("ROW")
+    return normalized in {"PM", "GM"} or any(token in metric for token in ("利润率", "毛利率"))
+
+
+def _uses_schema_backed_semantic_binding(logic: Any) -> bool:
+    capability = capability_for_operation(str(getattr(logic, "operation", "") or ""))
+    return capability.capability_family in {"vds_period_comparison", "chinese_retail_business_metric"}
+
+
+def _requested_dimension_concepts(question: str) -> list[str]:
+    requested: list[str] = []
+    for concept, aliases in DIMENSION_CONCEPT_ALIASES.items():
+        if any(_alias_in_question(question, alias) for alias in aliases):
+            requested.append(concept)
+    return requested
+
+
+def _card_scheme_steering_uses_temporal_scope_filters(logic: Any, requested_dimensions: list[str]) -> bool:
+    if str(getattr(logic, "operation", "") or "") != "card_scheme_steering":
+        return False
+    if not requested_dimensions or not set(requested_dimensions).issubset({"month", "time"}):
+        return False
+    filters = getattr(logic, "filters", {}) or {}
+    temporal_keys = ("month", "month_range", "year", "day_of_year")
+    return any(filters.get(key) not in (None, "", [], ()) for key in temporal_keys)
+
+
+def _asks_profit_margin(question: str) -> bool:
+    lowered = question.lower()
+    return any(token in lowered for token in ("profit margin", "gross margin", "profit rate", "margin rate", "margin")) or any(
+        token in question for token in ("利润率", "毛利率")
+    )
+
+
+def _column_matches_concept(column: str, concept: str, aliases_by_concept: dict[str, tuple[str, ...]]) -> bool:
+    normalized_column = _normalize_token(column)
+    return any(_normalize_token(alias) and _normalize_token(alias) in normalized_column for alias in aliases_by_concept.get(concept, ()))
+
+
+def _alias_in_question(question: str, alias: str) -> bool:
+    if any("\u4e00" <= char <= "\u9fff" for char in alias):
+        return alias in question
+    return bool(re_search(rf"\b{alias}\b", question))
+
+
+def _normalize_token(value: str) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(value).lower())
 
 
 def _asks_per_unique_entity(question: str) -> bool:
@@ -354,12 +539,16 @@ def _verify_join_contract(
 
     summary = primary.debug.get("join_execution_summary") if isinstance(primary.debug, dict) else None
     if isinstance(summary, dict):
-        notes.append(
-            "Join materialized: "
-            f"{summary.get('left_table')}.{summary.get('left_key')} -> "
-            f"{summary.get('right_table')}.{summary.get('right_key')} "
-            f"({summary.get('relationship')})."
-        )
+        steps = summary.get("steps")
+        if isinstance(steps, list) and steps:
+            notes.append(f"Join materialized with {len(steps)} trusted step(s).")
+        else:
+            notes.append(
+                "Join materialized: "
+                f"{summary.get('left_table')}.{summary.get('left_key')} -> "
+                f"{summary.get('right_table')}.{summary.get('right_key')} "
+                f"({summary.get('relationship')})."
+            )
         if summary.get("unmatched_left_key_count"):
             notes.append(f"Join produced unmatched primary keys: {summary.get('unmatched_left_key_count')}.")
     elif primary.success:
@@ -406,6 +595,16 @@ def _execution_rows(primary: ExecutionResult) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [row for row in value if isinstance(row, dict)]
     if isinstance(value, dict):
+        candidate_table = value.get("candidate_table")
+        if isinstance(candidate_table, list):
+            rows = [row for row in candidate_table if isinstance(row, dict)]
+            if rows:
+                return rows
+        result_rows = value.get("rows")
+        if isinstance(result_rows, list):
+            rows = [row for row in result_rows if isinstance(row, dict)]
+            if rows:
+                return rows
         return [value]
     return []
 
@@ -427,12 +626,20 @@ def _asks_named_dimension(question: str) -> bool:
             "customer name",
             "product name",
             "merchant name",
+            "category",
+            "channel",
+            "month",
             "城市",
             "国家",
             "客户名",
             "客户名称",
             "产品名",
             "产品名称",
+            "产品",
+            "品类",
+            "类别",
+            "渠道",
+            "月份",
             "商户名",
             "商户名称",
         )
@@ -481,6 +688,38 @@ def _asks_multi_entity_comparison(question: str) -> bool:
         any(token in question for token in ("哪个", "哪家", "which", "highest", "lowest", "最高", "最低", "最多", "最少", "比较", "对比"))
         and any(token in question for token in ("和", "与", "及", "、", " and ", " vs ", " versus "))
     )
+
+
+def _filter_scope_preserves_multi_entity(question: str, filters: dict[str, Any]) -> bool:
+    question_token = _normalize_token(question)
+    matched_values: set[str] = set()
+    for raw_value in filters.values():
+        for value in _flatten_filter_values(raw_value):
+            token = _normalize_token(value)
+            if token and token in question_token:
+                matched_values.add(token)
+    return len(matched_values) >= 2
+
+
+def _flatten_filter_values(value: Any) -> list[str]:
+    if value is None or (isinstance(value, str) and value == ""):
+        return []
+    if isinstance(value, dict):
+        values: list[str] = []
+        for item in value.values():
+            values.extend(_flatten_filter_values(item))
+        return values
+    if isinstance(value, (list, tuple, set)):
+        values = []
+        for item in value:
+            values.extend(_flatten_filter_values(item))
+        return values
+    text = str(value)
+    if any(separator in text for separator in (",", "，", "、", " 和 ", " 与 ", " and ")):
+        import re
+
+        return [part for part in re.split(r"\s*(?:,|，|、|和|与|\band\b)\s*", text, flags=re.I) if part]
+    return [text]
 
 
 def _asks_count_metric(question: str) -> bool:

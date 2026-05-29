@@ -2,6 +2,7 @@ const MONITOR_RUN_INDEX_KEY = "vds-monitor-runs";
 const ACTIVE_MONITOR_RUN_KEY = "vds-active-monitor-run";
 const PROJECT_PANEL_COLLAPSED_KEY = "vds-project-panel-collapsed";
 const MAX_MONITOR_RUN_RECORDS = 80;
+const HISTORY_LOAD_BATCH = 30;
 const DEFAULT_QUESTION_PLACEHOLDER = "向 VDS 提问，例如：哪个城市订单金额最高？";
 const ATTACHED_FILE_QUESTION_PLACEHOLDER = "有问题，尽管问";
 const CONTINUATION_PROMPT_LABELS = ["可继续提问", "可继续问", "继续提问", "后续提问", "后续问题"];
@@ -42,6 +43,10 @@ const state = {
   selectedTable: "",
   fileRecords: [],
   runHistory: [],
+  runHistoryOffset: 0,
+  runHistoryHasMore: true,
+  runHistoryLoading: false,
+  runHistoryRenderedCount: 0,
   progressTimer: null,
   thinkingElapsedTimer: null,
   progressStep: 0,
@@ -65,6 +70,9 @@ const state = {
   drawerResult: null,
   drawerTriggerSummary: null,
   activityDrawerAutoScroll: true,
+  activityDrawerCloseTimer: null,
+  activityDrawerScrollFrame: 0,
+  activityDrawerScrollTimeout: null,
   textDialogResolve: null,
   chatSearchQuery: "",
 };
@@ -133,7 +141,6 @@ const el = {
   sourcePanel: document.querySelector(".answer-source-panel"),
   sourceList: document.querySelector(".answer-source-list"),
   runHistory: document.querySelector("#run-history"),
-  historyCount: document.querySelector("#history-count"),
   projectPanel: document.querySelector(".project-panel"),
   projectCollapseButton: document.querySelector("#project-collapse-button"),
   projectSectionBody: document.querySelector("#project-section-body"),
@@ -175,6 +182,7 @@ window.addEventListener("scroll", closeContextMenu, true);
 el.activityBackdrop?.addEventListener("click", closeActivityDrawer);
 el.activityDrawerClose?.addEventListener("click", closeActivityDrawer);
 el.activityDrawerList?.addEventListener("scroll", handleActivityDrawerScroll);
+el.runHistory?.addEventListener("scroll", handleRunHistoryScroll);
 el.ruleModeToggle?.addEventListener("change", updateRuleMode);
 el.ruleFileInput?.addEventListener("change", handleRuleFileSelection);
 el.ruleUploadButton?.addEventListener("click", handleRuleUploadButtonClick);
@@ -1624,7 +1632,7 @@ async function loadProjectWorkspace(projectId = state.projectId) {
 }
 
 async function loadProjectConversations(projectId) {
-  const scopedQuery = new URLSearchParams({ limit: "30", project_id: projectId });
+  const scopedQuery = new URLSearchParams({ limit: String(HISTORY_LOAD_BATCH), project_id: projectId });
   const response = await fetch(`/api/data-agent/conversations?${scopedQuery.toString()}`);
   const payload = await response.json();
   if (!response.ok || !payload.success) {
@@ -2301,14 +2309,15 @@ function renderRows(rows, columns, result = {}) {
     return;
   }
   const safeColumns = columns.length ? columns : Object.keys(rows[0]);
+  const displayRows = Array.isArray(result?.result?.display_rows) && result.result.display_rows.length ? result.result.display_rows : rows;
   el.resultTable.className = "result-table";
   el.resultTable.innerHTML = `
     <table>
       <thead><tr>${safeColumns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead>
       <tbody>
-        ${rows
+        ${displayRows
           .slice(0, 50)
-          .map((row) => `<tr>${safeColumns.map((column) => `<td>${escapeHtml(row[column])}</td>`).join("")}</tr>`)
+          .map((row, index) => `<tr>${safeColumns.map((column) => `<td>${escapeHtml(formatTableCellValue(column, row?.[column] ?? rows[index]?.[column]))}</td>`).join("")}</tr>`)
           .join("")}
       </tbody>
     </table>
@@ -2347,10 +2356,11 @@ function shouldRenderRows(rows, columns, result = {}) {
   const isOverview = result.answer_type === "overview" || result.execution_mode === "overview";
   const isCleaning = result.answer_type === "cleaning_simulation" || result.execution_mode === "cleaning_simulation";
   if (isOverview) {
-    const compactOverviewColumns = [
-      ["指标", "数值"],
-      ["表名", "来源", "行数", "列数", "可能含义", "关键字段"],
-    ];
+	    const compactOverviewColumns = [
+	      ["指标", "数值"],
+	      ["表名", "来源", "行数", "列数", "可能含义", "关键字段"],
+	      ["表名", "行数", "类型", "主要作用", "关键字段"],
+	    ];
     return rows.length <= 30 && compactOverviewColumns.some((allowed) => allowed.length === safeColumns.length && allowed.every((column, index) => column === safeColumns[index]));
   }
   if (isCleaning) {
@@ -2385,6 +2395,30 @@ function renderChart(chart, fallbackRows = [], fallbackColumns = [], answer = ""
       return;
     }
     el.chartPanel.className = "chart-panel hidden";
+    return;
+  }
+  if (type === "combo_column_line") {
+    el.chartPanel.className = "chart-panel";
+    el.chartPanel.innerHTML = renderComboColumnLineChart(rows, chart, x, fallbackColumns);
+    bindChartInteractions(el.chartPanel);
+    return;
+  }
+  if (type === "stacked_column") {
+    el.chartPanel.className = "chart-panel";
+    el.chartPanel.innerHTML = renderStackedColumnChart(rows, chart, x, fallbackColumns);
+    bindChartInteractions(el.chartPanel);
+    return;
+  }
+  if (type === "stacked_area") {
+    el.chartPanel.className = "chart-panel";
+    el.chartPanel.innerHTML = renderStackedAreaChart(rows, chart, x, fallbackColumns);
+    bindChartInteractions(el.chartPanel);
+    return;
+  }
+  if (type === "dual_axis_line") {
+    el.chartPanel.className = "chart-panel";
+    el.chartPanel.innerHTML = renderDualAxisLineChart(rows, chart, x, fallbackColumns);
+    bindChartInteractions(el.chartPanel);
     return;
   }
   if (type === "line") {
@@ -2454,6 +2488,20 @@ function resolveLineSeries(chart, rows, xColumn, yColumn, fallbackColumns) {
       return { name: column, points };
     })
     .filter((series) => series.points.length > 1);
+}
+
+function resolveStackColumns(chart, rows, xColumn, fallbackColumns) {
+  const requested = uniqueStrings(
+    (chart?.series || [])
+      .map((series) => String(series?.y || ""))
+      .filter((column) => column && column !== xColumn),
+  ).filter((column) => rows.some((row) => Number.isFinite(Number(row?.[column]))));
+  if (requested.length >= 2) return requested;
+  const encoded = uniqueStrings((chart?.encoding?.stack || []).map((column) => String(column || ""))).filter(
+    (column) => column && column !== xColumn && rows.some((row) => Number.isFinite(Number(row?.[column]))),
+  );
+  if (encoded.length >= 2) return encoded;
+  return fallbackColumns.filter((column) => column !== xColumn && rows.some((row) => Number.isFinite(Number(row?.[column]))));
 }
 
 function renderChartImage(chart) {
@@ -2596,6 +2644,411 @@ function renderHorizontalBarChart(displayValues, chart, width, colors, domain, t
   `;
 }
 
+function renderComboColumnLineChart(rows, chart, xColumn, fallbackColumns) {
+  const width = 860;
+  const height = 460;
+  const left = 76;
+  const right = 84;
+  const top = 34;
+  const bottom = 76;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const series = Array.isArray(chart?.series) ? chart.series : [];
+  const leftColumns = uniqueStrings(
+    series.filter((item) => String(item?.type || "bar") === "bar").map((item) => String(item?.y || "")),
+  ).filter((column) => column && rows.some((row) => Number.isFinite(Number(row?.[column]))));
+  const rightColumns = uniqueStrings(
+    series.filter((item) => String(item?.type || "") === "line").map((item) => String(item?.y || "")),
+  ).filter((column) => column && rows.some((row) => Number.isFinite(Number(row?.[column]))));
+  const fallbackNumeric = fallbackColumns.filter((column) => column !== xColumn && rows.some((row) => Number.isFinite(Number(row?.[column]))));
+  const barColumns = (leftColumns.length ? leftColumns : fallbackNumeric.filter((column) => !looksLikeRateField(column)).slice(0, 2)).slice(0, 2);
+  const lineColumns = (rightColumns.length ? rightColumns : fallbackNumeric.filter((column) => looksLikeRateField(column)).slice(0, 1)).slice(0, 1);
+  if (!barColumns.length || !lineColumns.length) {
+    return renderChartImage(chart);
+  }
+  const displayRows = rows.slice(0, 18);
+  const leftValues = displayRows.flatMap((row) => barColumns.map((column) => Number(row?.[column]))).filter(Number.isFinite);
+  const rightValues = displayRows.flatMap((row) => lineColumns.map((column) => Number(row?.[column]))).filter(Number.isFinite);
+  const leftDomain = chartNumberDomain(leftValues.map((value) => ({ value })), true);
+  const rightDomain = chartNumberDomain(rightValues.map((value) => ({ value })), true);
+  rightDomain.min = Math.min(0, rightDomain.min);
+  const leftTicks = chartTicks(leftDomain.min, leftDomain.max, 5);
+  const rightTicks = chartTicks(rightDomain.min, rightDomain.max, 5);
+  const groupWidth = plotWidth / Math.max(displayRows.length, 1);
+  const gap = Math.min(12, groupWidth * 0.14);
+  const barWidth = Math.max(14, Math.min(28, (groupWidth * 0.66 - gap * Math.max(barColumns.length - 1, 0)) / Math.max(barColumns.length, 1)));
+  const zeroY = chartScale(0, leftDomain.min, leftDomain.max, top + plotHeight, top);
+  const colors = ["#2563eb", "#0ea5e9", "#f59e0b"];
+  const bandMarkup = displayRows
+    .map((row, index) => {
+      const centerX = left + groupWidth * index + groupWidth / 2;
+      const previousX = index === 0 ? left : left + groupWidth * index - groupWidth / 2;
+      const nextX = index === displayRows.length - 1 ? left + plotWidth : left + groupWidth * index + groupWidth * 1.5;
+      const tooltipLines = [
+        ...barColumns.map((column) => `${column}: ${formatNumber(row?.[column])}`),
+        ...lineColumns.map((column) => `${column}: ${looksLikeRateField(column) ? formatPercent(Number(row?.[column])) : formatNumber(row?.[column])}`),
+      ];
+      return `
+        <g class="chart-hit" tabindex="0" focusable="true">
+          <rect x="${previousX.toFixed(1)}" y="${top}" width="${Math.max(12, nextX - previousX).toFixed(1)}" height="${plotHeight}" fill="transparent"></rect>
+          <line x1="${centerX.toFixed(1)}" y1="${top}" x2="${centerX.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
+          ${chartTooltipMulti({
+            title: `${xColumn}: ${row?.[xColumn] ?? "-"}`,
+            lines: tooltipLines,
+            x: centerX - 90,
+            y: top + 8,
+            width,
+          })}
+        </g>
+      `;
+    })
+    .join("");
+  const barMarkup = displayRows
+    .map((row, rowIndex) => {
+      const centerX = left + groupWidth * rowIndex + groupWidth / 2;
+      return barColumns
+        .map((column, columnIndex) => {
+          const value = Number(row?.[column]);
+          if (!Number.isFinite(value)) return "";
+          const x = centerX - ((barColumns.length * barWidth + (barColumns.length - 1) * gap) / 2) + columnIndex * (barWidth + gap);
+          const valueY = chartScale(value, leftDomain.min, leftDomain.max, top + plotHeight, top);
+          const y = Math.min(zeroY, valueY);
+          const heightValue = Math.max(2, Math.abs(zeroY - valueY));
+          return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${heightValue.toFixed(1)}" fill="${colors[columnIndex % colors.length]}" rx="5"></rect>`;
+        })
+        .join("");
+    })
+    .join("");
+  const lineMarkup = lineColumns
+    .map((column, lineIndex) => {
+      const color = colors[(lineIndex + barColumns.length) % colors.length];
+      const points = displayRows
+        .map((row, index) => {
+          const value = Number(row?.[column]);
+          if (!Number.isFinite(value)) return null;
+          return {
+            x: left + groupWidth * index + groupWidth / 2,
+            y: chartScale(value, rightDomain.min, rightDomain.max, top + plotHeight, top),
+          };
+        })
+        .filter(Boolean);
+      if (points.length <= 1) return "";
+      return `
+        <polyline points="${points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}" class="line-path" style="stroke:${color}"></polyline>
+        ${points.map((point) => `<circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="4.5" class="line-dot" style="stroke:${color}"></circle>`).join("")}
+      `;
+    })
+    .join("");
+  const grid = leftTicks
+    .map((tick) => {
+      const y = chartScale(tick, leftDomain.min, leftDomain.max, top + plotHeight, top);
+      return `
+        <line x1="${left}" y1="${y.toFixed(1)}" x2="${left + plotWidth}" y2="${y.toFixed(1)}" class="grid-line"></line>
+        <text x="${left - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="axis-label">${formatAxisNumber(tick)}</text>
+      `;
+    })
+    .join("");
+  const rightLabels = rightTicks
+    .map((tick) => {
+      const y = chartScale(tick, rightDomain.min, rightDomain.max, top + plotHeight, top);
+      return `<text x="${left + plotWidth + 10}" y="${(y + 4).toFixed(1)}" class="axis-label">${looksLikeRateField(lineColumns[0]) ? formatPercent(Number(tick)) : formatAxisNumber(tick)}</text>`;
+    })
+    .join("");
+  const xLabels = displayRows
+    .map((row, index) => {
+      const centerX = left + groupWidth * index + groupWidth / 2;
+      return `<text x="${centerX.toFixed(1)}" y="${top + plotHeight + 26}" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(row?.[xColumn] ?? "-", 8))}</text>`;
+    })
+    .join("");
+  const legendItems = [...barColumns, ...lineColumns]
+    .map((column, index) => {
+      const color = colors[index % colors.length];
+      const y = top + 12 + index * 26;
+      if (index < barColumns.length) {
+        return `
+          <g class="chart-legend-item">
+            <rect x="${left + plotWidth + 18}" y="${(y - 10).toFixed(1)}" width="14" height="14" rx="4" fill="${color}"></rect>
+            <text x="${left + plotWidth + 40}" y="${(y + 2).toFixed(1)}" class="chart-legend-label">${escapeHtml(shortLabel(column, 12))}</text>
+          </g>
+        `;
+      }
+      return `
+        <g class="chart-legend-item">
+          <line x1="${left + plotWidth + 18}" y1="${y.toFixed(1)}" x2="${left + plotWidth + 34}" y2="${y.toFixed(1)}" style="stroke:${color};stroke-width:1.8"></line>
+          <circle cx="${left + plotWidth + 26}" cy="${y.toFixed(1)}" r="3.5" fill="#fff" style="stroke:${color};stroke-width:1.6"></circle>
+          <text x="${left + plotWidth + 40}" y="${(y + 2).toFixed(1)}" class="chart-legend-label">${escapeHtml(shortLabel(column, 12))}</text>
+        </g>
+      `;
+    })
+    .join("");
+  return `
+    <div class="chart-title">${escapeHtml(chart?.title || "柱线组合图")}</div>
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img">
+      ${grid}
+      ${rightLabels}
+      <line x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left + plotWidth}" y1="${top}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left}" y1="${zeroY.toFixed(1)}" x2="${left + plotWidth}" y2="${zeroY.toFixed(1)}" class="axis-line"></line>
+      <text x="${left + plotWidth / 2}" y="${height - 18}" text-anchor="middle" class="axis-title">${escapeHtml(xColumn)}</text>
+      <text transform="translate(18 ${top + plotHeight / 2}) rotate(-90)" text-anchor="middle" class="axis-title">${escapeHtml(barColumns.join(" / "))}</text>
+      <text x="${left + plotWidth}" y="${top - 10}" text-anchor="end" class="axis-title">${escapeHtml(lineColumns[0])}</text>
+      ${xLabels}
+      ${barMarkup}
+      ${lineMarkup}
+      ${legendItems}
+      ${bandMarkup}
+    </svg>
+  `;
+}
+
+function renderStackedColumnChart(rows, chart, xColumn, fallbackColumns) {
+  const width = 860;
+  const height = 440;
+  const left = 76;
+  const right = 160;
+  const top = 34;
+  const bottom = 76;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const stackColumns = resolveStackColumns(chart, rows, xColumn, fallbackColumns);
+  if (stackColumns.length < 2) return renderChartImage(chart);
+  const displayRows = rows.slice(0, 18);
+  const totals = displayRows.map((row) => stackColumns.reduce((sum, column) => sum + Math.max(Number(row?.[column]) || 0, 0), 0));
+  const domain = chartNumberDomain(totals.map((value) => ({ value })), true);
+  const ticks = chartTicks(domain.min, domain.max, 5);
+  const colors = ["#2563eb", "#0ea5e9", "#14b8a6", "#f59e0b", "#4f46e5", "#64748b"];
+  const gap = 10;
+  const barWidth = Math.max(20, (plotWidth - gap * (displayRows.length - 1)) / Math.max(displayRows.length, 1));
+  const grid = ticks
+    .map((tick) => {
+      const y = chartScale(tick, domain.min, domain.max, top + plotHeight, top);
+      return `
+        <line x1="${left}" y1="${y.toFixed(1)}" x2="${left + plotWidth}" y2="${y.toFixed(1)}" class="grid-line"></line>
+        <text x="${left - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="axis-label">${formatAxisNumber(tick)}</text>
+      `;
+    })
+    .join("");
+  const bars = displayRows
+    .map((row, rowIndex) => {
+      const x = left + rowIndex * (barWidth + gap);
+      let cumulative = 0;
+      const segments = stackColumns
+        .map((column, columnIndex) => {
+          const value = Math.max(Number(row?.[column]) || 0, 0);
+          const segmentTop = cumulative + value;
+          const y = chartScale(segmentTop, domain.min, domain.max, top + plotHeight, top);
+          const baseY = chartScale(cumulative, domain.min, domain.max, top + plotHeight, top);
+          cumulative = segmentTop;
+          return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(2, baseY - y).toFixed(1)}" fill="${colors[columnIndex % colors.length]}" rx="5"></rect>`;
+        })
+        .join("");
+      const lines = stackColumns.map((column) => `${column}: ${formatNumber(row?.[column])}`);
+      return `
+        <g class="chart-hit" tabindex="0" focusable="true">
+          ${segments}
+          <text x="${(x + barWidth / 2).toFixed(1)}" y="${(top + plotHeight + 24).toFixed(1)}" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(row?.[xColumn] ?? "-", 8))}</text>
+          ${chartTooltipMulti({ title: `${xColumn}: ${row?.[xColumn] ?? "-"}`, lines, x: x - 18, y: top + 8, width })}
+        </g>
+      `;
+    })
+    .join("");
+  const legend = stackColumns
+    .map((column, index) => `
+      <g class="chart-legend-item">
+        <rect x="${left + plotWidth + 24}" y="${(top + index * 26 - 10).toFixed(1)}" width="14" height="14" rx="4" fill="${colors[index % colors.length]}"></rect>
+        <text x="${left + plotWidth + 46}" y="${(top + index * 26 + 2).toFixed(1)}" class="chart-legend-label">${escapeHtml(shortLabel(column, 12))}</text>
+      </g>
+    `)
+    .join("");
+  return `
+    <div class="chart-title">${escapeHtml(chart?.title || "堆叠柱状图")}</div>
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img">
+      ${grid}
+      <line x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left}" y1="${top + plotHeight}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
+      ${bars}
+      ${legend}
+    </svg>
+  `;
+}
+
+function renderStackedAreaChart(rows, chart, xColumn, fallbackColumns) {
+  const width = 860;
+  const height = 440;
+  const left = 76;
+  const right = 160;
+  const top = 34;
+  const bottom = 76;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const stackColumns = resolveStackColumns(chart, rows, xColumn, fallbackColumns);
+  if (stackColumns.length < 2) return renderChartImage(chart);
+  const displayRows = rows.slice(0, 24);
+  const totals = displayRows.map((row) => stackColumns.reduce((sum, column) => sum + Math.max(Number(row?.[column]) || 0, 0), 0));
+  const domain = chartNumberDomain(totals.map((value) => ({ value })), true);
+  const ticks = chartTicks(domain.min, domain.max, 5);
+  const colors = ["#2563eb", "#0ea5e9", "#14b8a6", "#f59e0b", "#4f46e5", "#64748b"];
+  const grid = ticks
+    .map((tick) => {
+      const y = chartScale(tick, domain.min, domain.max, top + plotHeight, top);
+      return `
+        <line x1="${left}" y1="${y.toFixed(1)}" x2="${left + plotWidth}" y2="${y.toFixed(1)}" class="grid-line"></line>
+        <text x="${left - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="axis-label">${formatAxisNumber(tick)}</text>
+      `;
+    })
+    .join("");
+  const xPoints = displayRows.map((row, index) => ({
+    x: left + (index / Math.max(displayRows.length - 1, 1)) * plotWidth,
+    label: String(row?.[xColumn] ?? ""),
+  }));
+  const cumulative = new Array(displayRows.length).fill(0);
+  const areas = stackColumns
+    .map((column, seriesIndex) => {
+      const upper = [];
+      const lower = [];
+      displayRows.forEach((row, index) => {
+        const value = Math.max(Number(row?.[column]) || 0, 0);
+        const topValue = cumulative[index] + value;
+        upper.push(`${xPoints[index].x.toFixed(1)},${chartScale(topValue, domain.min, domain.max, top + plotHeight, top).toFixed(1)}`);
+        lower.push(`${xPoints[index].x.toFixed(1)},${chartScale(cumulative[index], domain.min, domain.max, top + plotHeight, top).toFixed(1)}`);
+        cumulative[index] = topValue;
+      });
+      return `<polygon points="${upper.concat(lower.reverse()).join(" ")}" fill="${colors[seriesIndex % colors.length]}" fill-opacity="0.72"></polygon>`;
+    })
+    .join("");
+  const xLabels = xPoints
+    .map((point, index) =>
+      index % Math.max(1, Math.ceil(xPoints.length / 6)) === 0 || index === xPoints.length - 1
+        ? `<text x="${point.x.toFixed(1)}" y="${(top + plotHeight + 24).toFixed(1)}" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(point.label, 8))}</text>`
+        : "",
+    )
+    .join("");
+  const hitBands = xPoints
+    .map((point, index) => {
+      const previousX = index === 0 ? left : (xPoints[index - 1].x + point.x) / 2;
+      const nextX = index === xPoints.length - 1 ? left + plotWidth : (point.x + xPoints[index + 1].x) / 2;
+      const lines = stackColumns.map((column) => `${column}: ${formatNumber(displayRows[index]?.[column])}`);
+      return `
+        <g class="chart-hit" tabindex="0" focusable="true">
+          <rect x="${previousX.toFixed(1)}" y="${top}" width="${Math.max(12, nextX - previousX).toFixed(1)}" height="${plotHeight}" fill="transparent"></rect>
+          <line x1="${point.x.toFixed(1)}" y1="${top}" x2="${point.x.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
+          ${chartTooltipMulti({ title: `${xColumn}: ${point.label}`, lines, x: point.x - 90, y: top + 8, width })}
+        </g>
+      `;
+    })
+    .join("");
+  const legend = stackColumns
+    .map((column, index) => `
+      <g class="chart-legend-item">
+        <rect x="${left + plotWidth + 24}" y="${(top + index * 26 - 10).toFixed(1)}" width="14" height="14" rx="4" fill="${colors[index % colors.length]}"></rect>
+        <text x="${left + plotWidth + 46}" y="${(top + index * 26 + 2).toFixed(1)}" class="chart-legend-label">${escapeHtml(shortLabel(column, 12))}</text>
+      </g>
+    `)
+    .join("");
+  return `
+    <div class="chart-title">${escapeHtml(chart?.title || "堆叠面积图")}</div>
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img">
+      ${grid}
+      <line x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left}" y1="${top + plotHeight}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
+      ${areas}
+      ${xLabels}
+      ${hitBands}
+      ${legend}
+    </svg>
+  `;
+}
+
+function renderDualAxisLineChart(rows, chart, xColumn, fallbackColumns) {
+  const width = 860;
+  const height = 440;
+  const left = 76;
+  const right = 84;
+  const top = 34;
+  const bottom = 76;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const series = Array.isArray(chart?.series) ? chart.series : [];
+  const leftColumns = uniqueStrings(series.filter((item) => String(item?.axis || "left") === "left").map((item) => String(item?.y || ""))).filter(Boolean);
+  const rightColumns = uniqueStrings(series.filter((item) => String(item?.axis || "") === "right").map((item) => String(item?.y || ""))).filter(Boolean);
+  const fallbackNumeric = fallbackColumns.filter((column) => column !== xColumn && rows.some((row) => Number.isFinite(Number(row?.[column]))));
+  const leftSeries = (leftColumns.length ? leftColumns : fallbackNumeric.slice(0, 1)).slice(0, 1);
+  const rightSeries = (rightColumns.length ? rightColumns : fallbackNumeric.slice(1, 2)).slice(0, 1);
+  if (!leftSeries.length || !rightSeries.length) return renderChartImage(chart);
+  const displayRows = rows.slice(0, 24);
+  const leftValues = displayRows.map((row) => Number(row?.[leftSeries[0]])).filter(Number.isFinite);
+  const rightValues = displayRows.map((row) => Number(row?.[rightSeries[0]])).filter(Number.isFinite);
+  const leftDomain = chartNumberDomain(leftValues.map((value) => ({ value })), true);
+  const rightDomain = chartNumberDomain(rightValues.map((value) => ({ value })), true);
+  const leftTicks = chartTicks(leftDomain.min, leftDomain.max, 5);
+  const rightTicks = chartTicks(rightDomain.min, rightDomain.max, 5);
+  const grid = leftTicks
+    .map((tick) => {
+      const y = chartScale(tick, leftDomain.min, leftDomain.max, top + plotHeight, top);
+      return `
+        <line x1="${left}" y1="${y.toFixed(1)}" x2="${left + plotWidth}" y2="${y.toFixed(1)}" class="grid-line"></line>
+        <text x="${left - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="axis-label">${formatAxisNumber(tick)}</text>
+      `;
+    })
+    .join("");
+  const rightLabels = rightTicks
+    .map((tick) => {
+      const y = chartScale(tick, rightDomain.min, rightDomain.max, top + plotHeight, top);
+      return `<text x="${left + plotWidth + 10}" y="${(y + 4).toFixed(1)}" class="axis-label">${formatAxisNumber(tick)}</text>`;
+    })
+    .join("");
+  const lineMarkup = [leftSeries[0], rightSeries[0]]
+    .map((column, index) => {
+      const domain = index === 0 ? leftDomain : rightDomain;
+      const color = index === 0 ? "#2563eb" : "#f59e0b";
+      const points = displayRows.map((row, pointIndex) => ({
+        x: left + (pointIndex / Math.max(displayRows.length - 1, 1)) * plotWidth,
+        y: chartScale(Number(row?.[column]) || 0, domain.min, domain.max, top + plotHeight, top),
+      }));
+      return `
+        <polyline points="${points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}" class="line-path" style="stroke:${color}"></polyline>
+        ${points.map((point) => `<circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="4.5" class="line-dot" style="stroke:${color}"></circle>`).join("")}
+      `;
+    })
+    .join("");
+  const xLabels = displayRows
+    .map((row, index) => {
+      const x = left + (index / Math.max(displayRows.length - 1, 1)) * plotWidth;
+      return index % Math.max(1, Math.ceil(displayRows.length / 6)) === 0 || index === displayRows.length - 1
+        ? `<text x="${x.toFixed(1)}" y="${(top + plotHeight + 24).toFixed(1)}" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(row?.[xColumn] ?? "-", 8))}</text>`
+        : "";
+    })
+    .join("");
+  const hits = displayRows
+    .map((row, index) => {
+      const x = left + (index / Math.max(displayRows.length - 1, 1)) * plotWidth;
+      const prevX = index === 0 ? left : left + ((index - 0.5) / Math.max(displayRows.length - 1, 1)) * plotWidth;
+      const nextX = index === displayRows.length - 1 ? left + plotWidth : left + ((index + 0.5) / Math.max(displayRows.length - 1, 1)) * plotWidth;
+      const lines = [`${leftSeries[0]}: ${formatNumber(row?.[leftSeries[0]])}`, `${rightSeries[0]}: ${formatNumber(row?.[rightSeries[0]])}`];
+      return `
+        <g class="chart-hit" tabindex="0" focusable="true">
+          <rect x="${prevX.toFixed(1)}" y="${top}" width="${Math.max(12, nextX - prevX).toFixed(1)}" height="${plotHeight}" fill="transparent"></rect>
+          <line x1="${x.toFixed(1)}" y1="${top}" x2="${x.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
+          ${chartTooltipMulti({ title: `${xColumn}: ${row?.[xColumn] ?? "-"}`, lines, x: x - 90, y: top + 8, width })}
+        </g>
+      `;
+    })
+    .join("");
+  return `
+    <div class="chart-title">${escapeHtml(chart?.title || "双轴折线图")}</div>
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img">
+      ${grid}
+      ${rightLabels}
+      <line x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left + plotWidth}" y1="${top}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left}" y1="${top + plotHeight}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
+      ${lineMarkup}
+      ${xLabels}
+      ${hits}
+    </svg>
+  `;
+}
+
 function renderLineChart(seriesValues, chart) {
   const width = 820;
   const height = 450;
@@ -2642,30 +3095,37 @@ function renderLineChart(seriesValues, chart) {
   const seriesMarkup = plottedSeries
     .map((series) => {
       const path = series.points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
-      const points = series.points
-        .map(
-          (point) => `
-            <g class="chart-hit" tabindex="0" focusable="true">
-              <title>${escapeHtml(`${xName}: ${point.label}\n${series.name}: ${formatNumber(point.value)}`)}</title>
-              <line x1="${point.x.toFixed(1)}" y1="${top}" x2="${point.x.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
-              <circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="5" class="line-dot" style="stroke:${series.color}"></circle>
-              <circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="12" class="line-hit-area"></circle>
-              ${chartTooltip({
-                label: point.label,
-                value: point.value,
-                xName,
-                yName: series.name,
-                x: point.x - 86,
-                y: point.y - 78,
-                width,
-              })}
-            </g>
-          `,
-        )
-        .join("");
       return `
         <polyline points="${path}" class="line-path" style="stroke:${series.color}"></polyline>
-        ${points}
+        ${series.points
+          .map((point) => `<circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="5" class="line-dot" style="stroke:${series.color}"></circle>`)
+          .join("")}
+      `;
+    })
+    .join("");
+  const hitBands = xPoints
+    .map((point, index) => {
+      const previousX = index === 0 ? left : (xPoints[index - 1].x + point.x) / 2;
+      const nextX = index === xPoints.length - 1 ? left + plotWidth : (point.x + xPoints[index + 1].x) / 2;
+      const lines = plottedSeries
+        .map((series) => {
+          const matched = series.points[index];
+          if (!matched) return "";
+          return `${series.name}: ${looksLikeRateField(series.name) ? formatPercent(matched.value) : formatNumber(matched.value)}`;
+        })
+        .filter(Boolean);
+      return `
+        <g class="chart-hit" tabindex="0" focusable="true">
+          <rect x="${previousX.toFixed(1)}" y="${top}" width="${Math.max(12, nextX - previousX).toFixed(1)}" height="${plotHeight}" fill="transparent"></rect>
+          <line x1="${point.x.toFixed(1)}" y1="${top}" x2="${point.x.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
+          ${chartTooltipMulti({
+            title: `${xName}: ${point.label}`,
+            lines,
+            x: point.x - 94,
+            y: top + 8,
+            width,
+          })}
+        </g>
       `;
     })
     .join("");
@@ -2693,6 +3153,7 @@ function renderLineChart(seriesValues, chart) {
       <text x="${left}" y="${top - 34}" text-anchor="start" class="axis-title">${escapeHtml(yName)}</text>
       ${xLabels}
       ${seriesMarkup}
+      ${hitBands}
       ${legend}
     </svg>
   `;
@@ -2851,6 +3312,25 @@ function chartTooltip({ label, value, xName, yName, x, y, width }) {
   `;
 }
 
+function chartTooltipMulti({ title, lines, x, y, width }) {
+  const safeLines = Array.isArray(lines) ? lines.filter(Boolean).slice(0, 3) : [];
+  const tooltipWidth = 188;
+  const tooltipHeight = 34 + safeLines.length * 18;
+  const safeX = Math.min(Math.max(4, x), width - tooltipWidth - 4);
+  const safeY = Math.max(4, y);
+  return `
+    <g class="chart-hover-card" transform="translate(${safeX.toFixed(1)} ${safeY.toFixed(1)})">
+      <rect class="chart-tooltip-bg" width="${tooltipWidth}" height="${tooltipHeight}" rx="8"></rect>
+      <text x="10" y="20" class="chart-tooltip-label">${escapeHtml(title)}</text>
+      ${safeLines.map((line, index) => `<text x="10" y="${38 + index * 18}" class="chart-tooltip-value">${escapeHtml(line)}</text>`).join("")}
+    </g>
+  `;
+}
+
+function looksLikeRateField(value) {
+  return /rate|ratio|share|percent|pct|%|达成率|完成率|占比|比例/i.test(String(value || ""));
+}
+
 function formatAxisNumber(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return String(value ?? "-");
@@ -2874,13 +3354,13 @@ function polarPoint(cx, cy, radius, angleDeg) {
 
 function renderInsight(insight, result = {}) {
   const hasInsightPayload = Boolean(insight && typeof insight === "object");
-  const suggestions = (insight?.business_suggestions || insight?.suggestions || []).filter(isUserFacingInsightText);
+  const suggestions = resolveInsightAdviceCandidates(insight);
   const findings = [...(insight?.anomaly_findings || []), ...(insight?.volatility_findings || [])]
     .map((item) => item?.message)
     .filter(isUserFacingInsightText);
   const caveats = (insight?.caveats || []).filter(isUserFacingInsightText);
   const nextQuestions = hasInsightPayload ? resolveInsightNextQuestions(insight?.next_questions || [], result).slice(0, 2) : [];
-  const summary = cleanInsightSummary(insight?.summary || "");
+  const summary = cleanInsightSummary(insight?.summary || "") || buildContextualInsightSummary(result);
   const primaryAdvice = pickInsightAdvice(suggestions, findings, caveats);
   const hasInsight = Boolean(summary || primaryAdvice || nextQuestions.length);
   el.insightPanel?.classList.toggle("hidden", !hasInsight);
@@ -2891,6 +3371,12 @@ function renderInsight(insight, result = {}) {
   }
   el.insightSummary.innerHTML = renderInsightBody(summary, primaryAdvice, nextQuestions);
   el.insightList.innerHTML = "";
+}
+
+function resolveInsightAdviceCandidates(insight = {}) {
+  const directSuggestions = [insight?.next_step, ...(Array.isArray(insight?.suggestions) ? insight.suggestions : [])].filter(isUserFacingInsightText);
+  const businessSuggestions = (Array.isArray(insight?.business_suggestions) ? insight.business_suggestions : []).filter(isUserFacingInsightText);
+  return uniqueStrings([...directSuggestions, ...businessSuggestions]);
 }
 
 function pickInsightAdvice(suggestions, findings, caveats) {
@@ -2970,6 +3456,31 @@ function buildContextualNextQuestions(result = {}) {
   return uniqueStrings(candidates.filter(isUserFacingInsightText));
 }
 
+function buildContextualInsightSummary(result = {}) {
+  const rows = resultRowsForSuggestions(result);
+  if (!rows.length) return "";
+  const columns = resultColumnsForSuggestions(result, rows);
+  const logic = result?.logic_form || {};
+  const parameters = logic.parameters && typeof logic.parameters === "object" ? logic.parameters : {};
+  const question = String(result?.question || "");
+  const operation = [logic.operation, logic.task_type, result?.debug?.operation, result?.answer_type].filter(Boolean).join(" ").toLowerCase();
+  const metric = firstText(logic.metric, parameters.metric, result?.chart?.y, firstNumericColumn(rows, columns), "");
+  const dimension = firstText(logic.group_by, parameters.dimension, parameters.group_by, chartDimension(result?.chart), firstDimensionColumn(rows, columns), "");
+  const firstRow = rows[0] || {};
+  if (looksLikeRankingQuestion(`${question} ${operation}`.toLowerCase()) && metric && dimension && firstRow[dimension] !== undefined && firstRow[metric] !== undefined) {
+    return `排名结果里第 1 位是 ${formatInsightValue(firstRow[dimension])}，${metric} 为 ${formatInsightValue(firstRow[metric])}。`;
+  }
+  return "";
+}
+
+function formatInsightValue(value) {
+  const number = Number(value);
+  if (value !== null && value !== "" && Number.isFinite(number)) {
+    return Math.abs(number) >= 1000 ? number.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) : String(Number(number.toFixed(2)));
+  }
+  return String(value ?? "-");
+}
+
 function resultRowsForSuggestions(result = {}) {
   const rows = result?.result?.rows;
   if (Array.isArray(rows)) return rowsWithoutContinuationPrompts(rows).filter((row) => row && typeof row === "object");
@@ -3038,13 +3549,26 @@ function renderInsightBody(summary, advice, nextQuestions) {
   if (summary) paragraphs.push(escapeHtml(summary));
   if (advice) {
     const parsed = parseInsightText(advice);
-    const headline = parsed.action || parsed.observation || advice;
-    if (headline) paragraphs.push(`<strong>下一步：</strong>${escapeHtml(headline)}`);
+    const action = isActionableInsightAdvice(parsed.action) ? parsed.action : "";
+    const fallback = isDistinctInsightText(parsed.observation, summary) ? parsed.observation : "";
+    const rawAdvice = isActionableInsightAdvice(advice) ? advice : "";
+    const headline = action || fallback || rawAdvice;
+    if (isDistinctInsightText(headline, summary)) paragraphs.push(`<strong>下一步：</strong>${escapeHtml(headline)}`);
   }
   if (nextQuestions.length) {
     paragraphs.push(`<strong>可继续问：</strong>${nextQuestions.map((question) => escapeHtml(question)).join("；")}`);
   }
   return paragraphs.map((paragraph) => `<p>${paragraph}</p>`).join("");
+}
+
+function isDistinctInsightText(text, summary = "") {
+  const value = String(text || "").trim();
+  if (!isUserFacingInsightText(value)) return false;
+  return normalizeInsightText(value) !== normalizeInsightText(summary);
+}
+
+function normalizeInsightText(text) {
+  return String(text || "").replace(/[，。；;,.!?！？\s]/g, "").trim();
 }
 
 function parseInsightText(text) {
@@ -3619,11 +4143,16 @@ function mergeActivityTraceNode(node) {
 }
 
 function openActivityDrawer(result = {}, triggerSummary = null) {
+  cancelActivityDrawerClose();
   state.drawerResult = result || state.latestActivityResult || {};
   state.drawerTriggerSummary = triggerSummary || null;
   state.activityDrawerAutoScroll = true;
   el.activityDrawer?.classList.remove("hidden");
   el.activityBackdrop?.classList.remove("hidden");
+  requestAnimationFrame(() => {
+    el.activityDrawer?.classList.add("is-active");
+    el.activityBackdrop?.classList.add("is-active");
+  });
   el.activityDrawer?.setAttribute("aria-hidden", "false");
   document.body.classList.add("activity-drawer-open");
   updateThinkingSummaryExpanded(true);
@@ -3631,13 +4160,26 @@ function openActivityDrawer(result = {}, triggerSummary = null) {
 }
 
 function closeActivityDrawer() {
-  el.activityDrawer?.classList.add("hidden");
-  el.activityBackdrop?.classList.add("hidden");
+  cancelActivityDrawerClose();
+  el.activityDrawer?.classList.remove("is-active");
+  el.activityBackdrop?.classList.remove("is-active");
   el.activityDrawer?.setAttribute("aria-hidden", "true");
   document.body.classList.remove("activity-drawer-open");
   updateThinkingSummaryExpanded(false);
   state.drawerTriggerSummary = null;
   state.activityDrawerAutoScroll = true;
+  state.activityDrawerCloseTimer = window.setTimeout(() => {
+    el.activityDrawer?.classList.add("hidden");
+    el.activityBackdrop?.classList.add("hidden");
+    state.activityDrawerCloseTimer = null;
+  }, 240);
+}
+
+function cancelActivityDrawerClose() {
+  if (state.activityDrawerCloseTimer) {
+    clearTimeout(state.activityDrawerCloseTimer);
+    state.activityDrawerCloseTimer = null;
+  }
 }
 
 function handleThinkingSummaryClick(event) {
@@ -3696,11 +4238,42 @@ function isActivityDrawerNearLatest() {
 
 function scrollActivityDrawerToLatest() {
   if (!el.activityDrawerList || !isActivityDrawerVisible()) return;
-  requestAnimationFrame(() => {
+  if (state.activityDrawerScrollFrame) {
+    cancelAnimationFrame(state.activityDrawerScrollFrame);
+    state.activityDrawerScrollFrame = 0;
+  }
+  if (state.activityDrawerScrollTimeout) {
+    clearTimeout(state.activityDrawerScrollTimeout);
+    state.activityDrawerScrollTimeout = null;
+  }
+  const scrollToLatestNode = (behavior = "auto") => {
     if (!el.activityDrawerList || !isActivityDrawerVisible()) return;
-    el.activityDrawerList.scrollTop = el.activityDrawerList.scrollHeight;
+    const sectionLists = el.activityDrawerList.querySelectorAll(".activity-section-list");
+    const latestList = sectionLists.length ? sectionLists[sectionLists.length - 1] : null;
+    const latestNode = latestList?.lastElementChild;
+    if (latestNode instanceof HTMLElement) {
+      latestNode.scrollIntoView({ block: "end", behavior });
+      const listRect = el.activityDrawerList.getBoundingClientRect();
+      const nodeRect = latestNode.getBoundingClientRect();
+      const delta = nodeRect.bottom - listRect.bottom;
+      if (Math.abs(delta) > 1) {
+        el.activityDrawerList.scrollTop += delta;
+      }
+    } else {
+      el.activityDrawerList.scrollTop = el.activityDrawerList.scrollHeight;
+    }
     state.activityDrawerAutoScroll = true;
+  };
+  state.activityDrawerScrollFrame = requestAnimationFrame(() => {
+    state.activityDrawerScrollFrame = requestAnimationFrame(() => {
+      scrollToLatestNode();
+      state.activityDrawerScrollFrame = 0;
+    });
   });
+  state.activityDrawerScrollTimeout = window.setTimeout(() => {
+    scrollToLatestNode();
+    state.activityDrawerScrollTimeout = null;
+  }, 180);
 }
 
 function handleActivityDrawerScroll() {
@@ -4475,7 +5048,13 @@ function pushHistory(result) {
     return;
   }
   state.runHistory.unshift(item);
-  state.runHistory = sortHistoryItems(state.runHistory).slice(0, 8);
+  state.runHistory = sortHistoryItems(state.runHistory);
+  if (!state.runHistoryRenderedCount) {
+    state.runHistoryRenderedCount = Math.min(HISTORY_LOAD_BATCH, state.runHistory.length);
+  }
+  if (state.runHistoryRenderedCount > state.runHistory.length) {
+    state.runHistoryRenderedCount = state.runHistory.length;
+  }
   renderHistory();
 }
 
@@ -4505,7 +5084,13 @@ function markHistoryRunning(question, fallbackRunId, projectId = currentMessageP
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
   state.runHistory.unshift(item);
-  state.runHistory = sortHistoryItems(state.runHistory).slice(0, 8);
+  state.runHistory = sortHistoryItems(state.runHistory);
+  if (!state.runHistoryRenderedCount) {
+    state.runHistoryRenderedCount = Math.min(HISTORY_LOAD_BATCH, state.runHistory.length);
+  }
+  if (state.runHistoryRenderedCount > state.runHistory.length) {
+    state.runHistoryRenderedCount = state.runHistory.length;
+  }
   renderHistory();
 }
 
@@ -4534,7 +5119,13 @@ function markHistoryFailed(question, message, projectId = currentMessageProjectI
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
   state.runHistory.unshift(item);
-  state.runHistory = sortHistoryItems(state.runHistory).slice(0, 8);
+  state.runHistory = sortHistoryItems(state.runHistory);
+  if (!state.runHistoryRenderedCount) {
+    state.runHistoryRenderedCount = Math.min(HISTORY_LOAD_BATCH, state.runHistory.length);
+  }
+  if (state.runHistoryRenderedCount > state.runHistory.length) {
+    state.runHistoryRenderedCount = state.runHistory.length;
+  }
   state.activeHistoryRunId = "";
   renderHistory();
 }
@@ -4551,13 +5142,14 @@ function sortHistoryItems(items) {
 }
 
 function renderHistory() {
-  el.historyCount.textContent = String(state.runHistory.length);
+  const visibleCount = Math.min(state.runHistoryRenderedCount || 0, state.runHistory.length);
   if (!state.runHistory.length) {
     el.runHistory.innerHTML = `<li class="history-empty">上传数据并提问后，这里会显示最近的分析记录。</li>`;
     if (isChatSearchOpen()) renderChatSearchResults();
     return;
   }
-  el.runHistory.innerHTML = state.runHistory
+  const visibleHistory = state.runHistory.slice(0, visibleCount || state.runHistory.length);
+  el.runHistory.innerHTML = visibleHistory
     .map(
       (item) => {
         const title = item.title || item.question || "未命名对话";
@@ -4853,9 +5445,32 @@ async function deleteHistoryConversation(runId) {
   }
 }
 
-async function loadConversations() {
+function handleRunHistoryScroll() {
+  if (!el.runHistory || state.runHistoryLoading || state.runHistory.length === 0) return;
+  const remaining = el.runHistory.scrollHeight - el.runHistory.clientHeight - el.runHistory.scrollTop;
+  if (remaining > 20) return;
+  if (state.runHistoryRenderedCount < state.runHistory.length) {
+    state.runHistoryRenderedCount = Math.min(state.runHistoryRenderedCount + HISTORY_LOAD_BATCH, state.runHistory.length);
+    renderHistory();
+    return;
+  }
+  if (!state.runHistoryHasMore) return;
+  loadConversations({ append: true });
+}
+
+async function loadConversations({ append = false } = {}) {
+  if (state.runHistoryLoading) return;
+  const requestOffset = append ? state.runHistoryOffset : 0;
+  if (!append) {
+    state.runHistoryOffset = 0;
+    state.runHistoryHasMore = true;
+    state.runHistoryRenderedCount = 0;
+  }
+  state.runHistoryLoading = true;
   try {
-    const query = new URLSearchParams({ limit: "30" });
+    const previousRenderedCount = state.runHistoryRenderedCount;
+    const previousLength = state.runHistory.length;
+    const query = new URLSearchParams({ limit: String(HISTORY_LOAD_BATCH), offset: String(requestOffset) });
     const response = await fetch(`/api/data-agent/conversations?${query.toString()}`);
     const payload = await response.json();
     if (!response.ok || !payload.success) {
@@ -4883,11 +5498,35 @@ async function loadConversations() {
         };
       });
     const loadedIds = new Set(loadedHistory.map((item) => item.runId));
-    const localUnreadHistory = state.runHistory.filter((item) => item.unread === true && !item.projectId && !loadedIds.has(item.runId));
-    state.runHistory = sortHistoryItems([...localUnreadHistory, ...loadedHistory]).slice(0, 30);
+    if (append) {
+      const merged = [...state.runHistory];
+      loadedHistory.forEach((item) => {
+        if (!existingById.has(item.runId)) {
+          merged.push(item);
+        }
+      });
+      state.runHistory = sortHistoryItems(merged);
+      if (previousRenderedCount >= previousLength) {
+        state.runHistoryRenderedCount = Math.min(state.runHistoryRenderedCount + HISTORY_LOAD_BATCH, state.runHistory.length);
+      }
+    } else {
+      const localUnreadHistory = state.runHistory.filter((item) => item.unread === true && !item.projectId && !loadedIds.has(item.runId));
+      state.runHistory = sortHistoryItems([...localUnreadHistory, ...loadedHistory]);
+      state.runHistoryRenderedCount = Math.min(HISTORY_LOAD_BATCH, state.runHistory.length);
+    }
+    if (state.runHistoryRenderedCount > state.runHistory.length) {
+      state.runHistoryRenderedCount = state.runHistory.length;
+    }
+    if (!state.runHistoryRenderedCount && state.runHistory.length) {
+      state.runHistoryRenderedCount = Math.min(HISTORY_LOAD_BATCH, state.runHistory.length);
+    }
+    state.runHistoryOffset = requestOffset + loadedHistory.length;
+    state.runHistoryHasMore = loadedHistory.length >= HISTORY_LOAD_BATCH;
     renderHistory();
   } catch {
     renderHistory();
+  } finally {
+    state.runHistoryLoading = false;
   }
 }
 
@@ -5210,11 +5849,71 @@ function cleanInsightSummary(summary) {
 }
 
 function isUserFacingInsightText(text) {
-  const value = String(text || "");
+  const value = String(text || "").trim();
   if (!value.trim()) return false;
-  return !["数据质量", "高严重度", "quality_report", "verification", "warnings", "errors", "join trace", "Join / Verification"].some((token) =>
+  if (!/[\u3400-\u9fff]/.test(value)) return false;
+  if (
+    ["数据质量", "高严重度", "quality_report", "verification", "warnings", "errors", "join trace", "Join / Verification"].some((token) =>
     value.includes(token),
-  );
+    )
+  ) {
+    return false;
+  }
+  return !looksLikeEnglishProseLeak(value);
+}
+
+function isActionableInsightAdvice(text) {
+  const value = String(text || "").trim();
+  if (!isUserFacingInsightText(value)) return false;
+  return /下一步|继续|先|按|比较|查看|检查|复核|确认|拆分|下钻|分析|生成|列出|看|追踪|对比|补充|选择|找出/.test(value);
+}
+
+function looksLikeEnglishProseLeak(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const segments = value
+    .split(/[；;。！？!?]\s*|(?:观察|风险|边界|依据|建议|下一步)[:：]/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  return (segments.length ? segments : [value]).some((segment) => segmentLooksLikeEnglishProseLeak(segment));
+}
+
+function segmentLooksLikeEnglishProseLeak(segment) {
+  const cjkCount = (segment.match(/[\u3400-\u9fff]/g) || []).length;
+  const latinWords = segment.match(/[A-Za-z][A-Za-z_'-]*/g) || [];
+  if (!latinWords.length) return false;
+  const proseTokens = new Set([
+    "are",
+    "based",
+    "by",
+    "compare",
+    "countries",
+    "country",
+    "data",
+    "followed",
+    "full",
+    "include",
+    "includes",
+    "is",
+    "leading",
+    "next",
+    "not",
+    "only",
+    "present",
+    "ranked",
+    "ranking",
+    "result",
+    "results",
+    "show",
+    "shows",
+    "step",
+    "the",
+    "this",
+    "that",
+  ]);
+  const proseCount = latinWords.filter((word) => proseTokens.has(word.toLowerCase().replace(/^_+|_+$/g, ""))).length;
+  if (cjkCount === 0) return proseCount >= 2 || (latinWords.length >= 5 && proseCount >= 1);
+  return proseCount >= 3 && cjkCount < 6;
 }
 
 function stringifyIssue(issue) {
@@ -5224,13 +5923,27 @@ function stringifyIssue(issue) {
 }
 
 function formatPercent(value) {
-  return `${value.toFixed(value >= 10 ? 1 : 2)}%`;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value ?? "-");
+  return `${number.toFixed(number >= 10 ? 1 : 2)}%`;
 }
 
 function formatNumber(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return String(value ?? "-");
   return Math.abs(number) >= 1000 ? number.toLocaleString("zh-CN", { maximumFractionDigits: 1 }) : String(Number(number.toFixed(2)));
+}
+
+function formatTableCellValue(column, value) {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "string" && /%|,/.test(value)) return value;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  if (looksLikeRateField(column)) return `${number.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+  if (/count|数量|次数|记录数|行数|year|month|day|hour|minute/i.test(String(column || "")) && !/金额|销售额|收入|利润/i.test(String(column || ""))) {
+    return number.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
+  }
+  return number.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function formatFileSize(value) {

@@ -132,26 +132,117 @@ class TextAnswerFrameworkTest(unittest.TestCase):
         for forbidden in ("task_id", "standard_answer", "trace", "scorer"):
             self.assertNotIn(forbidden, framed)
 
-    def test_ranking_frame_localizes_verifier_note_and_avoids_duplicate_caveat(self) -> None:
+    def test_simple_top1_ranking_answer_stays_short_and_avoids_audit_noise(self) -> None:
         response = {
             "success": True,
             "answer_type": "table",
-            "answer": "上海销售额最高。",
-            "logic_form": {"operation": "ranking", "source_tables": ["销售表"]},
-            "result": {"columns": ["城市", "销售额"], "rows": [{"城市": "上海", "销售额": 300}]},
+            "answer": "qa_store_b.csv 中销售额最高的产品是香蕉，销售额 90。",
+            "logic_form": {"operation": "ranking", "source_tables": ["qa_store_b"], "parameters": {"table": "qa_store_b"}},
+            "result": {"columns": ["product", "sales"], "rows": [{"product": "香蕉", "sales": 90}]},
             "verification": {
                 "passed": True,
                 "notes": ["Verifier checked execution success, optional backend consistency, and semantic metric contract."],
             },
         }
 
-        framed = apply_text_answer_framework(response, question="哪个城市销售额最高？")["answer"]
+        framed = apply_text_answer_framework(response, question="qa_store_b.csv里面哪个产品销售额最高？")["answer"]
 
-        self.assertIn("上海", framed)
-        self.assertIn("已通过执行成功、后端一致性和语义口径校验", framed)
+        self.assertIn("香蕉", framed)
+        self.assertIn("90", framed)
         self.assertNotIn("Verifier checked execution success", framed)
         self.assertNotIn("semantic metric contract", framed)
-        self.assertEqual(framed.count("排序口径应以结果表的聚合字段和排序字段为准"), 1)
+        self.assertNotIn("当前结果表只返回", framed)
+        self.assertNotIn("仍需按当前数据范围和指标口径解读", framed)
+        self.assertNotIn("排序口径应以结果表的聚合字段和排序字段为准", framed)
+
+    def test_simple_top1_derived_metric_keeps_short_answer_with_formula_scope(self) -> None:
+        response = {
+            "success": True,
+            "answer_type": "table",
+            "answer": "上海利润率最高。",
+            "logic_form": {
+                "operation": "ranking",
+                "source_tables": ["city_profit"],
+                "parameters": {
+                    "table": "city_profit",
+                    "dimension": "city",
+                    "metric": "利润率",
+                    "derived_metric": {
+                        "name": "利润率",
+                        "numerator": "profit",
+                        "denominator": "sales",
+                        "formula": "sum(profit)/sum(sales)",
+                    },
+                },
+            },
+            "result": {"columns": ["city", "利润率"], "rows": [{"city": "上海", "利润率": 0.4}]},
+            "verification": {
+                "passed": True,
+                "notes": ["Verifier checked execution success, optional backend consistency, and semantic metric contract."],
+            },
+        }
+
+        framed = apply_text_answer_framework(response, question="哪个城市利润率最高？")["answer"]
+
+        self.assertIn("上海", framed)
+        self.assertIn("40.00%", framed)
+        self.assertIn("sum(profit)/sum(sales)", framed)
+        self.assertNotIn("当前结果表只返回", framed)
+        self.assertNotIn("仍需按当前数据范围和指标口径解读", framed)
+
+    def test_simple_top1_trusted_join_keeps_short_answer_with_join_scope(self) -> None:
+        response = {
+            "success": True,
+            "answer_type": "table",
+            "answer": "北京销售额最高。",
+            "logic_form": {
+                "operation": "ranking",
+                "source_tables": ["orders", "customers"],
+                "parameters": {"dimension": "city", "metric": "sales"},
+                "join_plan": {
+                    "trusted": True,
+                    "left_table": "orders",
+                    "right_table": "customers",
+                    "left_key": "customer_id",
+                    "right_key": "customer_id",
+                },
+            },
+            "result": {"columns": ["city", "sales"], "rows": [{"city": "北京", "sales": 170}]},
+        }
+
+        framed = apply_text_answer_framework(response, question="哪个城市总销售额最高？")["answer"]
+
+        self.assertIn("北京", framed)
+        self.assertIn("170", framed)
+        self.assertIn("orders.customer_id", framed)
+        self.assertIn("customers.customer_id", framed)
+        self.assertNotIn("当前结果表只返回", framed)
+        self.assertNotIn("仍需按当前数据范围和指标口径解读", framed)
+
+    def test_multi_series_trend_frame_summarizes_top5_overall_patterns(self) -> None:
+        response = {
+            "success": True,
+            "answer_type": "table",
+            "answer": "已生成Top5品类趋势图。",
+            "logic_form": {"operation": "retail_category_distribution_monthly_trend", "task_type": "trend"},
+            "result": {
+                "columns": ["月份", "天然水", "纯净水", "东方树叶", "水溶C100", "茶π"],
+                "rows": [
+                    {"月份": "2026年1月", "天然水": 300000, "纯净水": 120000, "东方树叶": 180000, "水溶C100": 150000, "茶π": 90000},
+                    {"月份": "2026年2月", "天然水": 320000, "纯净水": 110000, "东方树叶": 190000, "水溶C100": 140000, "茶π": 95000},
+                    {"月份": "2026年3月", "天然水": 330000, "纯净水": 130000, "东方树叶": 210000, "水溶C100": 135000, "茶π": 98000},
+                    {"月份": "2026年4月", "天然水": 340000, "纯净水": 150000, "东方树叶": 260000, "水溶C100": 125000, "茶π": 102000},
+                    {"月份": "2026年5月", "天然水": 345000, "纯净水": 240000, "东方树叶": 220000, "水溶C100": 120000, "茶π": 110000},
+                ],
+            },
+        }
+
+        framed = apply_text_answer_framework(response, question="请展示2026年1月至5月Top5品类历史分销金额趋势。")["answer"]
+
+        self.assertIn("天然水 持续领先", framed)
+        self.assertIn("纯净水 在 2026年5月 明显跃升", framed)
+        self.assertIn("东方树叶 在 2026年4月 达到阶段峰值", framed)
+        self.assertNotIn("水溶C100", framed.split("核心结论是：", 1)[1].split("。", 1)[0])
 
 
 if __name__ == "__main__":

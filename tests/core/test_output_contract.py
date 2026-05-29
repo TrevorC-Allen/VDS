@@ -66,6 +66,15 @@ class OutputContractTest(unittest.TestCase):
         self.assertEqual("141, 384, 787", numeric_string.answer)
         self.assertEqual("B, A", text_answer.answer)
 
+    def test_empty_list_can_canonicalize_to_empty_string_when_guideline_requires_it(self) -> None:
+        answer = canonicalize_final_answer(
+            [],
+            {"answer_type": "list", "guidelines": "If the answer is an empty list, reply with an empty string."},
+        )
+
+        self.assertEqual("", answer.answer)
+        self.assertTrue(answer.validation.passed)
+
     def test_response_builder_marks_output_contract_failure_recoverable(self) -> None:
         logic = LogicForm(
             task_type="generic",

@@ -54,6 +54,10 @@ def apply_text_answer_framework(response: dict[str, Any], *, question: str) -> d
 
     kind = _classify_kind(question, response)
     context = _FrameContext(question=question, response=response, original_answer=answer, kind=kind)
+    if kind == "ranking" and _is_simple_top1_ranking(context):
+        response["answer"] = _simple_top1_ranking_answer(context)
+        _mark_debug(response, applied=True, reason="kind=ranking_simple_top1")
+        return response
     framed = _compose_frame(context)
     if not framed:
         _mark_debug(response, applied=False, reason="empty_composition")
@@ -155,6 +159,9 @@ def _core_conclusion(context: _FrameContext) -> str:
     if context.kind in {"cleaning", "quality"}:
         return _cleaning_core(context)
     if context.kind == "clarification":
+        specific = _specific_clarification_core(context)
+        if specific:
+            return specific
         return f"这个问题暂时不能可靠回答，当前还缺少{_missing_information(context)}"
     if context.kind == "target_actual":
         best = _best_metric_row(context, prefer_rate=True, highest=True)
@@ -181,7 +188,9 @@ def _overview_core(context: _FrameContext) -> str:
     tables = report.get("tables_summary")
     if isinstance(tables, list) and tables:
         themes = _short_join([_short_meaning(item.get("likely_meaning")) for item in tables[:4] if isinstance(item, dict)], limit=3)
-        return f"已读取这组数据：它由 {report.get('table_count') or len(tables)} 张表组成，主要覆盖{themes or '业务事实、维表和过程记录'}"
+        roles = _overview_table_role_summary(tables)
+        role_suffix = f"，表角色包括 {roles}" if roles else ""
+        return f"已读取这组数据：它由 {report.get('table_count') or len(tables)} 张表组成，主要覆盖{themes or '业务事实、维表和过程记录'}{role_suffix}"
     meaning = str(report.get("likely_meaning") or "").strip()
     table = str(report.get("table") or "这张表")
     metric = str(report.get("metric_column") or "").strip()
@@ -191,6 +200,20 @@ def _overview_core(context: _FrameContext) -> str:
         suffix = _short_join([f"指标可看 {metric}" if metric else "", f"维度可按 {dimension}" if dimension else "", f"时间可按 {period}" if period else ""], limit=3)
         return f"这份数据主要是一张表，{table}记录{_short_meaning(meaning)}" + (f"，{suffix}" if suffix else "")
     return _fallback_core(context)
+
+
+def _overview_table_role_summary(tables: list[Any]) -> str:
+    counts: dict[str, int] = {}
+    for item in tables:
+        if not isinstance(item, dict):
+            continue
+        table_type = str(item.get("table_type") or "").strip()
+        if not table_type:
+            continue
+        counts[table_type] = counts.get(table_type, 0) + 1
+    if not counts:
+        return ""
+    return "、".join(f"{name} {count} 张" for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:5])
 
 
 def _cleaning_core(context: _FrameContext) -> str:
@@ -253,7 +276,7 @@ def _overview_evidence(context: _FrameContext) -> str:
         sources = report.get("sources") if isinstance(report.get("sources"), list) else []
         examples = _short_join(
             [
-                f"{item.get('file_name')}（{item.get('source_type') or 'source'}：{item.get('purpose') or item.get('source_role') or '补充说明'}）"
+                f"{item.get('file_name')}（{item.get('source_category') or item.get('source_type') or '来源文件'}：{item.get('purpose_label') or item.get('purpose') or item.get('source_role') or '补充说明'}）"
                 for item in sources[:5]
                 if isinstance(item, dict)
             ],
@@ -267,7 +290,7 @@ def _overview_evidence(context: _FrameContext) -> str:
     if isinstance(tables, list) and tables:
         examples = _short_join(
             [
-                f"{item.get('table')}（{_format_plain_value(item.get('row_count'))} 行、{_format_plain_value(item.get('column_count'))} 列，关键字段：{_short_join(item.get('key_fields') or [], limit=4)}）"
+                f"{item.get('table')}（{item.get('table_type') or '结构化数据表'}，{_format_plain_value(item.get('row_count'))} 行、{_format_plain_value(item.get('column_count'))} 列，关键字段：{_short_join(item.get('key_fields') or [], limit=4)}）"
                 for item in tables[:3]
                 if isinstance(item, dict)
             ],
@@ -336,7 +359,7 @@ def _brief_conclusions(context: _FrameContext) -> list[str]:
         rows.append("未达标项需要优先看目标来源、实际来源和周期是否完整")
         return rows
     if context.kind == "trend":
-        extrema = _trend_points(context)
+        extrema = _multi_series_trend_points(context) or _trend_points(context)
         return extrema or _sentence_fallbacks(context)
     if context.kind == "ranking":
         rows = _ranking_conclusions(context)
@@ -359,9 +382,10 @@ def _overview_conclusions(context: _FrameContext) -> list[str]:
         largest = tables[0] if isinstance(tables[0], dict) else {}
         quality_count = sum(int(item.get("quality_issue_count") or 0) for item in tables if isinstance(item, dict))
         keyword_point = _keyword_point(context, "建议分析方向")
+        roles = _overview_table_role_summary(tables)
         conclusions = [
             f"这组数据不是单表，最大表是 {largest.get('table') or '主表'}，有 {_format_plain_value(largest.get('row_count'))} 行",
-            "核心字段需要先区分事实表、维表、规则/说明文件，再决定是否 join",
+            f"表角色需要先分清：{roles or '事实表、维表、规则/说明文件'}，再决定是否 join",
             f"已识别的质量问题数量为 {quality_count} 个，正式分析前建议先确认缺失、重复和异常影响",
         ]
         return _merge_points(_original_points(context, limit=2) + ([keyword_point] if keyword_point else []), conclusions, limit=3)
@@ -421,6 +445,95 @@ def _ranking_conclusions(context: _FrameContext) -> list[str]:
     if len(conclusions) < 3:
         conclusions.append("如需复核完整排名，需要查看未截断结果表或扩大 TopN 范围")
     return conclusions[:3]
+
+
+def _is_simple_top1_ranking(context: _FrameContext) -> bool:
+    if len(context.rows) != 1:
+        return False
+    logic = context.logic_form
+    params = _as_dict(logic.get("parameters"))
+    if str(logic.get("operation") or "") not in {"ranking", "filtered_metric_ranking"}:
+        return False
+    if context.response.get("warnings") or context.response.get("errors"):
+        return False
+    join_plan = _as_dict(params.get("join_plan") or logic.get("join_plan"))
+    if join_plan and not join_plan.get("trusted"):
+        return False
+    return True
+
+
+def _simple_top1_ranking_answer(context: _FrameContext) -> str:
+    row = context.rows[0]
+    metric = _preferred_metric_column(context.columns, context.rows)
+    label = _preferred_label_column(context.columns, metric)
+    name = str(row.get(label) if label else _first_non_empty_value(row)).strip()
+    direction = "最低" if any(token in context.question.lower() for token in ("最低", "最少", "lowest", "bottom", "min")) else "最高"
+    params = _as_dict(context.logic_form.get("parameters"))
+    table = str(params.get("table") or "").strip()
+    if params.get("same_schema_union") and table == "__same_schema_union__":
+        table = ""
+    prefix = f"{table} 中" if table else ""
+    scope = _simple_top1_scope_notes(context, params)
+    if metric:
+        answer = f"{prefix}{metric}{direction}的是{name}，{metric} {_format_cell_value(row.get(metric), metric)}。"
+    else:
+        answer = f"{prefix}{direction}项是{_describe_row(row, context.columns)}。"
+    if scope:
+        answer = answer + " " + " ".join(scope)
+    return _sanitize_text(answer)
+
+
+def _simple_top1_scope_notes(context: _FrameContext, params: dict[str, Any]) -> list[str]:
+    notes: list[str] = []
+    derived_metric = _as_dict(params.get("derived_metric"))
+    if derived_metric:
+        name = str(derived_metric.get("name") or "派生指标").strip()
+        formula = str(derived_metric.get("formula") or "").strip()
+        numerator = str(derived_metric.get("numerator") or "").strip()
+        denominator = str(derived_metric.get("denominator") or "").strip()
+        if formula:
+            notes.append(f"口径：{name} = {formula}。")
+        elif numerator and denominator:
+            notes.append(f"口径：{name} = sum({numerator}) / sum({denominator})。")
+
+    join_plan = _as_dict(params.get("join_plan") or context.logic_form.get("join_plan"))
+    if join_plan.get("trusted"):
+        steps = join_plan.get("steps") if isinstance(join_plan.get("steps"), list) else []
+        if steps:
+            links: list[str] = []
+            for step in steps[:3]:
+                step_dict = _as_dict(step)
+                left = str(step_dict.get("left_table") or "").strip()
+                right = str(step_dict.get("right_table") or "").strip()
+                left_key = str(step_dict.get("left_key") or "").strip()
+                right_key = str(step_dict.get("right_key") or "").strip()
+                if left and right and left_key and right_key:
+                    links.append(f"{left}.{left_key} -> {right}.{right_key}")
+            if links:
+                notes.append("关联：" + "；".join(links) + "。")
+        else:
+            left = str(join_plan.get("left_table") or "").strip()
+            right = str(join_plan.get("right_table") or "").strip()
+            left_key = str(join_plan.get("left_key") or "").strip()
+            right_key = str(join_plan.get("right_key") or "").strip()
+            if left and right and left_key and right_key:
+                notes.append(f"关联：{left}.{left_key} -> {right}.{right_key}。")
+
+    source_tables = context.logic_form.get("source_tables") or params.get("source_tables") or []
+    if not join_plan and params.get("same_schema_union") and isinstance(source_tables, list) and len(source_tables) > 1:
+        notes.append("范围：已合并同结构表 " + _short_join([str(item) for item in source_tables], limit=4) + "。")
+    return notes
+
+
+def _specific_clarification_core(context: _FrameContext) -> str:
+    original = context.original_answer.strip()
+    if not original or original.lower() == "not applicable":
+        return ""
+    if any(token in original for token in ("关联键", "关联", "join", "->")) and "." in original:
+        return original
+    if any(token in original for token in ("没有可用于", "不能把其他字段替代", "点名要按")):
+        return original
+    return ""
 
 
 def _sentence_fallbacks(context: _FrameContext) -> list[str]:
@@ -551,6 +664,10 @@ def _metric_scope(context: _FrameContext) -> str:
         report = context.overview_report
         if report.get("report_type") == "source_overview_report":
             return "按上传 manifest、文件类型、读取状态和内容摘要解释来源用途；不把说明文件当成可计算事实表"
+        tables = report.get("tables_summary")
+        if isinstance(tables, list) and tables:
+            roles = _overview_table_role_summary(tables)
+            return f"表角色={roles or '待确认'}；字段角色来自表名、字段名、类型和样例的安全推断"
         metric = report.get("metric_column")
         dimension = report.get("dimension_column")
         period = report.get("period_column")
@@ -726,6 +843,9 @@ def _best_metric_row(context: _FrameContext, *, prefer_rate: bool, highest: bool
 
 
 def _trend_summary(context: _FrameContext) -> str:
+    multi_series = _multi_series_trend_points(context)
+    if multi_series:
+        return "；".join(multi_series[:3])
     metric = _preferred_metric_column(context.columns, context.rows)
     period = _preferred_period_column(context.columns)
     if not metric or len(context.rows) < 2:
@@ -741,8 +861,68 @@ def _trend_summary(context: _FrameContext) -> str:
 
 
 def _extrema_text(context: _FrameContext) -> str:
-    points = _trend_points(context)
+    points = _multi_series_trend_points(context) or _trend_points(context)
     return "；".join(points[:3]) if points else ""
+
+
+def _multi_series_trend_points(context: _FrameContext) -> list[str]:
+    period = _preferred_period_column(context.columns)
+    series_columns = _multi_series_value_columns(context.columns, context.rows, period)
+    if not period or len(series_columns) < 2 or len(context.rows) < 2:
+        return []
+    series_profiles = []
+    for column in series_columns:
+        values = [_to_float(row.get(column)) for row in context.rows]
+        numeric_values = [value for value in values if value is not None]
+        if len(numeric_values) < 2:
+            continue
+        indexed = [(index, value) for index, value in enumerate(values) if value is not None]
+        total = sum(numeric_values)
+        peak_index, peak_value = max(indexed, key=lambda item: item[1])
+        leader_count = 0
+        for row in context.rows:
+            row_values = [_to_float(row.get(name)) for name in series_columns]
+            valid_values = [value for value in row_values if value is not None]
+            current = _to_float(row.get(column))
+            if current is not None and valid_values and math.isclose(current, max(valid_values), rel_tol=1e-9, abs_tol=1e-9):
+                leader_count += 1
+        last_change = None
+        previous_value = values[-2]
+        current_value = values[-1]
+        if previous_value is not None and current_value is not None:
+            last_change = current_value - previous_value
+        series_profiles.append(
+            {
+                "column": column,
+                "total": total,
+                "leader_count": leader_count,
+                "peak_index": peak_index,
+                "peak_value": peak_value,
+                "last_change": last_change,
+            }
+        )
+    if len(series_profiles) < 2:
+        return []
+    leader = max(series_profiles, key=lambda item: item["total"])
+    leader_periods = int(leader["leader_count"])
+    if leader_periods == len(context.rows):
+        leader_text = f"{leader['column']} 持续领先"
+    elif leader_periods >= max(2, len(context.rows) - 1):
+        leader_text = f"{leader['column']} 在大多数周期领先"
+    else:
+        leader_text = f"{leader['column']} 整体规模最高"
+    points = [leader_text]
+    growth_candidates = [item for item in series_profiles if item.get("last_change") not in {None, 0}]
+    if growth_candidates:
+        growth = max(growth_candidates, key=lambda item: float(item.get("last_change") or float("-inf")))
+        if float(growth.get("last_change") or 0.0) > 0:
+            points.append(f"{growth['column']} 在 {context.rows[-1].get(period)} 明显跃升")
+    peak_candidates = [item for item in series_profiles if item["column"] != leader["column"]]
+    if peak_candidates:
+        peak = max(peak_candidates, key=lambda item: item["peak_value"])
+        peak_period = context.rows[int(peak["peak_index"])].get(period)
+        points.append(f"{peak['column']} 在 {peak_period} 达到阶段峰值")
+    return points[:3]
 
 
 def _trend_points(context: _FrameContext) -> list[str]:
@@ -862,6 +1042,11 @@ def _preferred_period_column(columns: list[str]) -> str | None:
             if token.lower() in column.lower():
                 return column
     return None
+
+
+def _multi_series_value_columns(columns: list[str], rows: list[dict[str, Any]], period_column: str | None) -> list[str]:
+    excluded = {period_column, _preferred_rate_column(columns)}
+    return [column for column in columns if column not in excluded and _numeric_ratio(rows, column) >= 0.5 and not _looks_identifier(column)]
 
 
 def _numeric_ratio(rows: list[dict[str, Any]], column: str) -> float:

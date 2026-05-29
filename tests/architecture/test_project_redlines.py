@@ -19,9 +19,18 @@ class ProjectRedlineDocumentationTest(unittest.TestCase):
             "docs/FEATURE_BACKLOG.md": ["GPT-like parity review", "文件解析", "排版样式", "打回重写"],
             "docs/ARCHITECTURE.md": ["GPT-like parity redline", "文件解析", "排版密度", "打回重写"],
         }
+        non_regression_sources = {
+            "README.md": ["success=true", "语义错算", "已修能力不得下降", "non-regression"],
+            "MAIN_GOAL.md": ["success=true", "语义错算", "已修能力不得下降", "non-regression"],
+            "docs/PHASE_GATES.md": ["success=true", "语义错算", "已修能力不得下降", "non-regression"],
+            "docs/EVALUATION_GATE.md": ["success=true", "语义错算", "已修能力不得下降", "non-regression"],
+            "docs/WORKBENCH_GPT_PARITY_TEST_PLAN.md": ["success=true", "wrong metric", "wrong dimension", "non-regression"],
+            "docs/FEATURE_BACKLOG.md": ["success=true", "语义错算", "已修能力不得下降", "non-regression"],
+            "docs/ARCHITECTURE.md": ["success=true", "语义错算", "已修能力不得下降", "non-regression"],
+        }
 
         missing: list[str] = []
-        for relative_path, required_terms in required_sources.items():
+        for relative_path, required_terms in (required_sources | non_regression_sources).items():
             text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
             for term in required_terms:
                 if term not in text:
