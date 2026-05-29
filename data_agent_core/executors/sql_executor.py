@@ -183,6 +183,9 @@ def _group_average_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> list[dic
     if filters.get("year"):
         where.append(f"{_quote_identifier('year')} = ?")
         values.append(int(filters["year"]))
+    if filters.get("month") is not None:
+        where.append("CAST(strftime('%m', date(year || '-01-01', '+' || (day_of_year - 1) || ' days')) AS INTEGER) = ?")
+        values.append(int(filters["month"]))
     if filters.get("month_range"):
         start, end = filters["month_range"]
         where.append("CAST(strftime('%m', date(year || '-01-01', '+' || (day_of_year - 1) || ' days')) AS INTEGER) BETWEEN ? AND ?")

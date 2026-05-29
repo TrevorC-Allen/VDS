@@ -239,12 +239,37 @@ def _extract_group_by(question: str, default: str = "shopper_interaction") -> st
         "hour of day": "hour_of_day",
         "hour": "hour_of_day",
     }
-    match = re.search(r"grouped by\s+([a-z_ ]+?)(?:\s+for|\s+between|\?|$)", lowered)
+    for text, column in aliases.items():
+        if any(
+            re.search(pattern, lowered)
+            for pattern in (
+                rf"grouped by\s+{re.escape(text)}(?:\b|_)",
+                rf"\bby\s+{re.escape(text)}(?:\b|_)",
+                rf"\bper\s+{re.escape(text)}(?:\b|_)",
+            )
+        ):
+            return column
+        if any(token in question for token in (f"按{text}", f"按 {text}", f"按{text}分组", f"按 {text} 分组")):
+            return column
+    match = re.search(r"(?:grouped by|by|per)\s+([a-z_ ]+?)(?:\s+for|\s+between|\s+in|\?|$)", lowered)
     candidate = match.group(1).strip() if match else ""
     for text, column in aliases.items():
-        if candidate == text or f"grouped by {text}" in lowered:
+        if candidate == text:
             return column
     return default
+
+
+def _is_group_average_question(question: str) -> bool:
+    lowered = question.lower()
+    has_average = any(token in lowered for token in ("average", "avg", "mean")) or any(token in question for token in ("平均", "均值"))
+    has_transaction_value = any(
+        token in lowered for token in ("transaction value", "transaction amount", "eur_amount")
+    ) or any(token in question for token in ("交易金额", "交易额", "支付金额"))
+    if not has_average or not has_transaction_value:
+        return False
+    if "average fee" in lowered:
+        return False
+    return _extract_group_by(question, default="") != ""
 
 
 def _answer_type_for_group_by(group_by: str | None) -> str:
@@ -1143,7 +1168,7 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 2)},
         )
 
-    if "average transaction value grouped by" in lowered:
+    if _is_group_average_question(question):
         month_range = _extract_quarter_month_range(question)
         return make_logic_form(
             task_type="aggregation",
@@ -1152,9 +1177,10 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
                 "merchant": _extract_merchant(question, context),
                 "card_scheme": _extract_card_scheme(question),
                 "year": _extract_year(question),
+                "month": None if month_range else _extract_month(question),
                 "month_range": month_range,
             },
-            parameters={"group_by": _extract_field_name(question, context) or _extract_group_by(question), "metric": "eur_amount"},
+            parameters={"group_by": _extract_group_by(question, default="shopper_interaction"), "metric": "eur_amount"},
             output_format=output_format | {"answer_type": "grouped_amounts", "decimals": 2},
         )
 
@@ -1227,7 +1253,7 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 14)},
         )
 
-    if "steer traffic" in lowered and "card scheme" in lowered:
+    if "card scheme" in lowered and any(token in lowered for token in ("steer traffic", "steer to", "steer towards", "steering")):
         objective = "maximum" if "maximum" in lowered else "minimum"
         return make_logic_form(
             task_type="fee_rule",

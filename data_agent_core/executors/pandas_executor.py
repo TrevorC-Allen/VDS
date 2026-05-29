@@ -1273,6 +1273,13 @@ def _group_average(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, 
         data = data[data["card_scheme"] == filters["card_scheme"]]
     if filters.get("year"):
         data = data[data["year"] == int(filters["year"])]
+    if filters.get("month") is not None:
+        month_values = pd.to_datetime(
+            data["day_of_year"].astype(int) - 1,
+            unit="D",
+            origin=f"{int(filters.get('year') or 2023)}-01-01",
+        ).dt.month
+        data = data[month_values == int(filters["month"])]
     if filters.get("month_range"):
         start_month, end_month = filters["month_range"]
         months = pd.to_datetime(data["day_of_year"].astype(int) - 1, unit="D", origin=f"{int(filters.get('year') or 2023)}-01-01").dt.month

@@ -270,6 +270,46 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertEqual(["Linux", "Other", "iOS", "MacOS", "Windows"], [row["device_type"] for row in device_result.value])
         self.assertEqual(["IT", "NL", "BE"], [row["acquirer_country"] for row in acquirer_result.value])
 
+    def test_group_average_prefers_requested_dimension_over_filter_fields(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "merchant": ["A", "A", "A", "A", "A", "A"],
+                "card_scheme": ["GlobalCard", "GlobalCard", "GlobalCard", "GlobalCard", "NexPay", "NexPay"],
+                "year": [2023, 2023, 2023, 2023, 2023, 2023],
+                "day_of_year": [1, 2, 3, 4, 5, 6],
+                "eur_amount": [100.0, 200.0, 50.0, 70.0, 999.0, 1000.0],
+                "shopper_interaction": ["Ecommerce", "Ecommerce", "POS", "POS", "POS", "Ecommerce"],
+                "device_type": ["iOS", "iOS", "Android", "Android", "Web", "Web"],
+                "acquirer_country": ["NL", "NL", "DE", "DE", "FR", "FR"],
+            }
+        )
+        shopper_logic = parse_question(
+            "What is the average transaction value by shopper_interaction for GlobalCard transactions in 2023?"
+        )
+        device_logic = parse_question(
+            "What is the average transaction value grouped by device_type for merchant A in 2023?"
+        )
+        acquirer_logic = parse_question(
+            "What is the average transaction value grouped by acquirer_country for merchant A in 2023?"
+        )
+
+        self.assertEqual("group_average", shopper_logic.operation)
+        self.assertEqual("shopper_interaction", shopper_logic.parameters["group_by"])
+        self.assertEqual("GlobalCard", shopper_logic.filters["card_scheme"])
+        self.assertEqual("device_type", device_logic.parameters["group_by"])
+        self.assertEqual("acquirer_country", acquirer_logic.parameters["group_by"])
+
+        shopper_result = pandas_executor.execute_plan(build_analysis_plan(shopper_logic), {"payments": payments})
+        device_result = pandas_executor.execute_plan(build_analysis_plan(device_logic), {"payments": payments})
+        acquirer_result = pandas_executor.execute_plan(build_analysis_plan(acquirer_logic), {"payments": payments})
+
+        self.assertTrue(shopper_result.success, shopper_result.errors)
+        self.assertTrue(device_result.success, device_result.errors)
+        self.assertTrue(acquirer_result.success, acquirer_result.errors)
+        self.assertEqual(["POS", "Ecommerce"], [row["shopper_interaction"] for row in shopper_result.value])
+        self.assertEqual(["Android", "iOS", "Web"], [row["device_type"] for row in device_result.value])
+        self.assertEqual(["DE", "NL", "FR"], [row["acquirer_country"] for row in acquirer_result.value])
+
     def test_fraudulent_percentage_wording_routes_to_fraud_rate(self) -> None:
         payments = pd.DataFrame(
             {
@@ -784,6 +824,49 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertEqual("GlobalCard", result.value["card_scheme"])
         self.assertEqual(["GlobalCard", "NexPay"], [row["card_scheme"] for row in result.value["candidate_table"]])
 
+    def test_card_scheme_steering_parser_accepts_month_scope(self) -> None:
+        logic = parse_question(
+            "Which card scheme should Martinis_Fine_Steakhouse steer to in July 2023 to pay the lowest fees?",
+            context={"merchant_data": [{"merchant": "Martinis_Fine_Steakhouse"}]},
+        )
+
+        self.assertEqual("card_scheme_steering", logic.operation)
+        self.assertEqual("Martinis_Fine_Steakhouse", logic.filters["merchant"])
+        self.assertEqual(2023, logic.filters["year"])
+        self.assertEqual(7, logic.filters["month"])
+        self.assertEqual("minimum", logic.parameters["objective"])
+
+    def test_card_scheme_steering_respects_month_and_annual_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            globalcard = _fee_rule(1, "GlobalCard", ["A"], fixed_amount=0.50, rate=0)
+            nexpay = _fee_rule(2, "NexPay", ["A"], fixed_amount=0.00, rate=1000)
+            (root / "fees.json").write_text(json.dumps([globalcard, nexpay]))
+            (root / "merchant_data.json").write_text(
+                json.dumps([{"merchant": "Martinis_Fine_Steakhouse", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5411}])
+            )
+            (root / "merchant_category_codes.csv").write_text("mcc,description\n5411,Grocery Stores\n")
+            (root / "payments.csv").write_text(
+                "merchant,year,month,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+                "Martinis_Fine_Steakhouse,2023,7,182,0,0,1.0,true,false,false,A,GlobalCard,NL,NL\n"
+                "Martinis_Fine_Steakhouse,2023,8,213,0,0,100.0,true,false,false,A,NexPay,NL,NL\n"
+            )
+            monthly_logic = parse_question(
+                "Which card scheme should Martinis_Fine_Steakhouse steer to in July 2023 to pay the lowest fees?",
+                context={"merchant_data": [{"merchant": "Martinis_Fine_Steakhouse"}]},
+            )
+            annual_logic = parse_question(
+                "Which card scheme should Martinis_Fine_Steakhouse steer to in 2023 to pay the lowest fees?",
+                context={"merchant_data": [{"merchant": "Martinis_Fine_Steakhouse"}]},
+            )
+            monthly_result = pandas_executor.execute_plan(build_analysis_plan(monthly_logic), {"context_dir": root})
+            annual_result = pandas_executor.execute_plan(build_analysis_plan(annual_logic), {"context_dir": root})
+
+        self.assertTrue(monthly_result.success, monthly_result.errors)
+        self.assertTrue(annual_result.success, annual_result.errors)
+        self.assertEqual("NexPay", monthly_result.value["card_scheme"])
+        self.assertEqual("GlobalCard", annual_result.value["card_scheme"])
+
     def test_fee_extreme_by_mcc_returns_all_tied_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -912,6 +995,29 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
 
         self.assertTrue(result.success, result.errors)
         self.assertEqual("C", result.value["aci"])
+
+    def test_aci_fee_extreme_ignores_generic_credit_fallback_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            generic_f = _fee_rule(1, "GlobalCard", ["F"], fixed_amount=5.00, rate=0)
+            generic_f["is_credit"] = None
+            explicit_b = _fee_rule(2, "GlobalCard", ["B"], fixed_amount=1.20, rate=0)
+            explicit_c = _fee_rule(3, "GlobalCard", ["C"], fixed_amount=1.80, rate=0)
+            (root / "fees.json").write_text(json.dumps([generic_f, explicit_b, explicit_c]))
+            (root / "merchant_data.json").write_text(
+                json.dumps([{"merchant": "SyntheticMerchant", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5411}])
+            )
+            (root / "merchant_category_codes.csv").write_text("mcc,description\n5411,Grocery Stores\n")
+            (root / "payments.csv").write_text(
+                "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+                "SyntheticMerchant,2023,1,0,0,1.0,true,false,false,A,GlobalCard,NL,NL\n"
+            )
+            logic = parse_question("For a credit transaction of 1 euros on GlobalCard, what would be the most expensive Authorization Characteristics Indicator (ACI)?")
+            result = pandas_executor.execute_plan(build_analysis_plan(logic), {"context_dir": root})
+
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual("C", result.value["aci"])
+        self.assertEqual(["B", "C"], [row["aci"] for row in result.value["candidate_table"]])
 
     def test_missing_value_top_count_uses_null_filter_and_dimension(self) -> None:
         payments = pd.DataFrame(

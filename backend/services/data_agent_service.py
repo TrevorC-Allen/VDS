@@ -87,7 +87,12 @@ class DataAgentService:
         """Parse a dataset upload or persist an explicitly marked rule file."""
 
         try:
-            role = _normalize_file_role(file_role)
+            role, rule_scope = _resolve_upload_file_role_and_scope(
+                file_role=file_role,
+                rule_scope=rule_scope,
+                file_paths=[file_path],
+                original_filenames=[original_filename],
+            )
             if role == RULE_FILE_ROLE:
                 record = self.file_store.save_rule_file(
                     file_path,
@@ -138,7 +143,12 @@ class DataAgentService:
         """Parse multiple dataset files or persist same-scope rule files."""
 
         try:
-            role = _normalize_file_role(file_role)
+            role, rule_scope = _resolve_upload_file_role_and_scope(
+                file_role=file_role,
+                rule_scope=rule_scope,
+                file_paths=file_paths,
+                original_filenames=original_filenames,
+            )
             if role == RULE_FILE_ROLE:
                 records = self.file_store.save_rule_files(
                     file_paths,
@@ -366,6 +376,7 @@ class DataAgentService:
                 user_rule_context=user_rule_context,
             )
             if fee_rule_response is not None:
+                fee_rule_response = _apply_user_rule_output_constraints(fee_rule_response, user_rule_contexts)
                 _ensure_activity_trace_v2(fee_rule_response)
                 emit_monitor_event(
                     monitor_run_id,
@@ -642,6 +653,7 @@ class DataAgentService:
             )
             _attach_source_references(payload, profile=profile)
             payload = _apply_gpt_like_text_framework(payload, question=question)
+            payload = _apply_user_rule_output_constraints(payload, user_rule_contexts)
             _ensure_activity_trace_v2(payload)
             if payload.get("execution_artifacts"):
                 emit_monitor_event(
@@ -1546,17 +1558,28 @@ class DataAgentService:
     ) -> dict[str, Any]:
         """Return recent persistent workbench conversations."""
 
+        conversations = self.conversation_store.list_conversations(
+            limit=limit,
+            offset=offset,
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            project_id=project_id,
+        )
+        total = self.conversation_store.count_conversations(
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            project_id=project_id,
+        )
         return to_json_ready(
             {
                 "response_version": RESPONSE_VERSION,
                 "success": True,
-                "conversations": self.conversation_store.list_conversations(
-                    limit=limit,
-                    offset=offset,
-                    owner_id=owner_id,
-                    tenant_id=tenant_id,
-                    project_id=project_id,
-                ),
+                "conversations": conversations,
+                "total": total,
+                "limit": max(1, min(int(limit or 50), 200)),
+                "offset": max(0, int(offset or 0)),
+                "count": len(conversations),
+                "has_more": max(0, int(offset or 0)) + len(conversations) < total,
                 "warnings": [],
                 "errors": [],
             }
@@ -1771,14 +1794,33 @@ class DataAgentService:
         )
         return _project_response(record)
 
-    def list_projects(self, *, limit: int = 50, owner_id: str = "", tenant_id: str = "") -> dict[str, Any]:
+    def list_projects(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        owner_id: str = "",
+        tenant_id: str = "",
+    ) -> dict[str, Any]:
         """Return recent project workspaces."""
 
+        projects = self.project_store.list_projects(
+            limit=limit,
+            offset=offset,
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+        )
+        total = self.project_store.count_projects(owner_id=owner_id, tenant_id=tenant_id)
         return to_json_ready(
             {
                 "response_version": RESPONSE_VERSION,
                 "success": True,
-                "projects": self.project_store.list_projects(limit=limit, owner_id=owner_id, tenant_id=tenant_id),
+                "projects": projects,
+                "total": total,
+                "limit": max(1, min(int(limit or 50), 200)),
+                "offset": max(0, int(offset or 0)),
+                "count": len(projects),
+                "has_more": max(0, int(offset or 0)) + len(projects) < total,
                 "warnings": [],
                 "errors": [],
             }
@@ -1887,7 +1929,12 @@ class DataAgentService:
         if self.project_store.get_project(project_id) is None:
             return _project_not_found_response(project_id, failed_step="upload_project_sources")
         try:
-            normalized_file_role = _normalize_file_role(file_role)
+            normalized_file_role, normalized_rule_scope = _resolve_upload_file_role_and_scope(
+                file_role=file_role,
+                rule_scope=rule_scope,
+                file_paths=file_paths,
+                original_filenames=original_filenames,
+            )
         except Exception as exc:  # noqa: BLE001 - normalize upload errors at the service boundary.
             return error_response(
                 error=ErrorResult(
@@ -1942,7 +1989,7 @@ class DataAgentService:
             file_paths,
             original_filenames=original_filenames,
             file_role=normalized_file_role,
-            rule_scope=rule_scope,
+            rule_scope=normalized_rule_scope,
             bind_dataset_id=bind_dataset_id,
         )
         if not upload.get("success"):
@@ -2586,10 +2633,79 @@ def _project_metric_operand(table: pd.DataFrame, token: str) -> pd.Series | None
 
 
 def _normalize_file_role(file_role: str) -> str:
-    role = (file_role or DATASET_FILE_ROLE).strip()
+    role = (file_role or DATASET_FILE_ROLE).strip().lower()
     if role not in VALID_FILE_ROLES:
         raise ValueError("file_role must be dataset or rule.")
     return role
+
+
+def _resolve_upload_file_role_and_scope(
+    *,
+    file_role: str,
+    rule_scope: str,
+    file_paths: list[str | Path],
+    original_filenames: list[str | None] | None,
+) -> tuple[str, str]:
+    """Resolve legacy upload payloads with missing/legacy metadata into one supported shape."""
+
+    resolved_scope = (rule_scope or "").strip()
+    provided_role = (file_role or "").strip().lower()
+    explicit_rule_role = provided_role == RULE_FILE_ROLE
+    if not provided_role:
+        return DATASET_FILE_ROLE, resolved_scope
+    try:
+        resolved_role = _normalize_file_role(provided_role)
+    except ValueError:
+        if provided_role in {"none", "null", "undefined"}:
+            if _looks_like_user_rule_file_upload(file_paths, original_filenames):
+                resolved_role = RULE_FILE_ROLE
+                if not resolved_scope:
+                    resolved_scope = USER_ANALYSIS_RULE_SCOPE
+            else:
+                resolved_role = DATASET_FILE_ROLE
+        else:
+            raise
+    if resolved_role == RULE_FILE_ROLE and not resolved_scope:
+        if explicit_rule_role:
+            raise ValueError("Rule files require rule_scope=user_analysis or rule_scope=benchmark.")
+        if _looks_like_user_rule_file_upload(file_paths, original_filenames):
+            resolved_scope = USER_ANALYSIS_RULE_SCOPE
+    return resolved_role, resolved_scope
+
+
+def _looks_like_user_rule_file_upload(
+    file_paths: list[str | Path],
+    original_filenames: list[str | None] | None,
+) -> bool:
+    """Return true when uploaded files are explicitly rule-like metadata files."""
+
+    if not file_paths:
+        return False
+    for index, file_path in enumerate(file_paths):
+        original_name = None if original_filenames is None else original_filenames[index]
+        if not _looks_like_auto_user_rule_file(file_path, original_name):
+            return False
+        lowered_name = Path(str(original_name or Path(file_path).name)).name.lower()
+        if not any(
+            token in lowered_name
+            for token in (
+                "rule",
+                "rules",
+                "manual",
+                "guide",
+                "guideline",
+                "schema",
+                "metadata",
+                "definition",
+                "meaning",
+                "fee",
+                "口径",
+                "规则",
+                "计算",
+            )
+        ):
+            return False
+    return True
 
 
 def _split_rule_file_ids(value: str) -> list[str]:
@@ -2915,17 +3031,210 @@ def _rule_context_excerpt(rule_context: dict[str, Any]) -> str:
 def _user_rule_guidelines(rule_context: dict[str, Any]) -> str:
     parsed = rule_context.get("parsed_rule")
     raw_text = str(rule_context.get("raw_text") or "").strip()
-    if isinstance(parsed, dict) and "raw_text" not in parsed:
-        return (
-            "User analysis rules from uploaded rule file. These rules constrain this analysis only; "
-            "do not treat the rule file as a dataset.\n"
-            + json_dumps_compact(parsed)
-        )
-    return (
+    prefix = (
         "User analysis rules from uploaded rule file. These rules constrain this analysis only; "
-        "do not treat the rule file as a dataset.\n"
-        + raw_text
+        "do not treat the rule file as a dataset. Treat explicit output-format rules as hard constraints "
+        "for the final user-facing answer.\n"
     )
+    if isinstance(parsed, dict) and "raw_text" not in parsed:
+        return prefix + json_dumps_compact(parsed)
+    return prefix + raw_text
+
+
+def _apply_user_rule_output_constraints(
+    payload: dict[str, Any],
+    rule_contexts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    constraints = _collect_user_rule_output_constraints(rule_contexts)
+    if not constraints["suppress_numbers"] and not constraints["entity_only"]:
+        return payload
+    original_answer = str(payload.get("answer") or "").strip()
+    if not original_answer:
+        return payload
+    entity_answer = _entity_only_answer_from_payload(payload, preferred_label=str(constraints.get("entity_only_label") or ""))
+    updated_answer = original_answer
+    if constraints["entity_only"] and entity_answer:
+        updated_answer = entity_answer
+    elif constraints["suppress_numbers"] and _answer_contains_numeric_content(original_answer):
+        if entity_answer:
+            updated_answer = entity_answer
+        else:
+            sanitized = _remove_numeric_fragments(original_answer)
+            if sanitized:
+                updated_answer = sanitized
+    if not updated_answer or updated_answer == original_answer:
+        return payload
+    payload["answer"] = updated_answer
+    payload.setdefault("debug", {})["user_rule_output_constraints_applied"] = to_json_ready(constraints)
+    verification = payload.get("verification")
+    if isinstance(verification, dict):
+        notes = verification.setdefault("notes", [])
+        if isinstance(notes, list):
+            note = "Applied uploaded user rule output constraints to the final answer."
+            if note not in notes:
+                notes.append(note)
+    return payload
+
+
+def _collect_user_rule_output_constraints(rule_contexts: list[dict[str, Any]]) -> dict[str, Any]:
+    constraints: dict[str, Any] = {
+        "suppress_numbers": False,
+        "entity_only": False,
+        "entity_only_label": "",
+    }
+    for context in rule_contexts:
+        text = _rule_text_content(context)
+        if not text:
+            continue
+        if _rule_requests_no_numeric_output(text):
+            constraints["suppress_numbers"] = True
+        entity_only_label = _rule_requests_entity_only_output(text)
+        if entity_only_label and not constraints["entity_only"]:
+            constraints["entity_only"] = True
+            constraints["entity_only_label"] = entity_only_label
+    return constraints
+
+
+def _rule_text_content(rule_context: dict[str, Any]) -> str:
+    parsed = rule_context.get("parsed_rule")
+    raw_text = str(rule_context.get("raw_text") or "").strip()
+    if isinstance(parsed, dict) and str(parsed.get("raw_text") or "").strip():
+        return str(parsed.get("raw_text") or "")
+    if raw_text:
+        return raw_text
+    if parsed:
+        return json_dumps_compact(parsed)
+    return ""
+
+
+def _rule_requests_no_numeric_output(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or "")).lower()
+    return any(
+        token in compact
+        for token in (
+            "不要返回数值",
+            "不要返回数字",
+            "不返回数值",
+            "不返回数字",
+            "不要带数值",
+            "不要带数字",
+            "不带数值",
+            "不带数字",
+            "不要返回任何数字",
+            "donotreturnnumbers",
+            "withoutnumbers",
+            "nonumbers",
+            "donotincludenumbers",
+        )
+    )
+
+
+def _rule_requests_entity_only_output(text: str) -> str:
+    chinese_match = re.search(r"(?:只|仅)(?:回答|返回|给出|保留)([^，。；,\n]{1,12})", str(text or ""))
+    if chinese_match:
+        candidate = chinese_match.group(1).strip()
+        if candidate and candidate not in {"答案", "结果", "内容", "文本", "文字", "结论"}:
+            return candidate
+    english_match = re.search(r"(?:only|just)\s+(?:answer|return|give)\s+(?:the\s+)?([a-z][a-z _-]{0,20})", str(text or ""), re.IGNORECASE)
+    if english_match:
+        candidate = english_match.group(1).strip()
+        if candidate and candidate.lower() not in {"answer", "result", "text", "content"}:
+            return candidate
+    return ""
+
+
+def _entity_only_answer_from_payload(payload: dict[str, Any], *, preferred_label: str = "") -> str:
+    result = payload.get("result")
+    rows = result.get("rows") if isinstance(result, dict) else None
+    if not isinstance(rows, list) or not rows:
+        value = result.get("value") if isinstance(result, dict) else None
+        if isinstance(value, str) and value.strip() and not _answer_contains_numeric_content(value):
+            return value.strip()
+        return ""
+    dict_rows = [row for row in rows if isinstance(row, dict)]
+    if not dict_rows:
+        return ""
+    column = _pick_preferred_text_column(dict_rows, preferred_label=preferred_label)
+    if not column:
+        return ""
+    values: list[str] = []
+    for row in dict_rows:
+        value = row.get(column)
+        if value is None or _is_numeric_like_value(value):
+            continue
+        text = str(value).strip()
+        if text and text not in values:
+            values.append(text)
+    if not values:
+        return ""
+    return values[0] if len(values) == 1 else ", ".join(values[:5])
+
+
+def _pick_preferred_text_column(rows: list[dict[str, Any]], *, preferred_label: str = "") -> str:
+    first_row = rows[0]
+    candidate_columns = [column for column in first_row if any(not _is_numeric_like_value(row.get(column)) for row in rows)]
+    if not candidate_columns:
+        return ""
+    if preferred_label:
+        label_tokens = _output_label_tokens(preferred_label)
+        for column in candidate_columns:
+            normalized = _normalized_output_token(column)
+            if any(token == normalized or token in normalized or normalized in token for token in label_tokens):
+                return str(column)
+    for column in candidate_columns:
+        normalized = _normalized_output_token(column)
+        if normalized and not any(token in normalized for token in ("id", "code", "date", "time", "编号", "编码", "日期", "时间")):
+            return str(column)
+    return str(candidate_columns[0])
+
+
+def _output_label_tokens(label: str) -> set[str]:
+    normalized = _normalized_output_token(label)
+    if not normalized:
+        return set()
+    aliases = {
+        "城市": {"city", "cities", "城市"},
+        "地区": {"region", "area", "province", "state", "地区"},
+        "国家": {"country", "nation", "国家"},
+        "产品": {"product", "sku", "item", "产品"},
+        "客户": {"customer", "client", "account", "客户"},
+        "门店": {"store", "shop", "branch", "门店"},
+        "品类": {"category", "segment", "class", "品类"},
+        "品牌": {"brand", "品牌"},
+        "商户": {"merchant", "商户"},
+    }
+    tokens = {normalized}
+    for canonical, variants in aliases.items():
+        canonical_token = _normalized_output_token(canonical)
+        variant_tokens = {_normalized_output_token(value) for value in variants}
+        if normalized == canonical_token or normalized in variant_tokens:
+            tokens.update(token for token in variant_tokens | {canonical_token} if token)
+    return tokens
+
+
+def _normalized_output_token(value: Any) -> str:
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(value or "").lower())
+
+
+def _is_numeric_like_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    text = str(value or "").strip().replace(",", "")
+    return bool(re.fullmatch(r"[-+]?\d+(?:\.\d+)?%?", text))
+
+
+def _answer_contains_numeric_content(text: str) -> bool:
+    return bool(re.search(r"\d", str(text or "")))
+
+
+def _remove_numeric_fragments(text: str) -> str:
+    stripped = re.sub(r"[-+]?\d[\d,]*(?:\.\d+)?%?", "", str(text or ""))
+    stripped = re.sub(r"\(\s*\)", "", stripped)
+    stripped = re.sub(r"\s+", " ", stripped)
+    stripped = re.sub(r"\s+([,.;:，；：。])", r"\1", stripped)
+    return stripped.strip(" ,.;:，；：。")
 
 
 def _rule_context_by_name(contexts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

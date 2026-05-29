@@ -127,31 +127,31 @@ class ConversationStore:
     ) -> list[dict[str, Any]]:
         """Return recent conversation summaries."""
 
-        records = []
-        safe_project_id = None if project_id is None else _safe_project_id(project_id)
-        for path in self.root.glob("conv_*.json"):
-            try:
-                record = self._read(path)
-            except (OSError, json.JSONDecodeError):
-                continue
-            if owner_id and str(record.get("owner_id") or "") != owner_id:
-                continue
-            if tenant_id and str(record.get("tenant_id") or "") != tenant_id:
-                continue
-            if project_id is not None and str(record.get("project_id") or "") != str(safe_project_id or ""):
-                continue
-            records.append(_conversation_summary(record))
-        records.sort(
-            key=lambda item: (
-                bool(item.get("pinned")),
-                str(item.get("pinned_at") or item.get("updated_at") or ""),
-                str(item.get("updated_at") or ""),
-            ),
-            reverse=True,
+        records = self._filtered_conversation_summaries(
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            project_id=project_id,
         )
         safe_limit = max(1, min(int(limit or 50), 200))
         safe_offset = max(0, int(offset or 0))
         return records[safe_offset : safe_offset + safe_limit]
+
+    def count_conversations(
+        self,
+        *,
+        owner_id: str = "",
+        tenant_id: str = "",
+        project_id: str | None = None,
+    ) -> int:
+        """Return the full number of filtered conversations before pagination."""
+
+        return len(
+            self._filtered_conversation_summaries(
+                owner_id=owner_id,
+                tenant_id=tenant_id,
+                project_id=project_id,
+            )
+        )
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
         """Return a full conversation record if it exists."""
@@ -238,6 +238,37 @@ class ConversationStore:
         temp_path = path.with_suffix(".json.tmp")
         temp_path.write_text(json.dumps(to_json_ready(record), ensure_ascii=False, indent=2), encoding="utf-8")
         temp_path.replace(path)
+
+    def _filtered_conversation_summaries(
+        self,
+        *,
+        owner_id: str = "",
+        tenant_id: str = "",
+        project_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        records = []
+        safe_project_id = None if project_id is None else _safe_project_id(project_id)
+        for path in self.root.glob("conv_*.json"):
+            try:
+                record = self._read(path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if owner_id and str(record.get("owner_id") or "") != owner_id:
+                continue
+            if tenant_id and str(record.get("tenant_id") or "") != tenant_id:
+                continue
+            if project_id is not None and str(record.get("project_id") or "") != str(safe_project_id or ""):
+                continue
+            records.append(_conversation_summary(record))
+        records.sort(
+            key=lambda item: (
+                bool(item.get("pinned")),
+                str(item.get("pinned_at") or item.get("updated_at") or ""),
+                str(item.get("updated_at") or ""),
+            ),
+            reverse=True,
+        )
+        return records
 
 
 def _conversation_summary(record: dict[str, Any]) -> dict[str, Any]:
