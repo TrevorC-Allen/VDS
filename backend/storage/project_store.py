@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 from typing import Any
 import uuid
 
@@ -326,6 +327,7 @@ def build_project_context(project: dict[str, Any]) -> dict[str, Any]:
     instructions_guidelines = "Project instructions:\n" + instructions if instructions else ""
     memory_guidelines = "Project-only memory:\n" + "\n".join(memory_lines) if memory_lines else ""
     source_guidelines = "Project text sources:\n" + "\n".join(text_source_lines) if text_source_lines else ""
+    derived_metrics = _project_derived_metrics(project)
     return {
         "enabled": True,
         "project_id": project.get("project_id") or "",
@@ -334,6 +336,7 @@ def build_project_context(project: dict[str, Any]) -> dict[str, Any]:
         "default_dataset_id": project.get("default_dataset_id") or "",
         "source_count": len(sources),
         "memory_count": len(memories),
+        "derived_metrics": derived_metrics,
         "instructions_guidelines": instructions_guidelines,
         "memory_guidelines": memory_guidelines,
         "source_guidelines": source_guidelines,
@@ -341,6 +344,62 @@ def build_project_context(project: dict[str, Any]) -> dict[str, Any]:
             part for part in (instructions_guidelines, memory_guidelines, source_guidelines) if part
         ),
     }
+
+
+_PROJECT_FORMULA_PATTERN = re.compile(
+    r"(?P<name>[\u4e00-\u9fffA-Za-z_][\u4e00-\u9fffA-Za-z0-9_\s]{0,40}?)\s*=\s*"
+    r"(?P<expr>[\u4e00-\u9fffA-Za-z_][\u4e00-\u9fffA-Za-z0-9_]*(?:\s*[+\-*/]\s*(?:[\u4e00-\u9fffA-Za-z_][\u4e00-\u9fffA-Za-z0-9_]*|\d+(?:\.\d+)?))+)"
+)
+_PROJECT_FORMULA_TOKEN_PATTERN = re.compile(r"[\u4e00-\u9fffA-Za-z_][\u4e00-\u9fffA-Za-z0-9_]*|\d+(?:\.\d+)?")
+
+
+def _project_derived_metrics(project: dict[str, Any]) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    text_entries: list[tuple[str, str]] = []
+    instructions = str(project.get("instructions") or "").strip()
+    if instructions:
+        text_entries.append(("instructions", instructions))
+    for memory in project.get("memories") or []:
+        content = str(memory.get("content") or "").strip()
+        if not content:
+            continue
+        title = str(memory.get("title") or "memory").strip() or "memory"
+        text_entries.append((f"memory:{title}", content))
+    for source in project.get("sources") or []:
+        if str(source.get("source_type") or "") not in {"note", "saved_response"}:
+            continue
+        content = str(source.get("content") or "").strip()
+        if not content:
+            continue
+        title = str(source.get("title") or "source").strip() or "source"
+        text_entries.append((f"source:{title}", content))
+    for origin, text in text_entries:
+        for match in _PROJECT_FORMULA_PATTERN.finditer(text):
+            name = " ".join(str(match.group("name") or "").split()).strip("：:;,，。；")
+            expression = " ".join(str(match.group("expr") or "").split()).strip("：:;,，。；")
+            if not name or not expression:
+                continue
+            fields = [
+                token
+                for token in _PROJECT_FORMULA_TOKEN_PATTERN.findall(expression)
+                if not re.fullmatch(r"\d+(?:\.\d+)?", token)
+            ]
+            if len(fields) < 2:
+                continue
+            key = (name, expression)
+            if key in seen:
+                continue
+            seen.add(key)
+            specs.append(
+                {
+                    "name": name,
+                    "expression": expression,
+                    "fields": fields,
+                    "origin": origin,
+                }
+            )
+    return specs
 
 
 def _project_summary(record: dict[str, Any]) -> dict[str, Any]:

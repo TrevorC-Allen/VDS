@@ -25,11 +25,14 @@ FIELD_ALIASES = {
     "aci": "aci",
     "card scheme": "card_scheme",
     "device type": "device_type",
+    "device_type": "device_type",
     "device": "device_type",
     "shopper interaction": "shopper_interaction",
     "payment interaction": "shopper_interaction",
     "issuing country": "issuing_country",
     "issuing_country": "issuing_country",
+    "acquirer country": "acquirer_country",
+    "acquirer_country": "acquirer_country",
     "ip country": "ip_country",
     "ip_country": "ip_country",
     "ip address": "ip_address",
@@ -224,9 +227,12 @@ def _extract_group_by(question: str, default: str = "shopper_interaction") -> st
         "card scheme": "card_scheme",
         "issuing country": "issuing_country",
         "issuing_country": "issuing_country",
+        "acquirer country": "acquirer_country",
+        "acquirer_country": "acquirer_country",
         "ip country": "ip_country",
         "ip_country": "ip_country",
         "device type": "device_type",
+        "device_type": "device_type",
         "card_scheme": "card_scheme",
         "shopper_interaction": "shopper_interaction",
         "merchant": "merchant",
@@ -1148,7 +1154,7 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
                 "year": _extract_year(question),
                 "month_range": month_range,
             },
-            parameters={"group_by": _extract_group_by(question), "metric": "eur_amount"},
+            parameters={"group_by": _extract_field_name(question, context) or _extract_group_by(question), "metric": "eur_amount"},
             output_format=output_format | {"answer_type": "grouped_amounts", "decimals": 2},
         )
 
@@ -1277,7 +1283,7 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             task_type="fee_rule",
             operation="best_fraud_aci_choice",
             filters={"merchant": _extract_merchant(question, context), "year": _extract_year(question), "month": _extract_month(question)},
-            output_format=output_format | {"answer_type": "scheme_fee", "decimals": 2},
+            output_format=output_format | {"answer_type": "aci", "decimals": 2},
         )
 
     if "aci" in lowered and ("transaction value" in lowered or re.search(r"transaction of\s+\d", lowered)) and (

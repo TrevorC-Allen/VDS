@@ -70,7 +70,8 @@ def validate_final_answer(answer: Any, output_format: dict[str, Any] | None = No
         "comma_list_format_mismatch": False,
     }
 
-    if not text:
+    allow_empty = _guidelines_request_empty_string_for_empty_list(guidelines) and answer_type in {"list", "table"}
+    if not text and not allow_empty:
         flags["empty_answer"] = True
         issues.append("empty_answer")
     if _looks_like_object_or_list_leak(text):
@@ -150,6 +151,8 @@ def _coerce_mapping(value: dict[str, Any], answer_type: str, guidelines: str, ou
 
 def _coerce_sequence(value: list[Any] | tuple[Any, ...], answer_type: str, guidelines: str, output_format: dict[str, Any] | None = None) -> Any:
     if not value:
+        if _guidelines_request_empty_string_for_empty_list(guidelines) and answer_type in {"table", "list"}:
+            return ""
         return "没有匹配记录" if answer_type in {"table", "list"} else "Not Applicable"
     if answer_type in {"number", "percentage"} or _guidelines_request_plain_number(guidelines):
         first_numeric = _first_numeric_from_sequence(value)
@@ -305,6 +308,8 @@ def _format_list(value: Any, output_format: dict[str, Any]) -> str:
     items = _coerce_list_items(value)
     if items is None:
         return str(value)
+    if not items and _guidelines_request_empty_string_for_empty_list(str(output_format.get("guidelines") or "")):
+        return ""
     if output_format.get("dedupe_values"):
         deduped: list[Any] = []
         seen: set[str] = set()
@@ -479,6 +484,11 @@ def _guidelines_request_plain_number(guidelines: str) -> bool:
 def _guidelines_request_comma_separated(guidelines: str) -> bool:
     lowered = guidelines.lower()
     return "comma separated" in lowered or "comma-separated" in lowered or "英文逗号分隔" in guidelines
+
+
+def _guidelines_request_empty_string_for_empty_list(guidelines: str) -> bool:
+    lowered = guidelines.lower()
+    return "if the answer is an empty list, reply with an empty string" in lowered or "空列表返回空字符串" in guidelines
 
 
 def _is_plain_number(text: str) -> bool:

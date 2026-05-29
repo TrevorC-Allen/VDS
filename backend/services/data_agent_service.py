@@ -41,8 +41,7 @@ from data_agent_core.core.message_intent import (
     is_dataset_overview_question,
     is_dataset_source_question,
 )
-from data_agent_core.core.file_parser import parse_dataset_file
-from data_agent_core.core.file_parser import load_dabstep_context
+from data_agent_core.core.file_parser import load_dabstep_context, parse_dataset_file, parse_dataset_files
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import FILE_PARSE_ERROR, LOGIC_FORM_ERROR
 from data_agent_core.executors import pandas_executor
@@ -167,7 +166,15 @@ class DataAgentService:
             )
             if not dataset_paths:
                 raise ValueError("Upload at least one dataset file together with optional rule files.")
-            stored = self.file_store.save_uploaded_files(dataset_paths, original_filenames=dataset_names)
+            if rule_paths:
+                parsed = parse_dataset_files(dataset_paths, source_names=dataset_names)
+                stored = self.file_store.save_parsed_dataset_files(
+                    dataset_paths,
+                    parsed,
+                    original_filenames=dataset_names,
+                )
+            else:
+                stored = self.file_store.save_uploaded_files(dataset_paths, original_filenames=dataset_names)
             bound_rules: list[StoredRuleFile] = []
             if rule_paths:
                 bound_rules = self.file_store.save_rule_files(
@@ -211,6 +218,7 @@ class DataAgentService:
         agent_mode: str = "multi_agent",
         user_rule_file_id: str = "",
         monitor_run_id: str = "",
+        project_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run the configured Data Agent workflow for an uploaded dataset."""
 
@@ -319,6 +327,10 @@ class DataAgentService:
             )
 
         try:
+            tables, applied_project_metrics = _apply_project_derived_metrics_to_tables(
+                tables,
+                project_context=project_context or {},
+            )
             profile = self.file_store.get_profile(dataset_id)
             dataset_kind = self.file_store.get_dataset_kind(dataset_id)
             analysis_context = self.file_store.get_analysis_context(dataset_id)
@@ -604,6 +616,8 @@ class DataAgentService:
             payload["debug"]["agent_mode"] = agent_mode
             payload["debug"]["dataset_kind"] = dataset_kind
             payload["debug"]["user_rule_context"] = user_rule_context
+            if applied_project_metrics:
+                payload["debug"]["project_derived_metrics_applied"] = applied_project_metrics
             if rule_augmented_context is not None:
                 payload["debug"]["rule_augmented_fee_context"] = True
                 payload["debug"]["effective_context_kind"] = "user_rule_fee_context"
@@ -1235,6 +1249,7 @@ class DataAgentService:
                 agent_mode=agent_mode,
                 user_rule_file_id=user_rule_file_id,
                 monitor_run_id=monitor_run_id,
+                project_context=project_context,
             )
         else:
             response = self.analyze_dataset(
@@ -1245,6 +1260,7 @@ class DataAgentService:
                 agent_mode=agent_mode,
                 user_rule_file_id=user_rule_file_id,
                 monitor_run_id=monitor_run_id,
+                project_context=project_context,
             )
         _ensure_activity_trace_v2(response)
         _attach_project_metadata(response, project_context)
@@ -1945,7 +1961,7 @@ class DataAgentService:
                 project_id,
                 source_type="rule",
                 title=str(rule.get("file_name") or "Rule file"),
-                dataset_id=str(rule.get("dataset_id") or upload.get("dataset_id") or ""),
+                dataset_id=str(rule.get("bound_dataset_id") or upload.get("dataset_id") or ""),
                 file_id=str(rule.get("file_id") or ""),
                 metadata={"rule_scope": rule.get("rule_scope") or USER_ANALYSIS_RULE_SCOPE},
             )
@@ -1956,7 +1972,7 @@ class DataAgentService:
                 project_id,
                 source_type="rule",
                 title=str(rule.get("file_name") or "Rule file"),
-                dataset_id=str(rule.get("dataset_id") or ""),
+                dataset_id=str(rule.get("bound_dataset_id") or ""),
                 file_id=str(rule.get("file_id") or ""),
                 metadata={"rule_scope": rule.get("rule_scope") or rule_scope},
             )
@@ -2498,6 +2514,75 @@ def _attach_external_metadata(response: dict[str, Any], *, request_id: str | Non
     return to_json_ready(response)
 
 
+_PROJECT_METRIC_TOKEN_PATTERN = re.compile(r"[\u4e00-\u9fffA-Za-z_][\u4e00-\u9fffA-Za-z0-9_]*|\d+(?:\.\d+)?")
+
+
+def _apply_project_derived_metrics_to_tables(
+    tables: dict[str, pd.DataFrame],
+    *,
+    project_context: dict[str, Any],
+) -> tuple[dict[str, pd.DataFrame], list[str]]:
+    specs = [spec for spec in (project_context.get("derived_metrics") or []) if isinstance(spec, dict)]
+    if not specs:
+        return tables, []
+    copied_tables: dict[str, pd.DataFrame] | None = None
+    applied: list[str] = []
+    for spec in specs:
+        metric_name = str(spec.get("name") or "").strip()
+        expression = str(spec.get("expression") or "").strip()
+        fields = [str(field) for field in spec.get("fields") or [] if str(field).strip()]
+        if not metric_name or not expression or len(fields) < 2:
+            continue
+        for table_name, table in tables.items():
+            if metric_name in table.columns or not all(field in table.columns for field in fields):
+                continue
+            computed = _evaluate_project_metric_expression(table, expression)
+            if computed is None:
+                continue
+            if copied_tables is None:
+                copied_tables = {name: frame.copy() for name, frame in tables.items()}
+            copied_tables[table_name][metric_name] = computed
+            if metric_name not in applied:
+                applied.append(metric_name)
+    return copied_tables or tables, applied
+
+
+def _evaluate_project_metric_expression(table: pd.DataFrame, expression: str) -> pd.Series | None:
+    tokens = _PROJECT_METRIC_TOKEN_PATTERN.findall(expression)
+    if len(tokens) < 2:
+        return None
+    operators = re.findall(r"[+\-*/]", expression)
+    if len(operators) != len(tokens) - 1:
+        return None
+    current = _project_metric_operand(table, tokens[0])
+    if current is None:
+        return None
+    for operator, token in zip(operators, tokens[1:]):
+        operand = _project_metric_operand(table, token)
+        if operand is None:
+            return None
+        if operator == "+":
+            current = current + operand
+        elif operator == "-":
+            current = current - operand
+        elif operator == "*":
+            current = current * operand
+        elif operator == "/":
+            divisor = operand.where(operand != 0)
+            current = (current / divisor).replace([float("inf"), float("-inf")], pd.NA)
+        else:
+            return None
+    return current
+
+
+def _project_metric_operand(table: pd.DataFrame, token: str) -> pd.Series | None:
+    if re.fullmatch(r"\d+(?:\.\d+)?", token):
+        return pd.Series(float(token), index=table.index, dtype="float64")
+    if token not in table.columns:
+        return None
+    return pd.to_numeric(table[token], errors="coerce")
+
+
 def _normalize_file_role(file_role: str) -> str:
     role = (file_role or DATASET_FILE_ROLE).strip()
     if role not in VALID_FILE_ROLES:
@@ -2588,11 +2673,14 @@ def _looks_like_auto_user_rule_file(file_path: str | Path, original_filename: st
     if suffix in (RULE_FILE_EXTENSIONS - {".json"}):
         return True
     if suffix == ".json":
+        if lowered in {"fees.json", "merchant_data.json"}:
+            return True
         return any(
             token in lowered
             for token in (
                 "rule",
                 "rules",
+                "merchant_data",
                 "manual",
                 "guideline",
                 "guide",
@@ -2704,7 +2792,7 @@ def _rule_file_response(record: StoredRuleFile) -> dict[str, Any]:
             "file_name": record.file_name,
             "file_role": record.file_role,
             "rule_scope": record.rule_scope,
-            "dataset_id": record.dataset_id,
+            "bound_dataset_id": record.dataset_id,
             "status": "ready",
             "rule_summary": _rule_summary(record),
             "warnings": list(record.warnings),
@@ -2719,7 +2807,7 @@ def _public_rule_record(record: StoredRuleFile) -> dict[str, Any]:
         "file_name": record.file_name,
         "file_role": record.file_role,
         "rule_scope": record.rule_scope,
-        "dataset_id": record.dataset_id,
+        "bound_dataset_id": record.dataset_id,
         "warnings": list(record.warnings),
     }
 
@@ -3140,6 +3228,7 @@ def _attach_project_metadata(response: dict[str, Any], project_context: dict[str
         "source_count": project_context.get("source_count") or 0,
         "memory_count": project_context.get("memory_count") or 0,
         "default_dataset_id": project_context.get("default_dataset_id") or "",
+        "derived_metric_count": len(project_context.get("derived_metrics") or []),
     }
     response["project_id"] = project["project_id"]
     response["project"] = project

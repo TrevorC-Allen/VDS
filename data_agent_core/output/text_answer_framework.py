@@ -359,7 +359,7 @@ def _brief_conclusions(context: _FrameContext) -> list[str]:
         rows.append("未达标项需要优先看目标来源、实际来源和周期是否完整")
         return rows
     if context.kind == "trend":
-        extrema = _trend_points(context)
+        extrema = _multi_series_trend_points(context) or _trend_points(context)
         return extrema or _sentence_fallbacks(context)
     if context.kind == "ranking":
         rows = _ranking_conclusions(context)
@@ -843,6 +843,9 @@ def _best_metric_row(context: _FrameContext, *, prefer_rate: bool, highest: bool
 
 
 def _trend_summary(context: _FrameContext) -> str:
+    multi_series = _multi_series_trend_points(context)
+    if multi_series:
+        return "；".join(multi_series[:3])
     metric = _preferred_metric_column(context.columns, context.rows)
     period = _preferred_period_column(context.columns)
     if not metric or len(context.rows) < 2:
@@ -858,8 +861,68 @@ def _trend_summary(context: _FrameContext) -> str:
 
 
 def _extrema_text(context: _FrameContext) -> str:
-    points = _trend_points(context)
+    points = _multi_series_trend_points(context) or _trend_points(context)
     return "；".join(points[:3]) if points else ""
+
+
+def _multi_series_trend_points(context: _FrameContext) -> list[str]:
+    period = _preferred_period_column(context.columns)
+    series_columns = _multi_series_value_columns(context.columns, context.rows, period)
+    if not period or len(series_columns) < 2 or len(context.rows) < 2:
+        return []
+    series_profiles = []
+    for column in series_columns:
+        values = [_to_float(row.get(column)) for row in context.rows]
+        numeric_values = [value for value in values if value is not None]
+        if len(numeric_values) < 2:
+            continue
+        indexed = [(index, value) for index, value in enumerate(values) if value is not None]
+        total = sum(numeric_values)
+        peak_index, peak_value = max(indexed, key=lambda item: item[1])
+        leader_count = 0
+        for row in context.rows:
+            row_values = [_to_float(row.get(name)) for name in series_columns]
+            valid_values = [value for value in row_values if value is not None]
+            current = _to_float(row.get(column))
+            if current is not None and valid_values and math.isclose(current, max(valid_values), rel_tol=1e-9, abs_tol=1e-9):
+                leader_count += 1
+        last_change = None
+        previous_value = values[-2]
+        current_value = values[-1]
+        if previous_value is not None and current_value is not None:
+            last_change = current_value - previous_value
+        series_profiles.append(
+            {
+                "column": column,
+                "total": total,
+                "leader_count": leader_count,
+                "peak_index": peak_index,
+                "peak_value": peak_value,
+                "last_change": last_change,
+            }
+        )
+    if len(series_profiles) < 2:
+        return []
+    leader = max(series_profiles, key=lambda item: item["total"])
+    leader_periods = int(leader["leader_count"])
+    if leader_periods == len(context.rows):
+        leader_text = f"{leader['column']} 持续领先"
+    elif leader_periods >= max(2, len(context.rows) - 1):
+        leader_text = f"{leader['column']} 在大多数周期领先"
+    else:
+        leader_text = f"{leader['column']} 整体规模最高"
+    points = [leader_text]
+    growth_candidates = [item for item in series_profiles if item.get("last_change") not in {None, 0}]
+    if growth_candidates:
+        growth = max(growth_candidates, key=lambda item: float(item.get("last_change") or float("-inf")))
+        if float(growth.get("last_change") or 0.0) > 0:
+            points.append(f"{growth['column']} 在 {context.rows[-1].get(period)} 明显跃升")
+    peak_candidates = [item for item in series_profiles if item["column"] != leader["column"]]
+    if peak_candidates:
+        peak = max(peak_candidates, key=lambda item: item["peak_value"])
+        peak_period = context.rows[int(peak["peak_index"])].get(period)
+        points.append(f"{peak['column']} 在 {peak_period} 达到阶段峰值")
+    return points[:3]
 
 
 def _trend_points(context: _FrameContext) -> list[str]:
@@ -979,6 +1042,11 @@ def _preferred_period_column(columns: list[str]) -> str | None:
             if token.lower() in column.lower():
                 return column
     return None
+
+
+def _multi_series_value_columns(columns: list[str], rows: list[dict[str, Any]], period_column: str | None) -> list[str]:
+    excluded = {period_column, _preferred_rate_column(columns)}
+    return [column for column in columns if column not in excluded and _numeric_ratio(rows, column) >= 0.5 and not _looks_identifier(column)]
 
 
 def _numeric_ratio(rows: list[dict[str, Any]], column: str) -> float:

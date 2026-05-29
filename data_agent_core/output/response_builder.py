@@ -47,6 +47,10 @@ def build_response(
             "rows": overview_display["rows"],
             "value": overview_display["value"],
         }
+    display_result = _attach_display_rows(
+        display_result,
+        output_format=plan.logic_form.output_format,
+    )
     not_applicable_attribution = classify_not_applicable(execution_result.value, plan)
     success = (
         execution_result.success
@@ -308,6 +312,51 @@ def _result_rows(execution_result: ExecutionResult) -> list[dict[str, Any]]:
     if isinstance(value, dict):
         return [value]
     return []
+
+
+def _attach_display_rows(result: dict[str, Any], *, output_format: dict[str, Any]) -> dict[str, Any]:
+    rows = result.get("rows")
+    columns = result.get("columns")
+    if not isinstance(rows, list) or not rows or not isinstance(columns, list):
+        return result
+    result["display_rows"] = [
+        {column: _format_display_cell(column, row.get(column), output_format) for column in columns}
+        for row in rows
+        if isinstance(row, dict)
+    ]
+    return result
+
+
+def _format_display_cell(column: str, value: Any, output_format: dict[str, Any]) -> Any:
+    number = _to_float(value)
+    if number is None:
+        return value
+    if _looks_like_integer_display_column(column):
+        return f"{int(round(number)):,}"
+    decimals = int(output_format.get("decimals") or 2)
+    if _looks_like_rate_display_column(column):
+        return f"{number:,.{decimals}f}%"
+    if math.isclose(number, round(number)) and not _looks_like_amount_display_column(column):
+        return f"{int(round(number)):,}"
+    return f"{number:,.{decimals}f}"
+
+
+def _looks_like_integer_display_column(column: str) -> bool:
+    lowered = column.lower()
+    return any(
+        token in lowered
+        for token in ("year", "month", "day", "hour", "minute", "日期", "月份", "年", "数量", "次数", "记录数", "count", "行数")
+    ) and not _looks_like_amount_display_column(column)
+
+
+def _looks_like_rate_display_column(column: str) -> bool:
+    lowered = column.lower()
+    return any(token in lowered for token in ("rate", "ratio", "share", "percent", "%", "达成率", "完成率", "占比", "比例"))
+
+
+def _looks_like_amount_display_column(column: str) -> bool:
+    lowered = column.lower()
+    return any(token in lowered for token in ("金额", "销售额", "收入", "利润", "target", "actual", "amount", "revenue", "sales", "fee"))
 
 
 def _looks_like_overview_question(question: str) -> bool:

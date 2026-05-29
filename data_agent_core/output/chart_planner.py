@@ -10,7 +10,22 @@ from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.contracts.response_contracts import ChartSpec
 
 
-CHART_TYPES = {"bar", "horizontal_bar", "line", "pie", "donut", "histogram", "box", "scatter", "kpi", None}
+CHART_TYPES = {
+    "bar",
+    "horizontal_bar",
+    "line",
+    "combo_column_line",
+    "stacked_column",
+    "stacked_area",
+    "dual_axis_line",
+    "pie",
+    "donut",
+    "histogram",
+    "box",
+    "scatter",
+    "kpi",
+    None,
+}
 
 
 def build_chart_spec(
@@ -45,6 +60,8 @@ def build_chart_spec(
     logic = plan_dict.get("logic_form") if isinstance(plan_dict.get("logic_form"), dict) else {}
     task_type = str(logic.get("task_type") or "")
     operation = str(logic.get("operation") or "")
+    output_format = logic.get("output_format") if isinstance(logic.get("output_format"), dict) else {}
+    requested_chart_type = _requested_chart_type(output_format, logic)
     if _looks_like_detail_rows(rows, safe_columns, operation, task_type):
         return ChartSpec(
             chart_type=None,
@@ -109,6 +126,30 @@ def build_chart_spec(
             fallback_reason="unsafe_metric_column",
             confidence=0.86,
         )
+    combo_chart = _combo_chart_spec(
+        rows=rows,
+        x_column=x_column,
+        metric_columns=y_columns or [y_column],
+        requested_chart_type=requested_chart_type,
+    )
+    if combo_chart is not None:
+        return combo_chart
+    stacked_chart = _stacked_chart_spec(
+        rows=rows,
+        x_column=x_column,
+        metric_columns=y_columns or [y_column],
+        requested_chart_type=requested_chart_type,
+    )
+    if stacked_chart is not None:
+        return stacked_chart
+    dual_axis_chart = _dual_axis_line_spec(
+        rows=rows,
+        x_column=x_column,
+        metric_columns=y_columns or [y_column],
+        requested_chart_type=requested_chart_type,
+    )
+    if dual_axis_chart is not None:
+        return dual_axis_chart
     chart_type = "bar"
     selection_reason = "category_metric_comparison"
     title = "数据对比"
@@ -131,6 +172,11 @@ def build_chart_spec(
         title = f"{y_column} 排名"
     elif task_type == "ranking" or operation in {"ranking", "filtered_metric_ranking", "rank_by_metric", "top_count"}:
         title = f"{y_column} 排名"
+    if requested_chart_type == "horizontal_bar":
+        chart_type = "horizontal_bar"
+        selection_reason = "explicit_horizontal_ranking"
+    elif requested_chart_type in CHART_TYPES and requested_chart_type not in {None, "kpi"}:
+        chart_type = requested_chart_type
 
     return ChartSpec(
         chart_type=chart_type,
@@ -143,6 +189,105 @@ def build_chart_spec(
         series=[{"type": chart_type, "x": x_column, "y": column} for column in (y_columns or [y_column])],
         confidence=0.86,
         selection_reason=selection_reason,
+    )
+
+
+def _requested_chart_type(output_format: dict[str, Any], logic: dict[str, Any]) -> str | None:
+    requested = str(output_format.get("chart_type") or logic.get("chart_type") or "").strip()
+    if requested in CHART_TYPES:
+        return requested
+    return None
+
+
+def _combo_chart_spec(
+    *,
+    rows: list[dict[str, Any]],
+    x_column: str,
+    metric_columns: list[str],
+    requested_chart_type: str | None,
+) -> ChartSpec | None:
+    rate_columns = [column for column in metric_columns if _looks_like_rate_column(column)]
+    amount_columns = [column for column in metric_columns if column not in rate_columns]
+    wants_combo = requested_chart_type == "combo_column_line"
+    if not wants_combo and not (_time_column([x_column]) and rate_columns and len(amount_columns) >= 1):
+        return None
+    bar_columns = amount_columns[:2] if amount_columns else metric_columns[:1]
+    line_columns = rate_columns[:1] if rate_columns else metric_columns[1:2]
+    if not bar_columns or not line_columns:
+        return None
+    title = "目标、实际与达成率对比" if _looks_like_target_actual_combo(bar_columns, line_columns) else "柱线组合图"
+    series = [{"type": "bar", "x": x_column, "y": column, "axis": "left"} for column in bar_columns]
+    series.extend({"type": "line", "x": x_column, "y": column, "axis": "right"} for column in line_columns)
+    return ChartSpec(
+        chart_type="combo_column_line",
+        x=x_column,
+        y=bar_columns[0],
+        title=title,
+        data=rows,
+        reason="Selected combo chart for target/actual comparison with rate overlay.",
+        encoding={"x": x_column, "y": bar_columns[0], "y_left": bar_columns, "y_right": line_columns},
+        series=series,
+        confidence=0.9,
+        selection_reason="combo_target_actual_rate" if wants_combo or _looks_like_target_actual_combo(bar_columns, line_columns) else "explicit_combo_chart",
+    )
+
+
+def _stacked_chart_spec(
+    *,
+    rows: list[dict[str, Any]],
+    x_column: str,
+    metric_columns: list[str],
+    requested_chart_type: str | None,
+) -> ChartSpec | None:
+    if requested_chart_type not in {"stacked_column", "stacked_area"}:
+        return None
+    usable_metrics = [column for column in metric_columns if column != x_column]
+    if len(usable_metrics) < 2:
+        return None
+    chart_type = requested_chart_type
+    series_type = "area" if chart_type == "stacked_area" else "bar"
+    return ChartSpec(
+        chart_type=chart_type,
+        x=x_column,
+        y=usable_metrics[0],
+        title="堆叠趋势图" if chart_type == "stacked_area" else "堆叠对比图",
+        data=rows,
+        reason=f"Selected {chart_type} for explicit stacked multi-series request.",
+        encoding={"x": x_column, "y": usable_metrics[0], "stack": usable_metrics},
+        series=[{"type": series_type, "x": x_column, "y": column, "stacked": True} for column in usable_metrics],
+        confidence=0.9,
+        selection_reason=f"explicit_{chart_type}",
+    )
+
+
+def _dual_axis_line_spec(
+    *,
+    rows: list[dict[str, Any]],
+    x_column: str,
+    metric_columns: list[str],
+    requested_chart_type: str | None,
+) -> ChartSpec | None:
+    if requested_chart_type != "dual_axis_line":
+        return None
+    usable_metrics = [column for column in metric_columns if column != x_column]
+    if len(usable_metrics) < 2:
+        return None
+    left_metric = usable_metrics[0]
+    right_metric = usable_metrics[1]
+    return ChartSpec(
+        chart_type="dual_axis_line",
+        x=x_column,
+        y=left_metric,
+        title="双轴趋势图",
+        data=rows,
+        reason="Selected dual-axis line chart for explicit two-metric monthly trend request.",
+        encoding={"x": x_column, "y_left": [left_metric], "y_right": [right_metric]},
+        series=[
+            {"type": "line", "x": x_column, "y": left_metric, "axis": "left"},
+            {"type": "line", "x": x_column, "y": right_metric, "axis": "right"},
+        ],
+        confidence=0.9,
+        selection_reason="explicit_dual_axis_line",
     )
 
 
@@ -241,6 +386,21 @@ def _looks_like_identifier_metric(column: str) -> bool:
             "卡号",
         )
     ) or compact in {"id", "ids"} or compact.endswith("id") or compact.endswith("ids") or compact in {"number", "cardnumber"}
+
+
+def _looks_like_rate_column(column: str) -> bool:
+    lowered = column.lower()
+    return any(token in lowered for token in ("rate", "ratio", "share", "pct", "percent", "%", "达成率", "完成率", "占比", "比例"))
+
+
+def _looks_like_target_actual_combo(bar_columns: list[str], line_columns: list[str]) -> bool:
+    bars_text = " ".join(bar_columns).lower()
+    lines_text = " ".join(line_columns).lower()
+    return (
+        any(token in bars_text for token in ("目标", "target"))
+        and any(token in bars_text for token in ("实际", "actual", "金额", "amount"))
+        and any(token in lines_text for token in ("rate", "达成率", "完成率"))
+    )
 
 
 def _looks_part_to_whole(operation: str, metric: str, rows: list[dict[str, Any]], y_column: str) -> bool:

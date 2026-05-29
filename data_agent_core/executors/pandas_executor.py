@@ -159,21 +159,21 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         )
     if op == "applicable_fee_ids":
         return engine.applicable_fee_ids_for_merchant_period(
-            str(filters["merchant"]),
+            _merchant_filter_or_default(engine, filters),
             year=int(filters.get("year") or 2023),
             month=filters.get("month"),
             day_of_year=filters.get("day_of_year"),
         )
     if op == "total_fees":
         return engine.total_fees(
-            str(filters["merchant"]),
+            _merchant_filter_or_default(engine, filters),
             year=int(filters.get("year") or 2023),
             month=filters.get("month"),
             day_of_year=filters.get("day_of_year"),
         )
     if op == "fee_rate_delta":
         return engine.fee_rate_delta(
-            str(filters["merchant"]),
+            _merchant_filter_or_default(engine, filters),
             year=int(filters.get("year") or 2023),
             month=filters.get("month"),
             fee_id=int(params["fee_id"]),
@@ -181,7 +181,7 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         )
     if op == "card_scheme_steering":
         scheme, total, candidates = engine.card_scheme_steering(
-            str(filters["merchant"]),
+            _merchant_filter_or_default(engine, filters),
             year=int(filters.get("year") or 2023),
             month=filters.get("month"),
             objective=str(params["objective"]),
@@ -213,19 +213,19 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         )
     if op == "mcc_change_delta":
         return engine.mcc_change_delta(
-            str(filters["merchant"]),
+            _merchant_filter_or_default(engine, filters),
             year=int(filters.get("year") or 2023),
             month=filters.get("month"),
             new_mcc=int(params["new_mcc"]),
         )
     if op == "best_fraud_aci_choice":
         aci, delta, candidates = engine.best_fraud_aci_choice(
-            str(filters["merchant"]),
+            _merchant_filter_or_default(engine, filters),
             year=int(filters.get("year") or 2023),
             month=filters.get("month"),
         )
         return {
-            "card_scheme": aci,
+            "aci": aci,
             "fee": delta,
             "selected": aci,
             "candidate_table": _fee_candidate_table("aci", candidates),
@@ -1460,6 +1460,16 @@ def _fee_engine(context: dict[str, Any]) -> DabstepFeeEngine:
     if "_fee_engine" not in context:
         context["_fee_engine"] = DabstepFeeEngine(context["context_dir"])
     return context["_fee_engine"]
+
+
+def _merchant_filter_or_default(engine: DabstepFeeEngine, filters: dict[str, Any]) -> str:
+    merchant = filters.get("merchant")
+    if merchant:
+        return str(merchant)
+    merchants = sorted(str(name) for name in engine.merchants.keys())
+    if len(merchants) == 1:
+        return merchants[0]
+    raise ValueError("Merchant filter is required when multiple merchants are available.")
 
 
 def _mcc_from_filter(engine: DabstepFeeEngine, filters: dict[str, Any]) -> int | None:

@@ -2304,14 +2304,15 @@ function renderRows(rows, columns, result = {}) {
     return;
   }
   const safeColumns = columns.length ? columns : Object.keys(rows[0]);
+  const displayRows = Array.isArray(result?.result?.display_rows) && result.result.display_rows.length ? result.result.display_rows : rows;
   el.resultTable.className = "result-table";
   el.resultTable.innerHTML = `
     <table>
       <thead><tr>${safeColumns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead>
       <tbody>
-        ${rows
+        ${displayRows
           .slice(0, 50)
-          .map((row) => `<tr>${safeColumns.map((column) => `<td>${escapeHtml(row[column])}</td>`).join("")}</tr>`)
+          .map((row, index) => `<tr>${safeColumns.map((column) => `<td>${escapeHtml(formatTableCellValue(column, row?.[column] ?? rows[index]?.[column]))}</td>`).join("")}</tr>`)
           .join("")}
       </tbody>
     </table>
@@ -2391,6 +2392,30 @@ function renderChart(chart, fallbackRows = [], fallbackColumns = [], answer = ""
     el.chartPanel.className = "chart-panel hidden";
     return;
   }
+  if (type === "combo_column_line") {
+    el.chartPanel.className = "chart-panel";
+    el.chartPanel.innerHTML = renderComboColumnLineChart(rows, chart, x, fallbackColumns);
+    bindChartInteractions(el.chartPanel);
+    return;
+  }
+  if (type === "stacked_column") {
+    el.chartPanel.className = "chart-panel";
+    el.chartPanel.innerHTML = renderStackedColumnChart(rows, chart, x, fallbackColumns);
+    bindChartInteractions(el.chartPanel);
+    return;
+  }
+  if (type === "stacked_area") {
+    el.chartPanel.className = "chart-panel";
+    el.chartPanel.innerHTML = renderStackedAreaChart(rows, chart, x, fallbackColumns);
+    bindChartInteractions(el.chartPanel);
+    return;
+  }
+  if (type === "dual_axis_line") {
+    el.chartPanel.className = "chart-panel";
+    el.chartPanel.innerHTML = renderDualAxisLineChart(rows, chart, x, fallbackColumns);
+    bindChartInteractions(el.chartPanel);
+    return;
+  }
   if (type === "line") {
     const seriesValues = resolveLineSeries(chart, rows, x, y, fallbackColumns);
     if (!seriesValues.length) {
@@ -2458,6 +2483,20 @@ function resolveLineSeries(chart, rows, xColumn, yColumn, fallbackColumns) {
       return { name: column, points };
     })
     .filter((series) => series.points.length > 1);
+}
+
+function resolveStackColumns(chart, rows, xColumn, fallbackColumns) {
+  const requested = uniqueStrings(
+    (chart?.series || [])
+      .map((series) => String(series?.y || ""))
+      .filter((column) => column && column !== xColumn),
+  ).filter((column) => rows.some((row) => Number.isFinite(Number(row?.[column]))));
+  if (requested.length >= 2) return requested;
+  const encoded = uniqueStrings((chart?.encoding?.stack || []).map((column) => String(column || ""))).filter(
+    (column) => column && column !== xColumn && rows.some((row) => Number.isFinite(Number(row?.[column]))),
+  );
+  if (encoded.length >= 2) return encoded;
+  return fallbackColumns.filter((column) => column !== xColumn && rows.some((row) => Number.isFinite(Number(row?.[column]))));
 }
 
 function renderChartImage(chart) {
@@ -2600,6 +2639,411 @@ function renderHorizontalBarChart(displayValues, chart, width, colors, domain, t
   `;
 }
 
+function renderComboColumnLineChart(rows, chart, xColumn, fallbackColumns) {
+  const width = 860;
+  const height = 460;
+  const left = 76;
+  const right = 84;
+  const top = 34;
+  const bottom = 76;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const series = Array.isArray(chart?.series) ? chart.series : [];
+  const leftColumns = uniqueStrings(
+    series.filter((item) => String(item?.type || "bar") === "bar").map((item) => String(item?.y || "")),
+  ).filter((column) => column && rows.some((row) => Number.isFinite(Number(row?.[column]))));
+  const rightColumns = uniqueStrings(
+    series.filter((item) => String(item?.type || "") === "line").map((item) => String(item?.y || "")),
+  ).filter((column) => column && rows.some((row) => Number.isFinite(Number(row?.[column]))));
+  const fallbackNumeric = fallbackColumns.filter((column) => column !== xColumn && rows.some((row) => Number.isFinite(Number(row?.[column]))));
+  const barColumns = (leftColumns.length ? leftColumns : fallbackNumeric.filter((column) => !looksLikeRateField(column)).slice(0, 2)).slice(0, 2);
+  const lineColumns = (rightColumns.length ? rightColumns : fallbackNumeric.filter((column) => looksLikeRateField(column)).slice(0, 1)).slice(0, 1);
+  if (!barColumns.length || !lineColumns.length) {
+    return renderChartImage(chart);
+  }
+  const displayRows = rows.slice(0, 18);
+  const leftValues = displayRows.flatMap((row) => barColumns.map((column) => Number(row?.[column]))).filter(Number.isFinite);
+  const rightValues = displayRows.flatMap((row) => lineColumns.map((column) => Number(row?.[column]))).filter(Number.isFinite);
+  const leftDomain = chartNumberDomain(leftValues.map((value) => ({ value })), true);
+  const rightDomain = chartNumberDomain(rightValues.map((value) => ({ value })), true);
+  rightDomain.min = Math.min(0, rightDomain.min);
+  const leftTicks = chartTicks(leftDomain.min, leftDomain.max, 5);
+  const rightTicks = chartTicks(rightDomain.min, rightDomain.max, 5);
+  const groupWidth = plotWidth / Math.max(displayRows.length, 1);
+  const gap = Math.min(12, groupWidth * 0.14);
+  const barWidth = Math.max(14, Math.min(28, (groupWidth * 0.66 - gap * Math.max(barColumns.length - 1, 0)) / Math.max(barColumns.length, 1)));
+  const zeroY = chartScale(0, leftDomain.min, leftDomain.max, top + plotHeight, top);
+  const colors = ["#2563eb", "#0ea5e9", "#f59e0b"];
+  const bandMarkup = displayRows
+    .map((row, index) => {
+      const centerX = left + groupWidth * index + groupWidth / 2;
+      const previousX = index === 0 ? left : left + groupWidth * index - groupWidth / 2;
+      const nextX = index === displayRows.length - 1 ? left + plotWidth : left + groupWidth * index + groupWidth * 1.5;
+      const tooltipLines = [
+        ...barColumns.map((column) => `${column}: ${formatNumber(row?.[column])}`),
+        ...lineColumns.map((column) => `${column}: ${looksLikeRateField(column) ? formatPercent(Number(row?.[column])) : formatNumber(row?.[column])}`),
+      ];
+      return `
+        <g class="chart-hit" tabindex="0" focusable="true">
+          <rect x="${previousX.toFixed(1)}" y="${top}" width="${Math.max(12, nextX - previousX).toFixed(1)}" height="${plotHeight}" fill="transparent"></rect>
+          <line x1="${centerX.toFixed(1)}" y1="${top}" x2="${centerX.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
+          ${chartTooltipMulti({
+            title: `${xColumn}: ${row?.[xColumn] ?? "-"}`,
+            lines: tooltipLines,
+            x: centerX - 90,
+            y: top + 8,
+            width,
+          })}
+        </g>
+      `;
+    })
+    .join("");
+  const barMarkup = displayRows
+    .map((row, rowIndex) => {
+      const centerX = left + groupWidth * rowIndex + groupWidth / 2;
+      return barColumns
+        .map((column, columnIndex) => {
+          const value = Number(row?.[column]);
+          if (!Number.isFinite(value)) return "";
+          const x = centerX - ((barColumns.length * barWidth + (barColumns.length - 1) * gap) / 2) + columnIndex * (barWidth + gap);
+          const valueY = chartScale(value, leftDomain.min, leftDomain.max, top + plotHeight, top);
+          const y = Math.min(zeroY, valueY);
+          const heightValue = Math.max(2, Math.abs(zeroY - valueY));
+          return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${heightValue.toFixed(1)}" fill="${colors[columnIndex % colors.length]}" rx="5"></rect>`;
+        })
+        .join("");
+    })
+    .join("");
+  const lineMarkup = lineColumns
+    .map((column, lineIndex) => {
+      const color = colors[(lineIndex + barColumns.length) % colors.length];
+      const points = displayRows
+        .map((row, index) => {
+          const value = Number(row?.[column]);
+          if (!Number.isFinite(value)) return null;
+          return {
+            x: left + groupWidth * index + groupWidth / 2,
+            y: chartScale(value, rightDomain.min, rightDomain.max, top + plotHeight, top),
+          };
+        })
+        .filter(Boolean);
+      if (points.length <= 1) return "";
+      return `
+        <polyline points="${points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}" class="line-path" style="stroke:${color}"></polyline>
+        ${points.map((point) => `<circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="4.5" class="line-dot" style="stroke:${color}"></circle>`).join("")}
+      `;
+    })
+    .join("");
+  const grid = leftTicks
+    .map((tick) => {
+      const y = chartScale(tick, leftDomain.min, leftDomain.max, top + plotHeight, top);
+      return `
+        <line x1="${left}" y1="${y.toFixed(1)}" x2="${left + plotWidth}" y2="${y.toFixed(1)}" class="grid-line"></line>
+        <text x="${left - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="axis-label">${formatAxisNumber(tick)}</text>
+      `;
+    })
+    .join("");
+  const rightLabels = rightTicks
+    .map((tick) => {
+      const y = chartScale(tick, rightDomain.min, rightDomain.max, top + plotHeight, top);
+      return `<text x="${left + plotWidth + 10}" y="${(y + 4).toFixed(1)}" class="axis-label">${looksLikeRateField(lineColumns[0]) ? formatPercent(Number(tick)) : formatAxisNumber(tick)}</text>`;
+    })
+    .join("");
+  const xLabels = displayRows
+    .map((row, index) => {
+      const centerX = left + groupWidth * index + groupWidth / 2;
+      return `<text x="${centerX.toFixed(1)}" y="${top + plotHeight + 26}" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(row?.[xColumn] ?? "-", 8))}</text>`;
+    })
+    .join("");
+  const legendItems = [...barColumns, ...lineColumns]
+    .map((column, index) => {
+      const color = colors[index % colors.length];
+      const y = top + 12 + index * 26;
+      if (index < barColumns.length) {
+        return `
+          <g class="chart-legend-item">
+            <rect x="${left + plotWidth + 18}" y="${(y - 10).toFixed(1)}" width="14" height="14" rx="4" fill="${color}"></rect>
+            <text x="${left + plotWidth + 40}" y="${(y + 2).toFixed(1)}" class="chart-legend-label">${escapeHtml(shortLabel(column, 12))}</text>
+          </g>
+        `;
+      }
+      return `
+        <g class="chart-legend-item">
+          <line x1="${left + plotWidth + 18}" y1="${y.toFixed(1)}" x2="${left + plotWidth + 34}" y2="${y.toFixed(1)}" style="stroke:${color};stroke-width:1.8"></line>
+          <circle cx="${left + plotWidth + 26}" cy="${y.toFixed(1)}" r="3.5" fill="#fff" style="stroke:${color};stroke-width:1.6"></circle>
+          <text x="${left + plotWidth + 40}" y="${(y + 2).toFixed(1)}" class="chart-legend-label">${escapeHtml(shortLabel(column, 12))}</text>
+        </g>
+      `;
+    })
+    .join("");
+  return `
+    <div class="chart-title">${escapeHtml(chart?.title || "柱线组合图")}</div>
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img">
+      ${grid}
+      ${rightLabels}
+      <line x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left + plotWidth}" y1="${top}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left}" y1="${zeroY.toFixed(1)}" x2="${left + plotWidth}" y2="${zeroY.toFixed(1)}" class="axis-line"></line>
+      <text x="${left + plotWidth / 2}" y="${height - 18}" text-anchor="middle" class="axis-title">${escapeHtml(xColumn)}</text>
+      <text transform="translate(18 ${top + plotHeight / 2}) rotate(-90)" text-anchor="middle" class="axis-title">${escapeHtml(barColumns.join(" / "))}</text>
+      <text x="${left + plotWidth}" y="${top - 10}" text-anchor="end" class="axis-title">${escapeHtml(lineColumns[0])}</text>
+      ${xLabels}
+      ${barMarkup}
+      ${lineMarkup}
+      ${legendItems}
+      ${bandMarkup}
+    </svg>
+  `;
+}
+
+function renderStackedColumnChart(rows, chart, xColumn, fallbackColumns) {
+  const width = 860;
+  const height = 440;
+  const left = 76;
+  const right = 160;
+  const top = 34;
+  const bottom = 76;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const stackColumns = resolveStackColumns(chart, rows, xColumn, fallbackColumns);
+  if (stackColumns.length < 2) return renderChartImage(chart);
+  const displayRows = rows.slice(0, 18);
+  const totals = displayRows.map((row) => stackColumns.reduce((sum, column) => sum + Math.max(Number(row?.[column]) || 0, 0), 0));
+  const domain = chartNumberDomain(totals.map((value) => ({ value })), true);
+  const ticks = chartTicks(domain.min, domain.max, 5);
+  const colors = ["#2563eb", "#0ea5e9", "#14b8a6", "#f59e0b", "#4f46e5", "#64748b"];
+  const gap = 10;
+  const barWidth = Math.max(20, (plotWidth - gap * (displayRows.length - 1)) / Math.max(displayRows.length, 1));
+  const grid = ticks
+    .map((tick) => {
+      const y = chartScale(tick, domain.min, domain.max, top + plotHeight, top);
+      return `
+        <line x1="${left}" y1="${y.toFixed(1)}" x2="${left + plotWidth}" y2="${y.toFixed(1)}" class="grid-line"></line>
+        <text x="${left - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="axis-label">${formatAxisNumber(tick)}</text>
+      `;
+    })
+    .join("");
+  const bars = displayRows
+    .map((row, rowIndex) => {
+      const x = left + rowIndex * (barWidth + gap);
+      let cumulative = 0;
+      const segments = stackColumns
+        .map((column, columnIndex) => {
+          const value = Math.max(Number(row?.[column]) || 0, 0);
+          const segmentTop = cumulative + value;
+          const y = chartScale(segmentTop, domain.min, domain.max, top + plotHeight, top);
+          const baseY = chartScale(cumulative, domain.min, domain.max, top + plotHeight, top);
+          cumulative = segmentTop;
+          return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(2, baseY - y).toFixed(1)}" fill="${colors[columnIndex % colors.length]}" rx="5"></rect>`;
+        })
+        .join("");
+      const lines = stackColumns.map((column) => `${column}: ${formatNumber(row?.[column])}`);
+      return `
+        <g class="chart-hit" tabindex="0" focusable="true">
+          ${segments}
+          <text x="${(x + barWidth / 2).toFixed(1)}" y="${(top + plotHeight + 24).toFixed(1)}" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(row?.[xColumn] ?? "-", 8))}</text>
+          ${chartTooltipMulti({ title: `${xColumn}: ${row?.[xColumn] ?? "-"}`, lines, x: x - 18, y: top + 8, width })}
+        </g>
+      `;
+    })
+    .join("");
+  const legend = stackColumns
+    .map((column, index) => `
+      <g class="chart-legend-item">
+        <rect x="${left + plotWidth + 24}" y="${(top + index * 26 - 10).toFixed(1)}" width="14" height="14" rx="4" fill="${colors[index % colors.length]}"></rect>
+        <text x="${left + plotWidth + 46}" y="${(top + index * 26 + 2).toFixed(1)}" class="chart-legend-label">${escapeHtml(shortLabel(column, 12))}</text>
+      </g>
+    `)
+    .join("");
+  return `
+    <div class="chart-title">${escapeHtml(chart?.title || "堆叠柱状图")}</div>
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img">
+      ${grid}
+      <line x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left}" y1="${top + plotHeight}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
+      ${bars}
+      ${legend}
+    </svg>
+  `;
+}
+
+function renderStackedAreaChart(rows, chart, xColumn, fallbackColumns) {
+  const width = 860;
+  const height = 440;
+  const left = 76;
+  const right = 160;
+  const top = 34;
+  const bottom = 76;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const stackColumns = resolveStackColumns(chart, rows, xColumn, fallbackColumns);
+  if (stackColumns.length < 2) return renderChartImage(chart);
+  const displayRows = rows.slice(0, 24);
+  const totals = displayRows.map((row) => stackColumns.reduce((sum, column) => sum + Math.max(Number(row?.[column]) || 0, 0), 0));
+  const domain = chartNumberDomain(totals.map((value) => ({ value })), true);
+  const ticks = chartTicks(domain.min, domain.max, 5);
+  const colors = ["#2563eb", "#0ea5e9", "#14b8a6", "#f59e0b", "#4f46e5", "#64748b"];
+  const grid = ticks
+    .map((tick) => {
+      const y = chartScale(tick, domain.min, domain.max, top + plotHeight, top);
+      return `
+        <line x1="${left}" y1="${y.toFixed(1)}" x2="${left + plotWidth}" y2="${y.toFixed(1)}" class="grid-line"></line>
+        <text x="${left - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="axis-label">${formatAxisNumber(tick)}</text>
+      `;
+    })
+    .join("");
+  const xPoints = displayRows.map((row, index) => ({
+    x: left + (index / Math.max(displayRows.length - 1, 1)) * plotWidth,
+    label: String(row?.[xColumn] ?? ""),
+  }));
+  const cumulative = new Array(displayRows.length).fill(0);
+  const areas = stackColumns
+    .map((column, seriesIndex) => {
+      const upper = [];
+      const lower = [];
+      displayRows.forEach((row, index) => {
+        const value = Math.max(Number(row?.[column]) || 0, 0);
+        const topValue = cumulative[index] + value;
+        upper.push(`${xPoints[index].x.toFixed(1)},${chartScale(topValue, domain.min, domain.max, top + plotHeight, top).toFixed(1)}`);
+        lower.push(`${xPoints[index].x.toFixed(1)},${chartScale(cumulative[index], domain.min, domain.max, top + plotHeight, top).toFixed(1)}`);
+        cumulative[index] = topValue;
+      });
+      return `<polygon points="${upper.concat(lower.reverse()).join(" ")}" fill="${colors[seriesIndex % colors.length]}" fill-opacity="0.72"></polygon>`;
+    })
+    .join("");
+  const xLabels = xPoints
+    .map((point, index) =>
+      index % Math.max(1, Math.ceil(xPoints.length / 6)) === 0 || index === xPoints.length - 1
+        ? `<text x="${point.x.toFixed(1)}" y="${(top + plotHeight + 24).toFixed(1)}" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(point.label, 8))}</text>`
+        : "",
+    )
+    .join("");
+  const hitBands = xPoints
+    .map((point, index) => {
+      const previousX = index === 0 ? left : (xPoints[index - 1].x + point.x) / 2;
+      const nextX = index === xPoints.length - 1 ? left + plotWidth : (point.x + xPoints[index + 1].x) / 2;
+      const lines = stackColumns.map((column) => `${column}: ${formatNumber(displayRows[index]?.[column])}`);
+      return `
+        <g class="chart-hit" tabindex="0" focusable="true">
+          <rect x="${previousX.toFixed(1)}" y="${top}" width="${Math.max(12, nextX - previousX).toFixed(1)}" height="${plotHeight}" fill="transparent"></rect>
+          <line x1="${point.x.toFixed(1)}" y1="${top}" x2="${point.x.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
+          ${chartTooltipMulti({ title: `${xColumn}: ${point.label}`, lines, x: point.x - 90, y: top + 8, width })}
+        </g>
+      `;
+    })
+    .join("");
+  const legend = stackColumns
+    .map((column, index) => `
+      <g class="chart-legend-item">
+        <rect x="${left + plotWidth + 24}" y="${(top + index * 26 - 10).toFixed(1)}" width="14" height="14" rx="4" fill="${colors[index % colors.length]}"></rect>
+        <text x="${left + plotWidth + 46}" y="${(top + index * 26 + 2).toFixed(1)}" class="chart-legend-label">${escapeHtml(shortLabel(column, 12))}</text>
+      </g>
+    `)
+    .join("");
+  return `
+    <div class="chart-title">${escapeHtml(chart?.title || "堆叠面积图")}</div>
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img">
+      ${grid}
+      <line x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left}" y1="${top + plotHeight}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
+      ${areas}
+      ${xLabels}
+      ${hitBands}
+      ${legend}
+    </svg>
+  `;
+}
+
+function renderDualAxisLineChart(rows, chart, xColumn, fallbackColumns) {
+  const width = 860;
+  const height = 440;
+  const left = 76;
+  const right = 84;
+  const top = 34;
+  const bottom = 76;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const series = Array.isArray(chart?.series) ? chart.series : [];
+  const leftColumns = uniqueStrings(series.filter((item) => String(item?.axis || "left") === "left").map((item) => String(item?.y || ""))).filter(Boolean);
+  const rightColumns = uniqueStrings(series.filter((item) => String(item?.axis || "") === "right").map((item) => String(item?.y || ""))).filter(Boolean);
+  const fallbackNumeric = fallbackColumns.filter((column) => column !== xColumn && rows.some((row) => Number.isFinite(Number(row?.[column]))));
+  const leftSeries = (leftColumns.length ? leftColumns : fallbackNumeric.slice(0, 1)).slice(0, 1);
+  const rightSeries = (rightColumns.length ? rightColumns : fallbackNumeric.slice(1, 2)).slice(0, 1);
+  if (!leftSeries.length || !rightSeries.length) return renderChartImage(chart);
+  const displayRows = rows.slice(0, 24);
+  const leftValues = displayRows.map((row) => Number(row?.[leftSeries[0]])).filter(Number.isFinite);
+  const rightValues = displayRows.map((row) => Number(row?.[rightSeries[0]])).filter(Number.isFinite);
+  const leftDomain = chartNumberDomain(leftValues.map((value) => ({ value })), true);
+  const rightDomain = chartNumberDomain(rightValues.map((value) => ({ value })), true);
+  const leftTicks = chartTicks(leftDomain.min, leftDomain.max, 5);
+  const rightTicks = chartTicks(rightDomain.min, rightDomain.max, 5);
+  const grid = leftTicks
+    .map((tick) => {
+      const y = chartScale(tick, leftDomain.min, leftDomain.max, top + plotHeight, top);
+      return `
+        <line x1="${left}" y1="${y.toFixed(1)}" x2="${left + plotWidth}" y2="${y.toFixed(1)}" class="grid-line"></line>
+        <text x="${left - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="axis-label">${formatAxisNumber(tick)}</text>
+      `;
+    })
+    .join("");
+  const rightLabels = rightTicks
+    .map((tick) => {
+      const y = chartScale(tick, rightDomain.min, rightDomain.max, top + plotHeight, top);
+      return `<text x="${left + plotWidth + 10}" y="${(y + 4).toFixed(1)}" class="axis-label">${formatAxisNumber(tick)}</text>`;
+    })
+    .join("");
+  const lineMarkup = [leftSeries[0], rightSeries[0]]
+    .map((column, index) => {
+      const domain = index === 0 ? leftDomain : rightDomain;
+      const color = index === 0 ? "#2563eb" : "#f59e0b";
+      const points = displayRows.map((row, pointIndex) => ({
+        x: left + (pointIndex / Math.max(displayRows.length - 1, 1)) * plotWidth,
+        y: chartScale(Number(row?.[column]) || 0, domain.min, domain.max, top + plotHeight, top),
+      }));
+      return `
+        <polyline points="${points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}" class="line-path" style="stroke:${color}"></polyline>
+        ${points.map((point) => `<circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="4.5" class="line-dot" style="stroke:${color}"></circle>`).join("")}
+      `;
+    })
+    .join("");
+  const xLabels = displayRows
+    .map((row, index) => {
+      const x = left + (index / Math.max(displayRows.length - 1, 1)) * plotWidth;
+      return index % Math.max(1, Math.ceil(displayRows.length / 6)) === 0 || index === displayRows.length - 1
+        ? `<text x="${x.toFixed(1)}" y="${(top + plotHeight + 24).toFixed(1)}" text-anchor="middle" class="axis-label">${escapeHtml(shortLabel(row?.[xColumn] ?? "-", 8))}</text>`
+        : "";
+    })
+    .join("");
+  const hits = displayRows
+    .map((row, index) => {
+      const x = left + (index / Math.max(displayRows.length - 1, 1)) * plotWidth;
+      const prevX = index === 0 ? left : left + ((index - 0.5) / Math.max(displayRows.length - 1, 1)) * plotWidth;
+      const nextX = index === displayRows.length - 1 ? left + plotWidth : left + ((index + 0.5) / Math.max(displayRows.length - 1, 1)) * plotWidth;
+      const lines = [`${leftSeries[0]}: ${formatNumber(row?.[leftSeries[0]])}`, `${rightSeries[0]}: ${formatNumber(row?.[rightSeries[0]])}`];
+      return `
+        <g class="chart-hit" tabindex="0" focusable="true">
+          <rect x="${prevX.toFixed(1)}" y="${top}" width="${Math.max(12, nextX - prevX).toFixed(1)}" height="${plotHeight}" fill="transparent"></rect>
+          <line x1="${x.toFixed(1)}" y1="${top}" x2="${x.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
+          ${chartTooltipMulti({ title: `${xColumn}: ${row?.[xColumn] ?? "-"}`, lines, x: x - 90, y: top + 8, width })}
+        </g>
+      `;
+    })
+    .join("");
+  return `
+    <div class="chart-title">${escapeHtml(chart?.title || "双轴折线图")}</div>
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img">
+      ${grid}
+      ${rightLabels}
+      <line x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left + plotWidth}" y1="${top}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
+      <line x1="${left}" y1="${top + plotHeight}" x2="${left + plotWidth}" y2="${top + plotHeight}" class="axis-line"></line>
+      ${lineMarkup}
+      ${xLabels}
+      ${hits}
+    </svg>
+  `;
+}
+
 function renderLineChart(seriesValues, chart) {
   const width = 820;
   const height = 450;
@@ -2646,30 +3090,37 @@ function renderLineChart(seriesValues, chart) {
   const seriesMarkup = plottedSeries
     .map((series) => {
       const path = series.points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
-      const points = series.points
-        .map(
-          (point) => `
-            <g class="chart-hit" tabindex="0" focusable="true">
-              <title>${escapeHtml(`${xName}: ${point.label}\n${series.name}: ${formatNumber(point.value)}`)}</title>
-              <line x1="${point.x.toFixed(1)}" y1="${top}" x2="${point.x.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
-              <circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="5" class="line-dot" style="stroke:${series.color}"></circle>
-              <circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="12" class="line-hit-area"></circle>
-              ${chartTooltip({
-                label: point.label,
-                value: point.value,
-                xName,
-                yName: series.name,
-                x: point.x - 86,
-                y: point.y - 78,
-                width,
-              })}
-            </g>
-          `,
-        )
-        .join("");
       return `
         <polyline points="${path}" class="line-path" style="stroke:${series.color}"></polyline>
-        ${points}
+        ${series.points
+          .map((point) => `<circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="5" class="line-dot" style="stroke:${series.color}"></circle>`)
+          .join("")}
+      `;
+    })
+    .join("");
+  const hitBands = xPoints
+    .map((point, index) => {
+      const previousX = index === 0 ? left : (xPoints[index - 1].x + point.x) / 2;
+      const nextX = index === xPoints.length - 1 ? left + plotWidth : (point.x + xPoints[index + 1].x) / 2;
+      const lines = plottedSeries
+        .map((series) => {
+          const matched = series.points[index];
+          if (!matched) return "";
+          return `${series.name}: ${looksLikeRateField(series.name) ? formatPercent(matched.value) : formatNumber(matched.value)}`;
+        })
+        .filter(Boolean);
+      return `
+        <g class="chart-hit" tabindex="0" focusable="true">
+          <rect x="${previousX.toFixed(1)}" y="${top}" width="${Math.max(12, nextX - previousX).toFixed(1)}" height="${plotHeight}" fill="transparent"></rect>
+          <line x1="${point.x.toFixed(1)}" y1="${top}" x2="${point.x.toFixed(1)}" y2="${top + plotHeight}" class="chart-hover-guide"></line>
+          ${chartTooltipMulti({
+            title: `${xName}: ${point.label}`,
+            lines,
+            x: point.x - 94,
+            y: top + 8,
+            width,
+          })}
+        </g>
       `;
     })
     .join("");
@@ -2697,6 +3148,7 @@ function renderLineChart(seriesValues, chart) {
       <text x="${left}" y="${top - 34}" text-anchor="start" class="axis-title">${escapeHtml(yName)}</text>
       ${xLabels}
       ${seriesMarkup}
+      ${hitBands}
       ${legend}
     </svg>
   `;
@@ -2853,6 +3305,25 @@ function chartTooltip({ label, value, xName, yName, x, y, width }) {
       <text x="10" y="39" class="chart-tooltip-value">${escapeHtml(`${yName}: ${formatNumber(value)}`)}</text>
     </g>
   `;
+}
+
+function chartTooltipMulti({ title, lines, x, y, width }) {
+  const safeLines = Array.isArray(lines) ? lines.filter(Boolean).slice(0, 3) : [];
+  const tooltipWidth = 188;
+  const tooltipHeight = 34 + safeLines.length * 18;
+  const safeX = Math.min(Math.max(4, x), width - tooltipWidth - 4);
+  const safeY = Math.max(4, y);
+  return `
+    <g class="chart-hover-card" transform="translate(${safeX.toFixed(1)} ${safeY.toFixed(1)})">
+      <rect class="chart-tooltip-bg" width="${tooltipWidth}" height="${tooltipHeight}" rx="8"></rect>
+      <text x="10" y="20" class="chart-tooltip-label">${escapeHtml(title)}</text>
+      ${safeLines.map((line, index) => `<text x="10" y="${38 + index * 18}" class="chart-tooltip-value">${escapeHtml(line)}</text>`).join("")}
+    </g>
+  `;
+}
+
+function looksLikeRateField(value) {
+  return /rate|ratio|share|percent|pct|%|达成率|完成率|占比|比例/i.test(String(value || ""));
 }
 
 function formatAxisNumber(value) {
@@ -5381,13 +5852,27 @@ function stringifyIssue(issue) {
 }
 
 function formatPercent(value) {
-  return `${value.toFixed(value >= 10 ? 1 : 2)}%`;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value ?? "-");
+  return `${number.toFixed(number >= 10 ? 1 : 2)}%`;
 }
 
 function formatNumber(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return String(value ?? "-");
   return Math.abs(number) >= 1000 ? number.toLocaleString("zh-CN", { maximumFractionDigits: 1 }) : String(Number(number.toFixed(2)));
+}
+
+function formatTableCellValue(column, value) {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "string" && /%|,/.test(value)) return value;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  if (looksLikeRateField(column)) return `${number.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+  if (/count|数量|次数|记录数|行数|year|month|day|hour|minute/i.test(String(column || "")) && !/金额|销售额|收入|利润/i.test(String(column || ""))) {
+    return number.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
+  }
+  return number.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function formatFileSize(value) {

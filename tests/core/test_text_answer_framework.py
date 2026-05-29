@@ -219,6 +219,31 @@ class TextAnswerFrameworkTest(unittest.TestCase):
         self.assertNotIn("当前结果表只返回", framed)
         self.assertNotIn("仍需按当前数据范围和指标口径解读", framed)
 
+    def test_multi_series_trend_frame_summarizes_top5_overall_patterns(self) -> None:
+        response = {
+            "success": True,
+            "answer_type": "table",
+            "answer": "已生成Top5品类趋势图。",
+            "logic_form": {"operation": "retail_category_distribution_monthly_trend", "task_type": "trend"},
+            "result": {
+                "columns": ["月份", "天然水", "纯净水", "东方树叶", "水溶C100", "茶π"],
+                "rows": [
+                    {"月份": "2026年1月", "天然水": 300000, "纯净水": 120000, "东方树叶": 180000, "水溶C100": 150000, "茶π": 90000},
+                    {"月份": "2026年2月", "天然水": 320000, "纯净水": 110000, "东方树叶": 190000, "水溶C100": 140000, "茶π": 95000},
+                    {"月份": "2026年3月", "天然水": 330000, "纯净水": 130000, "东方树叶": 210000, "水溶C100": 135000, "茶π": 98000},
+                    {"月份": "2026年4月", "天然水": 340000, "纯净水": 150000, "东方树叶": 260000, "水溶C100": 125000, "茶π": 102000},
+                    {"月份": "2026年5月", "天然水": 345000, "纯净水": 240000, "东方树叶": 220000, "水溶C100": 120000, "茶π": 110000},
+                ],
+            },
+        }
+
+        framed = apply_text_answer_framework(response, question="请展示2026年1月至5月Top5品类历史分销金额趋势。")["answer"]
+
+        self.assertIn("天然水 持续领先", framed)
+        self.assertIn("纯净水 在 2026年5月 明显跃升", framed)
+        self.assertIn("东方树叶 在 2026年4月 达到阶段峰值", framed)
+        self.assertNotIn("水溶C100", framed.split("核心结论是：", 1)[1].split("。", 1)[0])
+
 
 if __name__ == "__main__":
     unittest.main()
