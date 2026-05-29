@@ -2008,6 +2008,27 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertIn("thinking_elapsed_ms", loaded["conversation"]["messages"][1]["payload"])
         self.assertEqual("VDS 助手介绍", loaded_after_restart["conversation"]["title"])
 
+    def test_list_conversations_supports_offset_pagination(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = Path(temp_dir) / "storage"
+            service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+
+            first = service.respond_to_message(question="第一条")
+            second = service.respond_to_message(question="第二条")
+            third = service.respond_to_message(question="第三条")
+
+            listed = service.list_conversations(limit=2, offset=1)
+
+        self.assertTrue(listed["success"])
+        self.assertEqual(
+            [second["conversation_id"], first["conversation_id"]],
+            [item["conversation_id"] for item in listed["conversations"]],
+        )
+        self.assertNotIn(third["conversation_id"], [item["conversation_id"] for item in listed["conversations"]])
+
     def test_conversation_pin_persists_and_sorts_first(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             storage_root = Path(temp_dir) / "storage"

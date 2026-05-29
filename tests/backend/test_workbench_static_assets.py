@@ -518,13 +518,14 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("thinking_elapsed_ms", js)
         self.assertIn("pinned: Boolean(item.pinned)", js)
         self.assertIn("pinnedAt: item.pinned_at ||", js)
-        global_loader = js[js.index("async function loadConversations()") : js.index("async function loadConversation(")]
+        global_loader = js[js.index("async function loadConversations(") : js.index("async function loadConversation(")]
         self.assertNotIn('query.set("project_id"', global_loader)
-        self.assertNotIn('new URLSearchParams({ limit: "30", project_id', global_loader)
+        self.assertIn('offset: String(requestOffset)', global_loader)
+        self.assertIn("handleRunHistoryScroll", js)
         self.assertIn(".filter((item) => !item.project_id)", global_loader)
         self.assertIn("!item.projectId && !loadedIds.has(item.runId)", global_loader)
         self.assertIn("loadProjectConversations", js)
-        self.assertIn('new URLSearchParams({ limit: "30", project_id: projectId })', js)
+        self.assertIn('new URLSearchParams({ limit: String(HISTORY_LOAD_BATCH), project_id: projectId })', js)
 
     def test_workbench_has_project_workspace_controls(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")

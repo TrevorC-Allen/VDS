@@ -1539,6 +1539,7 @@ class DataAgentService:
         self,
         *,
         limit: int = 50,
+        offset: int = 0,
         owner_id: str = "",
         tenant_id: str = "",
         project_id: str | None = "",
@@ -1551,6 +1552,7 @@ class DataAgentService:
                 "success": True,
                 "conversations": self.conversation_store.list_conversations(
                     limit=limit,
+                    offset=offset,
                     owner_id=owner_id,
                     tenant_id=tenant_id,
                     project_id=project_id,

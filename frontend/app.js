@@ -2,7 +2,7 @@ const MONITOR_RUN_INDEX_KEY = "vds-monitor-runs";
 const ACTIVE_MONITOR_RUN_KEY = "vds-active-monitor-run";
 const PROJECT_PANEL_COLLAPSED_KEY = "vds-project-panel-collapsed";
 const MAX_MONITOR_RUN_RECORDS = 80;
-const HISTORY_LIST_LIMIT = 30;
+const HISTORY_LOAD_BATCH = 30;
 const DEFAULT_QUESTION_PLACEHOLDER = "向 VDS 提问，例如：哪个城市订单金额最高？";
 const ATTACHED_FILE_QUESTION_PLACEHOLDER = "有问题，尽管问";
 const CONTINUATION_PROMPT_LABELS = ["可继续提问", "可继续问", "继续提问", "后续提问", "后续问题"];
@@ -43,6 +43,10 @@ const state = {
   selectedTable: "",
   fileRecords: [],
   runHistory: [],
+  runHistoryOffset: 0,
+  runHistoryHasMore: true,
+  runHistoryLoading: false,
+  runHistoryRenderedCount: 0,
   progressTimer: null,
   thinkingElapsedTimer: null,
   progressStep: 0,
@@ -178,6 +182,7 @@ window.addEventListener("scroll", closeContextMenu, true);
 el.activityBackdrop?.addEventListener("click", closeActivityDrawer);
 el.activityDrawerClose?.addEventListener("click", closeActivityDrawer);
 el.activityDrawerList?.addEventListener("scroll", handleActivityDrawerScroll);
+el.runHistory?.addEventListener("scroll", handleRunHistoryScroll);
 el.ruleModeToggle?.addEventListener("change", updateRuleMode);
 el.ruleFileInput?.addEventListener("change", handleRuleFileSelection);
 el.ruleUploadButton?.addEventListener("click", handleRuleUploadButtonClick);
@@ -1627,7 +1632,7 @@ async function loadProjectWorkspace(projectId = state.projectId) {
 }
 
 async function loadProjectConversations(projectId) {
-  const scopedQuery = new URLSearchParams({ limit: String(HISTORY_LIST_LIMIT), project_id: projectId });
+  const scopedQuery = new URLSearchParams({ limit: String(HISTORY_LOAD_BATCH), project_id: projectId });
   const response = await fetch(`/api/data-agent/conversations?${scopedQuery.toString()}`);
   const payload = await response.json();
   if (!response.ok || !payload.success) {
@@ -5043,7 +5048,13 @@ function pushHistory(result) {
     return;
   }
   state.runHistory.unshift(item);
-  state.runHistory = sortHistoryItems(state.runHistory).slice(0, HISTORY_LIST_LIMIT);
+  state.runHistory = sortHistoryItems(state.runHistory);
+  if (!state.runHistoryRenderedCount) {
+    state.runHistoryRenderedCount = Math.min(HISTORY_LOAD_BATCH, state.runHistory.length);
+  }
+  if (state.runHistoryRenderedCount > state.runHistory.length) {
+    state.runHistoryRenderedCount = state.runHistory.length;
+  }
   renderHistory();
 }
 
@@ -5073,7 +5084,13 @@ function markHistoryRunning(question, fallbackRunId, projectId = currentMessageP
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
   state.runHistory.unshift(item);
-  state.runHistory = sortHistoryItems(state.runHistory).slice(0, HISTORY_LIST_LIMIT);
+  state.runHistory = sortHistoryItems(state.runHistory);
+  if (!state.runHistoryRenderedCount) {
+    state.runHistoryRenderedCount = Math.min(HISTORY_LOAD_BATCH, state.runHistory.length);
+  }
+  if (state.runHistoryRenderedCount > state.runHistory.length) {
+    state.runHistoryRenderedCount = state.runHistory.length;
+  }
   renderHistory();
 }
 
@@ -5102,7 +5119,13 @@ function markHistoryFailed(question, message, projectId = currentMessageProjectI
   };
   state.runHistory = state.runHistory.filter((entry) => entry.runId !== runId);
   state.runHistory.unshift(item);
-  state.runHistory = sortHistoryItems(state.runHistory).slice(0, HISTORY_LIST_LIMIT);
+  state.runHistory = sortHistoryItems(state.runHistory);
+  if (!state.runHistoryRenderedCount) {
+    state.runHistoryRenderedCount = Math.min(HISTORY_LOAD_BATCH, state.runHistory.length);
+  }
+  if (state.runHistoryRenderedCount > state.runHistory.length) {
+    state.runHistoryRenderedCount = state.runHistory.length;
+  }
   state.activeHistoryRunId = "";
   renderHistory();
 }
@@ -5119,12 +5142,14 @@ function sortHistoryItems(items) {
 }
 
 function renderHistory() {
+  const visibleCount = Math.min(state.runHistoryRenderedCount || 0, state.runHistory.length);
   if (!state.runHistory.length) {
     el.runHistory.innerHTML = `<li class="history-empty">上传数据并提问后，这里会显示最近的分析记录。</li>`;
     if (isChatSearchOpen()) renderChatSearchResults();
     return;
   }
-  el.runHistory.innerHTML = state.runHistory
+  const visibleHistory = state.runHistory.slice(0, visibleCount || state.runHistory.length);
+  el.runHistory.innerHTML = visibleHistory
     .map(
       (item) => {
         const title = item.title || item.question || "未命名对话";
@@ -5420,9 +5445,32 @@ async function deleteHistoryConversation(runId) {
   }
 }
 
-async function loadConversations() {
+function handleRunHistoryScroll() {
+  if (!el.runHistory || state.runHistoryLoading || state.runHistory.length === 0) return;
+  const remaining = el.runHistory.scrollHeight - el.runHistory.clientHeight - el.runHistory.scrollTop;
+  if (remaining > 20) return;
+  if (state.runHistoryRenderedCount < state.runHistory.length) {
+    state.runHistoryRenderedCount = Math.min(state.runHistoryRenderedCount + HISTORY_LOAD_BATCH, state.runHistory.length);
+    renderHistory();
+    return;
+  }
+  if (!state.runHistoryHasMore) return;
+  loadConversations({ append: true });
+}
+
+async function loadConversations({ append = false } = {}) {
+  if (state.runHistoryLoading) return;
+  const requestOffset = append ? state.runHistoryOffset : 0;
+  if (!append) {
+    state.runHistoryOffset = 0;
+    state.runHistoryHasMore = true;
+    state.runHistoryRenderedCount = 0;
+  }
+  state.runHistoryLoading = true;
   try {
-    const query = new URLSearchParams({ limit: String(HISTORY_LIST_LIMIT) });
+    const previousRenderedCount = state.runHistoryRenderedCount;
+    const previousLength = state.runHistory.length;
+    const query = new URLSearchParams({ limit: String(HISTORY_LOAD_BATCH), offset: String(requestOffset) });
     const response = await fetch(`/api/data-agent/conversations?${query.toString()}`);
     const payload = await response.json();
     if (!response.ok || !payload.success) {
@@ -5450,11 +5498,35 @@ async function loadConversations() {
         };
       });
     const loadedIds = new Set(loadedHistory.map((item) => item.runId));
-    const localUnreadHistory = state.runHistory.filter((item) => item.unread === true && !item.projectId && !loadedIds.has(item.runId));
-    state.runHistory = sortHistoryItems([...localUnreadHistory, ...loadedHistory]).slice(0, HISTORY_LIST_LIMIT);
+    if (append) {
+      const merged = [...state.runHistory];
+      loadedHistory.forEach((item) => {
+        if (!existingById.has(item.runId)) {
+          merged.push(item);
+        }
+      });
+      state.runHistory = sortHistoryItems(merged);
+      if (previousRenderedCount >= previousLength) {
+        state.runHistoryRenderedCount = Math.min(state.runHistoryRenderedCount + HISTORY_LOAD_BATCH, state.runHistory.length);
+      }
+    } else {
+      const localUnreadHistory = state.runHistory.filter((item) => item.unread === true && !item.projectId && !loadedIds.has(item.runId));
+      state.runHistory = sortHistoryItems([...localUnreadHistory, ...loadedHistory]);
+      state.runHistoryRenderedCount = Math.min(HISTORY_LOAD_BATCH, state.runHistory.length);
+    }
+    if (state.runHistoryRenderedCount > state.runHistory.length) {
+      state.runHistoryRenderedCount = state.runHistory.length;
+    }
+    if (!state.runHistoryRenderedCount && state.runHistory.length) {
+      state.runHistoryRenderedCount = Math.min(HISTORY_LOAD_BATCH, state.runHistory.length);
+    }
+    state.runHistoryOffset = requestOffset + loadedHistory.length;
+    state.runHistoryHasMore = loadedHistory.length >= HISTORY_LOAD_BATCH;
     renderHistory();
   } catch {
     renderHistory();
+  } finally {
+    state.runHistoryLoading = false;
   }
 }
 
