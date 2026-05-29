@@ -163,6 +163,136 @@ class Phase8MultiTableCapabilityTest(unittest.TestCase):
         self.assertTrue(verification.passed, verification.issues)
         self.assertEqual(["a", "b"], executed["result"].debug["same_schema_union_summary"]["source_tables"])
 
+    def test_explicit_file_question_keeps_requested_product_dimension(self) -> None:
+        tables = {
+            "qa_store_a": pd.DataFrame({"store": ["A店", "A店"], "product": ["苹果", "香蕉"], "sales": [80, 70]}),
+            "qa_store_b": pd.DataFrame({"store": ["B店", "B店"], "product": ["苹果", "香蕉"], "sales": [80, 90]}),
+        }
+        tables["qa_store_a"].attrs["source_file"] = "qa_store_a.csv"
+        tables["qa_store_b"].attrs["source_file"] = "qa_store_b.csv"
+
+        executed = _execute("qa_store_b.csv里面哪个产品销售额最高？", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="qa_store_b.csv里面哪个产品销售额最高？"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual(["qa_store_b"], executed["logic"].source_tables)
+        self.assertEqual("product", executed["logic"].parameters["dimension"])
+        self.assertEqual([{"product": "香蕉", "sales": 90}], executed["result"].value)
+        self.assertTrue(verification.passed, verification.issues)
+
+    def test_verifier_rejects_requested_product_dimension_collapsed_to_store(self) -> None:
+        table = pd.DataFrame({"store": ["B店"], "product": ["香蕉"], "sales": [90]})
+        logic = make_logic_form(
+            task_type="ranking",
+            operation="ranking",
+            parameters={"table": "qa_store_b", "metric": "sales", "dimension": "store", "aggregation": "sum"},
+            output_format={"answer_type": "table"},
+        )
+        plan = build_analysis_plan(logic)
+        result = execute_plan(plan, {"tables": {"qa_store_b": table}, "primary_table": "qa_store_b"})
+        verification = verify_execution(
+            result,
+            plan=plan,
+            user_question=UserQuestion(dataset_id="ds_phase8", question="qa_store_b.csv里面哪个产品销售额最高？"),
+        )
+
+        self.assertTrue(result.success, result.errors)
+        self.assertFalse(verification.passed)
+        self.assertEqual("repair_dimension_binding", verification.correction_action["action"])
+
+    def test_verifier_accepts_category_dimension_alias_ctg_name(self) -> None:
+        table = pd.DataFrame({"ctg_name": ["饮料", "零食"], "sales": [120, 80]})
+        logic = make_logic_form(
+            task_type="ranking",
+            operation="ranking",
+            parameters={"table": "sales", "metric": "sales", "dimension": "ctg_name", "aggregation": "sum"},
+            output_format={"answer_type": "table"},
+        )
+        plan = build_analysis_plan(logic)
+        result = execute_plan(plan, {"tables": {"sales": table}, "primary_table": "sales"})
+        verification = verify_execution(
+            result,
+            plan=plan,
+            user_question=UserQuestion(dataset_id="ds_phase8", question="哪个品类销售额最高？"),
+        )
+
+        self.assertTrue(result.success, result.errors)
+        self.assertTrue(verification.passed, verification.semantic_verification_notes)
+
+    def test_profit_margin_ranking_uses_derived_ratio_metric(self) -> None:
+        tables = {"sales": pd.DataFrame({"city": ["上海", "北京"], "sales": [100, 280], "profit": [40, 56]})}
+        executed = _execute("哪个城市利润率最高？", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="哪个城市利润率最高？"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("ranking", executed["logic"].operation)
+        self.assertEqual({"name": "利润率", "numerator": "profit", "denominator": "sales", "formula": "sum(profit)/sum(sales)"}, executed["logic"].parameters["derived_metric"])
+        self.assertEqual([{"city": "上海", "利润率": 0.4}], executed["result"].value)
+        self.assertTrue(verification.passed, verification.issues)
+
+    def test_verifier_rejects_profit_margin_question_ranked_by_raw_sales(self) -> None:
+        table = pd.DataFrame({"city": ["上海", "北京"], "sales": [100, 280], "profit": [40, 56]})
+        logic = make_logic_form(
+            task_type="ranking",
+            operation="ranking",
+            parameters={"table": "sales", "metric": "sales", "dimension": "city", "aggregation": "sum"},
+            output_format={"answer_type": "table"},
+        )
+        plan = build_analysis_plan(logic)
+        result = execute_plan(plan, {"tables": {"sales": table}, "primary_table": "sales"})
+        verification = verify_execution(
+            result,
+            plan=plan,
+            user_question=UserQuestion(dataset_id="ds_phase8", question="哪个城市利润率最高？"),
+        )
+
+        self.assertTrue(result.success, result.errors)
+        self.assertFalse(verification.passed)
+        self.assertEqual("repair_metric_definition", verification.correction_action["action"])
+
+    def test_english_id_join_materializes_city_sales_ranking(self) -> None:
+        tables = {
+            "orders": pd.DataFrame({"customer_id": ["C1", "C2", "C1"], "sales": [100, 120, 70]}),
+            "customers": pd.DataFrame({"customer_id": ["C1", "C2"], "city": ["北京", "上海"]}),
+        }
+        executed = _execute("哪个城市总销售额最高？", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="哪个城市总销售额最高？"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual(["orders", "customers"], executed["logic"].source_tables)
+        self.assertTrue(executed["logic"].join_plan["trusted"])
+        self.assertEqual([{"city": "北京", "sales": 170}], executed["result"].value)
+        self.assertTrue(verification.passed, verification.issues)
+
+    def test_untrusted_join_key_does_not_verify_as_success(self) -> None:
+        tables = {
+            "orders": pd.DataFrame({"customer_id": ["C1", "C2"], "sales": [100, 120]}),
+            "customers": pd.DataFrame({"customer_id": ["X1", "X2"], "city": ["北京", "上海"]}),
+        }
+        executed = _execute("哪个城市总销售额最高？", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="哪个城市总销售额最高？"),
+        )
+
+        self.assertFalse(executed["result"].success)
+        self.assertFalse(executed["logic"].join_plan["trusted"])
+        self.assertFalse(verification.passed)
+        self.assertEqual("clarify_join_key", verification.correction_action["action"])
+
     def test_verifier_rejects_multi_entity_question_collapsed_to_single_filter(self) -> None:
         table = pd.DataFrame({"门店": ["A店"], "产品": ["苹果"], "sales": [150]})
         logic = parse_generic_table_question("A店和B店哪个门店总销售额最高？", {"a": table}, "")
@@ -199,11 +329,148 @@ class Phase8MultiTableCapabilityTest(unittest.TestCase):
         self.assertFalse(verification.passed)
         self.assertEqual("replace_operation", verification.correction_action["action"])
 
+    def test_same_schema_union_product_ranking_does_not_fail_verification(self) -> None:
+        tables = {
+            "qa_store_a": pd.DataFrame({"store": ["A店", "A店"], "product": ["苹果", "香蕉"], "sales": [100, 70]}),
+            "qa_store_b": pd.DataFrame({"store": ["B店", "B店"], "product": ["苹果", "香蕉"], "sales": [80, 90]}),
+        }
+        tables["qa_store_a"].attrs["source_file"] = "qa_store_a.csv"
+        tables["qa_store_b"].attrs["source_file"] = "qa_store_b.csv"
+        executed = _execute("A店和B店合起来哪个产品销售额最高？", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="A店和B店合起来哪个产品销售额最高？"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual([{"product": "苹果", "sales": 180}], executed["result"].value)
+        self.assertEqual(["qa_store_a", "qa_store_b"], executed["logic"].source_tables)
+        self.assertTrue(verification.passed, verification.issues)
+
+    def test_verifier_allows_multi_entity_filter_when_scope_keeps_all_named_entities(self) -> None:
+        tables = {
+            "qa_store_a": pd.DataFrame({"store": ["A店", "A店"], "product": ["苹果", "香蕉"], "sales": [100, 70]}),
+            "qa_store_b": pd.DataFrame({"store": ["B店", "B店"], "product": ["苹果", "香蕉"], "sales": [80, 90]}),
+        }
+        tables["qa_store_a"].attrs["source_file"] = "qa_store_a.csv"
+        tables["qa_store_b"].attrs["source_file"] = "qa_store_b.csv"
+        logic = parse_generic_table_question("A店和B店合起来哪个产品销售额最高？", tables, "")
+        logic.filters = {"store": ["A店", "B店"]}
+        plan = build_analysis_plan(logic)
+        result = execute_plan(plan, {"tables": tables, "primary_table": "qa_store_a"})
+        verification = verify_execution(
+            result,
+            plan=plan,
+            user_question=UserQuestion(dataset_id="ds_phase8", question="A店和B店合起来哪个产品销售额最高？"),
+        )
+
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual([{"product": "苹果", "sales": 180}], result.value)
+        self.assertTrue(verification.passed, verification.issues)
+
+    def test_monthly_trend_groups_by_month_not_city(self) -> None:
+        tables = {"sales": pd.DataFrame({"month": ["2026-01", "2026-01", "2026-02"], "city": ["上海", "北京", "广州"], "sales": [100, 250, 180]})}
+        executed = _execute("按月份展示销售额趋势，生成折线图。", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="按月份展示销售额趋势，生成折线图。"),
+        )
+        chart = build_chart_spec(plan=executed["plan"], execution_result=executed["result"], verification_passed=verification.passed)
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("aggregation", executed["logic"].operation)
+        self.assertEqual("month", executed["logic"].parameters["dimension"])
+        self.assertEqual({"2026-01": 350, "2026-02": 180}, {row["month"]: row["sales"] for row in executed["result"].value})
+        self.assertTrue(verification.passed, verification.issues)
+        self.assertEqual("line", chart.chart_type)
+        self.assertEqual("month", chart.x)
+
+    def test_missing_channel_dimension_is_blocked_instead_of_city_fallback(self) -> None:
+        tables = {"sales": pd.DataFrame({"city": ["北京", "上海"], "sales": [280, 100]})}
+        executed = _execute("哪个渠道销售额最高？", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="哪个渠道销售额最高？"),
+        )
+
+        self.assertNotEqual("city", executed["logic"].parameters.get("dimension"))
+        self.assertFalse(verification.passed)
+        self.assertEqual("repair_dimension_binding", verification.correction_action["action"])
+        self.assertTrue(verification.correction_action["missing_dimension"])
+
+    def test_verifier_rejects_llm_city_entity_grain_for_channel_question(self) -> None:
+        tables = {"sales": pd.DataFrame({"city": ["北京", "上海"], "sales": [280, 100]})}
+        logic = parse_generic_table_question("哪个渠道销售额最高？", tables, "")
+        logic.parameters.pop("dimension", None)
+        logic.parameters["strict_missing_dimension_guard"] = False
+        logic.entity_grain = {"entity_field": "city", "grain_role": "dimension"}
+        plan = build_analysis_plan(logic)
+        result = execute_plan(plan, {"tables": tables, "primary_table": "sales"})
+        verification = verify_execution(
+            result,
+            plan=plan,
+            user_question=UserQuestion(dataset_id="ds_phase8", question="哪个渠道销售额最高？"),
+        )
+
+        self.assertFalse(verification.passed)
+        self.assertEqual("repair_dimension_binding", verification.correction_action["action"])
+        self.assertEqual("city", verification.correction_action["actual_dimension"])
+
+    def test_category_dimension_join_uses_products_table(self) -> None:
+        executed = _execute("哪个品类总销售额最高？", _orders_products_customers())
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="哪个品类总销售额最高？"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("category", executed["logic"].parameters["dimension"])
+        self.assertEqual(["orders", "products"], executed["logic"].source_tables)
+        self.assertTrue(executed["logic"].join_plan["trusted"])
+        self.assertEqual([{"category": "水果", "sales": 180}], executed["result"].value)
+        self.assertTrue(verification.passed, verification.issues)
+
+    def test_category_dimension_join_with_city_filter_uses_two_dimension_tables(self) -> None:
+        executed = _execute("北京哪个品类销售额最高？", _orders_products_customers())
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="北京哪个品类销售额最高？"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("filtered_metric_ranking", executed["logic"].operation)
+        self.assertEqual("category", executed["logic"].parameters["dimension"])
+        self.assertEqual({"city": "北京"}, executed["logic"].filters)
+        self.assertEqual({"orders", "products", "customers"}, set(executed["logic"].source_tables))
+        self.assertEqual(2, len(executed["logic"].join_plan["steps"]))
+        self.assertEqual([{"category": "零食", "sales": 120}], executed["result"].value)
+        self.assertTrue(verification.passed, verification.issues)
+
 
 def _orders_and_customers() -> dict[str, pd.DataFrame]:
     return {
         "订单表": pd.DataFrame({"客户ID": ["C1", "C2", "C1"], "订单金额": [100, 200, 50]}),
         "客户表": pd.DataFrame({"客户ID": ["C1", "C2"], "城市": ["上海", "北京"]}),
+    }
+
+
+def _orders_products_customers() -> dict[str, pd.DataFrame]:
+    return {
+        "orders": pd.DataFrame(
+            {
+                "order_id": ["O1", "O2", "O3"],
+                "customer_id": ["C1", "C2", "C1"],
+                "product_id": ["P1", "P2", "P3"],
+                "sales": [100, 80, 120],
+            }
+        ),
+        "products": pd.DataFrame({"product_id": ["P1", "P2", "P3"], "category": ["水果", "水果", "零食"]}),
+        "customers": pd.DataFrame({"customer_id": ["C1", "C2"], "city": ["北京", "上海"]}),
     }
 
 

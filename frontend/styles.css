@@ -2215,6 +2215,10 @@ p {
   inset: 0;
   z-index: 80;
   background: rgba(17, 24, 39, 0.18);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 180ms ease, visibility 180ms ease;
 }
 
 .activity-drawer {
@@ -2229,11 +2233,33 @@ p {
   border-left: 1px solid var(--line);
   background: #fff;
   box-shadow: -18px 0 42px rgba(15, 23, 42, 0.12);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translate3d(28px, 0, 0);
+  transition:
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms ease,
+    visibility 220ms ease;
+  will-change: transform, opacity;
 }
 
 .activity-drawer.hidden,
 .activity-backdrop.hidden {
   display: none;
+}
+
+.activity-backdrop.is-active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.activity-drawer.is-active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translate3d(0, 0, 0);
 }
 
 .activity-drawer-header {
@@ -2278,6 +2304,7 @@ p {
   margin: 0;
   padding: 14px 18px 26px;
   overflow: auto;
+  overscroll-behavior: contain;
   list-style: none;
 }
 

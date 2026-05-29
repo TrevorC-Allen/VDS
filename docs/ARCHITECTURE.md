@@ -36,6 +36,8 @@
 
 2026-05-25 更新：新增 GPT-like parity redline。任何影响文件解析、字段画像、回答结构、Insight、图表/表格、过程流、代码 artifact 或 Workbench 排版样式的修改，都必须在测试阶段对照 GPT / ChatGPT Data Analysis 同类结果或冻结标准 GPT 参考结果；差距很大时打回重写，不能只凭单测或 smoke 通过。
 
+2026-05-28 更新：Phase 12 后续 correctness + GPT-like hardening 将语义正确性提升为架构红线。`success=true` 只是执行状态，不能覆盖 metric、dimension、join 或 derived formula 错算；点名文件、利润率、产品/门店/城市/客户维度、可信 join 和 overview 表角色都由后端 parser / executor / verifier / response builder 守护，前端只渲染契约。已修能力不得下降 / non-regression 必须由同族测试和旧代表回归证明。
+
 ## 层次边界
 
 1. data_agent_core 是核心算法层。
@@ -313,6 +315,16 @@ DataAgentService 追加 question、run_id、answer、answer_type、success 和 r
 2. 对比时必须检查事实理解、结构顺序、信息密度、用户下一步、表格/图表选择、过程流颗粒度和视觉层级。
 3. 如果差距很大，默认判定为体验实现失败，打回重写；通过单元测试、离线 scorer 或浏览器 smoke 不代表通过 GPT-like parity review。
 4. 如果没有实时 GPT 参考，必须明确记录使用的标准 GPT answer workbook、冻结截图或 repo 内参考 artifact，不能把 mock 结果冒充 GPT 结果。
+
+## Semantic correctness redline
+
+该红线约束所有会改变问题理解、执行计划、结果校验和最终回答的修改：
+
+1. `success=true` 不能绕过语义错算。执行器成功、结果非空或回答模板漂亮，都不能替代 metric / dimension / filter / join / derived formula 校验。
+2. 点名文件默认只在该文件内解析 metric / dimension；跨表 join 必须由问题显式需要或由可信 key 推导。
+3. 派生指标必须结构化进入 LogicForm / parameters，例如利润率使用 `sum(profit)/sum(sales)`，不能退成 raw sales 或 raw profit 排名。
+4. Uploaded-table join 只在 Pandas 路径 materialize；SQL 路径继续不 materialize uploaded-table join，保持现有 coverage 边界。
+5. 已修能力不得下降 / non-regression：任何 parser、verifier、executor、output 或 frontend 展示改动，都必须保留多文件路由、join、图表、overview、清洗边界和 GPT-like 回答旧代表回归。
 
 ## TODO
 

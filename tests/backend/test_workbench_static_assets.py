@@ -49,7 +49,9 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("const displayValues = values.slice(0, horizontal ? 18 : 16)", js)
         self.assertIn("chartTicks(domain.min, domain.max, 5)", js)
         self.assertIn("chartTooltip({", js)
+        self.assertIn("chartTooltipMulti({", js)
         self.assertIn("resolveLineSeries(chart, rows, x, y, fallbackColumns)", js)
+        self.assertIn("function renderComboColumnLineChart", js)
         self.assertIn("bindChartInteractions(el.chartPanel)", js)
         self.assertIn('panel.addEventListener("pointerover", activateFromEvent)', js)
         self.assertIn(".chart-svg", css)
@@ -73,7 +75,9 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("chart?.image_data_uri", js)
         self.assertIn("renderChartImage", js)
         self.assertLess(render_chart.index("const y = resolveChartY"), render_chart.index("chart?.image_data_uri"))
+        self.assertIn('type === "combo_column_line"', render_chart)
         self.assertIn("renderBarChart(values, chart", js)
+        self.assertIn("renderComboColumnLineChart(rows, chart, x, fallbackColumns)", js)
         self.assertIn("renderLineChart(seriesValues, chart)", js)
         self.assertIn('class="chart-image"', js)
         self.assertIn("function resolveChartY", js)
@@ -218,6 +222,16 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn(".answer-source-list", css)
         self.assertIn(".answer-source-icon.spreadsheet", css)
 
+    def test_workbench_insight_next_step_prefers_actionable_advice(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function resolveInsightAdviceCandidates", js)
+        self.assertIn("const directSuggestions = [insight?.next_step", js)
+        self.assertIn("return uniqueStrings([...directSuggestions, ...businessSuggestions])", js)
+        self.assertIn("function isDistinctInsightText", js)
+        self.assertIn("normalizeInsightText(value) !== normalizeInsightText(summary)", js)
+        self.assertIn("const rawAdvice = isActionableInsightAdvice(advice) ? advice : \"\"", js)
+
     def test_workbench_suppresses_raw_detail_rows_for_general_questions(self) -> None:
         js = Path("frontend/app.js").read_text(encoding="utf-8")
         css = Path("frontend/styles.css").read_text(encoding="utf-8")
@@ -331,6 +345,21 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertNotIn("!state.datasetId || !question", js)
         self.assertNotIn('state.datasetId ? "/api/data-agent/analyze"', js)
         self.assertIn("当前没有上传数据，我会直接回复可讨论的部分，不编造业务结论。", js)
+
+    def test_workbench_filters_english_insight_leaks_from_history(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function looksLikeEnglishProseLeak", js)
+        self.assertIn("function segmentLooksLikeEnglishProseLeak", js)
+        self.assertIn("function isActionableInsightAdvice", js)
+        self.assertIn("function buildContextualInsightSummary", js)
+        self.assertIn("排名结果里第 1 位是", js)
+        self.assertIn('if (!/[\\u3400-\\u9fff]/.test(value)) return false;', js)
+        self.assertIn("(?:观察|风险|边界|依据|建议|下一步)", js)
+        self.assertIn('"ranking"', js)
+        self.assertIn('"countries"', js)
+        self.assertIn("proseCount >= 2", js)
+        self.assertIn("isActionableInsightAdvice(parsed.action)", js)
 
     def test_workbench_keeps_dataset_filename_out_of_topbar(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")
@@ -489,13 +518,14 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("thinking_elapsed_ms", js)
         self.assertIn("pinned: Boolean(item.pinned)", js)
         self.assertIn("pinnedAt: item.pinned_at ||", js)
-        global_loader = js[js.index("async function loadConversations()") : js.index("async function loadConversation(")]
+        global_loader = js[js.index("async function loadConversations(") : js.index("async function loadConversation(")]
         self.assertNotIn('query.set("project_id"', global_loader)
-        self.assertNotIn('new URLSearchParams({ limit: "30", project_id', global_loader)
+        self.assertIn('offset: String(requestOffset)', global_loader)
+        self.assertIn("handleRunHistoryScroll", js)
         self.assertIn(".filter((item) => !item.project_id)", global_loader)
         self.assertIn("!item.projectId && !loadedIds.has(item.runId)", global_loader)
         self.assertIn("loadProjectConversations", js)
-        self.assertIn('new URLSearchParams({ limit: "30", project_id: projectId })', js)
+        self.assertIn('new URLSearchParams({ limit: String(HISTORY_LOAD_BATCH), project_id: projectId })', js)
 
     def test_workbench_has_project_workspace_controls(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")

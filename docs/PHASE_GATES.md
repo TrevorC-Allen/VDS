@@ -18,6 +18,24 @@
 10. 禁止只用英文 Benchmark、英文 prompt 或英文字段证明能力完成；中英文能力都必须纳入可复现测试或明确记录阶段限制。
 11. GPT-like parity redline：凡是修改文件解析、字段画像、最终回答、Insight、图表/表格、过程流、代码 artifact、Workbench 布局样式或用户可见文案，退出阶段前必须对照 GPT / ChatGPT Data Analysis 同类结果或已冻结标准 GPT 参考结果。验收结论必须明确“GPT 会不会这样解析、这样组织、这样排版、这样回答”；差距很大时直接打回重写，不能用单测通过、mock 通过或 smoke 通过替代。
 12. 每次正式测试必须写 `docs/test-runs/*.md` 测试文档；没有测试文档的 API smoke、浏览器 smoke、benchmark 回归、LLM GPT-like gate、changelog audit 或修复后复测，都不能作为阶段退出或验收完成证据。
+13. 语义正确性红线：`success=true`、空 errors、执行成功或 GPT-like 模板都不能覆盖语义错算。问题要求产品就不能按门店聚合，问题要求利润率就不能按 sales / profit 原始值排名，问题需要跨表维度时必须可信 join 或明确澄清候选关联键。
+14. 已修能力不得下降 / non-regression：任何 parser、verifier、executor、output、多文件、join、overview 或 Workbench 修改，都必须保留同族旧回归和新增代表性检查；不能为了一个新 P0/P1 修复牺牲既有多文件路由、图表聚合、清洗边界或 GPT-like 回答能力。
+
+## Phase 12 后续：Correctness + GPT-like Hardening
+
+目标：
+
+1. 修复普通上传表分析中“看起来成功但语义错算”的 P0/P1 问题。
+2. 把点名文件、点名维度、利润率派生指标、可信 join 和 overview 表角色沉淀为通用能力，不做当前文件名、当前样例值或当前截图特调。
+3. 保持前端只渲染后端契约；核心判断仍在 parser、executor、verifier 和 response builder。
+
+退出门槛：
+
+1. Verifier 必须拦截产品/门店/城市/客户等维度串错，拦截利润率问题被 raw sales 或 raw profit 排名。
+2. Pandas executor 必须支持可信 join 和派生 ratio；SQL 路径在 uploaded-table join plan 下继续保持不 materialize 边界。
+3. Overview 必须区分可计算事实表、维表、说明或元数据表，不得把知识库 / 表说明只当普通事实表。
+4. 简单 Top1 回答必须短，不包含“当前结果表只返回 1 条排序结果”“仍需按当前数据范围和指标口径解读”等审计噪声。
+5. `scripts/run_tests.py`、同族 P0/P1/P2 单测、旧代表回归和 `docs/test-runs/*.md` 证据必须通过；如任一旧能力回退，先修回归再谈新体验。
 
 ## Phase 1：核心算法 + 最小 API
 

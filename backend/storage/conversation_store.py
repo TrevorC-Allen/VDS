@@ -120,6 +120,7 @@ class ConversationStore:
         self,
         *,
         limit: int = 50,
+        offset: int = 0,
         owner_id: str = "",
         tenant_id: str = "",
         project_id: str | None = None,
@@ -148,7 +149,9 @@ class ConversationStore:
             ),
             reverse=True,
         )
-        return records[: max(1, min(int(limit or 50), 200))]
+        safe_limit = max(1, min(int(limit or 50), 200))
+        safe_offset = max(0, int(offset or 0))
+        return records[safe_offset : safe_offset + safe_limit]
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
         """Return a full conversation record if it exists."""

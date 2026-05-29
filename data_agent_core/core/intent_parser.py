@@ -25,11 +25,14 @@ FIELD_ALIASES = {
     "aci": "aci",
     "card scheme": "card_scheme",
     "device type": "device_type",
+    "device_type": "device_type",
     "device": "device_type",
     "shopper interaction": "shopper_interaction",
     "payment interaction": "shopper_interaction",
     "issuing country": "issuing_country",
     "issuing_country": "issuing_country",
+    "acquirer country": "acquirer_country",
+    "acquirer_country": "acquirer_country",
     "ip country": "ip_country",
     "ip_country": "ip_country",
     "ip address": "ip_address",
@@ -38,6 +41,18 @@ FIELD_ALIASES = {
     "merchant": "merchant",
     "shopper": "email_address",
     "customer": "email_address",
+    "产品": "product",
+    "商品": "product",
+    "品类": "category",
+    "门店": "store",
+    "店铺": "store",
+    "城市": "city",
+    "客户": "customer",
+    "销售额": "sales",
+    "销售金额": "sales",
+    "收入": "revenue",
+    "利润": "profit",
+    "毛利": "profit",
     "email": "email_address",
     "card number": "card_number",
     "card bin": "card_bin",
@@ -140,10 +155,21 @@ def _extract_day_of_year(question: str) -> int | None:
 
 
 def _extract_merchant(question: str, context: dict[str, Any]) -> str | None:
+    names: list[str] = []
     merchants = context.get("merchant_data") or []
-    names = [row["merchant"] for row in merchants if isinstance(row, dict) and "merchant" in row]
-    for name in sorted(names, key=len, reverse=True):
-        if name in question:
+    names.extend(str(row["merchant"]) for row in merchants if isinstance(row, dict) and "merchant" in row)
+    payments = context.get("payments")
+    if payments is None:
+        tables = context.get("tables") or {}
+        for table in tables.values():
+            if isinstance(table, pd.DataFrame) and "merchant" in table.columns:
+                payments = table
+                break
+    if isinstance(payments, pd.DataFrame) and "merchant" in payments.columns:
+        names.extend(str(value) for value in payments["merchant"].dropna().astype(str).unique().tolist())
+    lowered = question.lower()
+    for name in sorted({candidate for candidate in names if candidate}, key=len, reverse=True):
+        if name in question or name.lower() in lowered:
             return name
     return None
 
@@ -201,9 +227,12 @@ def _extract_group_by(question: str, default: str = "shopper_interaction") -> st
         "card scheme": "card_scheme",
         "issuing country": "issuing_country",
         "issuing_country": "issuing_country",
+        "acquirer country": "acquirer_country",
+        "acquirer_country": "acquirer_country",
         "ip country": "ip_country",
         "ip_country": "ip_country",
         "device type": "device_type",
+        "device_type": "device_type",
         "card_scheme": "card_scheme",
         "shopper_interaction": "shopper_interaction",
         "merchant": "merchant",
@@ -1125,7 +1154,7 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
                 "year": _extract_year(question),
                 "month_range": month_range,
             },
-            parameters={"group_by": _extract_group_by(question), "metric": "eur_amount"},
+            parameters={"group_by": _extract_field_name(question, context) or _extract_group_by(question), "metric": "eur_amount"},
             output_format=output_format | {"answer_type": "grouped_amounts", "decimals": 2},
         )
 
@@ -1254,7 +1283,7 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             task_type="fee_rule",
             operation="best_fraud_aci_choice",
             filters={"merchant": _extract_merchant(question, context), "year": _extract_year(question), "month": _extract_month(question)},
-            output_format=output_format | {"answer_type": "scheme_fee", "decimals": 2},
+            output_format=output_format | {"answer_type": "aci", "decimals": 2},
         )
 
     if "aci" in lowered and ("transaction value" in lowered or re.search(r"transaction of\s+\d", lowered)) and (
@@ -1458,8 +1487,21 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
     table_context = _select_table_context(question, tables)
     table_name, df = table_context["table_name"], table_context["df"]
     record_count_requested = _is_record_count_metric_question(lowered)
-    metric = None if record_count_requested else table_context.get("metric") or _find_metric_column(question, df)
-    filters = _infer_value_filters(question, df, exclude={metric})
+    derived_metric = None if record_count_requested else _derived_ratio_metric(question, df)
+    metric = None if record_count_requested else (
+        str(derived_metric["name"]) if derived_metric else table_context.get("metric") or _find_metric_column(question, df)
+    )
+    if derived_metric:
+        table_context["metric"] = metric
+        table_context["table_selection_reason"] = _table_selection_reason(
+            question,
+            table_name,
+            metric,
+            table_context.get("dimension"),
+            table_context.get("explicit_table"),
+            table_context.get("join_plan") or {},
+        )
+    filters = {**_infer_value_filters(question, df, exclude={metric}), **dict(table_context.get("filters") or {})}
     explicit_group_by = _find_group_by_column(question, df)
     if explicit_group_by == metric:
         explicit_group_by = None
@@ -1467,6 +1509,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
     if context_dimension in filters:
         context_dimension = None
     dimension = context_dimension or explicit_group_by or _find_dimension_column(question, df, metric, exclude=set(filters))
+    missing_dimension_concepts = list(table_context.get("missing_dimension_concepts") or [])
     if dimension != table_context.get("dimension") and not table_context.get("join_plan"):
         table_context["dimension"] = dimension
         table_context["table_selection_reason"] = _table_selection_reason(
@@ -1476,6 +1519,26 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             dimension,
             None,
             {},
+        )
+
+    if missing_dimension_concepts and (_is_ranking_question(lowered) or _is_grouped_metric_display_question(lowered)):
+        return make_logic_form(
+            task_type="schema_query",
+            operation="detail_lookup",
+            filters=filters,
+            parameters=_with_table_context(
+                {
+                    "table": table_name,
+                    "metric": metric,
+                    "dimension": None,
+                    "missing_dimension_concepts": missing_dimension_concepts,
+                    "strict_missing_dimension_guard": _strict_missing_dimension_guard(question),
+                    "available_columns": [str(column) for column in df.columns],
+                    "limit": 1,
+                },
+                table_context,
+            ),
+            output_format=output_format | {"answer_type": "clarification"},
         )
 
     if _is_top_outlier_group_question(lowered):
@@ -1638,6 +1701,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 "metric": metric,
                 "dimension": dimension,
                 "aggregation": aggregation,
+                **({"derived_metric": derived_metric} if derived_metric else {}),
             }, table_context),
             output_format=output_format | {"answer_type": "table"},
         )
@@ -1655,6 +1719,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 "aggregation": aggregation,
                 "sort_order": "asc" if _is_bottom_question(lowered) else "desc",
                 "limit": _extract_limit(question, default=1),
+                **({"derived_metric": derived_metric} if derived_metric else {}),
             }, table_context),
             answer_target=_ranking_answer_target(question, guidelines, dimension),
             output_format=output_format | _ranking_output_format(question, guidelines, dimension, _extract_limit(question, default=1)),
@@ -1671,6 +1736,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 "metric": metric,
                 "dimension": dimension if _has_grouping_language(lowered) else None,
                 "aggregation": aggregation,
+                **({"derived_metric": derived_metric} if derived_metric else {}),
             }, table_context),
             output_format=output_format
             | {"answer_type": "table" if dimension and _has_grouping_language(lowered) else "number"}
@@ -1731,17 +1797,48 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
     union_context = None if explicit_table else _same_schema_union_context(question, tables)
     if union_context is not None:
         return union_context
+    if explicit_table:
+        primary_df = tables[explicit_table]
+        metric = _find_metric_column(question, primary_df)
+        dimension = _find_group_by_column(question, primary_df) or _find_dimension_column(question, primary_df, metric)
+        return {
+            "table_name": explicit_table,
+            "df": primary_df,
+            "metric": metric,
+            "dimension": dimension,
+            "source_tables": [explicit_table],
+            "join_plan": {},
+            "explicit_table": explicit_table,
+            "table_selection_reason": _table_selection_reason(question, explicit_table, metric, dimension, explicit_table, {}),
+        }
     metric_table, metric = _best_metric_column(question, tables)
     primary_name = explicit_table or metric_table or _select_primary_table(tables)[0]
     primary_df = tables[primary_name]
     if metric is None and not _is_record_count_metric_question(question.lower()):
         metric = _find_metric_column(question, primary_df)
     dimension_table, dimension = _best_dimension_column(question, tables, preferred_table=primary_name, metric=metric)
+    requested_dimensions = _requested_dimension_concepts(question)
+    missing_dimension_concepts = requested_dimensions if requested_dimensions and not dimension else []
+    filter_matches = _infer_filter_matches_across_tables(question, tables, exclude={metric, dimension})
+    filters = {str(match["column"]): match["value"] for match in filter_matches}
+    target_tables: list[str] = []
+    if dimension and dimension_table and dimension_table != primary_name:
+        target_tables.append(dimension_table)
+    for match in filter_matches:
+        filter_table = str(match["table"])
+        if filter_table != primary_name and filter_table not in target_tables:
+            target_tables.append(filter_table)
+    if target_tables and not _should_attempt_generic_join(question):
+        target_tables = []
+        filters = {str(match["column"]): match["value"] for match in filter_matches if str(match["table"]) == primary_name}
+        if dimension_table and dimension_table != primary_name:
+            dimension_table = primary_name
+            dimension = _find_dimension_column(question, primary_df, metric, exclude=set(filters))
     join_plan: dict[str, Any] = {}
     source_tables = [primary_name]
-    if dimension and dimension_table and dimension_table != primary_name:
-        join_plan = _infer_join_plan(primary_name, primary_df, dimension_table, tables[dimension_table])
-        source_tables.append(dimension_table)
+    if target_tables:
+        join_plan = _infer_join_plan_for_targets(primary_name, tables, target_tables)
+        source_tables.extend(table_name for table_name in target_tables if table_name not in source_tables)
         if not join_plan.get("trusted"):
             reason = str(join_plan.get("reason") or "")
             if join_plan.get("many_to_many_risk"):
@@ -1750,7 +1847,7 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
                 "required": True,
                 "trusted": False,
                 "left_table": primary_name,
-                "right_table": dimension_table,
+                "right_table": target_tables[-1],
                 "reason": reason or "No trustworthy join key was found for the requested metric and dimension tables.",
             }
     return {
@@ -1758,8 +1855,11 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
         "df": primary_df,
         "metric": metric,
         "dimension": dimension,
+        "filters": filters,
+        "missing_dimension_concepts": missing_dimension_concepts,
         "source_tables": source_tables,
         "join_plan": join_plan,
+        "explicit_table": explicit_table,
         "table_selection_reason": _table_selection_reason(question, primary_name, metric, dimension, explicit_table, join_plan),
     }
 
@@ -1918,11 +2018,33 @@ def _best_dimension_column(
     preferred_table: str,
     metric: str | None,
 ) -> tuple[str | None, str | None]:
+    requested_concepts = _requested_dimension_concepts(question)
     best: tuple[int, str, str] | None = None
     for table_name, df in tables.items():
         for column in df.columns:
             column_name = str(column)
-            if column_name == metric or pd.api.types.is_numeric_dtype(df[column]):
+            if column_name == metric:
+                continue
+            is_numeric = pd.api.types.is_numeric_dtype(df[column])
+            if requested_concepts:
+                concept_scores = [
+                    _semantic_concept_column_score(column_name, concept)
+                    for concept in requested_concepts
+                    if _semantic_concept_column_score(column_name, concept) > 0
+                ]
+                if not concept_scores:
+                    continue
+                if is_numeric and not any(concept in {"month", "time"} for concept in requested_concepts):
+                    continue
+                score = max(concept_scores)
+                if _dimension_looks_like_join_identifier(column_name):
+                    score -= 10
+                if table_name == preferred_table:
+                    score += 1
+                if best is None or score > best[0]:
+                    best = (score, table_name, column_name)
+                continue
+            if is_numeric:
                 continue
             score = _column_question_score(question, column_name)
             if score == 0 and table_name == preferred_table and _dimension_name_hint(column_name):
@@ -1933,8 +2055,61 @@ def _best_dimension_column(
                 best = (score, table_name, column_name)
     if best is not None:
         return best[1], best[2]
+    if requested_concepts:
+        return None, None
     preferred_df = tables[preferred_table]
     return preferred_table, _find_dimension_column(question, preferred_df, metric)
+
+
+def _infer_join_plan_for_targets(primary_table: str, tables: dict[str, pd.DataFrame], target_tables: list[str]) -> dict[str, Any]:
+    unique_targets = [table_name for table_name in target_tables if table_name != primary_table and table_name in tables]
+    if not unique_targets:
+        return {}
+    if len(unique_targets) == 1:
+        return _infer_join_plan(primary_table, tables[primary_table], unique_targets[0], tables[unique_targets[0]]) | {"required": True}
+
+    joined_tables = [primary_table]
+    steps: list[dict[str, Any]] = []
+    for target_table in unique_targets:
+        best_step: dict[str, Any] | None = None
+        best_score = -1.0
+        for left_table in joined_tables:
+            candidate = _infer_join_plan(left_table, tables[left_table], target_table, tables[target_table])
+            score = float(candidate.get("confidence") or 0.0) + float(candidate.get("overlap_rate") or 0.0)
+            if candidate.get("trusted"):
+                score += 1.0
+            if score > best_score:
+                best_score = score
+                best_step = candidate
+        if best_step is None:
+            best_step = {
+                "trusted": False,
+                "left_table": primary_table,
+                "right_table": target_table,
+                "reason": "No join key candidate found.",
+            }
+        steps.append(best_step | {"required": True})
+        joined_tables.append(target_table)
+
+    trusted = all(step.get("trusted") and not step.get("many_to_many_risk") for step in steps)
+    first = steps[0]
+    risky = next((step for step in steps if step.get("many_to_many_risk")), None)
+    untrusted = next((step for step in steps if not step.get("trusted")), None)
+    return {
+        "required": True,
+        "trusted": trusted,
+        "join_type": "left",
+        "left_table": first.get("left_table"),
+        "right_table": steps[-1].get("right_table"),
+        "left_key": first.get("left_key"),
+        "right_key": first.get("right_key"),
+        "relationship": first.get("relationship"),
+        "confidence": round(min(sum(float(step.get("confidence") or 0.0) for step in steps) / len(steps), 1.0), 4),
+        "overlap_rate": round(min(float(step.get("overlap_rate") or 0.0) for step in steps), 4),
+        "many_to_many_risk": bool(risky),
+        "reason": str((untrusted or risky or {}).get("reason") or ""),
+        "steps": steps,
+    }
 
 
 def _infer_join_plan(left_table: str, left_df: pd.DataFrame, right_table: str, right_df: pd.DataFrame) -> dict[str, Any]:
@@ -1995,21 +2170,236 @@ def _table_selection_reason(
     return "; ".join(parts)
 
 
+SEMANTIC_COLUMN_ALIASES = {
+    "product": ("product", "sku", "item", "goods", "产品", "商品", "品名"),
+    "category": ("category", "ctg", "type", "class", "classification", "品类", "类别", "类目", "分类"),
+    "store": ("store", "shop", "branch", "门店", "店铺", "门店名称"),
+    "city": ("city", "城市", "市"),
+    "channel": ("channel", "渠道", "通路"),
+    "customer": ("customer", "cust", "client", "客户", "终端"),
+    "month": ("month", "month_id", "month_code", "stat_month", "ym", "年月", "月份"),
+    "time": ("date", "day", "week", "period", "日期", "时间", "周期"),
+    "sales": ("sales", "sale", "revenue", "amount", "销售额", "销售金额", "销售", "收入", "金额", "订单金额"),
+    "profit": ("profit", "gross_profit", "grossprofit", "利润", "毛利"),
+}
+
+DIMENSION_CONCEPTS = ("product", "category", "store", "city", "channel", "customer", "month", "time")
+
+
+def _requested_dimension_concepts(question: str) -> list[str]:
+    requested: list[str] = []
+    for concept in DIMENSION_CONCEPTS:
+        aliases = SEMANTIC_COLUMN_ALIASES.get(concept) or ()
+        if any(_semantic_alias_in_question(alias, question) for alias in aliases):
+            requested.append(concept)
+    return requested
+
+
+def _semantic_concept_column_score(column_name: str, concept: str) -> int:
+    aliases = SEMANTIC_COLUMN_ALIASES.get(concept) or ()
+    normalized_column = _normalize_column_token(column_name)
+    if not normalized_column:
+        return 0
+    best = 0
+    for alias in aliases:
+        normalized_alias = _normalize_column_token(alias)
+        if not normalized_alias:
+            continue
+        if normalized_column == normalized_alias:
+            best = max(best, 120)
+        elif normalized_alias in normalized_column:
+            best = max(best, 100)
+    return best
+
+
+def _dimension_looks_like_join_identifier(column_name: str) -> bool:
+    normalized = _normalize_field_name(column_name)
+    return normalized.endswith("id") or normalized.endswith("编号") or normalized.endswith("代码")
+
+
+def _infer_filter_matches_across_tables(
+    question: str,
+    tables: dict[str, pd.DataFrame],
+    *,
+    exclude: set[str | None] | None = None,
+) -> list[dict[str, Any]]:
+    lowered = question.lower()
+    excluded = {str(item) for item in (exclude or set()) if item}
+    matches: list[dict[str, Any]] = []
+    for table_name, df in tables.items():
+        for column in df.columns:
+            name = str(column)
+            if name in excluded:
+                continue
+            if _semantic_concept_column_score(name, "month") > 0 or _semantic_concept_column_score(name, "time") > 0:
+                continue
+            series = df[column]
+            if pd.api.types.is_numeric_dtype(series):
+                continue
+            unique_values = [value for value in series.dropna().unique().tolist() if str(value)]
+            if not unique_values or len(unique_values) > 50:
+                continue
+            matched = [
+                value
+                for value in sorted(unique_values, key=lambda item: len(str(item)), reverse=True)
+                if _is_safe_implicit_filter_value(str(value))
+                and (_value_in_question(str(value), question, lowered) or _implicit_value_in_question(str(value), question, lowered))
+            ]
+            if len(matched) == 1:
+                matches.append({"table": table_name, "column": name, "value": matched[0]})
+    return matches
+
+
+def _strict_missing_dimension_guard(question: str) -> bool:
+    lowered = question.lower()
+    complex_tokens = (
+        "相比",
+        "相较",
+        "占比",
+        "覆盖",
+        "中位数",
+        "潜在",
+        "如果",
+        "驱动",
+        "结构",
+        "变化",
+        "均衡",
+        "通过率",
+        "高于上月",
+        "低于上月",
+        "rather than",
+        "compared",
+        "coverage",
+        "median",
+        "potential",
+        "structure",
+        "mix",
+    )
+    if any(token in lowered for token in complex_tokens):
+        return False
+    return _is_ranking_question(lowered) or _is_grouped_metric_display_question(lowered)
+
+
+def _should_attempt_generic_join(question: str) -> bool:
+    lowered = question.lower()
+    if any(token in lowered for token in ("join", "merge", "关联", "连接", "结合", "映射", "多表")):
+        return True
+    complex_tokens = (
+        "通过率",
+        "覆盖率",
+        "覆盖数",
+        "覆盖",
+        "占比",
+        "中位数",
+        "潜在",
+        "如果",
+        "相比",
+        "相较",
+        "驱动",
+        "结构",
+        "变化",
+        "均衡",
+        "线路计划",
+        "计划拜访",
+        "sku检查",
+        "sku稽查",
+        "稽查",
+        "店均",
+        "高于上月",
+        "低于上月",
+        "coverage",
+        "ratio",
+        "rate",
+        "median",
+        "potential",
+        "compared",
+    )
+    return not any(token in lowered for token in complex_tokens)
+
+
 def _column_question_score(question: str, column_name: str) -> int:
-    normalized_question = _normalize_text(question)
+    searchable_question = _question_without_file_mentions(question)
+    normalized_question = _normalize_text(searchable_question)
     normalized_column = _normalize_text(column_name)
     if normalized_column and normalized_column in normalized_question:
         return 8 + len(normalized_column)
+    semantic_score = _semantic_column_question_score(question, column_name)
+    if semantic_score:
+        return semantic_score
     tokens = [token for token in re.split(r"[_\s/()-]+", column_name.lower()) if len(token) >= 2]
-    return sum(2 for token in tokens if token in question.lower())
+    return sum(2 for token in tokens if re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(token)}(?![A-Za-z0-9_.-])", searchable_question.lower()))
 
 
 def _normalize_text(value: str) -> str:
     return re.sub(r"[\s_\-./()（）]+", "", str(value).lower())
 
 
+def _question_without_file_mentions(question: str) -> str:
+    return re.sub(
+        r"[\w\u4e00-\u9fff（）() ._-]+\.(?:csv|xlsx|xls|tsv|txt|json|parquet)\b",
+        " ",
+        question,
+        flags=re.I,
+    )
+
+
 def _normalize_field_name(value: str) -> str:
     return _normalize_text(value).replace("编号", "id").replace("代码", "id")
+
+
+def _semantic_column_question_score(question: str, column_name: str) -> int:
+    searchable_question = _question_without_file_mentions(question)
+    normalized_column = _normalize_column_token(column_name)
+    if not searchable_question.strip() or not normalized_column:
+        return 0
+    best = 0
+    for aliases in SEMANTIC_COLUMN_ALIASES.values():
+        question_hit = any(_semantic_alias_in_question(alias, searchable_question) for alias in aliases)
+        if not question_hit:
+            continue
+        column_hit = any(_normalize_column_token(alias) and _normalize_column_token(alias) in normalized_column for alias in aliases)
+        if column_hit:
+            best = max(best, 12)
+    return best
+
+
+def _semantic_alias_in_question(alias: str, question: str) -> bool:
+    if any("\u4e00" <= char <= "\u9fff" for char in alias):
+        return alias in question
+    lowered = question.lower()
+    return bool(re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(alias.lower())}(?![A-Za-z0-9_.-])", lowered))
+
+
+def _derived_ratio_metric(question: str, df: pd.DataFrame) -> dict[str, str] | None:
+    if not _asks_profit_margin(question):
+        return None
+    numerator = _find_semantic_column(df, "profit")
+    denominator = _find_semantic_column(df, "sales")
+    if not numerator or not denominator or numerator == denominator:
+        return None
+    name = "利润率" if any(token in question for token in ("利润率", "毛利率", "利润", "毛利")) else "profit_margin"
+    return {
+        "name": name,
+        "numerator": numerator,
+        "denominator": denominator,
+        "formula": f"sum({numerator})/sum({denominator})",
+    }
+
+
+def _asks_profit_margin(question: str) -> bool:
+    lowered = question.lower()
+    return any(token in lowered for token in ("profit margin", "gross margin", "profit rate", "margin rate", "margin")) or any(
+        token in question for token in ("利润率", "毛利率")
+    )
+
+
+def _find_semantic_column(df: pd.DataFrame, concept: str) -> str | None:
+    aliases = SEMANTIC_COLUMN_ALIASES.get(concept) or ()
+    for column in df.columns:
+        normalized = _normalize_column_token(str(column))
+        if any(_normalize_column_token(alias) and _normalize_column_token(alias) in normalized for alias in aliases):
+            return str(column)
+    return None
 
 
 def _id_like(value: str) -> bool:
@@ -2026,8 +2416,8 @@ def _metric_name_hint(value: str) -> bool:
 
 def _dimension_name_hint(value: str) -> bool:
     lowered = value.lower()
-    return any(token in lowered for token in ("city", "country", "product", "customer", "merchant", "category", "region")) or any(
-        token in value for token in ("城市", "产品", "客户", "商户", "类别", "区域", "门店")
+    return any(token in lowered for token in ("city", "country", "product", "customer", "merchant", "category", "region", "channel", "month", "date")) or any(
+        token in value for token in ("城市", "产品", "客户", "商户", "类别", "品类", "区域", "门店", "渠道", "月份", "日期")
     )
 
 
@@ -2054,24 +2444,70 @@ def _find_dimension_column(
     metric: str | None,
     exclude: set[str] | None = None,
 ) -> str | None:
-    lowered = question.lower()
+    searchable_question = _question_without_file_mentions(question)
+    lowered = searchable_question.lower()
     excluded = set(exclude or set())
     for column in df.columns:
         name = str(column)
         if name == metric or name in excluded:
             continue
-        if name.lower() in lowered or name in question:
+        if _column_name_explicitly_mentioned(name, searchable_question, lowered):
             return name
     categorical = [
         str(column)
         for column in df.columns
         if str(column) != metric and str(column) not in excluded and not pd.api.types.is_numeric_dtype(df[column])
     ]
-    dimension_keywords = ("city", "country", "region", "category", "merchant", "城市", "国家", "地区", "类别", "分类", "商户")
+    semantic_matches = [
+        (_semantic_column_question_score(question, column), column)
+        for column in categorical
+    ]
+    semantic_matches = [(score, column) for score, column in semantic_matches if score > 0]
+    if semantic_matches:
+        semantic_matches.sort(key=lambda item: (-item[0], categorical.index(item[1])))
+        return semantic_matches[0][1]
+    dimension_keywords = (
+        "city",
+        "country",
+        "region",
+        "category",
+        "merchant",
+        "product",
+        "sku",
+        "item",
+        "store",
+        "shop",
+        "channel",
+        "customer",
+        "month",
+        "date",
+        "period",
+        "城市",
+        "国家",
+        "地区",
+        "类别",
+        "品类",
+        "分类",
+        "商户",
+        "产品",
+        "商品",
+        "门店",
+        "店铺",
+        "渠道",
+        "客户",
+        "月份",
+        "日期",
+    )
     for column in categorical:
         if any(keyword in column.lower() for keyword in dimension_keywords):
             return column
     return categorical[0] if categorical else None
+
+
+def _column_name_explicitly_mentioned(name: str, question: str, lowered: str) -> bool:
+    if any("\u4e00" <= char <= "\u9fff" for char in name):
+        return name in question
+    return bool(re.search(rf"\b{re.escape(name.lower())}\b", lowered))
 
 
 def _find_group_by_column(question: str, df: pd.DataFrame) -> str | None:
@@ -2080,7 +2516,7 @@ def _find_group_by_column(question: str, df: pd.DataFrame) -> str | None:
     lowered = question.lower()
     phrases: list[str] = []
     for pattern in (
-        r"按\s*([^，,。？?]+?)\s*(?:统计|分组|汇总|计算)",
+        r"按\s*([^，,。？?]+?)\s*(?:统计|分组|汇总|计算|展示|显示|生成|画|出|看)",
         r"(?:group(?:ed)?\s+by|by)\s+([A-Za-z0-9_ \-\u4e00-\u9fff]+?)(?:\s+(?:统计|计算|sum|total|average|count|share|percentage|占比)|[,，。？?]|$)",
     ):
         phrases.extend(match.strip() for match in re.findall(pattern, question, flags=re.I) if match.strip())
@@ -2090,6 +2526,11 @@ def _find_group_by_column(question: str, df: pd.DataFrame) -> str | None:
             name = str(column)
             if name in phrase or name.lower() in phrase_lower:
                 return name
+        requested_concepts = _requested_dimension_concepts(phrase)
+        for concept in requested_concepts:
+            for column in df.columns:
+                if _semantic_concept_column_score(str(column), concept) > 0:
+                    return str(column)
     return None
 
 
@@ -2113,23 +2554,25 @@ def _find_distinct_target_column(question: str, df: pd.DataFrame) -> str | None:
 
 
 def _find_named_column(question: str, df: pd.DataFrame) -> str | None:
-    lowered = question.lower()
+    searchable_question = _question_without_file_mentions(question)
+    lowered = searchable_question.lower()
     alias_column = _find_alias_column(question, df)
     if alias_column:
         return alias_column
     for column in df.columns:
         name = str(column)
-        if name.lower() in lowered or name in question:
+        if name.lower() in lowered or name in searchable_question:
             return name
     return None
 
 
 def _find_alias_column(question: str, df: pd.DataFrame) -> str | None:
-    lowered = question.lower()
+    searchable_question = _question_without_file_mentions(question)
+    lowered = searchable_question.lower()
     columns = [str(column) for column in df.columns]
     normalized_columns = {_normalize_column_token(column): column for column in columns}
     for alias, canonical in FIELD_ALIASES.items():
-        if not re.search(rf"\b{re.escape(alias)}\b", lowered):
+        if not _alias_in_question(alias, lowered, searchable_question):
             continue
         for token in (canonical, alias):
             normalized = _normalize_column_token(token)
@@ -2146,16 +2589,25 @@ def _find_alias_column(question: str, df: pd.DataFrame) -> str | None:
     return None
 
 
+def _alias_in_question(alias: str, lowered: str, question: str) -> bool:
+    if any("\u4e00" <= char <= "\u9fff" for char in alias):
+        return alias in question
+    return bool(re.search(rf"\b{re.escape(alias)}\b", lowered))
+
+
 def _normalize_column_token(value: str) -> str:
     return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", value.lower())
 
 
 def _find_entity_column(question: str, df: pd.DataFrame) -> str | None:
-    lowered = question.lower()
+    searchable_question = _question_without_file_mentions(question)
+    lowered = searchable_question.lower()
     entity_terms = {
         "merchant": ("merchant", "商户"),
         "shopper": ("shopper", "customer", "email", "客户", "用户", "邮箱"),
         "customer": ("customer", "cust", "store", "客户", "门店", "终端"),
+        "product": ("product", "sku", "item", "产品", "商品", "品类"),
+        "store": ("store", "shop", "branch", "门店", "店铺"),
         "card": ("card", "卡"),
         "city": ("city", "城市"),
         "country": ("country", "国家"),
@@ -2164,7 +2616,7 @@ def _find_entity_column(question: str, df: pd.DataFrame) -> str | None:
     }
     requested_terms: list[str] = []
     for aliases in entity_terms.values():
-        if any(term in lowered or term in question for term in aliases):
+        if any(term in lowered or term in searchable_question for term in aliases):
             requested_terms.extend(aliases)
     if not requested_terms:
         return None

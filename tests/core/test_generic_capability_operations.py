@@ -243,6 +243,33 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertAlmostEqual(10.0, float(pandas_result.value))
         self.assertAlmostEqual(float(pandas_result.value), float(sql_result.value))
 
+    def test_group_average_honors_underscore_field_names(self) -> None:
+        payments = pd.DataFrame(
+            {
+                "merchant": ["A", "A", "A", "A", "A", "A"],
+                "year": [2023, 2023, 2023, 2023, 2023, 2023],
+                "day_of_year": [1, 2, 3, 4, 5, 6],
+                "eur_amount": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+                "device_type": ["Linux", "Linux", "Other", "iOS", "MacOS", "Windows"],
+                "acquirer_country": ["IT", "IT", "NL", "NL", "BE", "BE"],
+                "shopper_interaction": ["Ecommerce", "POS", "POS", "Ecommerce", "POS", "Ecommerce"],
+            }
+        )
+        device_logic = parse_question("What is the average transaction value grouped by device_type for merchant A in 2023?")
+        acquirer_logic = parse_question("What is the average transaction value grouped by acquirer_country for merchant A in 2023?")
+
+        self.assertEqual("group_average", device_logic.operation)
+        self.assertEqual("device_type", device_logic.parameters["group_by"])
+        self.assertEqual("acquirer_country", acquirer_logic.parameters["group_by"])
+
+        device_result = pandas_executor.execute_plan(build_analysis_plan(device_logic), {"payments": payments})
+        acquirer_result = pandas_executor.execute_plan(build_analysis_plan(acquirer_logic), {"payments": payments})
+
+        self.assertTrue(device_result.success, device_result.errors)
+        self.assertTrue(acquirer_result.success, acquirer_result.errors)
+        self.assertEqual(["Linux", "Other", "iOS", "MacOS", "Windows"], [row["device_type"] for row in device_result.value])
+        self.assertEqual(["IT", "NL", "BE"], [row["acquirer_country"] for row in acquirer_result.value])
+
     def test_fraudulent_percentage_wording_routes_to_fraud_rate(self) -> None:
         payments = pd.DataFrame(
             {
@@ -293,7 +320,7 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
             )
 
         self.assertEqual("B", aci)
-        self.assertAlmostEqual(0.40, fee)
+        self.assertAlmostEqual(0.30, fee)
         self.assertEqual(["B", "C"], [key for key, value in candidates.items() if value["fee"] == fee])
 
     def test_aci_fee_extreme_parser_accepts_transaction_of_euros_wording(self) -> None:
@@ -367,6 +394,17 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
 
             self.assertEqual([100, 200], engine.applicable_fee_ids_for_merchant_period("SyntheticMerchant", year=2023, month=1))
             self.assertEqual([100, 200], engine.fee_ids_for_filters(card_scheme="GlobalCard"))
+
+    def test_applicable_fee_ids_parser_falls_back_to_payments_merchants(self) -> None:
+        payments = pd.DataFrame({"merchant": ["Rafa_AI", "OtherMerchant"]})
+        logic = parse_question(
+            "What were the applicable Fee IDs for Rafa_AI in December 2023?",
+            context={"payments": payments},
+        )
+
+        self.assertEqual("applicable_fee_ids", logic.operation)
+        self.assertEqual("Rafa_AI", logic.filters["merchant"])
+        self.assertEqual(12, logic.filters["month"])
 
     def test_row_and_distinct_count_work_for_english_and_chinese_questions(self) -> None:
         table = pd.DataFrame(
@@ -773,6 +811,29 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertTrue(result.success, result.errors)
         self.assertEqual(["2222", "3333"], result.value["answer"])
 
+    def test_fee_extreme_by_mcc_averages_explicit_and_null_mcc_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            generic_global = _fee_rule(1, "GlobalCard", [], fixed_amount=0.10, rate=0, mcc=[])
+            generic_nexpay = _fee_rule(2, "NexPay", [], fixed_amount=0.50, rate=0, mcc=[])
+            explicit_5813 = _fee_rule(3, "GlobalCard", [], fixed_amount=1.80, rate=0, mcc=[5813])
+            explicit_8011 = _fee_rule(4, "GlobalCard", [], fixed_amount=0.20, rate=0, mcc=[8011])
+            explicit_8021 = _fee_rule(5, "NexPay", [], fixed_amount=0.30, rate=0, mcc=[8021])
+            (root / "fees.json").write_text(json.dumps([generic_global, generic_nexpay, explicit_5813, explicit_8011, explicit_8021]))
+            (root / "merchant_data.json").write_text(
+                json.dumps([{"merchant": "SyntheticMerchant", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5813}])
+            )
+            (root / "merchant_category_codes.csv").write_text("mcc,description\n5813,Cafe\n8011,Legal\n8021,Dentist\n")
+            (root / "payments.csv").write_text(
+                "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+                "SyntheticMerchant,2023,1,0,0,10.0,true,false,false,A,GlobalCard,NL,NL\n"
+            )
+            logic = parse_question("What is the most expensive MCC for a transaction of 10 euros, in general?")
+            result = pandas_executor.execute_plan(build_analysis_plan(logic), {"context_dir": root})
+
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual(["5813"], result.value["answer"])
+
     def test_highest_transaction_count_defaults_to_merchant(self) -> None:
         payments = pd.DataFrame(
             {
@@ -787,6 +848,70 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertEqual("merchant", logic.group_by)
         self.assertTrue(result.success, result.errors)
         self.assertEqual("A", result.value)
+
+    def test_fee_rate_delta_uses_period_rounded_totals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fee = _fee_rule(10, "GlobalCard", ["A"], fixed_amount=0.0, rate=1000)
+            (root / "fees.json").write_text(json.dumps([fee]))
+            (root / "merchant_data.json").write_text(
+                json.dumps([{"merchant": "SyntheticMerchant", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5411}])
+            )
+            (root / "merchant_category_codes.csv").write_text("mcc,description\n5411,Grocery Stores\n")
+            (root / "payments.csv").write_text(
+                "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+                "SyntheticMerchant,2023,1,0,0,1.005,true,false,false,A,GlobalCard,NL,NL\n"
+                "SyntheticMerchant,2023,31,0,0,1.005,true,false,false,A,GlobalCard,NL,NL\n"
+            )
+            logic = parse_question("What is the fee delta for SyntheticMerchant in 2023 if fee with ID 10 changed to 1100?")
+            result = pandas_executor.execute_plan(build_analysis_plan(logic), {"context_dir": root})
+
+        self.assertTrue(result.success, result.errors)
+        self.assertAlmostEqual(0.02, float(result.value), places=9)
+
+    def test_best_fraud_aci_choice_limits_candidates_to_d_and_e(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rule_d = _fee_rule(1, "GlobalCard", ["D"], fixed_amount=0.10, rate=0)
+            rule_e = _fee_rule(2, "GlobalCard", ["E"], fixed_amount=0.05, rate=0)
+            rule_f = _fee_rule(3, "GlobalCard", ["F"], fixed_amount=0.01, rate=0)
+            (root / "fees.json").write_text(json.dumps([rule_d, rule_e, rule_f]))
+            (root / "merchant_data.json").write_text(
+                json.dumps([{"merchant": "SyntheticMerchant", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5411}])
+            )
+            (root / "merchant_category_codes.csv").write_text("mcc,description\n5411,Grocery Stores\n")
+            (root / "payments.csv").write_text(
+                "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+                "SyntheticMerchant,2023,1,0,0,10.0,true,true,false,D,GlobalCard,NL,NL\n"
+            )
+            logic = parse_question("For fraudulent transactions, which ACI leads to the lowest possible fees?")
+            result = pandas_executor.execute_plan(build_analysis_plan(logic), {"context_dir": root})
+
+        self.assertEqual("aci", logic.output_format["answer_type"])
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual("E", result.value["aci"])
+        self.assertEqual(["D", "E"], [row["aci"] for row in result.value["candidate_table"]])
+
+    def test_aci_fee_extreme_uses_only_explicit_aci_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            generic = _fee_rule(1, "GlobalCard", [], fixed_amount=2.50, rate=0)
+            explicit_b = _fee_rule(2, "GlobalCard", ["B"], fixed_amount=1.20, rate=0)
+            explicit_c = _fee_rule(3, "GlobalCard", ["C"], fixed_amount=1.80, rate=0)
+            (root / "fees.json").write_text(json.dumps([generic, explicit_b, explicit_c]))
+            (root / "merchant_data.json").write_text(
+                json.dumps([{"merchant": "SyntheticMerchant", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5411}])
+            )
+            (root / "merchant_category_codes.csv").write_text("mcc,description\n5411,Grocery Stores\n")
+            (root / "payments.csv").write_text(
+                "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+                "SyntheticMerchant,2023,1,0,0,10.0,true,false,false,A,GlobalCard,NL,NL\n"
+            )
+            logic = parse_question("For a credit transaction of 10 euros on GlobalCard, what would be the most expensive Authorization Characteristics Indicator (ACI)?")
+            result = pandas_executor.execute_plan(build_analysis_plan(logic), {"context_dir": root})
+
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual("C", result.value["aci"])
 
     def test_missing_value_top_count_uses_null_filter_and_dimension(self) -> None:
         payments = pd.DataFrame(

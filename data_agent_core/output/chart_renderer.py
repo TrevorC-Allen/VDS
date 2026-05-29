@@ -31,6 +31,14 @@ def render_chart_svg(chart: ChartSpec) -> str:
 
     values = _chart_values(chart)
     chart_type = chart.chart_type or "bar"
+    if chart_type == "combo_column_line":
+        return _combo_column_line_chart(chart)
+    if chart_type == "stacked_column":
+        return _stacked_column_chart(chart)
+    if chart_type == "stacked_area":
+        return _stacked_area_chart(chart)
+    if chart_type == "dual_axis_line":
+        return _dual_axis_line_chart(chart)
     if chart_type == "line":
         multi_series = _series_values(chart)
         if len(multi_series) > 1:
@@ -131,6 +139,83 @@ def _bar_chart(values: list[dict[str, Any]], chart: ChartSpec, *, horizontal: bo
     return _wrap_svg(width, height, title, "".join(body))
 
 
+def _combo_column_line_chart(chart: ChartSpec) -> str:
+    rows = [row for row in (chart.data or []) if isinstance(row, dict)]
+    if len(rows) <= 1:
+        return ""
+    x_column = chart.x or chart.encoding.get("x") or next(iter(rows[0].keys()), "")
+    left_columns = [str(column) for column in chart.encoding.get("y_left") or [] if str(column)]
+    right_columns = [str(column) for column in chart.encoding.get("y_right") or [] if str(column)]
+    if not left_columns or not right_columns:
+        return ""
+    width = 920
+    height = 470
+    title = chart.title or "柱线组合图"
+    left = 76
+    right = 84
+    top = 78
+    bottom = 84
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    left_values = [value for column in left_columns for row in rows if (value := _to_float(row.get(column))) is not None]
+    right_values = [value for column in right_columns for row in rows if (value := _to_float(row.get(column))) is not None]
+    if not left_values or not right_values:
+        return ""
+    left_max = max(left_values) or 1
+    right_max = max(right_values) or 1
+    group_width = plot_width / max(len(rows), 1)
+    bar_group_width = min(40.0, group_width * 0.68 / max(len(left_columns), 1))
+    gap = min(12.0, group_width * 0.16)
+    body = [_grid_lines(width, height, left, top, plot_width, plot_height)]
+    for tick in range(5):
+        value = left_max * (4 - tick) / 4
+        y = top + plot_height * tick / 4
+        body.append(f'<text x="{left - 10}" y="{y + 4:.1f}" class="axis-label" text-anchor="end">{escape(_format_number(value))}</text>')
+        right_value = right_max * (4 - tick) / 4
+        body.append(f'<text x="{left + plot_width + 10}" y="{y + 4:.1f}" class="axis-label">{escape(_format_number(right_value))}</text>')
+    for row_index, row in enumerate(rows):
+        center_x = left + group_width * row_index + group_width / 2
+        label = str(row.get(x_column, "")).strip()
+        for bar_index, column in enumerate(left_columns):
+            value = _to_float(row.get(column))
+            if value is None:
+                continue
+            bar_height = max(2.0, value / left_max * plot_height)
+            x = center_x - (len(left_columns) - 1) * (bar_group_width + gap) / 2 + bar_index * (bar_group_width + gap)
+            y = top + plot_height - bar_height
+            color = PALETTE[bar_index % len(PALETTE)]
+            body.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_group_width:.1f}" height="{bar_height:.1f}" rx="7" fill="{color}"/>')
+        body.append(f'<text x="{center_x:.1f}" y="{height - 38}" class="axis-label" text-anchor="middle">{escape(_short_label(label, 8))}</text>')
+    for line_index, column in enumerate(right_columns):
+        color = PALETTE[(line_index + len(left_columns)) % len(PALETTE)]
+        points: list[tuple[float, float]] = []
+        for row_index, row in enumerate(rows):
+            value = _to_float(row.get(column))
+            if value is None:
+                continue
+            x = left + group_width * row_index + group_width / 2
+            y = top + plot_height - (value / right_max) * plot_height
+            points.append((x, y))
+        if len(points) <= 1:
+            continue
+        body.append(
+            f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in points)}" fill="none" stroke="{color}" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>'
+        )
+        for x, y in points:
+            body.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.5" fill="#ffffff" stroke="{color}" stroke-width="2.5"/>')
+    legend_x = width - right + 8
+    for index, series in enumerate(chart.series or []):
+        color = PALETTE[index % len(PALETTE)]
+        y = top + index * 28
+        if series.get("type") == "line":
+            body.append(f'<line x1="{legend_x}" y1="{y:.1f}" x2="{legend_x + 18}" y2="{y:.1f}" stroke="{color}" stroke-width="3"/>')
+            body.append(f'<circle cx="{legend_x + 9}" cy="{y:.1f}" r="3.5" fill="#ffffff" stroke="{color}" stroke-width="2"/>')
+        else:
+            body.append(f'<rect x="{legend_x}" y="{y - 10:.1f}" width="16" height="16" rx="4" fill="{color}"/>')
+        body.append(f'<text x="{legend_x + 26}" y="{y + 4:.1f}" class="axis-label">{escape(_short_label(str(series.get("y") or ""), 12))}</text>')
+    return _wrap_svg(width, height, title, "".join(body))
+
+
 def _line_chart(values: list[dict[str, Any]], chart: ChartSpec) -> str:
     width = 920
     height = 450
@@ -161,6 +246,146 @@ def _line_chart(values: list[dict[str, Any]], chart: ChartSpec) -> str:
         if index % step == 0 or index == len(points) - 1:
             body.append(f'<text x="{x:.1f}" y="{height - 38}" class="axis-label" text-anchor="middle">{escape(_short_label(item["label"], 8))}</text>')
     return _wrap_svg(width, height, title, "".join(body))
+
+
+def _stacked_column_chart(chart: ChartSpec) -> str:
+    rows = [row for row in (chart.data or []) if isinstance(row, dict)]
+    if len(rows) <= 1:
+        return ""
+    x_column = chart.x or chart.encoding.get("x") or next(iter(rows[0].keys()), "")
+    stack_columns = [str(column) for column in chart.encoding.get("stack") or [] if str(column)]
+    if len(stack_columns) < 2:
+        stack_columns = [str(key) for key in rows[0].keys() if key != x_column and _to_float(rows[0].get(key)) is not None]
+    if len(stack_columns) < 2:
+        return ""
+    width = 920
+    height = 470
+    left = 72
+    right = 34
+    top = 76
+    bottom = 84
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    totals = [sum(max(_to_float(row.get(column)) or 0.0, 0.0) for column in stack_columns) for row in rows]
+    max_total = max(totals) or 1
+    gap = 14
+    bar_width = max(26, (plot_width - gap * (len(rows) - 1)) / max(len(rows), 1))
+    body = [_grid_lines(width, height, left, top, plot_width, plot_height)]
+    for row_index, row in enumerate(rows):
+        x = left + row_index * (bar_width + gap)
+        current_top = top + plot_height
+        for series_index, column in enumerate(stack_columns):
+            value = max(_to_float(row.get(column)) or 0.0, 0.0)
+            segment_height = value / max_total * plot_height
+            current_top -= segment_height
+            body.append(f'<rect x="{x:.1f}" y="{current_top:.1f}" width="{bar_width:.1f}" height="{max(segment_height, 2):.1f}" rx="6" fill="{PALETTE[series_index % len(PALETTE)]}"/>')
+        body.append(f'<text x="{x + bar_width / 2:.1f}" y="{height - 38}" class="axis-label" text-anchor="middle">{escape(_short_label(str(row.get(x_column, "")), 8))}</text>')
+    for index, column in enumerate(stack_columns[:8]):
+        legend_y = top + index * 28
+        body.append(f'<rect x="{width - 180}" y="{legend_y - 12}" width="14" height="14" rx="4" fill="{PALETTE[index % len(PALETTE)]}"/>')
+        body.append(f'<text x="{width - 156}" y="{legend_y}" class="axis-label">{escape(_short_label(column, 12))}</text>')
+    return _wrap_svg(width, height, chart.title or "堆叠柱状图", "".join(body))
+
+
+def _stacked_area_chart(chart: ChartSpec) -> str:
+    series_values = _series_values(chart)
+    if len(series_values) < 2:
+        return ""
+    width = 920
+    height = 470
+    title = chart.title or "堆叠面积图"
+    left = 72
+    right = 180
+    top = 76
+    bottom = 82
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    x_points = series_values[0]["points"]
+    if len(x_points) <= 1:
+        return ""
+    totals = []
+    for point_index in range(len(x_points)):
+        totals.append(sum(max(series["points"][point_index]["value"], 0.0) for series in series_values if point_index < len(series["points"])))
+    max_total = max(totals) or 1
+    body = [_grid_lines(width, height, left, top, plot_width, plot_height)]
+    cumulative = [0.0] * len(x_points)
+    for series_index, series in enumerate(series_values):
+        upper = []
+        lower = []
+        for point_index, point in enumerate(series["points"]):
+            x = left + point_index / max(len(x_points) - 1, 1) * plot_width
+            base_value = cumulative[point_index]
+            top_value = base_value + max(point["value"], 0.0)
+            y_top = top + plot_height - top_value / max_total * plot_height
+            y_base = top + plot_height - base_value / max_total * plot_height
+            upper.append((x, y_top))
+            lower.append((x, y_base))
+            cumulative[point_index] = top_value
+        polygon = upper + list(reversed(lower))
+        body.append(f'<polygon points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in polygon)}" fill="{PALETTE[series_index % len(PALETTE)]}" fill-opacity="0.72"/>')
+    step = max(1, math.ceil(len(x_points) / 6))
+    for index, point in enumerate(x_points):
+        if index % step == 0 or index == len(x_points) - 1:
+            x = left + index / max(len(x_points) - 1, 1) * plot_width
+            body.append(f'<text x="{x:.1f}" y="{height - 38}" class="axis-label" text-anchor="middle">{escape(_short_label(point["label"], 8))}</text>')
+    for index, series in enumerate(series_values[:8]):
+        legend_y = top + index * 28
+        body.append(f'<rect x="{width - right + 26}" y="{legend_y - 12}" width="14" height="14" rx="4" fill="{PALETTE[index % len(PALETTE)]}"/>')
+        body.append(f'<text x="{width - right + 48}" y="{legend_y}" class="axis-label">{escape(_short_label(str(series["name"]), 13))}</text>')
+    return _wrap_svg(width, height, title, "".join(body))
+
+
+def _dual_axis_line_chart(chart: ChartSpec) -> str:
+    rows = [row for row in (chart.data or []) if isinstance(row, dict)]
+    if len(rows) <= 1:
+        return ""
+    x_column = chart.x or chart.encoding.get("x") or next(iter(rows[0].keys()), "")
+    left_columns = [str(column) for column in chart.encoding.get("y_left") or [] if str(column)]
+    right_columns = [str(column) for column in chart.encoding.get("y_right") or [] if str(column)]
+    if not left_columns or not right_columns:
+        return ""
+    width = 920
+    height = 470
+    left = 76
+    right = 84
+    top = 78
+    bottom = 84
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    left_series = [{"name": column, "points": [{"label": str(row.get(x_column, "")), "value": _to_float(row.get(column)) or 0.0} for row in rows]} for column in left_columns]
+    right_series = [{"name": column, "points": [{"label": str(row.get(x_column, "")), "value": _to_float(row.get(column)) or 0.0} for row in rows]} for column in right_columns]
+    left_max = max(point["value"] for series in left_series for point in series["points"]) or 1
+    right_max = max(point["value"] for series in right_series for point in series["points"]) or 1
+    body = [_grid_lines(width, height, left, top, plot_width, plot_height)]
+    for tick in range(5):
+        y = top + plot_height * tick / 4
+        body.append(f'<text x="{left - 10}" y="{y + 4:.1f}" class="axis-label" text-anchor="end">{escape(_format_number(left_max * (4 - tick) / 4))}</text>')
+        body.append(f'<text x="{left + plot_width + 10}" y="{y + 4:.1f}" class="axis-label">{escape(_format_number(right_max * (4 - tick) / 4))}</text>')
+    all_series = [(left_series, left_max, 0), (right_series, right_max, len(left_series))]
+    for series_group, max_value, offset in all_series:
+        for series_index, series in enumerate(series_group):
+            color = PALETTE[(offset + series_index) % len(PALETTE)]
+            points = []
+            for index, item in enumerate(series["points"]):
+                x = left + index / max(len(series["points"]) - 1, 1) * plot_width
+                y = top + plot_height - item["value"] / max_value * plot_height
+                points.append((x, y, item))
+            body.append(f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y, _ in points)}" fill="none" stroke="{color}" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>')
+            for x, y, _ in points:
+                body.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.5" fill="#ffffff" stroke="{color}" stroke-width="2.5"/>')
+    step = max(1, math.ceil(len(rows) / 6))
+    for index, row in enumerate(rows):
+        if index % step == 0 or index == len(rows) - 1:
+            x = left + index / max(len(rows) - 1, 1) * plot_width
+            body.append(f'<text x="{x:.1f}" y="{height - 38}" class="axis-label" text-anchor="middle">{escape(_short_label(str(row.get(x_column, "")), 8))}</text>')
+    legend_series = left_series + right_series
+    for index, series in enumerate(legend_series[:8]):
+        color = PALETTE[index % len(PALETTE)]
+        y = top + index * 28
+        body.append(f'<line x1="{width - right + 8}" y1="{y:.1f}" x2="{width - right + 26}" y2="{y:.1f}" stroke="{color}" stroke-width="3"/>')
+        body.append(f'<circle cx="{width - right + 17}" cy="{y:.1f}" r="3.5" fill="#ffffff" stroke="{color}" stroke-width="2"/>')
+        body.append(f'<text x="{width - right + 34}" y="{y + 4:.1f}" class="axis-label">{escape(_short_label(str(series["name"]), 11))}</text>')
+    return _wrap_svg(width, height, chart.title or "双轴折线图", "".join(body))
 
 
 def _multi_line_chart(series_values: list[dict[str, Any]], chart: ChartSpec) -> str:

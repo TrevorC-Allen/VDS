@@ -7,6 +7,7 @@ file parsing, analysis, verification, and response building to the service/core.
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
 import tempfile
 from datetime import datetime, timezone
@@ -46,6 +47,7 @@ def chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return service.chat_without_dataset(
         question=str(payload.get("question") or ""),
         agent_mode=str(payload.get("agent_mode") or "multi_agent"),
+        user_rule_file_id=str(payload.get("user_rule_file_id") or ""),
         monitor_run_id=str(payload.get("monitor_run_id") or ""),
     )
 
@@ -79,6 +81,8 @@ def _http_status_for_response(response: dict[str, Any]) -> int:
     message_lower = message.lower()
     if "dataset not found" in message_lower or "project not found" in message_lower:
         return 404
+    if error_type in {"VERIFICATION_FAILED", "PANDAS_EXECUTION_ERROR"} and response.get("answer"):
+        return 200
     if error_type in {
         "FILE_PARSE_ERROR",
         "LOGIC_FORM_ERROR",
@@ -116,10 +120,10 @@ def create_conversation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def conversations_payload(limit: int = 50, project_id: str | None = "") -> dict[str, Any]:
+def conversations_payload(limit: int = 50, offset: int = 0, project_id: str | None = "") -> dict[str, Any]:
     """Non-FastAPI helper mirroring GET /api/data-agent/conversations."""
 
-    return service.list_conversations(limit=limit, project_id=project_id)
+    return service.list_conversations(limit=limit, offset=offset, project_id=project_id)
 
 
 def conversation_payload(conversation_id: str) -> dict[str, Any]:
@@ -390,8 +394,8 @@ try:
         )
 
     @router.get("/conversations")
-    def conversations(limit: int = 50, project_id: str | None = "") -> dict[str, Any]:
-        return service.list_conversations(limit=limit, project_id=project_id)
+    def conversations(limit: int = 50, offset: int = 0, project_id: str | None = "") -> dict[str, Any]:
+        return service.list_conversations(limit=limit, offset=offset, project_id=project_id)
 
     @router.get("/conversations/{conversation_id}")
     def conversation(conversation_id: str) -> dict[str, Any]:

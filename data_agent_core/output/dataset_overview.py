@@ -319,7 +319,7 @@ def _build_multi_table_overview_response(
             "output_format": {"answer_type": "overview"},
         },
         "result": {
-            "columns": ["表名", "来源", "行数", "列数", "可能含义", "关键字段"],
+            "columns": ["表名", "行数", "类型", "主要作用", "关键字段"],
             "rows": result_rows,
             "value": {
                 "table_count": len(table_summaries),
@@ -461,7 +461,14 @@ def _table_overview_summary(
         "sheet": sheet,
         "row_count": int(len(df)),
         "column_count": len(columns),
-        "table_type": _table_type_label({"field_meanings": field_meanings}),
+        "table_type": _table_type_label(
+            {
+                "table": table_name,
+                "source_file": source_file,
+                "field_meanings": field_meanings,
+                "columns": columns,
+            }
+        ),
         "likely_meaning": _likely_table_meaning(table_name, columns, field_meanings),
         "metric_column": metric_column,
         "dimension_column": dimension_column,
@@ -611,9 +618,11 @@ def _multi_table_general_answer(report: dict[str, Any]) -> str:
     table_examples = _short_join([f"{item['table']}（{item['row_count']:,} 行）" for item in top_tables], limit=5)
     relationship = _multi_table_relationship_text(tables)
     suggestions = _multi_table_suggestion_text(tables)
+    role_summary = _table_role_summary(tables)
     lines = [
         f"已读取这组数据：它不是一张单表，而是 {report['table_count']} 张表组成的数据集，共 {report['total_row_count']:,} 行、{report['total_column_count']} 个字段。",
         f"初步看，数据主题大致覆盖 {themes or '业务事实表、维表和过程表'}；这是基于字段名、表名和类型的推测，正式口径还要看业务说明。",
+        f"按角色看，{role_summary}。",
         f"主要区别在表的粒度和用途：例如 {table_examples or '各表'}。{relationship}",
         f"建议分析方向：{suggestions}",
         "质量问题也需要单独看，尤其是缺失、重复和异常值；完整表清单和关键字段我放在结果表里，不在主回答里展开明细。",
@@ -896,14 +905,23 @@ def _multi_table_result_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
         rows.append(
             {
                 "表名": item.get("table"),
-                "来源": _join_non_empty([item.get("source_file"), item.get("sheet")], " / "),
                 "行数": item.get("row_count"),
-                "列数": item.get("column_count"),
-                "可能含义": item.get("likely_meaning"),
+                "类型": item.get("table_type"),
+                "主要作用": item.get("likely_meaning"),
                 "关键字段": "、".join(item.get("key_fields") or []),
             }
         )
     return rows
+
+
+def _table_role_summary(tables: list[dict[str, Any]]) -> str:
+    counts: dict[str, int] = {}
+    for item in tables:
+        table_type = str(item.get("table_type") or "结构化数据表")
+        counts[table_type] = counts.get(table_type, 0) + 1
+    if not counts:
+        return "暂未识别稳定表角色"
+    return "、".join(f"{name} {count} 张" for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:5])
 
 
 def _multi_table_insight(report: dict[str, Any]) -> InsightResult:
@@ -1022,9 +1040,12 @@ def _single_table_general_answer(report: dict[str, Any]) -> str:
         metric_text = "暂未识别特别稳定的核心数值指标"
     dimension_text = f"可作为分组维度的是 {dimension}" if dimension else "分组维度需要结合业务字段再确认"
     distributions = report.get("categorical_distributions") or []
+    table_role = _table_type_label(report)
+    business_type = _table_business_type_label(report)
+    table_type_text = f"{table_role}（{business_type}）" if business_type else table_role
     lines = [
         f"已读取这个数据（{report.get('table') or '当前表'}）：{report['row_count']:,} 行、{report['column_count']} 列。",
-        f"这个表更像是{_table_type_label(report)}，主要讲的是{report.get('likely_meaning') or '一组结构化业务记录'}",
+        f"这个表更像是{table_type_text}，主要讲的是{report.get('likely_meaning') or '一组结构化业务记录'}",
         f"字段含义是根据字段名、类型和基础分布做的推测；关键字段包括 {key_fields or '待结合业务说明确认'}。",
         f"分析上，{metric_text}，{dimension_text}。{trend_text}",
     ]
@@ -1449,18 +1470,54 @@ def _missing_boundaries(columns: list[str]) -> list[str]:
 
 
 def _table_type_label(report: dict[str, Any]) -> str:
+    source_file = str(report.get("source_file") or "")
+    table_name = str(report.get("table") or "")
+    columns = " ".join(str(column).lower() for column in report.get("columns") or [])
+    file_haystack = f"{source_file} {table_name} {columns}".lower()
+    if any(token in file_haystack for token in ("知识库", "说明", "表结构", "数据结构", "metadata", "glossary", "dictionary", "readme", "manual", "口径", "规则")):
+        return "说明或元数据表"
     fields = " ".join(item["field"].lower() for item in report.get("field_meanings") or [])
+    combined = f"{file_haystack} {fields}"
+    if any(token in combined for token in ("target", "goal", "目标", "plan", "计划")):
+        return "可计算事实表"
+    if any(token in combined for token in ("order", "ord", "订单", "交易", "明细", "fact")):
+        return "可计算事实表"
     if any(token in fields for token in ("taxi", "trip", "fare", "pickup", "dropoff")):
-        return "出租车 / 出行行程明细表"
+        return "可计算事实表"
     if "invoice" in fields and any(token in fields for token in ("stock", "quantity", "unitprice", "customer")):
-        return "订单 / 零售交易明细表"
+        return "可计算事实表"
     if "merchant" in fields and ("amount" in fields or "eur_amount" in fields):
-        return "支付交易明细表"
+        return "可计算事实表"
     if any(token in fields for token in ("sales", "销售额", "revenue", "收入")):
-        return "业务销售 / 收入明细表"
+        return "可计算事实表"
     if any(token in fields for token in ("inventory", "库存")):
-        return "库存明细表"
+        return "可计算事实表"
+    if any(token in combined for token in ("customer", "cust", "客户", "终端", "维表", "dimension", "dim_")):
+        return "维表"
     return "结构化数据表"
+
+
+def _table_business_type_label(report: dict[str, Any]) -> str:
+    meaning = str(report.get("likely_meaning") or "")
+    haystack = " ".join(
+        [
+            str(report.get("source_file") or ""),
+            str(report.get("table") or ""),
+            " ".join(str(column) for column in report.get("columns") or []),
+            meaning,
+        ]
+    ).lower()
+    if "出租车" in meaning or any(token in haystack for token in ("taxi", "trip", "fare", "pickup", "dropoff")):
+        return "出租车 / 出行行程明细表"
+    if "订单或交易明细" in meaning or any(token in haystack for token in ("invoice", "order", "订单", "交易")):
+        return "订单 / 零售交易明细表"
+    if "客户或终端维表" in meaning or any(token in haystack for token in ("customer", "cust", "客户", "终端")):
+        return "客户 / 终端维表"
+    if "商品或 SKU" in meaning or any(token in haystack for token in ("sku", "product", "item", "商品", "产品")):
+        return "商品 / SKU 维表"
+    if "目标或计划表" in meaning or any(token in haystack for token in ("target", "goal", "目标", "计划")):
+        return "目标 / 计划表"
+    return ""
 
 
 def _preferred_metric_column(df: pd.DataFrame, question: str) -> str | None:

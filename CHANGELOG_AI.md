@@ -7888,6 +7888,142 @@ YYYY-MM-DD HH:MM TZ
 
 否。本轮是即时 UI 修正，未改变公开产品契约；已同步 CHANGELOG_AI。
 
+## 2026-05-28 13:16 CST - Phase 12 correctness / overview hardening
+
+### 本次目标
+
+修复用户指出的 P0/P1/P2 问题：点名文件后维度串错、利润率被当销售额排名、跨表 join 未执行或提示不清、overview 把说明表当普通表、简单 Top1 回答过度模板化。同时把 `success=true` 不能绕过语义错算、已修能力不得下降写入文档和测试门禁。
+
+### 修改文件
+
+- `data_agent_core/core/intent_parser.py`
+- `data_agent_core/executors/pandas_executor.py`
+- `data_agent_core/core/capability_registry.py`
+- `data_agent_core/verifier/rule_checker.py`
+- `data_agent_core/output/response_builder.py`
+- `data_agent_core/output/text_answer_framework.py`
+- `data_agent_core/output/dataset_overview.py`
+- `data_agent_core/output/source_overview.py`
+- `backend/services/data_agent_service.py`
+- `backend/routers/data_agent.py`
+- `frontend/app.js`
+- `tests/core/test_phase8_multitable_capabilities.py`
+- `tests/core/test_vds_bi_capabilities.py`
+- `tests/core/test_text_answer_framework.py`
+- `tests/backend/test_data_agent_message_semantics.py`
+- `tests/backend/test_data_agent_service.py`
+- `tests/backend/test_data_agent_api_status.py`
+- `tests/architecture/test_project_redlines.py`
+- `README.md`
+- `MAIN_GOAL.md`
+- `docs/PHASE_GATES.md`
+- `docs/EVALUATION_GATE.md`
+- `docs/WORKBENCH_GPT_PARITY_TEST_PLAN.md`
+- `docs/FEATURE_BACKLOG.md`
+- `docs/ARCHITECTURE.md`
+- `docs/test-runs/2026-05-28-phase12-correctness-overview.md`
+- `CHANGELOG_AI.md`
+
+### 修改内容
+
+- 点名文件优先级：用户明确点名 `qa_store_b.csv` 时，metric/dimension 只在该文件内绑定，避免文件名里的 `store` 干扰产品维度。
+- 字段语义绑定：新增产品、门店、城市、客户、销售额、利润等中英文别名；问题问产品时不能退成门店维度。
+- 派生指标：`利润率 / profit margin / margin / rate` 识别为 `sum(profit)/sum(sales)`，Pandas executor 先按维度聚合 numerator/denominator 后计算 ratio。
+- Verifier 硬拦截：产品问题按 store 回答、利润率问题按 raw sales/profit 排名都会 `verification.passed=false`，不能伪成功。
+- Join：`orders(customer_id,sales)` + `customers(customer_id,city)` 可信 join 可执行；不可信 join 返回候选键、重叠率和风险，HTTP 仍返回 200 以便前端展示澄清。
+- 同结构多文件 union：`A店和B店合起来哪个产品销售额最高？` 走 same-schema union 后按 product 汇总；Verifier 不再把保留 `A店/B店` 的多值过滤误杀为单实体折叠。
+- 趋势图粒度：月份趋势问题强制绑定 month/time 维度，chart x 与 chart data 保持一致，不能把 city 聚合结果伪装成 month 折线图。
+- 缺失字段守卫：问题点名 `渠道` 时，LLM planner 即使把 `city` 放进 `entity_grain.entity_field` 也会被 verifier 识别为错误替代并失败。
+- 品类维表 join：`products.category` 可作为产品维度 join 进入 orders；`北京哪个品类...` 支持 orders + products + customers 两跳 join 和 city filter。
+- Overview：多文件概览区分 `可计算事实表 / 维表 / 说明或元数据表`；`初版知识库.xlsx`、`数据表结构&表说明.xlsx` 这类解析成表的说明文件不再被计为 0 个说明来源。
+- 回答模板：普通 Top1、派生利润率 Top1、可信 join Top1 走短答案；去掉简单回答里的 `当前结果表只返回...` 和 `仍需按当前数据范围...` 审计噪声。
+- 文档：同步 Phase 12 correctness + GPT-like hardening、non-regression 红线和 gate 说明；新增 test-run 证据文件。
+
+### 测试方式
+
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.backend.test_data_agent_service tests.core.test_text_answer_framework tests.backend.test_data_agent_message_semantics -v`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 scripts/run_tests.py`
+- `node --check frontend/app.js`
+- `git diff --check`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.vds_desktop_benchmark_runner --question-workbook '/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/问题/问题汇总.xlsx' --answer-workbook '/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/问题/标准GPT答案汇总.xlsx' --data-root '/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/数据' --output-dir outputs/phase12_correctness_vds95_20260528_1455`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root '/Users/trevorcui/Desktop/微软脱敏数据' --limit 300 --offset 0 --output-dir outputs/phase12_correctness_microsoft300_20260528_1455`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root '/Users/trevorcui/Desktop/微软脱敏数据' --test-set '/Users/trevorcui/Desktop/微软脱敏数据/VDS_可视化周期性问题_20260525/微软数据集_可视化和周期性问题_问题和标准答案.jsonl' --output-dir outputs/phase12_correctness_non_dab_visual_periodic_20260528_1455 --execution-mode auto`
+- `VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m multi_agent_workflows.microsoft_anonymized_benchmark_runner --dataset-root '/Users/trevorcui/Desktop/微软脱敏数据' --test-set '/Users/trevorcui/Desktop/微软脱敏数据/VDS_高难推理问题_20260525/微软数据集_高难推理问题和标准答案.jsonl' --output-dir outputs/phase12_correctness_non_dab_hard_reasoning_20260528_1455 --execution-mode auto`
+- `scripts/sync_workbench_runtime.sh`
+- `launchctl kickstart -k gui/$(id -u)/com.trevorcui.vds.workbench`
+- Real runtime API smoke on `http://127.0.0.1:8001` for same-schema union, month trend chart, missing channel guard, category join, Beijing category multi-hop join, named-file product, profit margin, trusted join, untrusted join, and metadata overview.
+- Codex in-app Browser DOM check for `http://127.0.0.1:8001/workbench`.
+
+### 测试结果
+
+- Focused service/output tests 通过：Ran 34 tests，OK。
+- Full suite 通过：Ran 347 tests，OK，skipped=1。
+- `node --check frontend/app.js` 通过。
+- `git diff --check` 通过。
+- VDS 95：`95/95`，accuracy `1.0`，success_count `95`。
+- Microsoft DAB 300：`300/300`，accuracy `1.0`，success_count `300`，semantic_mismatch `0`。
+- Non-DAB visual/periodic：`0/40`，success_count `29`；不低于同轮修复前基线 `0/40`，success_count `28`。
+- Non-DAB hard reasoning：`3/30`，success_count `17`；不低于同轮修复前基线 `3/30`，success_count `17`。
+- Runtime 已同步到 `/Users/trevorcui/.vds-workbench-runtime/VDS` 并重启；`127.0.0.1:8001` 有新 PID 监听。
+- Real runtime smoke 通过：
+  - `A店和B店合起来哪个产品销售额最高？` 返回 `苹果 180`，same-schema union 覆盖 `qa_store_a/qa_store_b`，`verification.passed=true`。
+  - `按月份展示销售额趋势，生成折线图。` 返回 `2026-01=350`、`2026-02=180`，chart 为 line，x=`month`，chart data 无 city 字段。
+  - `哪个渠道销售额最高？` 返回 `success=false`，主回答明确点名 `渠道` 被错误绑定到 `城市`，没有伪造 `北京 280`。
+  - `哪个品类总销售额最高？` 返回 `水果 180`，source tables 包含 `products`，join plan trusted。
+  - `北京哪个品类销售额最高？` 返回 `零食 120`，filters=`{"city":"北京"}`，source tables 为 `orders/products/customers`，join plan 2 步。
+  - `qa_store_b.csv里面哪个产品销售额最高？` 返回 `香蕉 90`，source table 仅 `qa_store_b`，dimension=`product`。
+  - `哪个城市利润率最高？` 返回 `上海 40.00%`，口径为 `sum(profit)/sum(sales)`。
+  - trusted join 返回 `北京 sales=170`，answer 明确 `orders.customer_id -> customers.customer_id`。
+  - untrusted join HTTP 200 但 `success=false`，主回答提示候选关联键和 0% 重叠率。
+  - overview 识别 `1 个可计算表和 2 个说明/规则来源`，两个 xlsx 行类型为 `说明或元数据表`。
+
+### 浏览器 / Workbench 验证
+
+- Codex in-app Browser 打开 `http://127.0.0.1:8001/workbench` 成功，标题为 `Virtual Data Scientist Workbench`。
+- DOM 可见 `VDS` 和上传控件，确认真实 8001 runtime 已服务新版页面。
+
+### 遗留问题
+
+- Non-DAB visual/periodic 和 hard-reasoning 仍是能力缺口套件，本轮只证明未低于旧基线，不声明已支持。
+- SQL 路径仍不 materialize uploaded-table join；可信 join 执行保持 Pandas-only。
+- 部分失败澄清文案仍偏重审计风格，但已保留用户点名字段并禁止替代字段伪答。
+
+### 是否影响主流程
+
+是。影响通用表格语义解析、Pandas 执行、Verifier、回答生成、overview 和 Workbench 展示保护；修改集中在用户本轮要求的 correctness / overview / template 范围内。
+
+### 是否涉及 Benchmark
+
+是。已跑 VDS 95、Microsoft DAB 300、Microsoft non-DAB visual/periodic、Microsoft non-DAB hard-reasoning，并记录到 `docs/test-runs/2026-05-28-phase12-correctness-overview.md`。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+有正向影响。Verifier 的语义错算硬拦截、derived metric、join plan 和非回退门禁都属于后续多 Agent 编排时应保持的能力边界。
+
+### 是否修改核心数据契约
+
+是。`logic_form.parameters.derived_metric`、`join_plan`、overview source metadata label、Verifier correction action 都被用于约束输出语义；旧字段保留。
+
+### 是否修改 API 契约
+
+轻微影响。`VERIFICATION_FAILED` / `PANDAS_EXECUTION_ERROR` 的用户可读澄清响应会以 HTTP 200 返回，避免前端把可展示的“需要确认”当 fetch error。
+
+### 是否新增或修改错误类型
+
+未新增错误类型；扩展了 `VERIFICATION_FAILED` 场景下的语义绑定失败和 join 澄清行为。
+
+### 是否新增或修改运行追踪逻辑
+
+轻微影响。join plan 和 source overview 的 debug / process 信息更明确，但不暴露后端完整执行细节。
+
+### 是否已同步 README
+
+是。`README.md`、`MAIN_GOAL.md` 和相关 gate / parity 文档已同步 Phase 12 correctness + GPT-like hardening 与 non-regression 红线。
+
 2026-05-27 15:20 CST
 
 ### 本次目标

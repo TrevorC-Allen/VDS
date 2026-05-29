@@ -117,6 +117,23 @@ RUN_STANDARD_BENCHMARK=1 bash scripts/test_dataset_microsoft_anonymized.sh
 
 记录要求：提交或阶段汇报里必须写明参考来源、主要差距、已接受的差异和被打回重写的点；没有真实 GPT 参考时，必须明确使用的是标准 GPT answer workbook、冻结截图或 repo 内参考 artifact，不能冒充实时 GPT 结果。
 
+### 1.6 Semantic Correctness And Non-regression Gate
+
+适用于 parser、verifier、executor、output、多文件、join、overview 和 Workbench 用户可见结果。语义正确性高于模板效果：`success=true`、执行成功、空 errors 或 GPT-like 文案都不能覆盖语义错算。
+
+P0 硬断言：
+
+1. 点名文件后，metric / dimension 默认只能从该文件内选择，除非用户明确要求 join 或关联其他表。
+2. 用户问“哪个产品销售额最高”，维度必须绑定产品 / product / sku / item；不能因为文件名、第一列或旧 hint 退成门店 / store。
+3. 用户问“利润率 / profit margin / margin / rate”，必须使用派生 ratio，例如 `sum(profit)/sum(sales)`；不能直接用 raw sales 或 raw profit 排名。
+4. metric 在事实表、dimension 在维表且存在可信同名或同义 key 时，Pandas 路径可以 materialize join；join key 不可信时，主回答必须说清候选关联键和风险，不得假成功。
+
+non-regression 门槛：
+
+1. 已修能力不得下降 / non-regression 是硬验收项；每个新修复必须带同族新检查和旧代表回归。
+2. 简单 Top1 回答可以短，但不能牺牲派生指标、join、图表、overview、质量边界和 source metadata 的可解释性。
+3. 评测结论优先看 `comparison.*`、`comparison_scored.*`、focused correctness tests 和真实 Workbench 证据；不能只看 smoke 数字。
+
 ### 2. Domain Extension Gate
 
 当数据集有明确业务主题时，在 Generic Gate 通过后追加业务专项门禁。例如出租车双年度文件可以追加：
@@ -155,6 +172,8 @@ VDS_LLM_PROVIDER=mock /Users/trevorcui/.cache/codex-runtimes/codex-primary-runti
 5. 标准答案只能在 response 生成后用于离线评分。
 6. 领域专项必须在通用门禁后运行，不能替代通用门禁。
 7. GPT-like parity review 差距很大时必须打回重写，不能把“功能跑通”当作体验完成。
+8. `success=true` 不能绕过语义错算；语义口径错误即使执行成功也必须判失败或澄清。
+9. 已修能力不得下降 / non-regression；修新 P0/P1 时如果旧能力回退，先修回归。
 
 ## 当前 smoke 验证
 

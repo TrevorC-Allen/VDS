@@ -61,6 +61,27 @@ CHINESE_RETAIL_OPERATIONS = {
     "retail_manager_target_monthly_trend",
     "retail_top_employee_visit_success_rate_trend",
     "retail_category_distribution_monthly_trend",
+    "retail_employee_distribution_monthly_trend",
+    "retail_visit_weekday_distribution",
+    "retail_route_plan_daily_trend",
+    "retail_route_plan_employee_count_ranking",
+    "retail_display_status_monthly_distribution",
+    "retail_display_confirm_amount_category_monthly_top",
+    "retail_contract_customer_monthly_structure",
+    "retail_freezer_customer_monthly_trend",
+    "retail_freezer_door_average_monthly_trend",
+    "retail_sku_check_brand_pass_rate_top",
+    "retail_today_category_amount_share",
+    "retail_display_execution_monthly_dual_trend",
+    "retail_distribution_monthly_yoy_compare",
+    "retail_category_distribution_periodic_trend",
+    "retail_category_three_month_rank",
+    "retail_manager_target_monthly_change",
+    "retail_contract_customer_monthly_trend",
+    "retail_freezer_customer_monthly_change",
+    "retail_display_unqualified_rate_monthly",
+    "retail_sku_check_monthly_pass_rate",
+    "retail_employee_target_reached_monthly",
 }
 NO_MATCHING_RECORDS = "没有匹配记录"
 
@@ -171,6 +192,48 @@ def execute_chinese_retail_operation(logic: LogicForm, context: dict[str, Any]) 
         return _retail_top_employee_visit_success_rate_trend(tables, params)
     if op == "retail_category_distribution_monthly_trend":
         return _retail_category_distribution_monthly_trend(tables, params)
+    if op == "retail_employee_distribution_monthly_trend":
+        return _retail_employee_distribution_monthly_trend(tables, params)
+    if op == "retail_visit_weekday_distribution":
+        return _retail_visit_weekday_distribution(tables, params)
+    if op == "retail_route_plan_daily_trend":
+        return _retail_route_plan_daily_trend(tables, params)
+    if op == "retail_route_plan_employee_count_ranking":
+        return _retail_route_plan_employee_count_ranking(tables, params)
+    if op == "retail_display_status_monthly_distribution":
+        return _retail_display_status_monthly_distribution(tables, params)
+    if op == "retail_display_confirm_amount_category_monthly_top":
+        return _retail_display_confirm_amount_category_monthly_top(tables, params)
+    if op == "retail_contract_customer_monthly_structure":
+        return _retail_contract_customer_monthly_structure(tables, params)
+    if op == "retail_freezer_customer_monthly_trend":
+        return _retail_freezer_customer_monthly_trend(tables, params)
+    if op == "retail_freezer_door_average_monthly_trend":
+        return _retail_freezer_door_average_monthly_trend(tables, params)
+    if op == "retail_sku_check_brand_pass_rate_top":
+        return _retail_sku_check_brand_pass_rate_top(tables, params)
+    if op == "retail_today_category_amount_share":
+        return _retail_today_category_amount_share(tables, params)
+    if op == "retail_display_execution_monthly_dual_trend":
+        return _retail_display_execution_monthly_dual_trend(tables, params)
+    if op == "retail_distribution_monthly_yoy_compare":
+        return _retail_distribution_monthly_yoy_compare(tables, params)
+    if op == "retail_category_distribution_periodic_trend":
+        return _retail_category_distribution_periodic_trend(tables, params)
+    if op == "retail_category_three_month_rank":
+        return _retail_category_three_month_rank(tables, params)
+    if op == "retail_manager_target_monthly_change":
+        return _retail_manager_target_monthly_change(tables, params)
+    if op == "retail_contract_customer_monthly_trend":
+        return _retail_contract_customer_monthly_trend(tables, params)
+    if op == "retail_freezer_customer_monthly_change":
+        return _retail_freezer_customer_monthly_change(tables, params)
+    if op == "retail_display_unqualified_rate_monthly":
+        return _retail_display_unqualified_rate_monthly(tables, params)
+    if op == "retail_sku_check_monthly_pass_rate":
+        return _retail_sku_check_monthly_pass_rate(tables, params)
+    if op == "retail_employee_target_reached_monthly":
+        return _retail_employee_target_reached_monthly(tables, params)
     raise ValueError(f"Unsupported Chinese retail operation: {op}")
 
 
@@ -368,7 +431,12 @@ def _retail_distribution_monthly_mom(tables: dict[str, pd.DataFrame], params: di
 
 
 def _retail_distribution_topn_chart(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
-    hist = _filter_ym(_history_table(tables), "sign_time", params.get("ym"))
+    hist = _history_table(tables)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if months:
+        hist = _filter_date_month_range(hist, "sign_time", months)
+    else:
+        hist = _filter_ym(hist, "sign_time", params.get("ym"))
     dimension = _first_existing_column(hist, str(params.get("dimension") or "sku_name"), ("cmdt_name", "cmdt_sname", "sku_code"))
     metric = str(params.get("metric") or "sign_amt")
     if hist.empty or dimension not in hist.columns or metric not in hist.columns:
@@ -874,6 +942,546 @@ def _retail_category_distribution_monthly_trend(tables: dict[str, pd.DataFrame],
     }
 
 
+def _retail_employee_distribution_monthly_trend(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    hist = _history_table(tables)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    data = _filter_date_month_range(hist, "sign_time", months)
+    if data.empty or "emp_name" not in data.columns or "sign_amt" not in data.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    data = data.copy()
+    data["emp_name"] = data["emp_name"].fillna("").astype(str)
+    data = data[data["emp_name"].str.strip() != ""]
+    data["month"] = pd.to_datetime(data["sign_time"], errors="coerce").dt.strftime("%Y%m")
+    data = data[pd.to_numeric(data["month"], errors="coerce").notna()]
+    data["month"] = data["month"].astype(int)
+    data["sign_amt_n"] = _numeric(data["sign_amt"])
+    limit = int(params.get("limit") or 5)
+    employees = data.groupby("emp_name", dropna=True)["sign_amt_n"].sum().sort_values(ascending=False).head(limit).index.tolist()
+    if not employees:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    pivot = (
+        data[data["emp_name"].isin(employees)]
+        .groupby(["month", "emp_name"], dropna=True)["sign_amt_n"]
+        .sum()
+        .unstack(fill_value=0.0)
+        .reindex(index=months, columns=employees, fill_value=0.0)
+    )
+    rows = [{"月份": _ym_label(month), **{employee: float(pivot.loc[month, employee]) for employee in employees}} for month in months]
+    return {
+        "answer": f"已生成{_ym_label(months[0])}至{_ym_label(months[-1])}历史分销金额最高{len(employees)}名业代的月度趋势。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "sign_amt",
+    }
+
+
+def _retail_visit_weekday_distribution(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    visits = _filter_ym(_visit_table(tables), "visit_date", params.get("ym"))
+    weekday_order = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    counts = pd.Series(0, index=weekday_order, dtype=int)
+    if not visits.empty:
+        if "week_day" in visits.columns:
+            weekday_series = visits["week_day"].apply(_normalize_weekday_label)
+        else:
+            weekday_series = pd.to_datetime(visits["visit_date"], errors="coerce").dt.weekday.map(
+                {0: "周一", 1: "周二", 2: "周三", 3: "周四", 4: "周五", 5: "周六", 6: "周日"}
+            )
+        counted = weekday_series.dropna().astype(str).value_counts()
+        counts = counted.reindex(weekday_order, fill_value=0).astype(int)
+    rows = [{"星期": weekday, "拜访记录数": int(counts.loc[weekday])} for weekday in weekday_order]
+    top_weekday = max(rows, key=lambda row: int(row["拜访记录数"]))
+    return {
+        "answer": f"一周拜访分布已统计完成；记录最多的是{top_weekday['星期']}（{top_weekday['拜访记录数']}条）。",
+        "candidate_table": rows,
+        "x": "星期",
+        "metric": "拜访记录数",
+    }
+
+
+def _retail_route_plan_daily_trend(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    route = _route_table(tables)
+    data = _filter_date_range(route, "visit_date", params.get("start_date"), params.get("end_date"))
+    if data.empty or "cust_code" not in data.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    dates = pd.to_datetime(data["visit_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    scoped = data[dates.notna()].copy()
+    scoped["visit_date_key"] = dates[dates.notna()]
+    counts = scoped.groupby("visit_date_key", dropna=True)["cust_code"].apply(lambda series: series.dropna().astype(str).nunique()).sort_index()
+    rows = [{"日期": day, "计划客户数": int(value)} for day, value in counts.items()]
+    if not rows:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    top_day = max(rows, key=lambda row: int(row["计划客户数"]))
+    return {
+        "answer": f"已生成线路计划客户数日趋势；最高日期为{top_day['日期']}（{top_day['计划客户数']}家）。",
+        "candidate_table": rows,
+        "x": "日期",
+        "metric": "计划客户数",
+    }
+
+
+def _retail_route_plan_employee_count_ranking(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    route = _filter_ym(_route_table(tables), "visit_date", params.get("ym"))
+    if route.empty or "emp_name" not in route.columns or "cust_code" not in route.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    ranking = (
+        route.groupby("emp_name", dropna=True)["cust_code"]
+        .apply(lambda series: series.dropna().astype(str).nunique())
+        .sort_values(ascending=False)
+    )
+    ranking = ranking[ranking.index.astype(str).str.strip() != ""]
+    rows = [{"业代": str(name), "计划客户数": int(value)} for name, value in ranking.items()]
+    if not rows:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    return {
+        "answer": f"已按计划客户数生成{_ym_label(params.get('ym'))}各业代排名。",
+        "candidate_table": rows,
+        "x": "业代",
+        "metric": "计划客户数",
+    }
+
+
+def _retail_display_status_monthly_distribution(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    display = _display_plan_table(tables)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    data = _filter_execute_month_range(display, months)
+    if data.empty:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    status_column = _first_existing_column(data, "check_result_name", ("img_dsp_result_name", "dsp_result_name"))
+    if status_column not in data.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    scoped = data.copy()
+    scoped["status_norm"] = scoped[status_column].apply(_normalize_display_status)
+    pivot = (
+        scoped.groupby(["execute_ym", "status_norm"], dropna=False)["cust_code"]
+        .count()
+        .unstack(fill_value=0)
+        .reindex(index=months, columns=["合格", "不合格", "未检查"], fill_value=0)
+    )
+    rows = [
+        {"月份": _ym_label(month), "合格": int(pivot.loc[month, "合格"]), "不合格": int(pivot.loc[month, "不合格"]), "未检查": int(pivot.loc[month, "未检查"])}
+        for month in months
+    ]
+    return {
+        "answer": f"已生成{_ym_label(months[0])}至{_ym_label(months[-1])}陈列活动检查结果分布。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "合格",
+    }
+
+
+def _retail_display_confirm_amount_category_monthly_top(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    display = _display_plan_table(tables)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    data = _filter_execute_month_range(display, months)
+    if data.empty or "ctg_name" not in data.columns or "confirm_amt" not in data.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    data = data.copy()
+    data["confirm_amt_n"] = _numeric(data["confirm_amt"])
+    categories = (
+        data.groupby("ctg_name", dropna=True)["confirm_amt_n"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(int(params.get("limit") or 5))
+        .index.tolist()
+    )
+    if not categories:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    pivot = (
+        data[data["ctg_name"].isin(categories)]
+        .groupby(["execute_ym", "ctg_name"], dropna=True)["confirm_amt_n"]
+        .sum()
+        .unstack(fill_value=0.0)
+        .reindex(index=months, columns=categories, fill_value=0.0)
+    )
+    rows = [{"月份": _ym_label(month), **{category: float(pivot.loc[month, category]) for category in categories}} for month in months]
+    return {
+        "answer": f"已生成{_ym_label(months[0])}至{_ym_label(months[-1])}确认金额最高{len(categories)}个品类的月度结构。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "confirm_amt",
+    }
+
+
+def _retail_contract_customer_monthly_structure(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    rows = _customer_contract_rows(tables, months)
+    if not rows:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    return {
+        "answer": f"已生成{_ym_label(months[0])}至{_ym_label(months[-1])}合约店与非合约店数量变化。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "合约店",
+    }
+
+
+def _retail_freezer_customer_monthly_trend(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    rows = _freezer_customer_rows(tables, months)
+    if not rows:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    return {
+        "answer": f"已生成{_ym_label(months[0])}至{_ym_label(months[-1])}冰柜客户数量趋势。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "冰柜客户数",
+    }
+
+
+def _retail_freezer_door_average_monthly_trend(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    customer = _customer_table(tables)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    door_column = _first_existing_column(customer, "冰柜门数", ("我司冰柜门数", "门数"))
+    if door_column not in customer.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    rows: list[dict[str, Any]] = []
+    for month in months:
+        scoped = _filter_customer_ym(customer, month)
+        values = _numeric(scoped[door_column])
+        values = values[values > 0]
+        rows.append({"月份": _ym_label(month), "平均冰柜门数": 0.0 if values.empty else float(values.mean())})
+    return {
+        "answer": f"已生成{_ym_label(months[0])}至{_ym_label(months[-1])}终端客户平均冰柜门数趋势。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "平均冰柜门数",
+    }
+
+
+def _retail_sku_check_brand_pass_rate_top(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    sku = _filter_audit_ym(_sku_check_table(tables), params.get("ym"))
+    brand_column = _first_existing_column(sku, "brand_name", ("品牌",))
+    flag_column = _first_existing_column(sku, "sku_check_flag", ("check_flag", "是否通过"))
+    if sku.empty or brand_column not in sku.columns or flag_column not in sku.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    scoped = sku.copy()
+    scoped["brand_norm"] = scoped[brand_column].fillna("").astype(str)
+    grouped = scoped.groupby("brand_norm", dropna=False).agg(
+        记录数=(flag_column, "count"),
+        通过记录数=(flag_column, lambda series: int((_numeric(series) == 1).sum())),
+    )
+    grouped = grouped.sort_values(by=["记录数", "通过记录数"], ascending=[False, False]).head(int(params.get("limit") or 8))
+    rows = []
+    for brand, record in grouped.iterrows():
+        total = int(record["记录数"])
+        passed = int(record["通过记录数"])
+        rate = 0.0 if total == 0 else passed / total * 100
+        rows.append({"品牌": str(brand), "记录数": total, "通过率": rate})
+    return {
+        "answer": f"已生成{_ym_label(params.get('ym'))}记录数最高{len(rows)}个品牌的SKU检查通过率。",
+        "candidate_table": rows,
+        "x": "品牌",
+        "metric": "通过率",
+    }
+
+
+def _retail_today_category_amount_share(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    today = _filter_date(_today_table(tables), "sign_time", params.get("date"))
+    if today.empty or "ctg_name" not in today.columns or "sign_amt" not in today.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    grouped = _numeric(today["sign_amt"]).groupby(today["ctg_name"].fillna("").astype(str)).sum().sort_values(ascending=False)
+    total = float(grouped.sum())
+    rows = [{"品类": str(name), "签收金额": float(value), "占比": 0.0 if total == 0 else float(value) / total * 100} for name, value in grouped.items()]
+    return {
+        "answer": f"已生成{params.get('date')}各品类签收金额占比。",
+        "candidate_table": rows,
+        "x": "品类",
+        "metric": "签收金额",
+    }
+
+
+def _retail_display_execution_monthly_dual_trend(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    execute = _display_execute_table(tables)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    if "dd_exec_act_times" not in execute.columns or "dd_act_exec_nums" not in execute.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    scoped = _filter_execute_month_range(execute, months).copy()
+    scoped["dd_exec_act_times_n"] = _numeric(scoped["dd_exec_act_times"])
+    scoped["dd_act_exec_nums_n"] = _numeric(scoped["dd_act_exec_nums"])
+    grouped = scoped.groupby("execute_ym", dropna=True).agg(
+        执行次数=("dd_exec_act_times_n", "sum"),
+        执行组数=("dd_act_exec_nums_n", "sum"),
+    )
+    rows = []
+    for month in months:
+        if month in grouped.index:
+            rows.append(
+                {
+                    "月份": _ym_label(month),
+                    "执行次数": int(grouped.loc[month, "执行次数"]),
+                    "执行组数": int(grouped.loc[month, "执行组数"]),
+                }
+            )
+        else:
+            rows.append({"月份": _ym_label(month), "执行次数": 0, "执行组数": 0})
+    return {
+        "answer": f"已生成{_ym_label(months[0])}至{_ym_label(months[-1])}陈列执行次数和执行组数趋势。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "执行次数",
+    }
+
+
+def _retail_distribution_monthly_yoy_compare(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    hist = _history_table(tables)
+    current_ym = params.get("current_ym") or params.get("ym")
+    comparison_ym = params.get("comparison_ym")
+    if not current_ym:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    if not comparison_ym:
+        year, month = _split_ym(current_ym)
+        comparison_ym = (year - 1) * 100 + month if year and month else None
+    if not comparison_ym:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    current = _sum(_filter_ym(hist, "sign_time", current_ym), "sign_amt")
+    comparison = _sum(_filter_ym(hist, "sign_time", comparison_ym), "sign_amt")
+    yoy = 0.0 if comparison == 0 else (current - comparison) / comparison * 100
+    row = {
+        "本期月份": _ym_label(current_ym),
+        "本期金额": current,
+        "同期月份": _ym_label(comparison_ym),
+        "同期金额": comparison,
+        "同比": yoy,
+    }
+    notes: list[str] = []
+    current_rows = _filter_ym(hist, "sign_time", current_ym)
+    if not current_rows.empty:
+        max_date = pd.to_datetime(current_rows["sign_time"], errors="coerce").dropna().max()
+        year, month = _split_ym(current_ym)
+        if max_date is not pd.NaT and year and month and (max_date.year != year or max_date.month != month or max_date.day < 28):
+            notes.append(f"{_ym_label(current_ym)}按数据中截至{max_date.date().isoformat()}的签收记录计算")
+    answer = f"{row['本期月份']}金额{_format_decimal(current, 2)}，{row['同期月份']}金额{_format_decimal(comparison, 2)}，同比{_format_decimal(yoy, 2)}%。"
+    if notes:
+        answer += f" 说明：{'；'.join(notes)}。"
+    result = {"answer": answer, "candidate_table": [row], "x": "本期月份", "metric": "本期金额"}
+    if notes:
+        result["note"] = "；".join(notes)
+    return result
+
+
+def _retail_category_distribution_periodic_trend(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    product = params.get("product")
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not product or not months:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    hist = _filter_date_month_range(_history_table(tables), "sign_time", months)
+    hist = _filter_product(hist, product)
+    if hist.empty:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    hist = hist.copy()
+    hist["month"] = pd.to_datetime(hist["sign_time"], errors="coerce").dt.strftime("%Y%m").astype(int)
+    hist["sign_amt_n"] = _numeric(hist["sign_amt"])
+    totals = hist.groupby("month", dropna=True)["sign_amt_n"].sum().reindex(months, fill_value=0.0)
+    rows = [{"月份": _ym_label(month), "分销金额": float(totals.loc[month])} for month in months]
+    directions = []
+    for prev, curr in zip(rows, rows[1:]):
+        directions.append("上升" if float(curr["分销金额"]) > float(prev["分销金额"]) else "下降" if float(curr["分销金额"]) < float(prev["分销金额"]) else "持平")
+    highest = max(rows, key=lambda row: float(row["分销金额"]))
+    return {
+        "answer": f"{product}在{rows[0]['月份']}至{rows[-1]['月份']}的周期趋势已生成；最高月份为{highest['月份']}。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "分销金额",
+        "adjacent_trends": directions,
+        "highest_month": highest["月份"],
+    }
+
+
+def _retail_category_three_month_rank(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    hist = _history_table(tables)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    data = _filter_date_month_range(hist, "sign_time", months)
+    if data.empty or "ctg_name" not in data.columns or "sign_amt" not in data.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    ranking = _numeric(data["sign_amt"]).groupby(data["ctg_name"]).sum().sort_values(ascending=False).head(int(params.get("limit") or 5))
+    rows = [{"品类": str(name), "累计分销金额": float(value)} for name, value in ranking.items()]
+    return {
+        "answer": f"已生成{_ym_label(months[0])}至{_ym_label(months[-1])}累计历史分销金额最高的{len(rows)}个品类。",
+        "candidate_table": rows,
+        "x": "品类",
+        "metric": "累计分销金额",
+    }
+
+
+def _retail_manager_target_monthly_change(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    person = params.get("person")
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not person or not months:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    target = _table_with_columns(tables, {"stat_month", "mgr_name", "target_amt"}, ("ads_trd_dist_ord_target_mgr_1m_df",))
+    scoped = target[target["mgr_name"].astype(str) == str(person)].copy()
+    scoped = scoped[pd.to_numeric(scoped["stat_month"], errors="coerce").isin(months)]
+    if scoped.empty:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    scoped["target_n"] = _numeric(scoped["target_amt"])
+    grouped = scoped.groupby("stat_month", dropna=True)["target_n"].sum()
+    rows = [{"月份": _ym_label(month), "目标金额": float(grouped.get(month, 0.0))} for month in months]
+    higher_months = [curr["月份"] for prev, curr in zip(rows, rows[1:]) if float(curr["目标金额"]) > float(prev["目标金额"])]
+    return {
+        "answer": f"{person}在该周期高于上月的月份为：{', '.join(higher_months) if higher_months else '无'}。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "目标金额",
+        "higher_months": higher_months,
+    }
+
+
+def _retail_contract_customer_monthly_trend(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    rows = _contract_customer_rows(tables, months)
+    if not rows:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    trends = [
+        "上升" if int(curr["合约店数"]) > int(prev["合约店数"]) else "下降" if int(curr["合约店数"]) < int(prev["合约店数"]) else "持平"
+        for prev, curr in zip(rows, rows[1:])
+    ]
+    is_rising = all(trend == "上升" for trend in trends) if trends else False
+    return {
+        "answer": f"合约店数量连续上升：{'是' if is_rising else '否'}。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "合约店数",
+        "adjacent_trends": trends,
+        "is_continuously_rising": is_rising,
+    }
+
+
+def _retail_freezer_customer_monthly_change(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    base_rows = _freezer_customer_rows(tables, months)
+    if not base_rows:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    rows: list[dict[str, Any]] = []
+    previous: int | None = None
+    for row in base_rows:
+        count = int(row["冰柜客户数"])
+        delta = None if previous is None else count - previous
+        rows.append({"月份": row["月份"], "冰柜客户数": count, "较上月变化": delta})
+        previous = count
+    return {
+        "answer": f"已生成{rows[0]['月份']}至{rows[-1]['月份']}冰柜客户数月度变化。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "冰柜客户数",
+    }
+
+
+def _retail_display_unqualified_rate_monthly(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    display = _display_plan_table(tables)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    status_column = _first_existing_column(display, "check_result_name", ("img_dsp_result_name", "dsp_result_name"))
+    if status_column not in display.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    scoped = _filter_execute_month_range(display, months).copy()
+    scoped["status_norm"] = scoped[status_column].apply(_normalize_display_status)
+    grouped = scoped.groupby("execute_ym", dropna=True).agg(
+        总记录数=("status_norm", "count"),
+        不合格数=("status_norm", lambda series: int((series == "不合格").sum())),
+    )
+    rows = []
+    total_records = 0
+    total_bad = 0
+    for month in months:
+        total = int(grouped.loc[month, "总记录数"]) if month in grouped.index else 0
+        bad = int(grouped.loc[month, "不合格数"]) if month in grouped.index else 0
+        rate = 0.0 if total == 0 else bad / total * 100
+        rows.append({"月份": _ym_label(month), "不合格数": bad, "总记录数": total, "不合格率": rate})
+        total_records += total
+        total_bad += bad
+    average_rate = 0.0 if total_records == 0 else total_bad / total_records * 100
+    above = [row["月份"] for row in rows if float(row["不合格率"]) > average_rate]
+    return {
+        "answer": f"整体平均不合格率为{_format_decimal(average_rate, 2)}%；高于平均的月份：{', '.join(above) if above else '无'}。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "不合格率",
+        "average_rate": average_rate,
+        "above_average_months": above,
+    }
+
+
+def _retail_sku_check_monthly_pass_rate(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    sku = _sku_check_table(tables)
+    ym_column = _first_existing_column(sku, "ym", ("stat_month", "年月"))
+    flag_column = _first_existing_column(sku, "sku_check_flag", ("check_flag", "是否通过"))
+    if sku.empty or ym_column not in sku.columns or flag_column not in sku.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    scoped = sku[pd.to_numeric(sku[ym_column], errors="coerce").notna()].copy()
+    scoped["ym_n"] = pd.to_numeric(scoped[ym_column], errors="coerce").astype(int)
+    grouped = scoped.groupby("ym_n", dropna=True).agg(
+        记录数=(flag_column, "count"),
+        通过记录数=(flag_column, lambda series: int((_numeric(series) == 1).sum())),
+    )
+    rows = []
+    for month in sorted(grouped.index.tolist()):
+        total = int(grouped.loc[month, "记录数"])
+        passed = int(grouped.loc[month, "通过记录数"])
+        rows.append({"月份": _ym_label(month), "记录数": total, "通过记录数": passed, "通过率": 0.0 if total == 0 else passed / total * 100})
+    if not rows:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    highest = max(rows, key=lambda row: float(row["通过率"]))
+    return {
+        "answer": f"SKU检查通过率最高月份为{highest['月份']}。",
+        "candidate_table": rows,
+        "x": "月份",
+        "metric": "通过率",
+    }
+
+
+def _retail_employee_target_reached_monthly(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    if not months:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    target = _table_with_columns(tables, {"stat_month", "emp_name", "target"}, ("ads_trd_dist_ord_target_emp_1m_df",)).copy()
+    target = target[pd.to_numeric(target["stat_month"], errors="coerce").isin(months)]
+    if target.empty:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    target["stat_month_n"] = pd.to_numeric(target["stat_month"], errors="coerce").astype(int)
+    target["target_n"] = _numeric(target["target"])
+    hist = _filter_date_month_range(_history_table(tables), "sign_time", months).copy()
+    hist["month"] = pd.to_datetime(hist["sign_time"], errors="coerce").dt.strftime("%Y%m")
+    hist = hist[pd.to_numeric(hist["month"], errors="coerce").notna()]
+    hist["month"] = hist["month"].astype(int)
+    hist["sign_amt_n"] = _numeric(hist["sign_amt"])
+    actual = hist.groupby(["month", "emp_name"], dropna=True)["sign_amt_n"].sum()
+    rows: list[dict[str, Any]] = []
+    for _, item in target.iterrows():
+        month = int(item["stat_month_n"])
+        employee = str(item["emp_name"])
+        target_value = float(item["target_n"])
+        if target_value <= 0:
+            continue
+        actual_value = float(actual.get((month, employee), 0.0))
+        if actual_value < target_value:
+            continue
+        rows.append(
+            {
+                "月份": _ym_label(month),
+                "业代": employee,
+                "实际分销金额": actual_value,
+                "目标金额": target_value,
+                "达成率": actual_value / target_value * 100,
+            }
+        )
+    rows.sort(key=lambda row: (row["月份"], row["业代"]))
+    answer = "已筛选出完成分销目标的业代月份记录。" if rows else "没有达到或超过目标的记录。"
+    return {"answer": answer, "candidate_table": rows, "x": "月份", "metric": "达成率"}
+
+
 def _target_actual_monthly_rows(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> list[dict[str, Any]]:
     person = params.get("person")
     if not person:
@@ -986,6 +1594,7 @@ def _dimension_label(dimension: str) -> str:
         "ctg_name": "品类",
         "emp_name": "业代",
         "p_emp_name": "主任",
+        "channel_name": "渠道",
     }.get(dimension, dimension)
 
 
@@ -1042,6 +1651,110 @@ def _service_customer_rows(tables: dict[str, pd.DataFrame], ym: Any) -> pd.DataF
         active_mask = ~status.apply(lambda value: any(token in value for token in inactive_tokens))
         customer = customer[active_mask]
     return customer
+
+
+def _normalize_weekday_label(value: Any) -> str | None:
+    text = str(value).strip()
+    mapping = {
+        "1": "周一",
+        "2": "周二",
+        "3": "周三",
+        "4": "周四",
+        "5": "周五",
+        "6": "周六",
+        "7": "周日",
+        "周1": "周一",
+        "周2": "周二",
+        "周3": "周三",
+        "周4": "周四",
+        "周5": "周五",
+        "周6": "周六",
+        "周7": "周日",
+        "星期一": "周一",
+        "星期二": "周二",
+        "星期三": "周三",
+        "星期四": "周四",
+        "星期五": "周五",
+        "星期六": "周六",
+        "星期日": "周日",
+        "星期天": "周日",
+        "周一": "周一",
+        "周二": "周二",
+        "周三": "周三",
+        "周四": "周四",
+        "周五": "周五",
+        "周六": "周六",
+        "周日": "周日",
+        "monday": "周一",
+        "tuesday": "周二",
+        "wednesday": "周三",
+        "thursday": "周四",
+        "friday": "周五",
+        "saturday": "周六",
+        "sunday": "周日",
+    }
+    return mapping.get(text.lower(), mapping.get(text))
+
+
+def _normalize_display_status(value: Any) -> str:
+    text = str(value).strip()
+    if not text or text in {"nan", "None"}:
+        return "未检查"
+    if "不合格" in text:
+        return "不合格"
+    if "合格" in text:
+        return "合格"
+    if "未检查" in text:
+        return "未检查"
+    return "未检查"
+
+
+def _contract_customer_rows(tables: dict[str, pd.DataFrame], months: list[int]) -> list[dict[str, Any]]:
+    customer = _customer_table(tables)
+    if not months:
+        return []
+    rows: list[dict[str, Any]] = []
+    for month in months:
+        scoped = _filter_customer_ym(customer, month)
+        if scoped.empty:
+            rows.append({"月份": _ym_label(month), "合约店数": 0})
+            continue
+        scoped = scoped.copy()
+        yes_mask = scoped["是否合约店"].fillna("").astype(str) == "是"
+        count = scoped.loc[yes_mask, "终端客户编码"].dropna().astype(str).nunique()
+        rows.append({"月份": _ym_label(month), "合约店数": int(count)})
+    return rows
+
+
+def _customer_contract_rows(tables: dict[str, pd.DataFrame], months: list[int]) -> list[dict[str, Any]]:
+    customer = _customer_table(tables)
+    if not months:
+        return []
+    rows: list[dict[str, Any]] = []
+    for month in months:
+        scoped = _filter_customer_ym(customer, month)
+        if scoped.empty:
+            rows.append({"月份": _ym_label(month), "合约店": 0, "非合约店": 0})
+            continue
+        yes_mask = scoped["是否合约店"].fillna("").astype(str) == "是"
+        contract_count = scoped.loc[yes_mask, "终端客户编码"].dropna().astype(str).nunique()
+        non_contract_count = scoped.loc[~yes_mask, "终端客户编码"].dropna().astype(str).nunique()
+        rows.append({"月份": _ym_label(month), "合约店": int(contract_count), "非合约店": int(non_contract_count)})
+    return rows
+
+
+def _freezer_customer_rows(tables: dict[str, pd.DataFrame], months: list[int]) -> list[dict[str, Any]]:
+    customer = _customer_table(tables)
+    freezer_column = _first_existing_column(customer, "是否冰柜客户", ("是否我司冰柜客户", "是否冰柜"))
+    if not months or freezer_column not in customer.columns:
+        return []
+    rows: list[dict[str, Any]] = []
+    for month in months:
+        scoped = _filter_customer_ym(customer, month)
+        mask = scoped[freezer_column].fillna("").astype(str) == "是"
+        count = scoped.loc[mask, "终端客户编码"].dropna().astype(str).nunique()
+        rows.append({"月份": _ym_label(month), "冰柜客户数": int(count)})
+    return rows
 
 
 def _active_sku_rows(hist: pd.DataFrame) -> pd.DataFrame:
@@ -1137,6 +1850,19 @@ def _filter_date(data: pd.DataFrame, date_column: str, date_text: Any) -> pd.Dat
     return data[dates == target]
 
 
+def _filter_date_range(data: pd.DataFrame, date_column: str, start_date: Any, end_date: Any) -> pd.DataFrame:
+    if not start_date and not end_date:
+        return data
+    dates = pd.to_datetime(data[date_column], errors="coerce")
+    scoped = data
+    if start_date:
+        scoped = scoped[dates >= pd.Timestamp(str(start_date))]
+        dates = pd.to_datetime(scoped[date_column], errors="coerce")
+    if end_date:
+        scoped = scoped[dates <= pd.Timestamp(str(end_date))]
+    return scoped
+
+
 def _filter_execute_ym(data: pd.DataFrame, ym: Any) -> pd.DataFrame:
     if not ym:
         return data
@@ -1147,6 +1873,20 @@ def _filter_customer_ym(data: pd.DataFrame, ym: Any) -> pd.DataFrame:
     if not ym:
         return data
     return data[data["年月"].astype(int) == int(ym)]
+
+
+def _filter_execute_month_range(data: pd.DataFrame, months: list[int]) -> pd.DataFrame:
+    if not months:
+        return data.iloc[0:0]
+    values = pd.to_numeric(data["execute_ym"], errors="coerce")
+    return data[values.isin(months)]
+
+
+def _filter_customer_month_range(data: pd.DataFrame, months: list[int]) -> pd.DataFrame:
+    if not months:
+        return data.iloc[0:0]
+    values = pd.to_numeric(data["年月"], errors="coerce")
+    return data[values.isin(months)]
 
 
 def _filter_audit_ym(data: pd.DataFrame, ym: Any) -> pd.DataFrame:
@@ -1221,6 +1961,10 @@ def _audit_sku_table(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
         {"ctg_name", "cust_name", "sku_code"},
         ("v_chl_jc_cust_sku_mi", "稽查门店SKU分析"),
     )
+
+
+def _sku_check_table(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    return _table_with_columns(tables, {"ym", "sku_check_flag"}, ("v_chl_jc_cust_sku_mi",))
 
 
 def _safe_display_execute_table(tables: dict[str, pd.DataFrame]) -> pd.DataFrame | None:
