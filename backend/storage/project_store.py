@@ -56,22 +56,25 @@ class ProjectStore:
         self._write(record)
         return deepcopy(record)
 
-    def list_projects(self, *, limit: int = 50, owner_id: str = "", tenant_id: str = "") -> list[dict[str, Any]]:
+    def list_projects(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        owner_id: str = "",
+        tenant_id: str = "",
+    ) -> list[dict[str, Any]]:
         """Return recent project summaries."""
 
-        records = []
-        for path in self.root.glob("proj_*.json"):
-            try:
-                record = self._read(path)
-            except (OSError, json.JSONDecodeError):
-                continue
-            if owner_id and str(record.get("owner_id") or "") != owner_id:
-                continue
-            if tenant_id and str(record.get("tenant_id") or "") != tenant_id:
-                continue
-            records.append(_project_summary(record))
-        records.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
-        return records[: max(1, min(int(limit or 50), 200))]
+        records = self._filtered_project_summaries(owner_id=owner_id, tenant_id=tenant_id)
+        safe_limit = max(1, min(int(limit or 50), 200))
+        safe_offset = max(0, int(offset or 0))
+        return records[safe_offset : safe_offset + safe_limit]
+
+    def count_projects(self, *, owner_id: str = "", tenant_id: str = "") -> int:
+        """Return the full number of filtered projects before pagination."""
+
+        return len(self._filtered_project_summaries(owner_id=owner_id, tenant_id=tenant_id))
 
     def get_project(self, project_id: str) -> dict[str, Any] | None:
         """Return a full project record if it exists."""
@@ -306,6 +309,21 @@ class ProjectStore:
         temp_path = path.with_suffix(".json.tmp")
         temp_path.write_text(json.dumps(to_json_ready(record), ensure_ascii=False, indent=2), encoding="utf-8")
         temp_path.replace(path)
+
+    def _filtered_project_summaries(self, *, owner_id: str = "", tenant_id: str = "") -> list[dict[str, Any]]:
+        records = []
+        for path in self.root.glob("proj_*.json"):
+            try:
+                record = self._read(path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if owner_id and str(record.get("owner_id") or "") != owner_id:
+                continue
+            if tenant_id and str(record.get("tenant_id") or "") != tenant_id:
+                continue
+            records.append(_project_summary(record))
+        records.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        return records
 
 
 def build_project_context(project: dict[str, Any]) -> dict[str, Any]:

@@ -420,6 +420,45 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual(rule["file_id"], with_rule["debug"]["user_rule_context"]["file_id"])
         self.assertEqual(rule["file_id"], with_rule["debug"]["user_rule_context"]["files"][0]["file_id"])
 
+    def test_user_analysis_rule_can_constrain_final_answer_format(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales2.csv"
+            rule_path = root / "analysis_rules.md"
+            csv_path.write_text("city,sales\nShanghai,120\nBeijing,80\n", encoding="utf-8")
+            rule_path.write_text("只回答城市，不要返回数值。", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(csv_path, original_filename="sales2.csv")
+            rule = service.upload_dataset(
+                rule_path,
+                original_filename="analysis_rules.md",
+                file_role="rule",
+                rule_scope="user_analysis",
+            )
+            without_rule = service.analyze_dataset(
+                dataset_id=upload["dataset_id"],
+                question="Which city has the highest sales?",
+                execution_mode="dual",
+            )
+            with_rule = service.analyze_dataset(
+                dataset_id=upload["dataset_id"],
+                question="Which city has the highest sales?",
+                execution_mode="dual",
+                user_rule_file_id=rule["file_id"],
+            )
+
+        self.assertTrue(without_rule["success"], without_rule.get("errors"))
+        self.assertTrue(with_rule["success"], with_rule.get("errors"))
+        self.assertEqual("Shanghai", with_rule["answer"])
+        self.assertNotRegex(with_rule["answer"], r"\d")
+        self.assertNotEqual(without_rule["answer"], with_rule["answer"])
+        self.assertTrue(with_rule["debug"]["user_rule_output_constraints_applied"]["entity_only"])
+        self.assertTrue(with_rule["debug"]["user_rule_output_constraints_applied"]["suppress_numbers"])
+
     def test_message_without_dataset_can_inspect_enabled_user_rule_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -2028,6 +2067,11 @@ class DataAgentServiceTest(unittest.TestCase):
             [item["conversation_id"] for item in listed["conversations"]],
         )
         self.assertNotIn(third["conversation_id"], [item["conversation_id"] for item in listed["conversations"]])
+        self.assertEqual(3, listed["total"])
+        self.assertEqual(2, listed["limit"])
+        self.assertEqual(1, listed["offset"])
+        self.assertEqual(2, listed["count"])
+        self.assertFalse(listed["has_more"])
 
     def test_conversation_pin_persists_and_sorts_first(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2142,6 +2186,31 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertEqual(1, len(listed_project["conversations"]))
         self.assertEqual(project_id, listed_project["conversations"][0]["project_id"])
         self.assertEqual([first["conversation_id"]], loaded_project["project"]["conversation_ids"])
+
+    def test_list_projects_returns_stable_pagination_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = Path(temp_dir) / "storage"
+            service = DataAgentService(
+                file_store=TempFileStore(storage_root),
+                llm_client=MockLLMClient(),
+            )
+
+            first = service.create_project(name="项目一")
+            second = service.create_project(name="项目二")
+            third = service.create_project(name="项目三")
+            listed = service.list_projects(limit=2, offset=1)
+
+        self.assertTrue(listed["success"])
+        self.assertEqual(3, listed["total"])
+        self.assertEqual(2, listed["limit"])
+        self.assertEqual(1, listed["offset"])
+        self.assertEqual(2, listed["count"])
+        self.assertFalse(listed["has_more"])
+        self.assertEqual(
+            [second["project"]["project_id"], first["project"]["project_id"]],
+            [item["project_id"] for item in listed["projects"]],
+        )
+        self.assertNotIn(third["project"]["project_id"], [item["project_id"] for item in listed["projects"]])
 
     def test_project_upload_sources_default_dataset_and_project_only_memory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2325,6 +2394,110 @@ class DataAgentServiceTest(unittest.TestCase):
                 self.assertEqual("external-error", response["request_id"])
                 self.assertEqual(case["error_type"], response["errors"][0]["error_type"])
 
+    def test_card_scheme_steering_monthly_scope_question_2644_passes_verifier(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            files = _write_card_scheme_steering_context_package(root)
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            upload = service.upload_dataset(files["payments"], original_filename="payments.csv")
+            dataset_id = upload["dataset_id"]
+            for path in (files["fees"], files["merchant_data"]):
+                rule = service.upload_dataset(
+                    path,
+                    original_filename=path.name,
+                    file_role="rule",
+                    rule_scope="user_analysis",
+                    bind_dataset_id=dataset_id,
+                )
+                self.assertTrue(rule["success"], rule.get("errors"))
+            response = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="Looking at the month of July, to which card scheme should the merchant Martinis_Fine_Steakhouse steer traffic in order to pay the minimum fees?",
+                execution_mode="pandas",
+            )
+
+        self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertTrue(response["verification"]["passed"], response["verification"])
+        self.assertEqual("card_scheme_steering", response["logic_form"]["operation"])
+        self.assertNotEqual("clarification", response["answer_type"])
+        self.assertEqual("Martinis_Fine_Steakhouse", response["logic_form"]["filters"]["merchant"])
+        self.assertEqual(7, response["logic_form"]["filters"]["month"])
+        self.assertIn(
+            "Card scheme steering uses month/year language as filter scope, not as a grouped output dimension.",
+            response["verification"]["semantic_verification_notes"],
+        )
+
+    def test_card_scheme_steering_monthly_scope_with_explicit_year_passes_verifier(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            files = _write_card_scheme_steering_context_package(root)
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            upload = service.upload_dataset(files["payments"], original_filename="payments.csv")
+            dataset_id = upload["dataset_id"]
+            for path in (files["fees"], files["merchant_data"]):
+                rule = service.upload_dataset(
+                    path,
+                    original_filename=path.name,
+                    file_role="rule",
+                    rule_scope="user_analysis",
+                    bind_dataset_id=dataset_id,
+                )
+                self.assertTrue(rule["success"], rule.get("errors"))
+            response = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="Which card scheme should Martinis_Fine_Steakhouse steer to in July 2023 to pay the lowest fees?",
+                execution_mode="pandas",
+            )
+
+        self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertTrue(response["verification"]["passed"], response["verification"])
+        self.assertEqual("card_scheme_steering", response["logic_form"]["operation"])
+        self.assertNotEqual("clarification", response["answer_type"])
+        self.assertEqual("Martinis_Fine_Steakhouse", response["logic_form"]["filters"]["merchant"])
+        self.assertEqual(2023, response["logic_form"]["filters"]["year"])
+        self.assertEqual(7, response["logic_form"]["filters"]["month"])
+
+    def test_card_scheme_steering_annual_scope_still_passes_verifier(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            files = _write_card_scheme_steering_context_package(root)
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            upload = service.upload_dataset(files["payments"], original_filename="payments.csv")
+            dataset_id = upload["dataset_id"]
+            for path in (files["fees"], files["merchant_data"]):
+                rule = service.upload_dataset(
+                    path,
+                    original_filename=path.name,
+                    file_role="rule",
+                    rule_scope="user_analysis",
+                    bind_dataset_id=dataset_id,
+                )
+                self.assertTrue(rule["success"], rule.get("errors"))
+            response = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="Looking at the year 2023, to which card scheme should the merchant Martinis_Fine_Steakhouse steer traffic to in order to pay the minimum fees?",
+                execution_mode="pandas",
+            )
+
+        self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertTrue(response["verification"]["passed"], response["verification"])
+        self.assertEqual("card_scheme_steering", response["logic_form"]["operation"])
+        self.assertNotEqual("clarification", response["answer_type"])
+        self.assertEqual("Martinis_Fine_Steakhouse", response["logic_form"]["filters"]["merchant"])
+        self.assertEqual(2023, response["logic_form"]["filters"]["year"])
+
 def _write_dabstep_context_package(root: Path) -> list[Path]:
     fee_rule = {
         "ID": 1,
@@ -2366,6 +2539,54 @@ def _write_dabstep_context_package(root: Path) -> list[Path]:
         path.write_text(content, encoding="utf-8")
         paths.append(path)
     return paths
+
+
+def _write_card_scheme_steering_context_package(root: Path) -> dict[str, Path]:
+    file_contents = {
+        "payments.csv": (
+            "merchant,year,month,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,"
+            "has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+            "Martinis_Fine_Steakhouse,2023,1,12,0,0,100.0,true,false,false,A,GlobalCard,NL,NL\n"
+            "Martinis_Fine_Steakhouse,2023,7,182,0,0,34781.2825,true,false,false,A,GlobalCard,NL,NL\n"
+            "Martinis_Fine_Steakhouse,2023,8,213,0,0,2000000.0,true,false,false,A,GlobalCard,NL,NL\n"
+        ),
+        "merchant_category_codes.csv": "mcc,description\n5411,Grocery Stores\n",
+        "fees.json": json.dumps(
+            [
+                _service_fee_rule(1, "GlobalCard", fixed_amount=500.0, rate=0),
+                _service_fee_rule(2, "NexPay", fixed_amount=0.0, rate=100),
+                _service_fee_rule(3, "SwiftCharge", fixed_amount=200.0, rate=400),
+                _service_fee_rule(4, "TransactPlus", fixed_amount=100.0, rate=700),
+            ]
+        ),
+        "merchant_data.json": json.dumps(
+            [{"merchant": "Martinis_Fine_Steakhouse", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5411}]
+        ),
+    }
+    paths: dict[str, Path] = {}
+    for filename, content in file_contents.items():
+        path = root / filename
+        path.write_text(content, encoding="utf-8")
+        stem = filename.split(".", 1)[0]
+        paths[stem] = path
+    return paths
+
+
+def _service_fee_rule(fee_id: int, card_scheme: str, *, fixed_amount: float, rate: int) -> dict[str, object]:
+    return {
+        "ID": fee_id,
+        "card_scheme": card_scheme,
+        "account_type": [],
+        "capture_delay": None,
+        "monthly_fraud_level": None,
+        "monthly_volume": None,
+        "merchant_category_code": [],
+        "is_credit": True,
+        "aci": ["A"],
+        "fixed_amount": fixed_amount,
+        "rate": rate,
+        "intracountry": None,
+    }
 
 
 def _write_simple_docx(path: Path, text: str) -> None:

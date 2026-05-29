@@ -705,12 +705,13 @@ class DabstepFeeEngine:
                 for rule in self.rules
                 if rule.aci
                 and aci in rule.aci
-                and self.rule_matches_filters(
-                    rule,
-                    card_scheme=card_scheme,
-                    is_credit=is_credit,
-                )
+                and (card_scheme is None or rule.card_scheme == card_scheme)
             ]
+            if is_credit is None:
+                matched_rules = [rule for rule in matched_rules if self.rule_matches_filters(rule, card_scheme=card_scheme)]
+            else:
+                # For explicit credit/debit ACI questions, do not mix in generic ACI fallback rules.
+                matched_rules = [rule for rule in matched_rules if rule.is_credit is not None and rule.is_credit == is_credit]
             if matched_rules:
                 candidates[aci] = {
                     "aci": aci,

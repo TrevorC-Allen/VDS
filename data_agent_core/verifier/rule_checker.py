@@ -280,6 +280,9 @@ def _verify_requested_metric_dimension_binding(
     dimension_fields = _semantic_dimension_fields(logic)
     requested_dimensions = _requested_dimension_concepts(question)
     schema_backed_semantics = _uses_schema_backed_semantic_binding(logic)
+    if _card_scheme_steering_uses_temporal_scope_filters(logic, requested_dimensions):
+        notes.append("Card scheme steering uses month/year language as filter scope, not as a grouped output dimension.")
+        return True, notes, None
     if requested_dimensions and schema_backed_semantics:
         notes.append("Schema-backed business operation handles dimension semantic binding internally.")
     elif requested_dimensions and not dimension_fields:
@@ -395,6 +398,16 @@ def _requested_dimension_concepts(question: str) -> list[str]:
         if any(_alias_in_question(question, alias) for alias in aliases):
             requested.append(concept)
     return requested
+
+
+def _card_scheme_steering_uses_temporal_scope_filters(logic: Any, requested_dimensions: list[str]) -> bool:
+    if str(getattr(logic, "operation", "") or "") != "card_scheme_steering":
+        return False
+    if not requested_dimensions or not set(requested_dimensions).issubset({"month", "time"}):
+        return False
+    filters = getattr(logic, "filters", {}) or {}
+    temporal_keys = ("month", "month_range", "year", "day_of_year")
+    return any(filters.get(key) not in (None, "", [], ()) for key in temporal_keys)
 
 
 def _asks_profit_margin(question: str) -> bool:
