@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -42,6 +43,9 @@ class ProjectStore:
             "name": _clean_name(name) or "新项目",
             "description": _clean_text(description, 500),
             "instructions": _clean_text(instructions, 4000),
+            "instructions_version": 1,
+            "instructions_updated_at": now if _clean_text(instructions, 4000) else "",
+            "content_hash": _content_hash(_clean_text(instructions, 4000)),
             "memory_mode": "project_only",
             "default_dataset_id": "",
             "owner_id": str(owner_id or ""),
@@ -111,7 +115,12 @@ class ProjectStore:
         if description is not None:
             record["description"] = _clean_text(description, 500)
         if instructions is not None:
-            record["instructions"] = _clean_text(instructions, 4000)
+            clean_instructions = _clean_text(instructions, 4000)
+            if clean_instructions != str(record.get("instructions") or ""):
+                record["instructions_version"] = _safe_int(record.get("instructions_version"), 1) + 1
+                record["instructions_updated_at"] = _now_iso()
+                record["content_hash"] = _content_hash(clean_instructions)
+            record["instructions"] = clean_instructions
         if default_dataset_id is not None:
             record["default_dataset_id"] = _safe_ref(default_dataset_id)
         record["updated_at"] = _now_iso()
@@ -150,17 +159,38 @@ class ProjectStore:
         if record is None:
             return None
         now = _now_iso()
+        clean_content = _clean_text(content, 8000)
+        metadata_payload = to_json_ready(metadata or {})
+        replaces_source_id = _safe_source_id(str(metadata_payload.get("replaces_source_id") or ""))
+        source_version = _source_version(record, replaces_source_id)
         source = {
             "source_id": _new_source_id(),
             "source_type": _normalize_source_type(source_type),
             "title": _clean_name(title) or _default_source_title(source_type, dataset_id, file_id),
             "dataset_id": _safe_ref(dataset_id),
             "file_id": _safe_ref(file_id),
-            "content": _clean_text(content, 8000),
-            "metadata": to_json_ready(metadata or {}),
+            "content": clean_content,
+            "metadata": metadata_payload,
+            "source_version": source_version,
+            "content_hash": _content_hash(
+                {
+                    "source_type": _normalize_source_type(source_type),
+                    "title": _clean_name(title),
+                    "dataset_id": _safe_ref(dataset_id),
+                    "file_id": _safe_ref(file_id),
+                    "content": clean_content,
+                }
+            ),
+            "source_status": _normalize_source_status(str(metadata_payload.get("source_status") or "")),
+            "replaces_source_id": replaces_source_id,
             "created_at": now,
             "updated_at": now,
         }
+        if replaces_source_id:
+            for existing in record.setdefault("sources", []):
+                if existing.get("source_id") == replaces_source_id:
+                    existing["source_status"] = "superseded"
+                    existing["updated_at"] = now
         record.setdefault("sources", []).append(source)
         if source["dataset_id"] and not record.get("default_dataset_id"):
             record["default_dataset_id"] = source["dataset_id"]
@@ -427,6 +457,9 @@ def _project_summary(record: dict[str, Any]) -> dict[str, Any]:
         "description": record.get("description") or "",
         "memory_mode": record.get("memory_mode") or "project_only",
         "default_dataset_id": record.get("default_dataset_id") or "",
+        "instructions_version": record.get("instructions_version") or 1,
+        "instructions_updated_at": record.get("instructions_updated_at") or "",
+        "content_hash": record.get("content_hash") or "",
         "source_count": len(record.get("sources") or []),
         "memory_count": len(record.get("memories") or []),
         "conversation_count": len(record.get("conversation_ids") or []),
@@ -438,6 +471,20 @@ def _project_summary(record: dict[str, Any]) -> dict[str, Any]:
 def _normalize_source_type(source_type: str) -> str:
     value = str(source_type or "").strip().lower()
     return value if value in {"dataset", "rule", "note", "saved_response"} else "note"
+
+
+def _normalize_source_status(source_status: str) -> str:
+    value = str(source_status or "").strip().lower()
+    return value if value in {"active", "superseded", "deleted", "unavailable"} else "active"
+
+
+def _source_version(record: dict[str, Any], replaces_source_id: str) -> int:
+    if not replaces_source_id:
+        return 1
+    for source in record.get("sources") or []:
+        if source.get("source_id") == replaces_source_id:
+            return max(1, _safe_int(source.get("source_version"), 1) + 1)
+    return 1
 
 
 def _normalize_memory_type(memory_type: str) -> str:
@@ -461,10 +508,22 @@ def _clean_text(value: str, limit: int) -> str:
     return str(value or "").strip()[:limit]
 
 
+def _content_hash(value: Any) -> str:
+    payload = json.dumps(to_json_ready(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _safe_ref(value: str) -> str:
     text = str(value or "").strip()
     allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
     return text if text and all(char in allowed for char in text) else ""
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _safe_project_id(project_id: str) -> str:

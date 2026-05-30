@@ -223,6 +223,50 @@ class Phase8MultiTableCapabilityTest(unittest.TestCase):
         self.assertTrue(result.success, result.errors)
         self.assertTrue(verification.passed, verification.semantic_verification_notes)
 
+    def test_channel_synonym_binds_sales_channel_before_city(self) -> None:
+        tables = {
+            "sales": pd.DataFrame(
+                {
+                    "city": ["上海", "北京", "广州"],
+                    "sales_channel": ["线上", "线下", "线上"],
+                    "sales": [100, 250, 180],
+                }
+            )
+        }
+        executed = _execute("哪个来源渠道销售额最高？", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="哪个来源渠道销售额最高？"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("sales_channel", executed["logic"].parameters["dimension"])
+        self.assertEqual([{"sales_channel": "线上", "sales": 280}], executed["result"].value)
+        self.assertTrue(verification.passed, verification.issues)
+
+    def test_category_synonym_binds_product_category_before_city(self) -> None:
+        tables = {
+            "sales": pd.DataFrame(
+                {
+                    "city": ["上海", "北京", "广州"],
+                    "product_category": ["饮料", "零食", "饮料"],
+                    "sales": [100, 250, 180],
+                }
+            )
+        }
+        executed = _execute("哪个商品品类销售额最高？", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="哪个商品品类销售额最高？"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("product_category", executed["logic"].parameters["dimension"])
+        self.assertEqual([{"product_category": "饮料", "sales": 280}], executed["result"].value)
+        self.assertTrue(verification.passed, verification.issues)
+
     def test_profit_margin_ranking_uses_derived_ratio_metric(self) -> None:
         tables = {"sales": pd.DataFrame({"city": ["上海", "北京"], "sales": [100, 280], "profit": [40, 56]})}
         executed = _execute("哪个城市利润率最高？", tables)
@@ -386,6 +430,21 @@ class Phase8MultiTableCapabilityTest(unittest.TestCase):
         self.assertTrue(verification.passed, verification.issues)
         self.assertEqual("line", chart.chart_type)
         self.assertEqual("month", chart.x)
+
+    def test_monthly_trend_binds_numeric_stat_month(self) -> None:
+        tables = {"sales": pd.DataFrame({"stat_month": [202601, 202601, 202602], "city": ["上海", "北京", "广州"], "sales": [100, 250, 180]})}
+        executed = _execute("按月度展示销售额趋势，生成折线图。", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="按月度展示销售额趋势，生成折线图。"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("aggregation", executed["logic"].operation)
+        self.assertEqual("stat_month", executed["logic"].parameters["dimension"])
+        self.assertEqual({202601: 350, 202602: 180}, {row["stat_month"]: row["sales"] for row in executed["result"].value})
+        self.assertTrue(verification.passed, verification.issues)
 
     def test_missing_channel_dimension_is_blocked_instead_of_city_fallback(self) -> None:
         tables = {"sales": pd.DataFrame({"city": ["北京", "上海"], "sales": [280, 100]})}

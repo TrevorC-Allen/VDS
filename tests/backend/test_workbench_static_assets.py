@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -611,6 +612,67 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn(".project-conversation-menu-button", css)
         self.assertNotIn('id="project-select"', html)
         self.assertNotIn(".project-controls", css)
+
+    def test_p0_workspace_url_sync_and_cross_window_invalidation(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function applyWorkspaceFromUrl", js)
+        self.assertIn("new URLSearchParams(window.location.search || \"\")", js)
+        self.assertIn("project_id", js)
+        self.assertIn("conversation_id", js)
+        self.assertIn("function syncUrlWithWorkspace", js)
+        self.assertIn("window.history[method]({}, \"\", nextUrl)", js)
+        self.assertIn("replaceState", js)
+        self.assertIn("new BroadcastChannel(WORKBENCH_SYNC_CHANNEL)", js)
+        self.assertIn("handleWorkspaceInvalidation", js)
+        self.assertIn("window.addEventListener(\"storage\"", js)
+        self.assertIn("loadProjectWorkspace(state.projectId)", js)
+        self.assertIn("loadConversation(state.conversationId)", js)
+
+    def test_p0_run_jobs_cancel_retry_and_download_controls_are_wired(self) -> None:
+        html = Path("frontend/index.html").read_text(encoding="utf-8")
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn('class="save-response-button message-action-button hidden"', html)
+        self.assertIn('class="download-artifacts-button message-action-button hidden"', html)
+        self.assertIn('class="cancel-run-button message-action-button hidden"', html)
+        self.assertIn('class="retry-run-button message-action-button hidden"', html)
+        self.assertIn('const JOB_MESSAGE_ENDPOINT = "/api/data-agent/message/jobs"', js)
+        self.assertIn("async function waitForRunResult", js)
+        self.assertIn("fetchRunStatus", js)
+        self.assertIn("fetchRunResult", js)
+        self.assertIn('fetch(`/api/data-agent/runs/${encodeURIComponent(runId)}/cancel`', js)
+        self.assertIn('fetch(`/api/data-agent/runs/${encodeURIComponent(runId)}/retry`', js)
+        self.assertIn("SLOW_RUN_THRESHOLD_MS", js)
+        self.assertIn("实时过程重连中", js)
+        self.assertIn("saveAssistantResponseToProject", js)
+        self.assertIn('source_type: "saved_response"', js)
+        self.assertIn("artifacts_manifest", js)
+        self.assertIn("openDownloadMenu", js)
+        self.assertIn("downloadChartFromMessage", js)
+        self.assertIn("downloadSvgAsPng", js)
+        self.assertIn("downloadTableCsvFromResult", js)
+        self.assertIn("compactResultSummary", js)
+        self.assertIn("chartSummary", js)
+        self.assertIn("artifact.download_name || artifact.file_name", js)
+        self.assertIn('artifact.artifact_type === "result_table"', js)
+
+    def test_p0_workbench_does_not_store_business_workspace_state_in_local_storage(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+        set_item_keys = set(re.findall(r"localStorage\.setItem\(([^,\n]+)", js))
+
+        self.assertLessEqual(
+            set_item_keys,
+            {
+                "WORKBENCH_SYNC_PULSE_KEY",
+                "PROJECT_PANEL_COLLAPSED_KEY",
+                "ACTIVE_MONITOR_RUN_KEY",
+                "MONITOR_RUN_INDEX_KEY",
+            },
+        )
+        self.assertNotIn('localStorage.setItem("project_id"', js)
+        self.assertNotIn('localStorage.setItem("conversation_id"', js)
+        self.assertNotIn('localStorage.setItem("dataset_id"', js)
 
     def test_workbench_exposes_standalone_agent_monitor_page(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")

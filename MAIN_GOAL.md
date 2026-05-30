@@ -10,7 +10,7 @@
 
 ## 当前阶段目标
 
-当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环。Phase 11 已启动会话隔离和历史续聊持久化首个落点，当前具备本地 JSON conversation store、`conversation_id`、历史载入和重命名持久化；真实登录、权限和多租户隔离仍未实现。Phase 12 已作为 Phase 11 之后的正式 Workbench 体验收敛阶段落地首轮实现，把 general 表单概览、结构化 Insight、代码展示和 GPT-like 活动流做成后端稳定契约。Phase 13 已完成首个 GPT-like Project 工作区落点，把 chats、共享文件、项目说明和项目内 memory 纳入同一 project-only 上下文边界；Project 入口必须高度对齐 ChatGPT Project：进入 Project 后左侧全局导航、项目列表和最近历史仍可见，右侧主区域呈现项目主页和项目内上下文。
+当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环。Phase 11 已启动会话隔离和历史续聊持久化首个落点，当前具备本地 JSON conversation store、`conversation_id`、历史载入和重命名持久化；真实登录、权限和多租户隔离仍未实现。Phase 12 已作为 Phase 11 之后的正式 Workbench 体验收敛阶段落地首轮实现，把 general 表单概览、结构化 Insight、代码展示和 GPT-like 活动流做成后端稳定契约。Phase 13 已完成首个 GPT-like Project 工作区落点，把 chats、共享文件、项目说明和项目内 memory 纳入同一 project-only 上下文边界；Project 入口必须高度对齐 ChatGPT Project：进入 Project 后左侧全局导航、项目列表和最近历史仍可见，右侧主区域呈现项目主页和项目内上下文。Phase 14 已启动 P0 core hardening 首轮实现，优先补真实文件理解、显式公式口径绑定、图表语义绑定和多轮口径纠错重跑；前端只展示后端结构化结果，不承载解析、公式、join、排序或聚合。
 
 1. 已搭建 data_agent_core 核心算法目录
 2. 已搭建 data_agent_core/contracts 数据契约目录
@@ -44,6 +44,7 @@
 30. Phase 12 已作为 Phase 11 之后的正式体验收敛阶段：GPT-like General Answer, Insight and Activity Stream。首轮已实现 `overview_report`、增强 Insight、安全 `execution_artifacts`、dataset overview 活动流、语义图表规划防线和规则文件自动绑定；真实 `127.0.0.1:8001/workbench` smoke 已确认 general、Insight、过程流和代码卡片可见，前端仍只负责渲染。
 31. Phase 12 后续 correctness + GPT-like hardening 已作为当前硬化目标：语义正确性优先于模板效果，`success=true` 不能掩盖语义错算；点名文件、点名维度、利润率派生指标、可信 join、untrusted join 澄清、overview 表角色和简单 Top1 减噪都必须有 non-regression 测试守护，已修能力不得下降。
 32. Phase 13 已完成首个落点：Project Workspace / Shared Files / Project Memory。已新增 Project Store、Project Sources、Project Memory、project-scoped conversations 和 GPT-like Workbench Project UI，把共享文件、项目说明、项目内记忆和项目 Chat 放进同一后端上下文边界；Project 不是左侧历史过滤器，左侧最近历史必须保持全局可见，项目内聊天 / 来源列表由主区域项目主页单独展示。
+33. Phase 14 P0 core hardening 已启动首轮实现：文件解析 profile 新增 source_kind、range_ref、header_rows、table_role、role_confidence 和 parse_diagnostics；Excel 上传开始识别可分析表、字段字典、规则/说明和空 sheet，CSV 记录编码、分隔符和坏行诊断，PDF/图片表格当前明确要求转换或 OCR，不伪造 DataFrame。显式公式口径可进入 derived metric lineage，多轮“不是这个口径，用公式重算”会读取上一轮 conversation、强制重跑并返回 correction_context；不完整修正必须先澄清。
 
 ## 统一 Phase 状态表
 
@@ -71,6 +72,7 @@
 22. Phase 12：GPT-like General Answer / Insight / Activity Stream，状态为 First implementation landed。该阶段不修改 Phase 10 / Phase 11 的已完成语义，专门收敛 overview report、enhanced insight、execution artifacts、activity process view、semantic chart planning 和规则文件自动绑定。
 23. Phase 12 后续 correctness + GPT-like hardening，状态为 in progress。该阶段不重开前端大改，优先修语义正确性：文件点名与维度绑定、利润率派生 ratio、可信 join / untrusted join 澄清、overview 表角色和简单回答减噪；任何修复必须证明旧的多文件、join、chart、overview 和 GPT-like 回答能力 non-regression。
 24. Phase 13：Project Workspace / Shared Files / Project Memory，状态为 First implementation landed。该阶段新增 project-only memory 和共享文件上下文层；共享文件复用既有 upload / rule / dataset store，前端只渲染后端 Project 契约，不实现检索、join、聚合、评分或数据清洗。Workbench Project UX 必须保持 GPT-like：左侧全局最近历史不因进入 Project 消失，右侧主区域展示 Project 标题、项目内新聊天入口、聊天 / 来源 tabs 和 project-scoped 列表。
+25. Phase 14：P0 Real File Understanding / Semantic Correctness / Multi-turn Correction，状态为 First implementation in progress。该阶段先补 `data_agent_core` 文件候选表识别、显式公式和 chart 语义绑定、verifier 阻断，再接 backend conversation correction；frontend 只展示后端给出的表角色、range 和 correction_context。
 
 ## 当前实现状态
 

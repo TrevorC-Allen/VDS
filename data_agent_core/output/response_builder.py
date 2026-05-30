@@ -154,20 +154,40 @@ def _semantic_failure_answer(user_question: UserQuestion, plan: AnalysisPlan, ve
     logic = plan.logic_form
     params = logic.parameters or {}
     join_plan = logic.join_plan or params.get("join_plan") or {}
-    if isinstance(join_plan, dict) and join_plan and action_name in {"clarify_join_key", "repair_table_selection_or_join"}:
-        left_table = str(join_plan.get("left_table") or params.get("table") or "左表")
-        right_table = str(join_plan.get("right_table") or "右表")
-        left_key = str(join_plan.get("left_key") or "待确认字段")
-        right_key = str(join_plan.get("right_key") or "待确认字段")
-        reason = str(join_plan.get("reason") or action.get("reason") or "")
-        overlap = join_plan.get("overlap_rate")
-        risk = "，且存在多对多风险" if join_plan.get("many_to_many_risk") else ""
-        overlap_text = f"，当前键值重叠率约 {float(overlap):.0%}" if isinstance(overlap, (int, float)) else ""
-        reason_text = f"；原因是 {reason}" if reason else ""
+    if action_name in {"clarify_join_key", "repair_table_selection_or_join"}:
+        target_dimension = (
+            params.get("dimension")
+            or params.get("group_by")
+            or logic.group_by
+            or "、".join(str(item) for item in action.get("requested_dimensions") or [])
+        )
+        dimension_label = _semantic_dimension_label(str(target_dimension or "目标维度"))
+        metric_label = str(params.get("metric") or logic.metric or "目标指标")
+        reason = str(action.get("reason") or "")
+        if isinstance(join_plan, dict) and join_plan:
+            left_table = str(join_plan.get("left_table") or params.get("table") or "左表")
+            right_table = str(join_plan.get("right_table") or "右表")
+            left_key = str(join_plan.get("left_key") or "待确认字段")
+            right_key = str(join_plan.get("right_key") or "待确认字段")
+            reason = str(join_plan.get("reason") or reason)
+            overlap = join_plan.get("overlap_rate")
+            risk = "，且存在多对多风险" if join_plan.get("many_to_many_risk") else ""
+            overlap_text = f"，当前键值重叠率约 {float(overlap):.0%}" if isinstance(overlap, (int, float)) else ""
+            reason_text = f"；原因是 {reason}" if reason else ""
+            return (
+                f"这个问题需要先确认跨表关联，不能直接把单表结果当成{dimension_label}口径。"
+                f"建议检查关联键：{left_table}.{left_key} -> {right_table}.{right_key}{overlap_text}{risk}{reason_text}。"
+                f"确认后我才能按{dimension_label}汇总或排名{metric_label}。"
+            )
+        source_tables = list(logic.source_tables or params.get("source_tables") or action.get("source_tables") or [])
+        source_text = "、".join(str(item) for item in source_tables if str(item)) or "相关表"
+        actual_dimension = str(action.get("actual_dimension") or params.get("dimension") or logic.group_by or "")
+        actual_text = f"当前计划绑定到 {actual_dimension}，" if actual_dimension else ""
+        reason_text = f"原因是 {reason}，" if reason else ""
         return (
-            "这个问题需要先确认跨表关联，不能直接把单表结果当成城市口径。"
-            f"建议检查关联键：{left_table}.{left_key} -> {right_table}.{right_key}{overlap_text}{risk}{reason_text}。"
-            "确认后我才能按城市汇总销售额。"
+            f"这个问题需要{source_text}之间的可信关联，{actual_text}{reason_text}"
+            f"不能直接把结果当成{dimension_label}口径。请先确认关联键或选择包含{dimension_label}字段的数据表，"
+            f"确认后我才能按{dimension_label}汇总或排名{metric_label}。"
         )
     if action_name == "repair_dimension_binding":
         requested = "、".join(str(item) for item in action.get("requested_dimensions") or []) or "用户点名维度"
@@ -197,7 +217,29 @@ def _semantic_dimension_label(value: str) -> str:
         "month": "月份",
         "time": "时间",
     }
-    parts = [labels.get(item.strip(), item.strip()) for item in value.split("、") if item.strip()]
+    alias_labels = (
+        ("channel", "渠道"),
+        ("渠道", "渠道"),
+        ("category", "品类"),
+        ("ctg", "品类"),
+        ("品类", "品类"),
+        ("类目", "品类"),
+        ("month", "月份"),
+        ("月份", "月份"),
+        ("月度", "月份"),
+        ("statmonth", "月份"),
+        ("yearmonth", "月份"),
+    )
+    parts: list[str] = []
+    for raw in value.split("、"):
+        item = raw.strip()
+        if not item:
+            continue
+        if item in labels:
+            parts.append(labels[item])
+            continue
+        normalized = "".join(char for char in item.lower() if char.isalnum() or "\u4e00" <= char <= "\u9fff")
+        parts.append(next((label for token, label in alias_labels if token in normalized), item))
     return "、".join(parts) if parts else value
 
 

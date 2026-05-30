@@ -8,7 +8,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -30,6 +30,7 @@ from backend.schemas.data_agent_schema import (
 from backend.storage.conversation_store import ConversationStore
 from backend.storage.project_store import ProjectStore, build_project_context
 from backend.storage.temp_file_store import StoredRuleFile, TempFileStore, _read_source_text
+from backend.services.export_service import generate_export_artifacts
 from data_agent_core.agent.single_agent import DataAnalysisAgent, UploadedDatasetAgent
 from data_agent_core.benchmark.evaluator import question_scorer
 from data_agent_core.contracts.analysis_contracts import UserQuestion
@@ -229,10 +230,13 @@ class DataAgentService:
         user_rule_file_id: str = "",
         monitor_run_id: str = "",
         project_context: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        cancel_checker: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Run the configured Data Agent workflow for an uploaded dataset."""
 
-        run_id = "run_" + uuid.uuid4().hex[:16]
+        run_id = run_id or "run_" + uuid.uuid4().hex[:16]
+        _raise_if_cancelled(cancel_checker)
         emit_monitor_event(
             monitor_run_id,
             "analysis_requested",
@@ -376,6 +380,7 @@ class DataAgentService:
                 user_rule_context=user_rule_context,
             )
             if fee_rule_response is not None:
+                _raise_if_cancelled(cancel_checker)
                 fee_rule_response = _apply_user_rule_output_constraints(fee_rule_response, user_rule_contexts)
                 _ensure_activity_trace_v2(fee_rule_response)
                 emit_monitor_event(
@@ -408,6 +413,7 @@ class DataAgentService:
                 source_manifest=source_manifest,
             )
             if semantic_route["route"] == "dataset_source_overview":
+                _raise_if_cancelled(cancel_checker)
                 response = to_json_ready(
                     build_dataset_source_overview_response(
                         run_id=run_id,
@@ -448,6 +454,7 @@ class DataAgentService:
                 )
                 return response
             if semantic_route["route"] == "cleaning_guidance":
+                _raise_if_cancelled(cancel_checker)
                 response = to_json_ready(
                     build_cleaning_guidance_response(
                         run_id=run_id,
@@ -488,6 +495,7 @@ class DataAgentService:
                 )
                 return response
             if semantic_route["route"] == "dataset_overview":
+                _raise_if_cancelled(cancel_checker)
                 response = to_json_ready(
                     build_dataset_overview_response(
                         run_id=run_id,
@@ -539,6 +547,7 @@ class DataAgentService:
                 )
                 return response
             if agent_mode == "single_agent":
+                _raise_if_cancelled(cancel_checker)
                 emit_monitor_event(
                     monitor_run_id,
                     "agent_started",
@@ -565,6 +574,9 @@ class DataAgentService:
                 else:
                     agent = UploadedDatasetAgent(tables=tables, dataset_id=dataset_id, llm_client=self.llm_client)
                 response, trace = agent.analyze(question=question, guidelines=guidelines, execution_mode=execution_mode)
+                response.run_id = run_id
+                trace.run_id = run_id
+                _raise_if_cancelled(cancel_checker)
                 emit_monitor_event(
                     monitor_run_id,
                     "agent_completed",
@@ -593,6 +605,8 @@ class DataAgentService:
                     guidelines=guidelines,
                     execution_mode=execution_mode,
                     monitor_run_id=monitor_run_id,
+                    run_id=run_id,
+                    cancel_checker=cancel_checker,
                 )
             elif dataset_kind == "dabstep_context" and analysis_context is not None:
                 agent = DataAnalysisMultiAgentWorkflow(
@@ -606,6 +620,8 @@ class DataAgentService:
                     guidelines=guidelines,
                     execution_mode=execution_mode,
                     monitor_run_id=monitor_run_id,
+                    run_id=run_id,
+                    cancel_checker=cancel_checker,
                 )
             else:
                 agent = DataAnalysisMultiAgentWorkflow.from_uploaded_tables(
@@ -619,6 +635,8 @@ class DataAgentService:
                     guidelines=guidelines,
                     execution_mode=execution_mode,
                     monitor_run_id=monitor_run_id,
+                    run_id=run_id,
+                    cancel_checker=cancel_checker,
                 )
             trace_path = self.file_store.write_run_trace(trace)
             payload = response.to_dict()
@@ -636,6 +654,9 @@ class DataAgentService:
                 payload["debug"]["monitor_run_id"] = monitor_run_id
             if dataset_kind == "dabstep_context" or rule_augmented_context is not None:
                 payload["debug"]["knowledge_files"] = ["manual.md", "fees.json", "merchant_data.json"]
+            formula_lineage = _formula_lineage_from_payload(payload)
+            if formula_lineage:
+                payload["debug"]["formula_lineage"] = formula_lineage
             payload = _suppress_raw_detail_answer(
                 payload,
                 question=question,
@@ -1180,17 +1201,25 @@ class DataAgentService:
         agent_mode: str = "multi_agent",
         user_rule_file_id: str = "",
         monitor_run_id: str = "",
+        run_id: str | None = None,
+        cancel_checker: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Route one workbench message to chat, overview, or full analysis."""
 
         started_at = datetime.now(timezone.utc)
         started_perf = time.perf_counter()
         cleaned_question = question.strip()
+        run_id = run_id or "run_" + uuid.uuid4().hex[:16]
+        _raise_if_cancelled(cancel_checker)
+        conversation_record = self.conversation_store.get_conversation(conversation_id) if conversation_id else None
+        if conversation_record and not dataset_id:
+            dataset_id = str(conversation_record.get("dataset_id") or "")
         project_context = {"enabled": False}
         if project_id:
             project = self.project_store.get_project(project_id)
             if project is None:
                 return error_response(
+                    run_id=run_id,
                     error=ErrorResult(
                         error_type=LOGIC_FORM_ERROR,
                         error_message=f"Project not found: {project_id}",
@@ -1207,6 +1236,36 @@ class DataAgentService:
                 str(project_context.get("memory_guidelines") or ""),
                 str(project_context.get("source_guidelines") or ""),
             )
+        correction_context = _build_turn_correction_context(
+            conversation_record,
+            question=cleaned_question,
+            dataset_id=dataset_id,
+        )
+        if correction_context.get("needs_clarification"):
+            response = _correction_clarification_response(
+                run_id=run_id,
+                dataset_id=dataset_id,
+                question=cleaned_question,
+                correction_context=correction_context,
+                started_at=started_at,
+                started_perf=started_perf,
+            )
+            _ensure_activity_trace_v2(response)
+            _attach_project_metadata(response, project_context)
+            _attach_export_artifacts(response, runs_root=self.file_store.runs_root)
+            return self._record_conversation_turn(
+                response,
+                conversation_id=conversation_id,
+                question=cleaned_question,
+                dataset_id=dataset_id,
+                project_id=project_id,
+                owner_id=owner_id,
+                tenant_id=tenant_id,
+                owner_context=owner_context,
+            )
+        effective_question = str(correction_context.get("revised_question") or cleaned_question)
+        if correction_context.get("is_correction"):
+            guidelines = _combine_guidelines(guidelines, str(correction_context.get("revised_guidelines") or ""))
         emit_monitor_event(
             monitor_run_id,
             "message_requested",
@@ -1219,20 +1278,24 @@ class DataAgentService:
                 "project_id": project_id,
                 "dataset_id": dataset_id,
                 "question": cleaned_question,
+                "effective_question": effective_question,
                 "execution_mode": execution_mode,
                 "agent_mode": agent_mode,
             },
         )
         if not dataset_id:
             response = self.chat_without_dataset(
-                question=cleaned_question,
+                question=effective_question,
                 agent_mode=agent_mode,
                 user_rule_file_id=user_rule_file_id,
                 monitor_run_id=monitor_run_id,
+                run_id=run_id,
+                cancel_checker=cancel_checker,
             )
             _ensure_activity_trace_v2(response)
             _attach_project_metadata(response, project_context)
             _attach_message_timing(response, started_at=started_at, started_perf=started_perf)
+            _attach_export_artifacts(response, runs_root=self.file_store.runs_root)
             return self._record_conversation_turn(
                 response,
                 conversation_id=conversation_id,
@@ -1243,40 +1306,49 @@ class DataAgentService:
                 tenant_id=tenant_id,
                 owner_context=owner_context,
             )
-        intent = classify_workbench_message(cleaned_question, has_dataset=True)
-        if _is_rule_context_inspection_question(cleaned_question) or intent == "chat":
+        intent = classify_workbench_message(effective_question, has_dataset=True)
+        if not correction_context.get("is_correction") and (_is_rule_context_inspection_question(cleaned_question) or intent == "chat"):
             response = self.chat_with_dataset(
                 dataset_id=dataset_id,
-                question=cleaned_question,
+                question=effective_question,
                 agent_mode=agent_mode,
                 user_rule_file_id=user_rule_file_id,
                 monitor_run_id=monitor_run_id,
+                run_id=run_id,
+                cancel_checker=cancel_checker,
             )
         elif intent == "cleaning_guidance":
             response = self.analyze_dataset(
                 dataset_id=dataset_id,
-                question=cleaned_question,
+                question=effective_question,
                 execution_mode=execution_mode,
                 guidelines=guidelines,
                 agent_mode=agent_mode,
                 user_rule_file_id=user_rule_file_id,
                 monitor_run_id=monitor_run_id,
                 project_context=project_context,
+                run_id=run_id,
+                cancel_checker=cancel_checker,
             )
         else:
             response = self.analyze_dataset(
                 dataset_id=dataset_id,
-                question=cleaned_question,
+                question=effective_question,
                 execution_mode=execution_mode,
                 guidelines=guidelines,
                 agent_mode=agent_mode,
                 user_rule_file_id=user_rule_file_id,
                 monitor_run_id=monitor_run_id,
                 project_context=project_context,
+                run_id=run_id,
+                cancel_checker=cancel_checker,
             )
         _ensure_activity_trace_v2(response)
+        if correction_context.get("is_correction"):
+            _attach_correction_context(response, correction_context, original_question=cleaned_question)
         _attach_project_metadata(response, project_context)
         _attach_message_timing(response, started_at=started_at, started_perf=started_perf)
+        _attach_export_artifacts(response, runs_root=self.file_store.runs_root)
         return self._record_conversation_turn(
             response,
             conversation_id=conversation_id,
@@ -2155,7 +2227,16 @@ class DataAgentService:
         )
         if project_id:
             self.project_store.attach_conversation(project_id, record["conversation_id"])
+        assistant_message = next(
+            (
+                message
+                for message in reversed(record.get("messages") or [])
+                if message.get("role") == "assistant" and message.get("run_id") == response.get("run_id")
+            ),
+            {},
+        )
         response["conversation_id"] = record["conversation_id"]
+        response["message_id"] = assistant_message.get("message_id") or ""
         response["conversation"] = {
             "conversation_id": record["conversation_id"],
             "title": record.get("title") or "",
@@ -2175,10 +2256,13 @@ class DataAgentService:
         agent_mode: str = "multi_agent",
         user_rule_file_id: str = "",
         monitor_run_id: str = "",
+        run_id: str | None = None,
+        cancel_checker: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Return a VDS assistant reply when no dataset has been uploaded yet."""
 
-        run_id = "run_" + uuid.uuid4().hex[:16]
+        run_id = run_id or "run_" + uuid.uuid4().hex[:16]
+        _raise_if_cancelled(cancel_checker)
         cleaned_question = question.strip()
         if not cleaned_question:
             return error_response(
@@ -2274,6 +2358,7 @@ class DataAgentService:
             question=cleaned_question,
             has_dataset=False,
         )
+        _raise_if_cancelled(cancel_checker)
         _ensure_activity_trace_v2(response)
         emit_monitor_event(
             monitor_run_id,
@@ -2294,10 +2379,13 @@ class DataAgentService:
         agent_mode: str = "multi_agent",
         user_rule_file_id: str = "",
         monitor_run_id: str = "",
+        run_id: str | None = None,
+        cancel_checker: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Return an ordinary assistant reply while keeping dataset context available."""
 
-        run_id = "run_" + uuid.uuid4().hex[:16]
+        run_id = run_id or "run_" + uuid.uuid4().hex[:16]
+        _raise_if_cancelled(cancel_checker)
         cleaned_question = question.strip()
         if not cleaned_question:
             return error_response(
@@ -2416,6 +2504,7 @@ class DataAgentService:
             has_dataset=True,
             dataset_id=dataset_id,
         )
+        _raise_if_cancelled(cancel_checker)
         _ensure_activity_trace_v2(response)
         emit_monitor_event(
             monitor_run_id,
@@ -2431,6 +2520,7 @@ class DataAgentService:
     def get_dataset_profile(self, dataset_id: str) -> dict[str, Any]:
         """Return a stored dataset profile by dataset_id."""
 
+        was_in_memory = self.file_store.has_dataset_in_memory(dataset_id)
         profile = self.file_store.get_profile(dataset_id)
         if profile is None:
             return error_response(
@@ -2443,7 +2533,22 @@ class DataAgentService:
                     suggested_fix="Upload the dataset again before requesting its profile.",
                 ),
             )
+        restored_from_disk = False
+        restore_error = ""
+        if not was_in_memory:
+            restored_ok, restore_error = self.file_store.restore_dataset_from_disk(dataset_id)
+            restored_from_disk = restored_ok
         response = dataset_profile_response(profile)
+        tables = self.file_store.get_tables(dataset_id) or {}
+        dataset_kind = self.file_store.get_dataset_kind(dataset_id)
+        source_manifest = self.file_store.get_dataset_sources(dataset_id)
+        can_analyze = bool(tables) and not restore_error and dataset_kind != "uploaded_sources"
+        response["can_analyze"] = can_analyze
+        response["restored_from_disk"] = restored_from_disk
+        response["restore_error"] = restore_error or ""
+        response["dataset_kind"] = dataset_kind
+        response["source_status"] = "available" if can_analyze or dataset_kind == "uploaded_sources" else "needs_reupload"
+        response["source_files"] = source_manifest.get("sources") if isinstance(source_manifest, dict) else []
         bound = self.file_store.get_bound_rule_file_ids(dataset_id, rule_scope=USER_ANALYSIS_RULE_SCOPE)
         if bound:
             response["auto_bound_user_rule_file_ids"] = bound
@@ -3482,6 +3587,211 @@ def _fee_id_process_view(*, operation: str, execution_success: bool, verificatio
     }
 
 
+def _build_turn_correction_context(record: dict[str, Any] | None, *, question: str, dataset_id: str) -> dict[str, Any]:
+    if not record or not _looks_like_correction_request(question):
+        return {"is_correction": False}
+    previous = _latest_analysis_turn(record, dataset_id=dataset_id)
+    if not previous:
+        return {
+            "is_correction": True,
+            "needs_clarification": True,
+            "reason": "no_previous_analysis_turn",
+            "changed_scope": [],
+        }
+    formula_text = _extract_explicit_formula_text(question)
+    if not formula_text:
+        return {
+            "is_correction": True,
+            "needs_clarification": True,
+            "reason": "missing_revised_formula",
+            "previous_run_id": previous["payload"].get("run_id") or "",
+            "changed_scope": [],
+            "previous_formula": _formula_lineage_from_payload(previous["payload"]),
+        }
+    previous_question = str(previous.get("question") or previous["payload"].get("question") or "")
+    revised_question = f"{previous_question}\n用户本轮修正口径：{question}\n请按修正口径重新计算，并解释和上一轮口径的差异。"
+    return {
+        "is_correction": True,
+        "needs_clarification": False,
+        "previous_run_id": previous["payload"].get("run_id") or "",
+        "previous_question": previous_question,
+        "previous_formula": _formula_lineage_from_payload(previous["payload"]),
+        "previous_result_summary": _result_summary_for_correction(previous["payload"]),
+        "revised_formula": formula_text,
+        "changed_scope": ["metric_formula"],
+        "revised_question": revised_question,
+        "revised_guidelines": (
+            "用户正在修正上一轮分析口径。必须重新计算，不得复用上一轮结果。"
+            f" 本轮显式口径：{formula_text}。"
+        ),
+    }
+
+
+def _looks_like_correction_request(question: str) -> bool:
+    lowered = question.lower()
+    has_correction_word = any(
+        token in lowered
+        for token in (
+            "不是这个口径",
+            "口径不对",
+            "改成",
+            "按",
+            "用",
+            "重新算",
+            "重算",
+            "重跑",
+            "recalculate",
+            "rerun",
+            "use ",
+            "instead",
+        )
+    )
+    return has_correction_word and ("口径" in question or "sum" in lowered or "=" in question or "/" in question or "重新" in question or "重算" in question)
+
+
+def _latest_analysis_turn(record: dict[str, Any], *, dataset_id: str) -> dict[str, Any] | None:
+    messages = record.get("messages") if isinstance(record, dict) else []
+    if not isinstance(messages, list):
+        return None
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or not payload.get("logic_form"):
+            continue
+        if dataset_id and str(payload.get("dataset_id") or "") not in {"", dataset_id}:
+            continue
+        question = ""
+        if index > 0 and isinstance(messages[index - 1], dict) and messages[index - 1].get("role") == "user":
+            question = str(messages[index - 1].get("content") or "")
+        return {"payload": payload, "question": question}
+    return None
+
+
+def _extract_explicit_formula_text(question: str) -> str:
+    patterns = (
+        r"[\w\u4e00-\u9fff]{1,20}\s*=\s*sum\s*\(?\s*[\w\u4e00-\u9fff_ -]{1,40}\s*\)?\s*/\s*sum\s*\(?\s*[\w\u4e00-\u9fff_ -]{1,40}\s*\)?",
+        r"[\w\u4e00-\u9fff]{1,20}\s*=\s*[\w\u4e00-\u9fff_ -]{1,40}\s*/\s*[\w\u4e00-\u9fff_ -]{1,40}",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, question, re.I)
+        if match:
+            text = match.group(0).strip(" ，,。.;；")
+            return re.sub(r"(重新计算|重新算|重算|再算|计算|这个口径|口径)$", "", text).strip(" ，,。.;；")
+    return ""
+
+
+def _formula_lineage_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    debug = payload.get("debug") if isinstance(payload.get("debug"), dict) else {}
+    if isinstance(debug.get("formula_lineage"), dict) and debug["formula_lineage"]:
+        return dict(debug["formula_lineage"])
+    logic_form = payload.get("logic_form") if isinstance(payload.get("logic_form"), dict) else {}
+    params = logic_form.get("parameters") if isinstance(logic_form.get("parameters"), dict) else {}
+    derived = params.get("derived_metric") if isinstance(params.get("derived_metric"), dict) else {}
+    if derived:
+        return {key: derived.get(key) for key in ("name", "numerator", "denominator", "formula", "formula_source") if derived.get(key)}
+    metric = params.get("metric") or logic_form.get("metric")
+    aggregation = params.get("aggregation")
+    return {"metric": metric, "aggregation": aggregation} if metric or aggregation else {}
+
+
+def _result_summary_for_correction(payload: dict[str, Any]) -> dict[str, Any]:
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    rows = result.get("rows") if isinstance(result.get("rows"), list) else []
+    return {
+        "run_id": payload.get("run_id") or "",
+        "answer": str(payload.get("answer") or "")[:240],
+        "first_row": rows[0] if rows and isinstance(rows[0], dict) else {},
+    }
+
+
+def _correction_clarification_response(
+    *,
+    run_id: str,
+    dataset_id: str,
+    question: str,
+    correction_context: dict[str, Any],
+    started_at: datetime,
+    started_perf: float,
+) -> dict[str, Any]:
+    previous_formula = correction_context.get("previous_formula") if isinstance(correction_context.get("previous_formula"), dict) else {}
+    previous_text = ""
+    if previous_formula:
+        previous_text = "上一轮口径是：" + _short_json(previous_formula) + "。"
+    response = {
+        "response_version": RESPONSE_VERSION,
+        "success": False,
+        "run_id": run_id,
+        "dataset_id": dataset_id,
+        "question": question,
+        "answer_type": "clarification",
+        "execution_mode": "correction_clarification",
+        "answer": previous_text + "你正在修正上一轮口径，但还没有给出可执行的新公式或分子/分母。请明确类似“利润率=sum利润/sum销售”的口径后我再重跑。",
+        "result": {"columns": [], "rows": []},
+        "verification": {"passed": False, "issues": ["missing_revised_formula"]},
+        "warnings": ["Correction request needs an explicit revised metric formula before rerun."],
+        "errors": [],
+        "debug": {"message_intent": "correction_clarification", "reason": correction_context.get("reason")},
+        "correction_context": correction_context,
+        "process_view_v2": build_chat_process_view(question, has_dataset=bool(dataset_id)),
+    }
+    _attach_message_timing(response, started_at=started_at, started_perf=started_perf)
+    return response
+
+
+def _attach_correction_context(response: dict[str, Any], correction_context: dict[str, Any], *, original_question: str) -> None:
+    current_formula = _formula_lineage_from_payload(response)
+    previous_summary = correction_context.get("previous_result_summary") if isinstance(correction_context.get("previous_result_summary"), dict) else {}
+    context = {
+        key: correction_context.get(key)
+        for key in (
+            "is_correction",
+            "previous_run_id",
+            "changed_scope",
+            "previous_formula",
+            "revised_formula",
+            "previous_question",
+        )
+        if key in correction_context
+    }
+    context["current_formula"] = current_formula
+    context["difference_summary"] = _correction_difference_summary(previous_summary, response, correction_context, current_formula)
+    response["correction_context"] = to_json_ready(context)
+    response["question"] = original_question
+    debug = response.setdefault("debug", {})
+    if isinstance(debug, dict):
+        debug["correction_rerun"] = {
+            "previous_run_id": correction_context.get("previous_run_id") or "",
+            "changed_scope": correction_context.get("changed_scope") or [],
+        }
+
+
+def _correction_difference_summary(
+    previous_summary: dict[str, Any],
+    response: dict[str, Any],
+    correction_context: dict[str, Any],
+    current_formula: dict[str, Any],
+) -> str:
+    previous_formula = correction_context.get("previous_formula") or {}
+    previous_row = previous_summary.get("first_row") if isinstance(previous_summary.get("first_row"), dict) else {}
+    current_rows = ((response.get("result") or {}).get("rows") or []) if isinstance(response.get("result"), dict) else []
+    current_row = current_rows[0] if current_rows and isinstance(current_rows[0], dict) else {}
+    parts = []
+    if previous_formula or current_formula:
+        parts.append(f"口径已从 {_short_json(previous_formula) or '上一轮默认指标'} 改为 {_short_json(current_formula) or correction_context.get('revised_formula') or '新口径'}")
+    if previous_row or current_row:
+        parts.append(f"首行结果从 {_short_json(previous_row) or '无'} 更新为 {_short_json(current_row) or '无'}")
+    return "；".join(parts) + "。" if parts else "已按用户修正口径重新计算。"
+
+
+def _short_json(value: Any, limit: int = 180) -> str:
+    if not value:
+        return ""
+    text = json.dumps(to_json_ready(value), ensure_ascii=False, default=str)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _combine_guidelines(*parts: str) -> str:
     return "\n\n".join(part.strip() for part in parts if part and part.strip())
 
@@ -4093,6 +4403,34 @@ def _attach_message_timing(response: dict[str, Any], *, started_at: datetime, st
     response["thinking_elapsed_ms"] = max(0, int(round((time.perf_counter() - started_perf) * 1000)))
 
 
+def _attach_export_artifacts(response: dict[str, Any], *, runs_root: Path) -> None:
+    """Attach downloadable artifact manifest without exposing trace/debug payloads."""
+
+    if not isinstance(response, dict) or response.get("success") is False:
+        return
+    try:
+        response["artifacts_manifest"] = generate_export_artifacts(response, runs_root=runs_root)
+    except Exception as exc:  # noqa: BLE001 - exports must not turn a valid answer into a failure.
+        response["artifacts_manifest"] = {
+            "version": "export_artifacts.v1",
+            "source_run_id": str(response.get("run_id") or ""),
+            "artifacts": [],
+            "unavailable": [
+                {
+                    "artifact_type": "summary_report",
+                    "format": "all",
+                    "reason": f"{type(exc).__name__}: {str(exc)[:200]}",
+                }
+            ],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+def _raise_if_cancelled(cancel_checker: Callable[[], bool] | None) -> None:
+    if cancel_checker is not None and cancel_checker():
+        raise RuntimeError("Execution cancelled")
+
+
 def _attach_source_references(response: dict[str, Any], *, profile: Any) -> None:
     """Attach user-facing uploaded-file references for the answer footer."""
 
@@ -4275,6 +4613,9 @@ def _project_summary_response(record: dict[str, Any]) -> dict[str, Any]:
         "description": record.get("description") or "",
         "memory_mode": record.get("memory_mode") or "project_only",
         "default_dataset_id": record.get("default_dataset_id") or "",
+        "instructions_version": record.get("instructions_version") or 1,
+        "instructions_updated_at": record.get("instructions_updated_at") or "",
+        "content_hash": record.get("content_hash") or "",
         "source_count": len(record.get("sources") or []),
         "memory_count": len(record.get("memories") or []),
         "conversation_count": len(record.get("conversation_ids") or []),

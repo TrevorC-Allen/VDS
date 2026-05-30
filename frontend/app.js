@@ -1,8 +1,13 @@
 const MONITOR_RUN_INDEX_KEY = "vds-monitor-runs";
 const ACTIVE_MONITOR_RUN_KEY = "vds-active-monitor-run";
 const PROJECT_PANEL_COLLAPSED_KEY = "vds-project-panel-collapsed";
+const WORKBENCH_SYNC_CHANNEL = "vds-workbench-sync";
+const WORKBENCH_SYNC_PULSE_KEY = "vds-workbench-sync-pulse";
+const LEGACY_MESSAGE_ENDPOINT = "/api/data-agent/message";
+const JOB_MESSAGE_ENDPOINT = "/api/data-agent/message/jobs";
 const MAX_MONITOR_RUN_RECORDS = 80;
 const HISTORY_LOAD_BATCH = 30;
+const SLOW_RUN_THRESHOLD_MS = 15000;
 const DEFAULT_QUESTION_PLACEHOLDER = "向 VDS 提问，例如：哪个城市订单金额最高？";
 const ATTACHED_FILE_QUESTION_PLACEHOLDER = "有问题，尽管问";
 const CONTINUATION_PROMPT_LABELS = ["可继续提问", "可继续问", "继续提问", "后续提问", "后续问题"];
@@ -75,6 +80,13 @@ const state = {
   activityDrawerScrollTimeout: null,
   textDialogResolve: null,
   chatSearchQuery: "",
+  workspaceChannel: null,
+  lastWorkspacePulseId: "",
+  applyingUrlState: false,
+  activeRun: null,
+  activeRunPollTimer: 0,
+  activeRunStartedAt: 0,
+  activeRunQuestion: "",
 };
 
 const el = {
@@ -232,7 +244,7 @@ el.questionInput.addEventListener("keydown", handleQuestionKeydown);
 updateFileSummary();
 updateQuestionEmptyState();
 loadProjectPanelCollapsed();
-loadProjects().finally(() => loadConversations());
+initializeWorkspace();
 
 function updateFileSummary() {
   const files = [...el.fileInput.files];
@@ -518,6 +530,116 @@ function updateRuleMode() {
   updateBenchmarkButtons();
 }
 
+async function initializeWorkspace() {
+  initWorkspaceSync();
+  await loadProjects();
+  const restoredFromUrl = await applyWorkspaceFromUrl();
+  await loadConversations();
+  if (!restoredFromUrl) {
+    syncUrlWithWorkspace({ replace: true });
+  }
+}
+
+function initWorkspaceSync() {
+  try {
+    if ("BroadcastChannel" in window) {
+      state.workspaceChannel = new BroadcastChannel(WORKBENCH_SYNC_CHANNEL);
+      state.workspaceChannel.onmessage = (event) => handleWorkspaceInvalidation(event.data || {});
+    }
+  } catch {
+    state.workspaceChannel = null;
+  }
+  window.addEventListener("storage", (event) => {
+    if (event.key !== WORKBENCH_SYNC_PULSE_KEY || !event.newValue) return;
+    try {
+      handleWorkspaceInvalidation(JSON.parse(event.newValue));
+    } catch {
+      handleWorkspaceInvalidation({ kind: "unknown" });
+    }
+  });
+  window.addEventListener("popstate", () => {
+    applyWorkspaceFromUrl();
+  });
+}
+
+function notifyWorkspaceMutation(kind, payload = {}) {
+  const message = {
+    id: `pulse_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    kind,
+    project_id: payload.project_id || state.projectId || "",
+    conversation_id: payload.conversation_id || state.conversationId || "",
+    run_id: payload.run_id || "",
+    created_at: new Date().toISOString(),
+  };
+  try {
+    state.workspaceChannel?.postMessage(message);
+  } catch {
+    // BroadcastChannel is an invalidation hint only.
+  }
+  try {
+    window.localStorage.setItem(WORKBENCH_SYNC_PULSE_KEY, JSON.stringify(message));
+    window.localStorage.removeItem(WORKBENCH_SYNC_PULSE_KEY);
+  } catch {
+    // storage event is an invalidation hint only.
+  }
+}
+
+async function handleWorkspaceInvalidation(message = {}) {
+  if (!message || message.id === state.lastWorkspacePulseId) return;
+  state.lastWorkspacePulseId = message.id || "";
+  await loadProjects();
+  if (state.projectId) {
+    await loadProjectWorkspace(state.projectId);
+  }
+  await loadConversations();
+  if (message.conversation_id && message.conversation_id === state.conversationId) {
+    await loadConversation(state.conversationId);
+  }
+}
+
+async function applyWorkspaceFromUrl() {
+  const params = new URLSearchParams(window.location.search || "");
+  const projectId = String(params.get("project_id") || "").trim();
+  const conversationId = String(params.get("conversation_id") || "").trim();
+  if (!projectId && !conversationId) return false;
+  state.applyingUrlState = true;
+  try {
+    if (conversationId) {
+      await loadConversation(conversationId);
+      if (projectId && !state.projectId) {
+        state.projectId = projectId;
+        await loadProjectWorkspace(projectId);
+      }
+      return true;
+    }
+    if (projectId) {
+      state.projectId = projectId;
+      state.projectViewTab = "chats";
+      state.projectDraftActive = false;
+      renderProjects();
+      resetConversation({ preserveProject: true, skipUrlSync: true });
+      await loadProjectWorkspace(projectId);
+      setApiStatus("ready", "Project 已恢复");
+      return true;
+    }
+  } finally {
+    state.applyingUrlState = false;
+  }
+  return false;
+}
+
+function syncUrlWithWorkspace({ replace = true } = {}) {
+  if (state.applyingUrlState) return;
+  const params = new URLSearchParams();
+  if (state.projectId) params.set("project_id", state.projectId);
+  if (state.conversationId) params.set("conversation_id", state.conversationId);
+  const nextUrl = params.toString() ? `/workbench?${params.toString()}` : "/workbench";
+  const currentUrl = `${window.location.pathname}${window.location.search}`;
+  if (currentUrl === nextUrl) return;
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method]({}, "", nextUrl);
+}
+
 function handleRuleUploadButtonClick() {
   if (state.hasPendingRuleUpload) {
     void uploadUserRule();
@@ -704,6 +826,7 @@ async function uploadFiles() {
           : "数据集已就绪"
         : "项目共享文件已添加",
     );
+    notifyWorkspaceMutation("source_uploaded", { project_id: state.projectId, conversation_id: state.conversationId });
     el.fileSummary.textContent = "查看文件";
     el.fileDetail.textContent = `${files.length} 个文件已就绪`;
     return profile;
@@ -798,6 +921,7 @@ async function uploadProjectSourceFiles(files) {
     await loadProjectWorkspace(state.projectId);
     setProjectSourceUploadStatus(`${selectedFiles.length} 个来源已添加。`, "ready");
     setApiStatus("ready", result.dataset_id ? "项目数据源已添加" : "项目来源已添加");
+    notifyWorkspaceMutation("source_uploaded", { project_id: state.projectId });
     return result;
   } catch (error) {
     setProjectSourceUploadStatus(`来源上传失败：${String(error.message || error)}`, "error");
@@ -848,7 +972,7 @@ async function runAnalysis() {
   if (liveActivity) connectActivityStream(monitorRunId);
   setApiStatus("idle", "处理中");
   try {
-    const response = await fetch("/api/data-agent/message", {
+    const response = await fetch(JOB_MESSAGE_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -862,10 +986,21 @@ async function runAnalysis() {
         monitor_run_id: monitorRunId,
       }),
     });
-    const result = await response.json();
-    if (!response.ok) {
-      throw new Error(errorText(result) || `HTTP ${response.status}`);
+    const job = await response.json();
+    if (!response.ok || !job.success) {
+      throw new Error(errorText(job) || `HTTP ${response.status}`);
     }
+    const run = job.run || {};
+    state.activeRun = run;
+    state.activeRunStartedAt = thinkingStartedAt;
+    state.activeRunQuestion = question;
+    updateRunActionButtons(el.resultMessage, { run, mode: "running" });
+    notifyWorkspaceMutation("run_started", { project_id: messageProjectId, conversation_id: state.conversationId, run_id: run.run_id });
+    const result = await waitForRunResult(run.run_id, {
+      question,
+      startedAtMs: thinkingStartedAt,
+      projectId: messageProjectId,
+    });
     stopProgress();
     closeActivityStream();
     result.question = question;
@@ -879,18 +1014,98 @@ async function runAnalysis() {
       await loadProjectWorkspace(state.projectId);
     }
     await loadConversations();
+    syncUrlWithWorkspace({ replace: true });
+    notifyWorkspaceMutation("run_completed", { project_id: messageProjectId, conversation_id: result.conversation_id || state.conversationId, run_id: run.run_id });
   } catch (error) {
     const fallbackElapsedMs = Math.round(performance.now() - thinkingStartedAt);
+    const cancelled = state.activeRun?.status === "cancelled" || /cancel|取消/i.test(String(error.message || error));
     stopProgress();
     closeActivityStream();
     failMonitorRun(question, String(error.message || error));
     markHistoryFailed(question, String(error.message || error), messageProjectId);
-    setApiStatus("error", "分析失败");
-    renderUserFacingError("分析失败", String(error.message || error), { thinkingElapsedMs: fallbackElapsedMs });
+    setApiStatus("error", cancelled ? "任务已取消" : "分析失败");
+    renderUserFacingError(cancelled ? "任务已取消" : "分析失败", String(error.message || error), { thinkingElapsedMs: fallbackElapsedMs, run: state.activeRun });
   } finally {
     state.isAnalyzing = false;
+    state.activeRun = null;
+    state.activeRunStartedAt = 0;
+    state.activeRunQuestion = "";
     updateRunButton();
   }
+}
+
+async function waitForRunResult(runId, context = {}) {
+  if (!runId) throw new Error("Run ID 缺失");
+  while (true) {
+    const statusPayload = await fetchRunStatus(runId);
+    const run = statusPayload.run || {};
+    state.activeRun = run;
+    updateRunActionButtons(el.resultMessage, { run, mode: run.status });
+    renderRunStatusProgress(run, context);
+    if (run.status === "completed") {
+      const result = await fetchRunResult(runId);
+      result.run_status = run;
+      return result;
+    }
+    if (run.status === "failed" || run.status === "cancelled") {
+      if (run.result_available) {
+        const result = await fetchRunResult(runId);
+        result.run_status = run;
+        return result;
+      }
+      const message = run.failure_reason || run.error_message || (run.status === "cancelled" ? "任务已取消。" : "任务失败。");
+      throw new Error(message);
+    }
+    await sleep(900);
+  }
+}
+
+async function fetchRunStatus(runId) {
+  const response = await fetch(`/api/data-agent/runs/${encodeURIComponent(runId)}`, { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok || !payload.success) {
+    throw new Error(errorText(payload) || `HTTP ${response.status}`);
+  }
+  return payload;
+}
+
+async function fetchRunResult(runId) {
+  const response = await fetch(`/api/data-agent/runs/${encodeURIComponent(runId)}/result`, { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok || !payload.success) {
+    throw new Error(errorText(payload) || `HTTP ${response.status}`);
+  }
+  return payload.result || {};
+}
+
+function renderRunStatusProgress(run = {}, context = {}) {
+  if (!state.isAnalyzing || !run?.run_id) return;
+  const elapsedMs = Math.max(0, Math.round(performance.now() - (context.startedAtMs || state.activeRunStartedAt || performance.now())));
+  if (elapsedMs < SLOW_RUN_THRESHOLD_MS && run.status !== "cancel_requested") return;
+  const latest = run.latest_summary || state.activityEvents.at(-1)?.summary || "后端仍在执行。";
+  const stage = run.latest_stage || run.status || "running";
+  const status = run.status === "cancel_requested" ? "active" : run.status === "failed" ? "failed" : "active";
+  const steps = [
+    {
+      title: run.status === "cancel_requested" ? "取消请求已发送" : "仍在执行",
+      summary: `${latest} 已用时 ${formatThinkingDuration(elapsedMs)}。`,
+      status,
+    },
+    {
+      title: "当前阶段",
+      summary: stage,
+      status,
+    },
+  ];
+  renderProcessItems(steps, `${latest} 已用时 ${formatThinkingDuration(elapsedMs)}。`, [], {
+    collapse: false,
+    liveSummary: true,
+    activityTrace: normalizeActivityTrace(state.liveActivityTrace),
+  });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function handleQuestionKeydown(event) {
@@ -1496,6 +1711,8 @@ async function createProjectFromPrompt() {
     resetConversation();
     await loadProjectWorkspace(state.projectId);
     await loadConversations();
+    syncUrlWithWorkspace({ replace: true });
+    notifyWorkspaceMutation("project_created", { project_id: state.projectId });
     setApiStatus("ready", "Project 已创建");
   } catch (error) {
     setApiStatus("error", `Project 创建失败：${String(error.message || error)}`);
@@ -1532,6 +1749,7 @@ async function renameProjectFromId(projectId) {
     }
     await loadProjects();
     renderProjectHome();
+    notifyWorkspaceMutation("project_updated", { project_id: current.project_id });
     setApiStatus("ready", "Project 已重命名");
   } catch (error) {
     setApiStatus("error", `Project 重命名失败：${String(error.message || error)}`);
@@ -1564,6 +1782,8 @@ async function deleteProjectFromId(projectId) {
     }
     await loadProjects();
     await loadConversations();
+    syncUrlWithWorkspace({ replace: true });
+    notifyWorkspaceMutation("project_deleted", { project_id: current.project_id });
     setApiStatus("ready", "Project 已删除");
   } catch (error) {
     setApiStatus("error", `Project 删除失败：${String(error.message || error)}`);
@@ -1586,6 +1806,7 @@ async function openProject(projectId) {
   renderProjects();
   resetConversation();
   await loadProjectWorkspace(safeProjectId);
+  syncUrlWithWorkspace({ replace: true });
   setApiStatus("ready", "Project 已打开");
 }
 
@@ -1597,12 +1818,14 @@ function startGlobalConversation() {
   state.projectDraftActive = false;
   renderProjects();
   resetConversation();
+  syncUrlWithWorkspace({ replace: true });
 }
 
 function startProjectConversation() {
   if (!state.projectId) return;
   state.projectDraftActive = true;
   resetConversation();
+  syncUrlWithWorkspace({ replace: true });
   el.questionInput?.focus();
 }
 
@@ -1622,6 +1845,9 @@ async function loadProjectWorkspace(projectId = state.projectId) {
     }
     state.projectDetails = projectPayload.project || null;
     state.projectConversations = await loadProjectConversations(safeProjectId);
+    if (!state.conversationId && state.projectDetails?.default_dataset_id) {
+      await restoreDatasetProfile(state.projectDetails.default_dataset_id);
+    }
   } catch (error) {
     state.projectDetails = currentProject();
     state.projectConversations = [];
@@ -2048,6 +2274,324 @@ function resetCopyReplyButton(button) {
   button.dataset.tooltip = "复制回复";
 }
 
+function updateRunActionButtons(message, context = {}) {
+  if (!message) return;
+  if (context.run) {
+    message.__vdsRunStatus = context.run;
+  }
+  const result = context.result || message.__vdsResult || null;
+  const run = context.run || message.__vdsRunStatus || null;
+  const mode = String(context.mode || run?.status || "");
+  const saveButton = message.querySelector(".save-response-button");
+  const downloadButton = message.querySelector(".download-artifacts-button");
+  const cancelButton = message.querySelector(".cancel-run-button");
+  const retryButton = message.querySelector(".retry-run-button");
+  const hasResult = Boolean(result && (result.answer || result.result || result.chart));
+  const canSave = Boolean(state.projectId && hasResult && result?.answer);
+  const canDownload = hasDownloadableItems(message, result);
+  saveButton?.classList.toggle("hidden", !canSave);
+  saveButton?.toggleAttribute("disabled", !canSave);
+  downloadButton?.classList.toggle("hidden", !canDownload);
+  downloadButton?.toggleAttribute("disabled", !canDownload);
+  const canCancel = ["starting", "queued", "running", "cancel_requested"].includes(mode) && Boolean(run?.run_id || state.activeRun?.run_id);
+  cancelButton?.classList.toggle("hidden", !canCancel);
+  cancelButton?.toggleAttribute("disabled", mode === "cancel_requested" || !canCancel);
+  const canRetry = ["failed", "cancelled"].includes(mode) && Boolean(run?.run_id);
+  retryButton?.classList.toggle("hidden", !canRetry);
+  retryButton?.toggleAttribute("disabled", !canRetry);
+}
+
+function hasDownloadableItems(message, result) {
+  if (!result) return false;
+  return Boolean(
+    (message?.querySelector(".chart-svg") || result?.chart?.image_data_uri)
+      || downloadableResultRows(result).rows.length
+      || artifactItems(result).length,
+  );
+}
+
+async function saveAssistantResponseToProject(message) {
+  const result = message?.__vdsResult;
+  if (!state.projectId || !result?.answer) return;
+  const content = [
+    result.answer,
+    compactResultSummary(result),
+    result.insight?.summary ? `简要结论：${result.insight.summary}` : "",
+    chartSummary(result),
+  ].filter(Boolean).join("\n\n").trim();
+  const metadata = {
+    conversation_id: result.conversation_id || state.conversationId || "",
+    message_id: result.message_id || message?.dataset?.messageId || "",
+    run_id: result.run_id || "",
+    dataset_id: result.dataset_id || state.datasetId || "",
+    response_version: result.response_version || "",
+    saved_at: new Date().toISOString(),
+  };
+  try {
+    const response = await fetch(`/api/data-agent/projects/${encodeURIComponent(state.projectId)}/sources`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source_type: "saved_response",
+        title: shortLabel(result.question || "保存的回答", 70),
+        content,
+        dataset_id: result.dataset_id || state.datasetId || "",
+        metadata,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    await loadProjectWorkspace(state.projectId);
+    notifyWorkspaceMutation("source_saved_response", { project_id: state.projectId, conversation_id: state.conversationId, run_id: result.run_id || "" });
+    setApiStatus("ready", "回答已保存到 Project");
+  } catch (error) {
+    setApiStatus("error", `保存失败：${String(error.message || error)}`);
+  }
+}
+
+function compactResultSummary(result = {}) {
+  const { rows, columns } = downloadableResultRows(result);
+  if (!rows.length || !columns.length) {
+    const value = result?.result?.value;
+    return value === undefined || value === null || value === "" ? "" : `结果值：${String(value)}`;
+  }
+  const previewRows = rows.slice(0, 5).map((row) => columns.map((column) => `${column}=${String(row?.[column] ?? "")}`).join("，"));
+  return [`结果表：${rows.length} 行，${columns.length} 列。`, ...previewRows].join("\n");
+}
+
+function chartSummary(result = {}) {
+  const chart = result.chart || {};
+  if (!chart || (!chart.title && !chart.chart_type && !chart.x && !chart.y)) return "";
+  const fields = [
+    chart.title ? `标题=${chart.title}` : "",
+    chart.chart_type ? `类型=${chart.chart_type}` : "",
+    chart.x ? `X=${chart.x}` : "",
+    chart.y ? `Y=${chart.y}` : "",
+  ].filter(Boolean);
+  return `图表：${fields.join("，")}`;
+}
+
+function openDownloadMenu(anchor, message) {
+  const result = message?.__vdsResult;
+  if (!result) return;
+  const items = [];
+  const currentSvgChart = message?.querySelector(".chart-svg");
+  const fallbackImageDataUri = result.chart?.image_data_uri || "";
+  const hasClientChartDownload = Boolean(currentSvgChart || fallbackImageDataUri);
+  const canDownloadSvg = Boolean(currentSvgChart || String(fallbackImageDataUri).startsWith("data:image/svg"));
+  if (canDownloadSvg) {
+    items.push({
+      label: "图表 SVG",
+      className: "download-chart-svg",
+      icon: downloadIcon(),
+      action: () => downloadChartFromMessage(message, "svg"),
+    });
+  }
+  if (hasClientChartDownload) {
+    items.push({
+      label: "图表 PNG",
+      className: "download-chart-png",
+      icon: downloadIcon(),
+      action: () => downloadChartFromMessage(message, "png"),
+    });
+  }
+  const table = downloadableResultRows(result);
+  if (table.rows.length) {
+    items.push({
+      label: "结果表 CSV",
+      className: "download-table-csv",
+      icon: downloadIcon(),
+      action: () => downloadTableCsvFromResult(result),
+    });
+  }
+  artifactItems(result).filter((artifact) => {
+    if (hasClientChartDownload && artifact.artifact_type === "chart") return false;
+    if (table.rows.length && artifact.artifact_type === "result_table" && artifact.format === "csv") return false;
+    return true;
+  }).forEach((artifact) => {
+    items.push({
+      label: artifact.display_name || `${artifact.artifact_type || "产物"} ${artifact.format || ""}`,
+      className: `download-artifact-${artifact.format || "file"}`,
+      icon: downloadIcon(),
+      action: () => downloadServerArtifact(artifact),
+    });
+  });
+  if (!items.length) return;
+  showContextMenu(anchor, items);
+}
+
+function artifactItems(result = {}) {
+  const artifacts = result.artifacts_manifest?.artifacts;
+  return Array.isArray(artifacts) ? artifacts.filter((artifact) => artifact?.download_url) : [];
+}
+
+function downloadableResultRows(result = {}) {
+  const rows = rowsWithoutContinuationPrompts(result?.result?.rows || []).filter((row) => row && typeof row === "object");
+  const columns = Array.isArray(result?.result?.columns) && result.result.columns.length
+    ? result.result.columns.map(String)
+    : Object.keys(rows[0] || {});
+  return { rows, columns };
+}
+
+function downloadServerArtifact(artifact) {
+  if (!artifact?.download_url) return;
+  const link = document.createElement("a");
+  link.href = artifact.download_url;
+  link.download = artifact.download_name || artifact.file_name || artifact.display_name || "";
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+async function downloadChartFromMessage(message, format) {
+  const result = message?.__vdsResult || {};
+  const svg = message?.querySelector(".chart-svg");
+  if (svg) {
+    const source = serializeSvg(svg);
+    if (format === "svg") {
+      downloadBlob(new Blob([source], { type: "image/svg+xml;charset=utf-8" }), downloadBaseName(result, "chart") + ".svg");
+      return;
+    }
+    downloadSvgAsPng(source, downloadBaseName(result, "chart") + ".png");
+    return;
+  }
+  const dataUri = result.chart?.image_data_uri;
+  if (dataUri) {
+    if (format === "png" && dataUri.startsWith("data:image/svg")) {
+      try {
+        const svgSource = await (await fetch(dataUri)).text();
+        downloadSvgAsPng(svgSource, downloadBaseName(result, "chart") + ".png");
+        return;
+      } catch {
+        // Fall back to downloading the original image data below.
+      }
+    }
+    downloadDataUri(dataUri, downloadBaseName(result, "chart") + (dataUri.startsWith("data:image/svg") ? ".svg" : ".png"));
+  }
+}
+
+function serializeSvg(svg) {
+  const clone = svg.cloneNode(true);
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  return new XMLSerializer().serializeToString(clone);
+}
+
+function downloadSvgAsPng(svgSource, fileName) {
+  const image = new Image();
+  const svgBlob = new Blob([svgSource], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(svgBlob);
+  image.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, image.naturalWidth || 1200);
+    canvas.height = Math.max(1, image.naturalHeight || 720);
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0);
+    URL.revokeObjectURL(url);
+    canvas.toBlob((blob) => {
+      if (blob) downloadBlob(blob, fileName);
+    }, "image/png");
+  };
+  image.onerror = () => URL.revokeObjectURL(url);
+  image.src = url;
+}
+
+function downloadTableCsvFromResult(result) {
+  const { rows, columns } = downloadableResultRows(result);
+  if (!rows.length || !columns.length) return;
+  const lines = [
+    columns.map(csvCell).join(","),
+    ...rows.map((row) => columns.map((column) => csvCell(row?.[column])).join(",")),
+  ];
+  downloadBlob(new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8" }), downloadBaseName(result, "result_table") + ".csv");
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
+  return /[",\n]/.test(safe) ? `"${safe.replaceAll('"', '""')}"` : safe;
+}
+
+function downloadDataUri(dataUri, fileName) {
+  const link = document.createElement("a");
+  link.href = dataUri;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function downloadBaseName(result, fallback) {
+  const runId = String(result?.run_id || "").replace(/[^\w-]+/g, "_");
+  return runId ? `vds_${fallback}_${runId}` : `vds_${fallback}`;
+}
+
+async function cancelRunFromMessage(message) {
+  const runId = message?.__vdsRunStatus?.run_id || state.activeRun?.run_id;
+  if (!runId) return;
+  try {
+    const response = await fetch(`/api/data-agent/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    message.__vdsRunStatus = payload.run || message.__vdsRunStatus;
+    updateRunActionButtons(message, { run: payload.run, mode: "cancel_requested" });
+    setApiStatus("idle", "正在取消");
+  } catch (error) {
+    setApiStatus("error", `取消失败：${String(error.message || error)}`);
+  }
+}
+
+async function retryRunFromMessage(message) {
+  const runId = message?.__vdsRunStatus?.run_id;
+  if (!runId || state.isAnalyzing) return;
+  try {
+    const response = await fetch(`/api/data-agent/runs/${encodeURIComponent(runId)}/retry`, { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(errorText(payload) || `HTTP ${response.status}`);
+    }
+    const run = payload.run || {};
+    state.isAnalyzing = true;
+    state.activeRun = run;
+    state.activeRunStartedAt = performance.now();
+    bindResultMessage(message);
+    message.classList.add("thinking-only");
+    updateRunActionButtons(message, { run, mode: "running" });
+    setApiStatus("idle", "重试中");
+    const result = await waitForRunResult(run.run_id, { startedAtMs: state.activeRunStartedAt });
+    stopProgress();
+    renderResult(result, { thinkingElapsedMs: Math.round(performance.now() - state.activeRunStartedAt) });
+    setApiStatus(result.success ? "ready" : "error", result.success ? "分析完成" : "需要继续确认");
+    await loadConversations();
+  } catch (error) {
+    renderUserFacingError("重试失败", String(error.message || error), { run: state.activeRun });
+  } finally {
+    state.isAnalyzing = false;
+    state.activeRun = null;
+    updateRunButton();
+  }
+}
+
+function downloadIcon() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg>`;
+}
+
 function copyReplyIcon() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2"></path><path d="M6 8h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z"></path></svg>`;
 }
@@ -2116,6 +2660,7 @@ async function deleteProjectSource(sourceId) {
     state.projectDetails = payload.project || state.projectDetails;
     await loadProjects();
     await loadProjectWorkspace(state.projectId);
+    notifyWorkspaceMutation("source_deleted", { project_id: state.projectId });
     setApiStatus("ready", "Project source 已删除");
   } catch (error) {
     setApiStatus("error", `Project source 删除失败：${String(error.message || error)}`);
@@ -2136,6 +2681,7 @@ async function deleteProjectMemory(memoryId) {
     state.projectDetails = payload.project || state.projectDetails;
     await loadProjects();
     await loadProjectWorkspace(state.projectId);
+    notifyWorkspaceMutation("memory_deleted", { project_id: state.projectId });
     setApiStatus("ready", "Project memory 已删除");
   } catch (error) {
     setApiStatus("error", `Project memory 删除失败：${String(error.message || error)}`);
@@ -2224,10 +2770,12 @@ function renderProfile() {
     const button = document.createElement("button");
     button.className = `table-card${table.table_name === state.selectedTable ? " selected" : ""}`;
     button.type = "button";
+    const roleMeta = table.table_role ? ` / ${tableRoleLabel(table.table_role)}` : "";
+    const rangeMeta = table.range_ref ? ` / ${table.range_ref}` : "";
     button.innerHTML = `
       <span>
         <strong>${escapeHtml(table.table_name || "-")}</strong>
-        <span class="table-meta">${escapeHtml(table.source_file || "-")} / ${escapeHtml(table.sheet || "sheet: -")}</span>
+        <span class="table-meta">${escapeHtml(table.source_file || "-")} / ${escapeHtml(table.sheet || "sheet: -")}${escapeHtml(roleMeta)}${escapeHtml(rangeMeta)}</span>
       </span>
       <span class="count-pill">${Number(table.row_count || 0)} x ${Number(table.column_count || 0)}</span>
     `;
@@ -2245,6 +2793,17 @@ function clearDatasetHeaderStatus() {
   el.datasetStatus.textContent = "";
   el.datasetStatus.classList.add("hidden");
   el.datasetStatus.setAttribute("aria-hidden", "true");
+  el.datasetStatus.classList.remove("ready", "error");
+}
+
+function setDatasetHeaderStatus(message, tone = "ready") {
+  if (!el.datasetStatus) return;
+  const text = String(message || "").trim();
+  el.datasetStatus.textContent = text;
+  el.datasetStatus.classList.toggle("hidden", !text);
+  el.datasetStatus.setAttribute("aria-hidden", text ? "false" : "true");
+  el.datasetStatus.classList.toggle("ready", tone === "ready");
+  el.datasetStatus.classList.toggle("error", tone === "error");
 }
 
 function renderFieldTable(table) {
@@ -2267,6 +2826,11 @@ function renderFieldTable(table) {
 
 function renderResult(result, options = {}) {
   el.resultMessage.__vdsResult = result;
+  const runStatus = result.run_status || result.runStatus || null;
+  el.resultMessage.__vdsRunStatus = runStatus;
+  if (result.message_id) {
+    el.resultMessage.dataset.messageId = result.message_id;
+  }
   if (result.conversation_id) {
     state.conversationId = result.conversation_id;
   }
@@ -2280,7 +2844,7 @@ function renderResult(result, options = {}) {
   const isOverviewShaped = Boolean(result.debug?.user_experience_shaping?.applied);
   el.resultMessage.classList.remove("thinking-only");
   el.resultTitle.textContent = isChat ? "VDS" : "分析结果";
-  el.answer.textContent = result.answer || "-";
+  el.answer.textContent = answerWithCorrectionSummary(result);
   el.resultStatus.textContent = isChat ? "已回复" : result.success ? "已完成" : "需要继续确认";
   renderRows(rows, columns, result);
   renderChart(isOverviewShaped ? null : result.chart, rows, columns, result.answer);
@@ -2296,10 +2860,34 @@ function renderResult(result, options = {}) {
   setMessageTime(el.resultMessage, options.createdAt || result.responded_at || result.completed_at || result.conversation?.updated_at || result.created_at || new Date().toISOString());
   setThinkingElapsed(el.resultMessage, resolveThinkingElapsedMs(result, options.thinkingElapsedMs));
   updateCopyReplyButton(el.resultMessage, result.answer || "");
+  updateRunActionButtons(el.resultMessage, {
+    result,
+    run: runStatus,
+    mode: runStatus?.status || (result.success ? "completed" : "failed"),
+  });
   if (options.updateHistory !== false) {
     pushHistory(result);
   }
+  syncUrlWithWorkspace({ replace: true });
   revealMessage(el.resultMessage, "start");
+}
+
+function tableRoleLabel(role) {
+  const labels = {
+    data_table: "可分析表",
+    field_dictionary: "字段说明",
+    rule_or_notes: "规则/说明",
+    notes_or_metadata: "说明/元数据",
+    empty_sheet: "空 sheet",
+  };
+  return labels[role] || role;
+}
+
+function answerWithCorrectionSummary(result) {
+  const answer = result.answer || "-";
+  const summary = result.correction_context?.difference_summary;
+  if (!summary) return answer;
+  return `${answer}\n\n口径修正：${summary}`;
 }
 
 function renderRows(rows, columns, result = {}) {
@@ -3813,6 +4401,7 @@ function renderProgress(question, options = {}) {
   setMessageTime(el.resultMessage, options.createdAt || new Date().toISOString());
   startThinkingElapsed(el.resultMessage, options.startedAtMs);
   updateCopyReplyButton(el.resultMessage, "");
+  updateRunActionButtons(el.resultMessage, { mode: "starting" });
   el.chatMessages.append(el.resultMessage);
   revealMessage(el.resultMessage);
 
@@ -3864,7 +4453,7 @@ function connectActivityStream(monitorRunId) {
   ACTIVITY_EVENT_TYPES.forEach((type) => source.addEventListener(type, handleActivityEvent));
   source.onerror = () => {
     if (state.isAnalyzing) {
-      setApiStatus("idle", "实时过程重试中");
+      setApiStatus("idle", "实时过程重连中");
     }
   };
   return true;
@@ -5003,6 +5592,9 @@ function friendlyJoinText(joinPlan) {
 
 function renderUserFacingError(title, message, options = {}) {
   stopProgress();
+  const runStatus = options.run || state.activeRun || null;
+  el.resultMessage.__vdsResult = null;
+  el.resultMessage.__vdsRunStatus = runStatus;
   el.resultMessage.classList.remove("thinking-only");
   el.answer.textContent = title;
   el.resultStatus.textContent = "需要处理";
@@ -5017,6 +5609,7 @@ function renderUserFacingError(title, message, options = {}) {
   setMessageTime(el.resultMessage, options.createdAt || new Date().toISOString());
   setThinkingElapsed(el.resultMessage, options.thinkingElapsedMs);
   updateCopyReplyButton(el.resultMessage, title);
+  updateRunActionButtons(el.resultMessage, { run: runStatus, mode: runStatus?.status || "failed" });
   revealMessage(el.resultMessage);
 }
 
@@ -5288,6 +5881,7 @@ async function renameConversationFromPrompt(runId) {
     if (state.projectId) {
       await loadProjectWorkspace(state.projectId);
     }
+    notifyWorkspaceMutation("conversation_renamed", { conversation_id: runId, project_id: state.projectId });
     setApiStatus("ready", "对话已重命名");
   } catch (error) {
     setApiStatus("error", `重命名失败：${String(error.message || error)}`);
@@ -5331,6 +5925,7 @@ async function toggleHistoryPinned(runId, pinned) {
     if (state.projectId) {
       await loadProjectWorkspace(state.projectId);
     }
+    notifyWorkspaceMutation("conversation_pinned", { conversation_id: runId, project_id: state.projectId });
     setApiStatus("ready", conversation.pinned ? "对话已置顶" : "对话已取消置顶");
   } catch (error) {
     setApiStatus("error", `置顶失败：${String(error.message || error)}`);
@@ -5402,6 +5997,7 @@ async function assignHistoryToProject(runId, targetProjectId) {
       await loadProjects();
     }
     await loadConversations();
+    notifyWorkspaceMutation("conversation_moved", { conversation_id: runId, project_id: conversation.project_id || safeProjectId });
     setApiStatus("ready", "对话已放入 Project");
   } catch (error) {
     setApiStatus("error", `加入 Project 失败：${String(error.message || error)}`);
@@ -5439,6 +6035,8 @@ async function deleteHistoryConversation(runId) {
       await loadProjectWorkspace(state.projectId);
     }
     await loadConversations();
+    syncUrlWithWorkspace({ replace: true });
+    notifyWorkspaceMutation("conversation_deleted", { conversation_id: runId, project_id: state.projectId });
     setApiStatus("ready", "对话已删除");
   } catch (error) {
     setApiStatus("error", `对话删除失败：${String(error.message || error)}`);
@@ -5579,6 +6177,7 @@ async function restoreConversation(conversation) {
       appendUserMessage(message.content || "", { createdAt: message.created_at });
     } else if (message.payload) {
       const assistantMessage = createAssistantResultMessage();
+      assistantMessage.dataset.messageId = message.message_id || message.payload.message_id || "";
       bindResultMessage(assistantMessage);
       el.chatMessages.append(el.resultMessage);
       renderResult(message.payload, { updateHistory: false, createdAt: message.created_at });
@@ -5593,6 +6192,7 @@ async function restoreConversation(conversation) {
   }
   renderHistory();
   renderProjectHome();
+  syncUrlWithWorkspace({ replace: true });
   scrollToLatest();
 }
 
@@ -5609,15 +6209,23 @@ async function restoreDatasetProfile(datasetId) {
     state.userRuleFileId = state.autoRuleFileIds[0] || "";
     state.selectedTable = profile.tables?.[0]?.table_name || "";
     renderProfile();
-    applyRestoredFileRecords(profile);
+    if (profile.can_analyze === false) {
+      clearRestoredFileRecords();
+      el.datasetChip.textContent = "需重新上传";
+      setDatasetHeaderStatus(profile.restore_error || "数据记录存在，但源文件无法恢复，需要重新上传。", "error");
+      setApiStatus("error", "数据需重新上传");
+    } else {
+      applyRestoredFileRecords(profile);
+      setDatasetHeaderStatus(profile.restored_from_disk ? "已从本地存储恢复数据集。" : "", "ready");
+      setApiStatus("ready", profile.restored_from_disk ? "数据集已恢复" : "数据集已就绪");
+    }
     refreshRenderedAnswerSources();
-    setApiStatus("ready", "数据集已就绪");
   } catch {
     state.profile = null;
     clearRestoredFileRecords();
     renderProfile();
     el.datasetChip.textContent = state.datasetId ? "数据记录已关联" : "未上传数据";
-    clearDatasetHeaderStatus();
+    setDatasetHeaderStatus("数据记录存在但需重新上传。", "error");
   }
 }
 
@@ -5637,6 +6245,7 @@ function clearResult() {
   updateCopyReplyButton(el.resultMessage, "");
   renderAnswerSources(null);
   if (el.resultMessage) el.resultMessage.__vdsResult = null;
+  updateRunActionButtons(el.resultMessage, { mode: "idle" });
   renderInsight(null);
   renderProcess([]);
 }
@@ -5685,7 +6294,7 @@ function scrollToMessageStart(message) {
   });
 }
 
-function resetConversation() {
+function resetConversation(options = {}) {
   state.datasetId = "";
   state.conversationId = "";
   state.profile = null;
@@ -5720,6 +6329,9 @@ function resetConversation() {
   setQuestionText("");
   updateRunButton();
   renderProjectHome();
+  if (!options.skipUrlSync) {
+    syncUrlWithWorkspace({ replace: true });
+  }
   scrollToLatest();
 }
 
@@ -5754,8 +6366,24 @@ function bindResultMessage(message) {
   el.sourceList = message.querySelector(".answer-source-list");
   el.messageMeta = message.querySelector(".message-meta");
   el.copyReplyButton = message.querySelector(".copy-reply-button");
+  el.saveResponseButton = message.querySelector(".save-response-button");
+  el.downloadArtifactsButton = message.querySelector(".download-artifacts-button");
+  el.cancelRunButton = message.querySelector(".cancel-run-button");
+  el.retryRunButton = message.querySelector(".retry-run-button");
   if (el.copyReplyButton) {
     el.copyReplyButton.onclick = () => copyReplyFromMessage(message);
+  }
+  if (el.saveResponseButton) {
+    el.saveResponseButton.onclick = () => saveAssistantResponseToProject(message);
+  }
+  if (el.downloadArtifactsButton) {
+    el.downloadArtifactsButton.onclick = () => openDownloadMenu(el.downloadArtifactsButton, message);
+  }
+  if (el.cancelRunButton) {
+    el.cancelRunButton.onclick = () => cancelRunFromMessage(message);
+  }
+  if (el.retryRunButton) {
+    el.retryRunButton.onclick = () => retryRunFromMessage(message);
   }
 }
 

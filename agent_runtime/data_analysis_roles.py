@@ -744,7 +744,41 @@ def _short_text(value: Any, limit: int = 500) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+DIMENSION_REPAIR_ALIASES = {
+    "product": ("product", "product_name", "sku", "item", "goods", "产品", "商品", "品名", "商品名称", "产品名称"),
+    "category": (
+        "category",
+        "category_name",
+        "ctg",
+        "ctg_name",
+        "prod_category",
+        "product_category",
+        "cat",
+        "type",
+        "class",
+        "classification",
+        "品类",
+        "品类名称",
+        "商品品类",
+        "产品品类",
+        "类别",
+        "类别名称",
+        "类目",
+        "类目名称",
+        "分类",
+    ),
+    "store": ("store", "shop", "branch", "门店", "店铺", "门店名称"),
+    "city": ("city", "城市", "市"),
+    "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
+    "customer": ("customer", "cust", "client", "客户", "终端"),
+    "month": ("month", "month_id", "month_code", "stat_month", "ym", "year_month", "biz_month", "年月", "月份", "月度", "业务月份", "统计月份"),
+    "time": ("date", "day", "week", "period", "日期", "时间", "周期", "业务日期", "统计日期"),
+}
+
+
 def _corrected_logic_form_payload(logic_payload: dict[str, Any], action: dict[str, Any]) -> dict[str, Any] | None:
+    if action.get("action") == "repair_dimension_binding":
+        return _repair_dimension_binding_logic_form(logic_payload, action)
     if action.get("action") != "replace_logic_form" or action.get("to_operation") != "rank_by_metric":
         return None
     corrected = dict(logic_payload)
@@ -772,3 +806,115 @@ def _corrected_logic_form_payload(logic_payload: dict[str, Any], action: dict[st
     params.update({"metric": corrected["metric"], "group_by": group_by, "sort_order": "desc", "limit": 1, "options": options})
     corrected["parameters"] = params
     return corrected
+
+
+def _repair_dimension_binding_logic_form(logic_payload: dict[str, Any], action: dict[str, Any]) -> dict[str, Any] | None:
+    if action.get("missing_dimension"):
+        return None
+    requested = [str(item) for item in action.get("requested_dimensions") or [] if str(item)]
+    if not requested:
+        return None
+    candidates = _dimension_repair_candidates(logic_payload, action)
+    repaired_dimension = _best_dimension_repair_candidate(requested, candidates)
+    if not repaired_dimension:
+        return None
+    actual_dimension = str(action.get("actual_dimension") or "")
+    if actual_dimension and _same_dimension_field(actual_dimension, repaired_dimension):
+        return None
+
+    corrected = dict(logic_payload)
+    params = dict(corrected.get("parameters") or {})
+    params["dimension"] = repaired_dimension
+    if params.get("group_by") or corrected.get("group_by") or str(corrected.get("operation") or "") in {"top_count", "top_outlier_group"}:
+        params["group_by"] = repaired_dimension
+        corrected["group_by"] = repaired_dimension
+    for key in ("entity", "entity_field", "primary_entity_field"):
+        if actual_dimension and _same_dimension_field(str(params.get(key) or ""), actual_dimension):
+            params[key] = repaired_dimension
+    entity_grain = dict(corrected.get("entity_grain") or {})
+    for key, value in list(entity_grain.items()):
+        if actual_dimension and _same_dimension_field(str(value or ""), actual_dimension):
+            entity_grain[key] = repaired_dimension
+    if entity_grain:
+        corrected["entity_grain"] = entity_grain
+    output_format = dict(corrected.get("output_format") or {})
+    if actual_dimension and _same_dimension_field(str(output_format.get("answer_target") or ""), actual_dimension):
+        output_format["answer_target"] = repaired_dimension
+        corrected["answer_target"] = repaired_dimension
+    if output_format:
+        corrected["output_format"] = output_format
+    reason = str(corrected.get("table_selection_reason") or params.get("table_selection_reason") or "")
+    marker = f"corrected_dimension_binding={repaired_dimension}"
+    if marker not in reason:
+        reason = "; ".join(part for part in (reason, marker) if part)
+    corrected["table_selection_reason"] = reason
+    params["table_selection_reason"] = reason
+    corrected["parameters"] = params
+    return corrected
+
+
+def _dimension_repair_candidates(logic_payload: dict[str, Any], action: dict[str, Any]) -> list[str]:
+    params = logic_payload.get("parameters") if isinstance(logic_payload.get("parameters"), dict) else {}
+    sources = (
+        action.get("available_columns"),
+        params.get("available_columns") if isinstance(params, dict) else None,
+        logic_payload.get("available_columns"),
+    )
+    candidates: list[str] = []
+    for source in sources:
+        if not isinstance(source, (list, tuple, set)):
+            continue
+        for item in source:
+            text = str(item or "")
+            if text and text not in candidates:
+                candidates.append(text)
+    return candidates
+
+
+def _best_dimension_repair_candidate(requested_concepts: list[str], candidates: list[str]) -> str | None:
+    best: tuple[int, int, str] | None = None
+    for index, candidate in enumerate(candidates):
+        scores = [
+            _dimension_concept_score(candidate, concept)
+            for concept in requested_concepts
+            if _dimension_concept_score(candidate, concept) > 0
+        ]
+        if not scores:
+            continue
+        score = max(scores)
+        if _dimension_identifier_like(candidate):
+            score -= 20
+        if best is None or (score, -index) > (best[0], -best[1]):
+            best = (score, index, candidate)
+    return best[2] if best is not None else None
+
+
+def _dimension_concept_score(column_name: str, concept: str) -> int:
+    aliases = DIMENSION_REPAIR_ALIASES.get(concept) or ()
+    normalized_column = _normalize_dimension_token(column_name)
+    if not normalized_column:
+        return 0
+    best = 0
+    for alias in aliases:
+        normalized_alias = _normalize_dimension_token(alias)
+        if not normalized_alias:
+            continue
+        if normalized_column == normalized_alias:
+            best = max(best, 120)
+        elif normalized_alias in normalized_column:
+            best = max(best, 100)
+    return best
+
+
+def _same_dimension_field(left: str, right: str) -> bool:
+    return bool(left and right and _normalize_dimension_token(left) == _normalize_dimension_token(right))
+
+
+def _dimension_identifier_like(column_name: str) -> bool:
+    normalized = _normalize_dimension_token(column_name)
+    return normalized.endswith("id") or normalized.endswith("编号") or normalized.endswith("代码")
+
+
+def _normalize_dimension_token(value: str) -> str:
+    text = str(value or "").lower()
+    return "".join(char for char in text if char.isalnum() or "\u4e00" <= char <= "\u9fff")

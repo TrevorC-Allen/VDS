@@ -1513,7 +1513,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
     table_context = _select_table_context(question, tables)
     table_name, df = table_context["table_name"], table_context["df"]
     record_count_requested = _is_record_count_metric_question(lowered)
-    derived_metric = None if record_count_requested else _derived_ratio_metric(question, df)
+    derived_metric = None if record_count_requested else _derived_ratio_metric(question, df, guidelines=guidelines)
     metric = None if record_count_requested else (
         str(derived_metric["name"]) if derived_metric else table_context.get("metric") or _find_metric_column(question, df)
     )
@@ -1835,6 +1835,7 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
             "source_tables": [explicit_table],
             "join_plan": {},
             "explicit_table": explicit_table,
+            "available_columns": [str(column) for column in primary_df.columns],
             "table_selection_reason": _table_selection_reason(question, explicit_table, metric, dimension, explicit_table, {}),
         }
     metric_table, metric = _best_metric_column(question, tables)
@@ -1886,13 +1887,34 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
         "source_tables": source_tables,
         "join_plan": join_plan,
         "explicit_table": explicit_table,
+        "available_columns": _available_columns_for_sources(tables, source_tables),
         "table_selection_reason": _table_selection_reason(question, primary_name, metric, dimension, explicit_table, join_plan),
     }
+
+
+def _available_columns_for_sources(tables: dict[str, pd.DataFrame], source_tables: list[str]) -> list[str]:
+    columns: list[str] = []
+    for table_name in source_tables:
+        df = tables.get(table_name)
+        if df is None:
+            continue
+        for column in df.columns:
+            name = str(column)
+            if name not in columns:
+                columns.append(name)
+    return columns
 
 
 def _with_table_context(params: dict[str, Any], table_context: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(params)
     enriched.setdefault("source_tables", list(table_context.get("source_tables") or [params.get("table")]))
+    available_columns = table_context.get("available_columns")
+    if not available_columns:
+        df = table_context.get("df")
+        if isinstance(df, pd.DataFrame):
+            available_columns = [str(column) for column in df.columns]
+    if available_columns:
+        enriched.setdefault("available_columns", [str(column) for column in available_columns])
     if table_context.get("table_selection_reason"):
         enriched.setdefault("table_selection_reason", table_context["table_selection_reason"])
     if table_context.get("join_plan"):
@@ -1940,6 +1962,7 @@ def _same_schema_union_context(question: str, tables: dict[str, pd.DataFrame]) -
         "source_tables": table_names,
         "join_plan": {},
         "same_schema_union": union_metadata,
+        "available_columns": first_columns,
         "table_selection_reason": _table_selection_reason(
             question,
             union_name,
@@ -2025,7 +2048,7 @@ def _best_metric_column(question: str, tables: dict[str, pd.DataFrame]) -> tuple
     for table_name, df in tables.items():
         for column in df.columns:
             column_name = str(column)
-            if not pd.api.types.is_numeric_dtype(df[column]):
+            if not _is_metric_value_column(df[column], column_name):
                 continue
             score = _column_question_score(question, column_name)
             if _metric_name_hint(column_name):
@@ -2197,14 +2220,34 @@ def _table_selection_reason(
 
 
 SEMANTIC_COLUMN_ALIASES = {
-    "product": ("product", "sku", "item", "goods", "产品", "商品", "品名"),
-    "category": ("category", "ctg", "type", "class", "classification", "品类", "类别", "类目", "分类"),
+    "product": ("product", "product_name", "sku", "item", "goods", "产品", "商品", "品名", "商品名称", "产品名称"),
+    "category": (
+        "category",
+        "category_name",
+        "ctg",
+        "ctg_name",
+        "prod_category",
+        "product_category",
+        "cat",
+        "type",
+        "class",
+        "classification",
+        "品类",
+        "品类名称",
+        "商品品类",
+        "产品品类",
+        "类别",
+        "类别名称",
+        "类目",
+        "类目名称",
+        "分类",
+    ),
     "store": ("store", "shop", "branch", "门店", "店铺", "门店名称"),
     "city": ("city", "城市", "市"),
-    "channel": ("channel", "渠道", "通路"),
+    "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
     "customer": ("customer", "cust", "client", "客户", "终端"),
-    "month": ("month", "month_id", "month_code", "stat_month", "ym", "年月", "月份"),
-    "time": ("date", "day", "week", "period", "日期", "时间", "周期"),
+    "month": ("month", "month_id", "month_code", "stat_month", "ym", "year_month", "biz_month", "年月", "月份", "月度", "业务月份", "统计月份"),
+    "time": ("date", "day", "week", "period", "日期", "时间", "周期", "业务日期", "统计日期"),
     "sales": ("sales", "sale", "revenue", "amount", "销售额", "销售金额", "销售", "收入", "金额", "订单金额"),
     "profit": ("profit", "gross_profit", "grossprofit", "利润", "毛利"),
 }
@@ -2396,7 +2439,10 @@ def _semantic_alias_in_question(alias: str, question: str) -> bool:
     return bool(re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(alias.lower())}(?![A-Za-z0-9_.-])", lowered))
 
 
-def _derived_ratio_metric(question: str, df: pd.DataFrame) -> dict[str, str] | None:
+def _derived_ratio_metric(question: str, df: pd.DataFrame, *, guidelines: str = "") -> dict[str, str] | None:
+    explicit = _explicit_ratio_metric(question, df, guidelines=guidelines)
+    if explicit is not None:
+        return explicit
     if not _asks_profit_margin(question):
         return None
     numerator = _find_semantic_column(df, "profit")
@@ -2410,6 +2456,53 @@ def _derived_ratio_metric(question: str, df: pd.DataFrame) -> dict[str, str] | N
         "denominator": denominator,
         "formula": f"sum({numerator})/sum({denominator})",
     }
+
+
+def _explicit_ratio_metric(question: str, df: pd.DataFrame, *, guidelines: str = "") -> dict[str, str] | None:
+    text = f"{question}\n{guidelines}"
+    patterns = (
+        r"(?P<name>[\w\u4e00-\u9fff]{1,20})\s*=\s*sum\s*\(?\s*(?P<num>[\w\u4e00-\u9fff_ -]{1,40})\s*\)?\s*/\s*sum\s*\(?\s*(?P<den>[\w\u4e00-\u9fff_ -]{1,40})\s*\)?",
+        r"(?P<name>[\w\u4e00-\u9fff]{1,20})\s*=\s*(?P<num>[\w\u4e00-\u9fff_ -]{1,40})\s*/\s*(?P<den>[\w\u4e00-\u9fff_ -]{1,40})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if not match:
+            continue
+        name = re.sub(r"^(用|按|以|按照|改成|改为)", "", match.group("name").strip()).strip() or "ratio"
+        numerator = _resolve_formula_column(match.group("num"), df)
+        denominator = _resolve_formula_column(match.group("den"), df)
+        if numerator and denominator and numerator != denominator:
+            return {
+                "name": name,
+                "numerator": numerator,
+                "denominator": denominator,
+                "formula": f"sum({numerator})/sum({denominator})",
+            }
+    return None
+
+
+def _resolve_formula_column(raw_name: str, df: pd.DataFrame) -> str | None:
+    cleaned = re.sub(r"^(字段|列|column|field)\s*", "", str(raw_name or "").strip(), flags=re.I)
+    cleaned = cleaned.strip(" ：:，,。.;；()（）[]【】")
+    cleaned = re.sub(r"(重新计算|重新算|重算|再算|计算|这个口径|口径)$", "", cleaned).strip()
+    if not cleaned:
+        return None
+    normalized = _normalize_column_token(cleaned)
+    for column in df.columns:
+        column_name = str(column)
+        if _normalize_column_token(column_name) == normalized:
+            return column_name
+    for concept, aliases in SEMANTIC_COLUMN_ALIASES.items():
+        if any(_normalize_column_token(alias) == normalized or normalized in _normalize_column_token(alias) for alias in aliases):
+            found = _find_semantic_column(df, concept)
+            if found:
+                return found
+    for column in df.columns:
+        column_name = str(column)
+        normalized_column = _normalize_column_token(column_name)
+        if normalized and (normalized in normalized_column or normalized_column in normalized):
+            return column_name
+    return None
 
 
 def _asks_profit_margin(question: str) -> bool:
@@ -2452,9 +2545,9 @@ def _find_metric_column(question: str, df: pd.DataFrame) -> str | None:
     for column in df.columns:
         name = str(column)
         if name.lower() in lowered or name in question:
-            if pd.api.types.is_numeric_dtype(df[column]):
+            if _is_metric_value_column(df[column], name):
                 return name
-    numeric_columns = [str(column) for column in df.columns if pd.api.types.is_numeric_dtype(df[column])]
+    numeric_columns = [str(column) for column in df.columns if _is_metric_value_column(df[column], str(column))]
     if not numeric_columns:
         return None
     metric_keywords = ("sales", "revenue", "amount", "fee", "cost", "price", "profit", "销售", "金额", "收入", "费用", "利润")
@@ -2462,6 +2555,27 @@ def _find_metric_column(question: str, df: pd.DataFrame) -> str | None:
         if any(keyword in column.lower() for keyword in metric_keywords):
             return column
     return numeric_columns[0]
+
+
+def _is_metric_value_column(series: pd.Series, column_name: str) -> bool:
+    if pd.api.types.is_numeric_dtype(series):
+        return not _metric_identifier_like(column_name)
+    if _metric_identifier_like(column_name):
+        return False
+    non_empty = series.dropna()
+    if non_empty.empty:
+        return False
+    text = non_empty.astype(str).str.strip()
+    text = text[text != ""]
+    if text.empty:
+        return False
+    converted = pd.to_numeric(text.str.replace(",", "", regex=False), errors="coerce")
+    return float(converted.notna().sum()) / float(len(text)) >= 0.85
+
+
+def _metric_identifier_like(column_name: str) -> bool:
+    normalized = _normalize_column_token(column_name)
+    return any(token in normalized for token in ("id", "code", "编号", "代码", "手机号", "电话", "邮编"))
 
 
 def _find_dimension_column(
@@ -2479,6 +2593,30 @@ def _find_dimension_column(
             continue
         if _column_name_explicitly_mentioned(name, searchable_question, lowered):
             return name
+    requested_concepts = _requested_dimension_concepts(question)
+    if requested_concepts:
+        semantic_candidates: list[tuple[int, int, str]] = []
+        allows_numeric_dimension = any(concept in {"month", "time"} for concept in requested_concepts)
+        for index, column in enumerate(df.columns):
+            name = str(column)
+            if name == metric or name in excluded:
+                continue
+            if pd.api.types.is_numeric_dtype(df[column]) and not allows_numeric_dimension:
+                continue
+            concept_scores = [
+                _semantic_concept_column_score(name, concept)
+                for concept in requested_concepts
+                if _semantic_concept_column_score(name, concept) > 0
+            ]
+            if not concept_scores:
+                continue
+            score = max(concept_scores)
+            if _dimension_looks_like_join_identifier(name):
+                score -= 10
+            semantic_candidates.append((score, index, name))
+        if semantic_candidates:
+            semantic_candidates.sort(key=lambda item: (-item[0], item[1]))
+            return semantic_candidates[0][2]
     categorical = [
         str(column)
         for column in df.columns
@@ -2522,6 +2660,8 @@ def _find_dimension_column(
         "渠道",
         "客户",
         "月份",
+        "月度",
+        "年月",
         "日期",
     )
     for column in categorical:

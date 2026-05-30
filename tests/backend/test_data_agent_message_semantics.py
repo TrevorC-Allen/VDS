@@ -88,6 +88,49 @@ class DataAgentMessageSemanticsTest(unittest.TestCase):
         self.assertNotIn("当前结果表只返回", response["answer"])
         self.assertNotIn("仍需按当前数据范围和指标口径解读", response["answer"])
 
+    def test_message_correction_reruns_with_revised_formula_from_conversation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "city_profit.csv"
+            csv_path.write_text("city,sales,profit\n上海,100,40\n北京,300,60\n", encoding="utf-8")
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="city_profit.csv")
+            first = service.respond_to_message(dataset_id=upload["dataset_id"], question="哪个城市利润最高？")
+            response = service.respond_to_message(
+                conversation_id=first["conversation_id"],
+                question="不是这个口径，用利润率=sum利润/sum销售重新算",
+            )
+
+        self.assertTrue(first["success"], first["errors"])
+        self.assertEqual([{"city": "北京", "profit": 60}], first["result"]["rows"])
+        self.assertTrue(response["success"], response["errors"])
+        self.assertEqual(first["conversation_id"], response["conversation_id"])
+        self.assertEqual([{"city": "上海", "利润率": 0.4}], response["result"]["rows"])
+        self.assertTrue(response["correction_context"]["is_correction"])
+        self.assertEqual(first["run_id"], response["correction_context"]["previous_run_id"])
+        self.assertEqual(["metric_formula"], response["correction_context"]["changed_scope"])
+        self.assertIn("sum(profit)/sum(sales)", response["answer"])
+        self.assertIn("首行结果", response["correction_context"]["difference_summary"])
+
+    def test_message_incomplete_correction_asks_for_formula_without_reusing_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "city_profit.csv"
+            csv_path.write_text("city,sales,profit\n上海,100,40\n北京,300,60\n", encoding="utf-8")
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="city_profit.csv")
+            first = service.respond_to_message(dataset_id=upload["dataset_id"], question="哪个城市利润最高？")
+            response = service.respond_to_message(
+                conversation_id=first["conversation_id"],
+                question="不是这个口径，重新算",
+            )
+
+        self.assertFalse(response["success"])
+        self.assertEqual("clarification", response["answer_type"])
+        self.assertEqual("missing_revised_formula", response["correction_context"]["reason"])
+        self.assertEqual([], response["result"]["rows"])
+        self.assertIn("利润率=sum利润/sum销售", response["answer"])
+
     def test_message_trusted_join_returns_joined_city_top1_without_audit_noise(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -873,6 +873,14 @@ p {
   white-space: nowrap;
 }
 
+#dataset-status.ready {
+  color: #2563eb;
+}
+
+#dataset-status.error {
+  color: #b42318;
+}
+
 .status-strip {
   display: flex;
   align-items: center;
@@ -1022,6 +1030,7 @@ p {
   margin-top: 8px;
 }
 
+.message-action-button,
 .copy-reply-button {
   position: relative;
   display: grid;
@@ -1036,6 +1045,8 @@ p {
   transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
 }
 
+.message-action-button:hover,
+.message-action-button:focus-visible,
 .copy-reply-button:hover,
 .copy-reply-button:focus-visible {
   border-color: #111827;
@@ -1044,6 +1055,13 @@ p {
   outline: none;
 }
 
+.message-action-button[disabled],
+.copy-reply-button[disabled] {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.message-action-button::after,
 .copy-reply-button::after {
   position: absolute;
   top: calc(100% + 6px);
@@ -1064,10 +1082,18 @@ p {
   white-space: nowrap;
 }
 
+.message-action-button:hover::after,
+.message-action-button:focus-visible::after,
 .copy-reply-button:hover::after,
 .copy-reply-button:focus-visible::after {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
+}
+
+.message-action-button.is-active {
+  border-color: #111827;
+  background: #fff;
+  color: #111827;
 }
 
 .copy-reply-button.copied {
@@ -1082,6 +1108,7 @@ p {
   color: #111827;
 }
 
+.message-action-button svg,
 .copy-reply-button svg {
   width: 18px;
   height: 18px;

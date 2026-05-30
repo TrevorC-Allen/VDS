@@ -215,6 +215,9 @@ def _verify_generalization_contract(
     if _asks_explicit_filter(user_question.question) and not logic.filters and not _has_structured_filter_context(logic):
         notes.append("Question includes an explicit filter expression, but the plan has no filters.")
         return False, notes, {"action": "repair_filters", "reason": "explicit_filter_missing"}
+    if _asks_explicit_metric_formula(user_question.question) and not _logic_uses_explicit_derived_formula(logic):
+        notes.append("Question includes an explicit metric formula, but the plan does not carry it as a derived metric.")
+        return False, notes, {"action": "repair_metric_definition", "reason": "explicit_formula_missing"}
     if _asks_grouped_count(question) and logic.operation == "row_count":
         notes.append("Question asks for grouped counts, but the plan returns only a scalar row count.")
         return False, notes, {"action": "replace_operation", "to_operation": "aggregation", "aggregation": "count"}
@@ -254,14 +257,31 @@ def _verify_generalization_contract(
 
 
 DIMENSION_CONCEPT_ALIASES = {
-    "product": ("product", "sku", "item", "产品", "商品", "品名"),
-    "category": ("category", "ctg", "类别", "品类", "类目"),
+    "product": ("product", "product_name", "sku", "item", "产品", "商品", "品名", "商品名称", "产品名称"),
+    "category": (
+        "category",
+        "category_name",
+        "ctg",
+        "ctg_name",
+        "prod_category",
+        "product_category",
+        "cat",
+        "类别",
+        "类别名称",
+        "品类",
+        "品类名称",
+        "商品品类",
+        "产品品类",
+        "类目",
+        "类目名称",
+        "分类",
+    ),
     "store": ("store", "shop", "branch", "门店", "店铺"),
     "city": ("city", "城市", "市"),
-    "channel": ("channel", "渠道", "通路"),
+    "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
     "customer": ("customer", "cust", "client", "客户", "终端"),
-    "month": ("month", "stat_month", "ym", "年月", "月份"),
-    "time": ("date", "day", "week", "period", "日期", "时间", "周期"),
+    "month": ("month", "month_id", "month_code", "stat_month", "ym", "year_month", "biz_month", "年月", "月份", "月度", "业务月份", "统计月份"),
+    "time": ("date", "day", "week", "period", "日期", "时间", "周期", "业务日期", "统计日期"),
 }
 
 METRIC_CONCEPT_ALIASES = {
@@ -308,11 +328,13 @@ def _verify_requested_metric_dimension_binding(
             if any(_column_matches_concept(field, concept, DIMENSION_CONCEPT_ALIASES) for concept in requested_dimensions)
         ]
         if not matched_dimensions:
+            available = [str(item) for item in params.get("available_columns") or []]
             notes.append(f"Question requests dimension {requested_dimensions}, but plan uses dimension {dimension_fields[0]}.")
             return False, notes, {
                 "action": "repair_dimension_binding",
                 "requested_dimensions": requested_dimensions,
                 "actual_dimension": dimension_fields[0],
+                "available_columns": available,
             }
         rows = _execution_rows(primary)
         if rows and not any(field in rows[0] for field in matched_dimensions):
@@ -467,6 +489,18 @@ def _looks_like_metric_formula(text: str) -> bool:
     return "=" in segment and any(operator in segment for operator in ("/", "+", "*"))
 
 
+def _asks_explicit_metric_formula(question: str) -> bool:
+    return _looks_like_metric_formula(question) and bool(re_search(r"sum\s*\(?|利润率|达成率|占比|率\s*=", question))
+
+
+def _logic_uses_explicit_derived_formula(logic: Any) -> bool:
+    params = getattr(logic, "parameters", {}) or {}
+    derived_metric = params.get("derived_metric")
+    if not isinstance(derived_metric, dict) or not derived_metric:
+        return False
+    return bool(derived_metric.get("name") and derived_metric.get("numerator") and derived_metric.get("denominator") and derived_metric.get("formula"))
+
+
 def _has_structured_filter_context(logic: Any) -> bool:
     params = getattr(logic, "parameters", {}) or {}
     time_window = getattr(logic, "time_window", {}) or {}
@@ -523,19 +557,41 @@ def _verify_join_contract(
             notes.append("Schema-backed business operation handles source alignment internally.")
             return True, notes, None
         notes.append("Plan references multiple source tables but does not define a join plan.")
-        return False, notes, {"action": "clarify_join_key", "reason": "multi_table_without_join_plan"}
+        return False, notes, {
+            "action": "clarify_join_key",
+            "reason": "multi_table_without_join_plan",
+            "source_tables": source_tables,
+            "requested_dimensions": _requested_dimension_concepts(question),
+        }
     if not join_plan:
         if _asks_named_dimension(question) and _dimension_looks_like_id(params.get("dimension") or getattr(logic, "group_by", None)):
             notes.append("Question asks for a named dimension, but the plan would return an ID field.")
-            return False, notes, {"action": "repair_table_selection_or_join", "reason": "dimension_fell_back_to_id"}
+            return False, notes, {
+                "action": "repair_table_selection_or_join",
+                "reason": "dimension_fell_back_to_id",
+                "actual_dimension": params.get("dimension") or getattr(logic, "group_by", None),
+                "requested_dimensions": _requested_dimension_concepts(question),
+            }
         return True, notes, None
 
     if not join_plan.get("trusted"):
         notes.append("Join plan is required but not trusted.")
-        return False, notes, {"action": "clarify_join_key", "reason": join_plan.get("reason") or "untrusted_join_plan"}
+        return False, notes, {
+            "action": "clarify_join_key",
+            "reason": join_plan.get("reason") or "untrusted_join_plan",
+            "join_plan": join_plan,
+            "source_tables": source_tables,
+            "requested_dimensions": _requested_dimension_concepts(question),
+        }
     if join_plan.get("many_to_many_risk"):
         notes.append("Join plan has many-to-many risk and cannot be treated as a verified result.")
-        return False, notes, {"action": "clarify_join_key", "reason": "many_to_many_join_risk"}
+        return False, notes, {
+            "action": "clarify_join_key",
+            "reason": "many_to_many_join_risk",
+            "join_plan": join_plan,
+            "source_tables": source_tables,
+            "requested_dimensions": _requested_dimension_concepts(question),
+        }
 
     summary = primary.debug.get("join_execution_summary") if isinstance(primary.debug, dict) else None
     if isinstance(summary, dict):

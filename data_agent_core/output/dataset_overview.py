@@ -26,12 +26,13 @@ def build_dataset_overview_response(
     """Build a full-table, user-facing dataset overview response."""
 
     profile_payload = _profile_payload(profile)
-    if _wants_multi_table_overview(question, tables):
+    overview_tables = _tables_with_profile_only_sources(tables, profile_payload)
+    if _wants_multi_table_overview(question, overview_tables):
         return _build_multi_table_overview_response(
             run_id=run_id,
             dataset_id=dataset_id,
             question=question,
-            tables=tables,
+            tables=overview_tables,
             profile_payload=profile_payload,
             agent_mode=agent_mode,
         )
@@ -231,6 +232,38 @@ def _wants_multi_table_overview(question: str, tables: dict[str, pd.DataFrame]) 
     )
     single_signals = ("这个表", "这张表", "当前表", "这个文件")
     return any(signal in compact for signal in multi_signals) and not any(signal in compact for signal in single_signals)
+
+
+def _tables_with_profile_only_sources(tables: dict[str, pd.DataFrame], profile_payload: dict[str, Any]) -> dict[str, pd.DataFrame]:
+    if not isinstance(profile_payload, dict):
+        return tables
+    combined = dict(tables)
+    for table in profile_payload.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        table_name = str(table.get("table_name") or "")
+        if not table_name or table_name in combined:
+            continue
+        combined[table_name] = _dataframe_from_table_profile(table)
+    return combined
+
+
+def _dataframe_from_table_profile(table: dict[str, Any]) -> pd.DataFrame:
+    columns = [str(column.get("name") or "") for column in table.get("columns") or [] if isinstance(column, dict) and column.get("name")]
+    if not columns:
+        columns = [f"column_{index + 1}" for index in range(int(table.get("column_count") or 0))]
+    row_count = max(0, int(table.get("row_count") or 0))
+    rows: list[dict[str, Any]] = []
+    for row_index in range(row_count):
+        row: dict[str, Any] = {}
+        for column_payload in table.get("columns") or []:
+            if not isinstance(column_payload, dict):
+                continue
+            name = str(column_payload.get("name") or "")
+            samples = column_payload.get("sample_values") if isinstance(column_payload.get("sample_values"), list) else []
+            row[name] = samples[row_index] if row_index < len(samples) else None
+        rows.append(row)
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _wants_shape_summary(question: str) -> bool:

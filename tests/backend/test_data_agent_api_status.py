@@ -73,6 +73,111 @@ class DataAgentHttpStatusHelperTest(unittest.TestCase):
         self.assertFalse(body["success"])
         self.assertEqual("FILE_PARSE_ERROR", body["errors"][0]["error_type"])
 
+    @unittest.skipUnless(hasattr(data_agent_router, "MessagePayload"), "FastAPI route payload is not available.")
+    def test_message_route_rejects_invalid_agent_mode_with_actionable_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_service = data_agent_router.service
+            original_run_store = data_agent_router.run_store
+            data_agent_router.service = DataAgentService(
+                file_store=TempFileStore(Path(temp_dir) / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            try:
+                response = data_agent_router.message(
+                    data_agent_router.MessagePayload(question="你好", agent_mode="invalid_mode")
+                )
+            finally:
+                data_agent_router.service = original_service
+                data_agent_router.run_store = original_run_store
+
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(422, response.status_code)
+        self.assertFalse(body["success"])
+        self.assertEqual("LOGIC_FORM_ERROR", body["errors"][0]["error_type"])
+        self.assertIn("Unsupported agent_mode", body["errors"][0]["error_message"])
+        self.assertIn("multi_agent", body["errors"][0]["suggested_fix"])
+
+    @unittest.skipUnless(hasattr(data_agent_router, "MessagePayload"), "FastAPI route payload is not available.")
+    def test_sync_message_route_persists_returned_run_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            csv_path.write_text("city,sales\n上海,100\n北京,120\n", encoding="utf-8")
+            original_service = data_agent_router.service
+            original_run_store = data_agent_router.run_store
+            data_agent_router.service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            try:
+                upload = data_agent_router.service.upload_dataset(csv_path, original_filename="sales.csv")
+                response = data_agent_router.message(
+                    data_agent_router.MessagePayload(dataset_id=upload["dataset_id"], question="哪个城市销售额最高？")
+                )
+                body = json.loads(response.body.decode("utf-8"))
+                run_id = body["run_id"]
+                status_body = json.loads(data_agent_router.get_run(run_id).body.decode("utf-8"))
+                result_body = json.loads(data_agent_router.get_run_result(run_id).body.decode("utf-8"))
+            finally:
+                data_agent_router.service = original_service
+                data_agent_router.run_store = original_run_store
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(body["success"], body.get("errors"))
+        self.assertTrue(run_id.startswith("run_"))
+        self.assertTrue(status_body["success"])
+        self.assertEqual("completed", status_body["run"]["status"])
+        self.assertTrue(status_body["run"]["result_available"])
+        self.assertTrue(result_body["success"])
+        self.assertEqual(run_id, result_body["result"]["run_id"])
+        self.assertEqual(body["answer"], result_body["result"]["answer"])
+
+    @unittest.skipUnless(hasattr(data_agent_router, "MessagePayload"), "FastAPI route payload is not available.")
+    def test_legacy_sync_message_run_recovers_from_conversation_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_service = data_agent_router.service
+            original_run_store = data_agent_router.run_store
+            data_agent_router.service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            try:
+                run_id = "run_legacy_sync_message"
+                legacy_response = {
+                    "response_version": "v1",
+                    "success": True,
+                    "run_id": run_id,
+                    "dataset_id": "ds_legacy",
+                    "question": "哪个城市销售额最高？",
+                    "answer_type": "table",
+                    "answer": "上海销售额最高。",
+                    "result": {"columns": ["city", "sales"], "rows": [{"city": "上海", "sales": 200}]},
+                }
+                data_agent_router.service.conversation_store.append_turn(
+                    question="哪个城市销售额最高？",
+                    response=legacy_response,
+                    dataset_id="ds_legacy",
+                )
+
+                status_response = data_agent_router.get_run(run_id)
+                result_response = data_agent_router.get_run_result(run_id)
+                status_body = json.loads(status_response.body.decode("utf-8"))
+                result_body = json.loads(result_response.body.decode("utf-8"))
+            finally:
+                data_agent_router.service = original_service
+                data_agent_router.run_store = original_run_store
+
+        self.assertEqual(200, status_response.status_code)
+        self.assertTrue(status_body["success"])
+        self.assertEqual("completed", status_body["run"]["status"])
+        self.assertTrue(status_body["run"]["result_available"])
+        self.assertEqual("ds_legacy", status_body["run"]["dataset_id"])
+        self.assertEqual(200, result_response.status_code)
+        self.assertTrue(result_body["success"])
+        self.assertEqual(run_id, result_body["result"]["run_id"])
+        self.assertEqual("上海销售额最高。", result_body["result"]["answer"])
+
 
 @unittest.skipIf(app is None or TestClient is None, "FastAPI test client is not available.")
 class DataAgentApiStatusTest(unittest.TestCase):

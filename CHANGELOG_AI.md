@@ -68,6 +68,124 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-05-30 12:36 CST
+
+### 本次目标
+
+按当前 dirty worktree 的真实状态补写 changelog，覆盖本分支所有未提交项目变更，包括其他 Codex 实例已落下但尚未提交的后端、前端、核心算法、文档和测试改动。该记录只基于当前文件 diff、现有测试记录和本轮实际复核命令，不把未完成的 runtime / full benchmark gate 写成已完成。
+
+### 修改文件
+
+- CHANGELOG_AI.md
+- MAIN_GOAL.md
+- docs/FEATURE_BACKLOG.md
+- docs/test-runs/2026-05-29-phase14-p0-file-semantic-correction.md
+- agent_runtime/data_analysis_roles.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- backend/routers/data_agent.py
+- backend/services/data_agent_service.py
+- backend/services/export_service.py
+- backend/storage/project_store.py
+- backend/storage/run_store.py
+- backend/storage/temp_file_store.py
+- data_agent_core/contracts/dataset_contracts.py
+- data_agent_core/contracts/response_contracts.py
+- data_agent_core/core/dabstep_fee_engine.py
+- data_agent_core/core/file_parser.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/core/schema_profiler.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/output/chart_planner.py
+- data_agent_core/output/dataset_overview.py
+- data_agent_core/output/response_builder.py
+- data_agent_core/verifier/rule_checker.py
+- frontend/app.js
+- frontend/index.html
+- frontend/styles.css
+- tests/agent_runtime/test_runtime_contracts.py
+- tests/backend/test_data_agent_api_status.py
+- tests/backend/test_data_agent_message_semantics.py
+- tests/backend/test_p0_workspace_runtime.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_chinese_retail_capabilities.py
+- tests/core/test_file_parser.py
+- tests/core/test_generic_capability_operations.py
+- tests/core/test_output_contract.py
+- tests/core/test_phase8_multitable_capabilities.py
+
+### 修改内容
+
+- Phase 14 P0 文件理解：`DatasetProfile` / `TableProfile` 新增 `source_kind`、`range_ref`、`header_rows`、`table_role`、`role_confidence`、`parse_diagnostics`；Excel 解析开始拆分 sheet/block，识别可分析表、规则/说明、字段字典、空 sheet 和 range；CSV 记录 encoding / delimiter / bad-line diagnostics；图片表格明确要求 OCR/转换，不伪造 DataFrame。
+- 语义正确性：parser / verifier / correction 增强渠道、品类、月度等自然语言维度到真实字段的绑定；`repair_dimension_binding` 可在存在可修复字段时生成 `corrected_logic_form`，由现有 workflow 触发 Pandas / SQL / Verifier 重跑；缺字段仍保持 clarification，不用 city 等无关字段替代。
+- 显式公式和口径纠错：显式 `sum(numerator)/sum(denominator)` 进入 derived metric / formula lineage；conversation correction 可基于上一轮 `conversation_id` 和 run 结果重构有效问题并强制重跑，不完整“不是这个口径”请求返回 clarification 和 `correction_context`。
+- Join / retail 边界：untrusted join 的用户提示改为按实际维度、指标和关联键说明，不再硬写“城市口径”；retail schema-backed operation 继续绕开泛化 join 误拦截，并补充计划拜访线路、合约店、分销数量的 verification 覆盖。
+- Workbench run/job 化：同步 `/api/data-agent/message` 会创建并完成 run-store 记录；新增异步 `/message/jobs`、`/runs/{run_id}`、`/runs/{run_id}/result`、cancel、retry、export 下载等契约；RunStore 以 JSON 持久化 status/result，支持重试 attempt、取消请求、孤儿 active run 标记和 legacy sync message recovery。
+- 导出产物：新增 `export_service`，从稳定 response 字段生成 result CSV/XLSX、summary XLSX/PPTX/PDF、chart fallback 和 manifest；导出时剥离 debug、trace、raw prompt、standard answer / scorer 等内部字段；`FinalResponse` 新增 `artifacts_manifest`。
+- Project / workspace 状态：Project instructions 和 sources 增加版本、hash、source_status、replaces_source_id；dataset profile 支持服务重启后的磁盘恢复状态、`can_analyze`、`source_status` 和 source files；message response 暴露 assistant `message_id` 以便保存回答。
+- 前端 workbench：从同步 message 调用切到 job endpoint；增加 URL project/conversation 恢复、BroadcastChannel/storage 跨窗口 invalidation、run polling、slow-run 状态、取消/重试、保存到 Project、下载结果/图表/报告按钮；避免把 project_id / conversation_id / dataset_id 等业务 workspace 状态写入 localStorage。
+- 图表和执行：chart planner 优先使用 logic form 绑定的 dimension / derived metric；Pandas grouped aggregation 先把 metric 转数值再聚合；join debug 带 formula lineage；DAB fee delta 改为使用 raw period totals 后再求差，避免逐月提前四舍五入。
+- 文档：`MAIN_GOAL.md` 和 `docs/FEATURE_BACKLOG.md` 增加 Phase 14 P0 real file understanding / semantic correctness / multi-turn correction 阶段口径；`docs/test-runs/2026-05-29-phase14-p0-file-semantic-correction.md` 记录 focused checks、pending gates 和 residual risks。
+- 测试：新增/扩展 file parser、message correction、workspace runtime、run store、export artifact、frontend static wiring、agent runtime correction、semantic dimension binding、join clarification、retail verification、generic numeric-like metric 和 output artifact contract 测试。
+
+### 测试方式
+
+- 本轮实际复核：`python3 -m unittest tests.backend.test_data_agent_api_status tests.agent_runtime.test_runtime_contracts tests.core.test_phase8_multitable_capabilities tests.core.test_output_contract tests.core.test_chinese_retail_capabilities`
+- 本轮实际复核：`python3 -m compileall agent_runtime/data_analysis_roles.py data_agent_core/core/intent_parser.py data_agent_core/verifier/rule_checker.py data_agent_core/output/response_builder.py`
+- 本轮实际复核：`git diff --check -- agent_runtime/data_analysis_roles.py data_agent_core/core/intent_parser.py data_agent_core/verifier/rule_checker.py data_agent_core/output/response_builder.py tests/agent_runtime/test_runtime_contracts.py tests/core/test_phase8_multitable_capabilities.py tests/core/test_output_contract.py tests/core/test_chinese_retail_capabilities.py tests/backend/test_data_agent_api_status.py`
+- dirty 文档中已有记录但本轮未重跑：`tests.core.test_file_parser -v`、`tests.backend.test_data_agent_message_semantics -v`、`node --check frontend/app.js`，见 `docs/test-runs/2026-05-29-phase14-p0-file-semantic-correction.md`。
+
+### 测试结果
+
+- 本轮实际复核：72 tests OK，2 个 FastAPI/TestClient 相关测试按当前可选依赖环境 skip。
+- 本轮实际复核：Python compileall 通过。
+- 本轮实际复核：目标文件 `git diff --check` 通过。
+- dirty 文档记录：`tests.core.test_file_parser` 为 4 tests OK，`tests.backend.test_data_agent_message_semantics` 为 13 tests OK，`node --check frontend/app.js` passed。
+- 未完成 / 未复核：本轮没有运行 full `scripts/run_tests.py`，没有运行 VDS 95 / Microsoft 300 / DAB 全量 gate，没有同步并重启真实 `127.0.0.1:8001/workbench` runtime。
+
+### 遗留问题
+
+- 当前 worktree 仍是大范围 dirty 状态，存在其他 Codex 实例或上轮遗留改动；本条 changelog 汇总当前文件状态，不代表已完成提交边界。
+- `.DS_Store` 处于未跟踪状态，属于本地系统文件，不作为项目功能变更记录；提交前建议删除或忽略。
+- Excel candidate detection 仍是启发式，不能按当前 fixture 或文件名特调；PDF/图片表格仍是边界能力，不代表 OCR 已完成。
+- 显式公式当前以 ratio-first 为主，复杂嵌套公式、多指标表达式和跨表公式仍需要后续能力族。
+- Run/job、export、workspace frontend 的真实 8001 runtime 验证尚未在本轮完成；浏览器可见行为需同步 runtime 后复测。
+
+### 是否影响主流程
+
+是。影响普通 `/api/data-agent/message` 分析主链路、multi-agent workflow、文件上传解析、结果验证、回答构造、workbench 运行方式和导出/保存体验。
+
+### 是否涉及 Benchmark
+
+是，但不是 benchmark runner / scorer / 标准答案改动。涉及 DAB fee engine 计算口径、benchmark 相关非回归风险说明，以及 Phase 14 pending gate 文档；本轮未运行 full benchmark gate。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。没有引入或修改 Microsoft Agent Framework 适配层；只修改本地 `agent_runtime` 和 VDS workflow 契约。
+
+### 是否影响未来多 Agent 迁移
+
+是。`corrected_logic_form`、RunStore status/result、cancel checker、formula lineage、verifier correction action、FinalResponse artifact manifest 都属于未来多 Agent 编排必须保留的跨角色契约。
+
+### 是否修改核心数据契约
+
+是。`DatasetProfile` / `TableProfile`、`LogicForm.parameters` 中的语义证据和 derived metric lineage、`FinalResponse.artifacts_manifest`、dataset profile restore 状态、project source/version/hash 字段均属于核心或后端稳定数据契约扩展。
+
+### 是否修改 API 契约
+
+是。新增或扩展 `/api/data-agent/message/jobs`、`/api/data-agent/runs/{run_id}`、`/api/data-agent/runs/{run_id}/result`、`/cancel`、`/retry`、`/exports/{artifact_id}`，并要求同步 `/message` 返回的 `run_id` 可被 run/result 查询追踪。
+
+### 是否新增或修改错误类型
+
+未新增全局错误类型。继续复用 `FILE_PARSE_ERROR`、`LOGIC_FORM_ERROR`、`VERIFICATION_FAILED` 等错误类型；新增 run failure category / status 文案，如 dataset restore、parser、executor、verifier、provider timeout、cancelled、unknown。
+
+### 是否新增或修改运行追踪逻辑
+
+是。新增 JSON RunStore、message job active task map、run status/result recovery、cancel/retry/orphaned 状态、formula lineage debug、export artifacts manifest，以及前端 run polling / slow-run / reconnect 展示。
+
+### 是否已同步 README
+
+否。本轮和当前 dirty worktree 已同步 `MAIN_GOAL.md`、`docs/FEATURE_BACKLOG.md` 和 test-run 文档，但没有修改 README；README 是否需要同步应在 Phase 14 runtime/full gate 完成后再单独处理。
+
 2026-05-28 10:39 CST
 
 ### 本次目标

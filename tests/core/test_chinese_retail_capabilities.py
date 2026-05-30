@@ -242,7 +242,12 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.tables["v_trd_dist_ord_dtl"] = original
 
     def test_route_contract_product_quantity_uses_store_set_join(self) -> None:
-        answer = self._answer("张三在2026-05-19计划拜访线路上的合约店，2026年5月东方树叶分销数量是多少？", "答案只返回数字，保留3位小数。")
+        question = "张三在2026-05-19计划拜访线路上的合约店，2026年5月东方树叶分销数量是多少？"
+        logic, result, verification, answer = self._verified_logic_result(question, "答案只返回数字，保留3位小数。")
+
+        self.assertEqual("retail_route_contract_product_quantity", logic.operation)
+        self.assertTrue(result.success, result.errors)
+        self.assertTrue(verification.passed, verification.issues)
         self.assertEqual(answer, "0.000")
 
     def test_daily_progress_rate_uses_today_amount_target_and_dist_days(self) -> None:

@@ -499,6 +499,13 @@ def _materialize_join_steps(tables: dict[str, pd.DataFrame], params: dict[str, A
 def _join_debug(params: dict[str, Any]) -> dict[str, Any]:
     join_plan = params.get("join_plan")
     debug: dict[str, Any] = {}
+    derived_metric = params.get("derived_metric")
+    if isinstance(derived_metric, dict) and derived_metric:
+        debug["formula_lineage"] = {
+            key: derived_metric.get(key)
+            for key in ("name", "numerator", "denominator", "formula", "formula_source")
+            if derived_metric.get(key)
+        }
     if isinstance(join_plan, dict) and join_plan:
         debug["join_plan"] = {
             key: join_plan.get(key)
@@ -661,7 +668,9 @@ def _aggregate_grouped(data: pd.DataFrame, dimension: str, metric: str | None, a
         return result.to_dict(orient="records")
     if metric not in data.columns:
         raise ValueError(f"Unknown metric column: {metric}")
-    result = data.groupby(dimension, dropna=True)[metric].agg(aggregation).reset_index()
+    working = data[[dimension, metric]].copy()
+    working[metric] = pd.to_numeric(working[metric], errors="coerce")
+    result = working.groupby(dimension, dropna=True)[metric].agg(aggregation).reset_index()
     return result.to_dict(orient="records")
 
 

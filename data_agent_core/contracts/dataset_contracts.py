@@ -28,6 +28,12 @@ class TableProfile:
     columns: list[ColumnProfile] = field(default_factory=list)
     source_file: str | None = None
     sheet: str | None = None
+    source_kind: str = "table"
+    range_ref: str = ""
+    header_rows: list[int] = field(default_factory=list)
+    table_role: str = "data_table"
+    role_confidence: float = 0.0
+    parse_diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -42,3 +48,4 @@ class DatasetProfile:
     warnings: list[str] = field(default_factory=list)
     errors: list[Any] = field(default_factory=list)
     quality_report: dict[str, Any] | None = None
+    parse_diagnostics: dict[str, Any] = field(default_factory=dict)

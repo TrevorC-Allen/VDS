@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm, UserQuestion
 from data_agent_core.contracts.execution_contracts import ExecutionResult
+from data_agent_core.contracts.response_contracts import FinalResponse
 from data_agent_core.contracts.verification_contracts import VerificationResult
 from data_agent_core.errors.error_types import OUTPUT_CONTRACT_VALIDATION_FAILED
 from data_agent_core.output.output_contract import canonicalize_final_answer, validate_final_answer
@@ -93,6 +94,24 @@ class OutputContractTest(unittest.TestCase):
         self.assertFalse(response.debug["output_contract_validation"]["passed"])
         self.assertEqual(OUTPUT_CONTRACT_VALIDATION_FAILED, response.errors[0]["error_type"])
 
+    def test_final_response_contract_carries_optional_artifacts_manifest(self) -> None:
+        response = FinalResponse(
+            response_version="v1",
+            success=True,
+            run_id="run_export_contract",
+            dataset_id="ds",
+            question="导出结果",
+            answer_type="text",
+            execution_mode="auto",
+            answer="已生成。",
+            artifacts_manifest={"version": "export_artifacts.v1", "artifacts": []},
+        )
+
+        payload = response.to_dict()
+
+        self.assertIn("artifacts_manifest", payload)
+        self.assertEqual("export_artifacts.v1", payload["artifacts_manifest"]["version"])
+
     def test_response_builder_summarizes_vds_current_metric_top(self) -> None:
         logic = LogicForm(
             task_type="ranking",
@@ -158,6 +177,53 @@ class OutputContractTest(unittest.TestCase):
         self.assertIn("1. 甲客户", response.answer)
         self.assertIn("2. 乙客户", response.answer)
         self.assertNotIn("最高的是甲客户", response.answer)
+
+    def test_join_clarification_mentions_requested_dimension_not_city(self) -> None:
+        logic = LogicForm(
+            task_type="aggregation",
+            operation="aggregation",
+            parameters={
+                "table": "orders",
+                "metric": "sales",
+                "dimension": "sales_channel",
+                "source_tables": ["orders", "channels"],
+                "join_plan": {
+                    "trusted": False,
+                    "left_table": "orders",
+                    "right_table": "channels",
+                    "left_key": "channel_id",
+                    "right_key": "channel_code",
+                    "overlap_rate": 0.25,
+                    "reason": "low_overlap",
+                },
+            },
+            source_tables=["orders", "channels"],
+            join_plan={
+                "trusted": False,
+                "left_table": "orders",
+                "right_table": "channels",
+                "left_key": "channel_id",
+                "right_key": "channel_code",
+                "overlap_rate": 0.25,
+                "reason": "low_overlap",
+            },
+            output_format={"answer_type": "table"},
+        )
+        response = build_response(
+            run_id="run_join_clarification",
+            user_question=UserQuestion(dataset_id="ds", question="按渠道统计销售额"),
+            plan=AnalysisPlan(plan_id="plan", logic_form=logic),
+            execution_result=ExecutionResult(backend="pandas", success=False, value=[]),
+            verification=VerificationResult(
+                passed=False,
+                correction_action={"action": "clarify_join_key", "requested_dimensions": ["channel"]},
+            ),
+        )
+
+        self.assertFalse(response.success)
+        self.assertIn("渠道口径", response.answer)
+        self.assertIn("orders.channel_id -> channels.channel_code", response.answer)
+        self.assertNotIn("城市口径", response.answer)
 
 
 if __name__ == "__main__":

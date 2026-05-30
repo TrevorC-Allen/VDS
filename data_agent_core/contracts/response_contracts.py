@@ -107,6 +107,7 @@ class FinalResponse:
     overview_report: dict[str, Any] = field(default_factory=dict)
     activity_trace_v2: list[dict[str, Any]] = field(default_factory=list)
     execution_artifacts: list[dict[str, Any]] = field(default_factory=list)
+    artifacts_manifest: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[Any] = field(default_factory=list)
     debug: dict[str, Any] = field(default_factory=dict)
