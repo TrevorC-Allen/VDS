@@ -253,6 +253,8 @@ class DataAnalysisRoleRuntime:
         """Run bounded correction planning without executing arbitrary retries."""
 
         rule_action = (state.verification or {}).get("correction_action") if isinstance(state.verification, dict) else None
+        if isinstance(rule_action, dict):
+            rule_action = _action_with_runtime_available_columns(rule_action, self.context, state.logic_form)
         correction = complete_stage_with_llm(
             llm_client=self.llm_client,
             stage_name="correction_planner",
@@ -478,6 +480,17 @@ def _available_columns_for_logic_form(context: dict[str, Any], logic_form: Any) 
         table = next(iter(tables.values()))
         return [str(column) for column in table.columns]
     return None
+
+
+def _action_with_runtime_available_columns(action: dict[str, Any], context: dict[str, Any], logic_form: Any) -> dict[str, Any]:
+    if action.get("action") != "repair_dimension_binding" or action.get("available_columns"):
+        return action
+    available_columns = _available_columns_for_logic_form(context, logic_form)
+    if not available_columns:
+        return action
+    enriched = dict(action)
+    enriched["available_columns"] = available_columns
+    return enriched
 
 
 def _agent_result(
@@ -753,14 +766,24 @@ DIMENSION_REPAIR_ALIASES = {
         "ctg_name",
         "prod_category",
         "product_category",
+        "product_line",
+        "productline",
+        "product_segment",
+        "sku_category",
+        "sku_cat",
         "cat",
         "type",
         "class",
         "classification",
+        "line",
+        "segment",
         "品类",
         "品类名称",
         "商品品类",
         "产品品类",
+        "产品线",
+        "商品线",
+        "品项",
         "类别",
         "类别名称",
         "类目",
@@ -769,9 +792,9 @@ DIMENSION_REPAIR_ALIASES = {
     ),
     "store": ("store", "shop", "branch", "门店", "店铺", "门店名称"),
     "city": ("city", "城市", "市"),
-    "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
+    "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "source", "origin", "来源", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
     "customer": ("customer", "cust", "client", "客户", "终端"),
-    "month": ("month", "month_id", "month_code", "stat_month", "ym", "year_month", "biz_month", "年月", "月份", "月度", "业务月份", "统计月份"),
+    "month": ("month", "month_id", "month_code", "stat_month", "ym", "year_month", "biz_month", "period", "month_period", "period_month", "年月", "月份", "月度", "业务月份", "统计月份", "期间"),
     "time": ("date", "day", "week", "period", "日期", "时间", "周期", "业务日期", "统计日期"),
 }
 

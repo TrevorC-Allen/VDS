@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import unittest
@@ -132,6 +133,51 @@ class DataAgentHttpStatusHelperTest(unittest.TestCase):
         self.assertEqual(run_id, result_body["result"]["run_id"])
         self.assertEqual(body["answer"], result_body["result"]["answer"])
 
+    @unittest.skipUnless(hasattr(data_agent_router, "_create_message_job"), "Async message job helper is not available.")
+    def test_message_job_returns_nested_run_id_and_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "sales.csv"
+            csv_path.write_text("city,sales\n上海,100\n北京,120\n", encoding="utf-8")
+            original_service = data_agent_router.service
+            original_run_store = data_agent_router.run_store
+            data_agent_router.service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            async def run_job() -> tuple[dict[str, object], str, dict[str, object], object, dict[str, object]]:
+                upload = data_agent_router.service.upload_dataset(csv_path, original_filename="sales.csv")
+                body = await data_agent_router._create_message_job(
+                    {"dataset_id": upload["dataset_id"], "question": "哪个城市销售额最高？"}
+                )
+                run_id = body["run"]["run_id"]
+                status_body: dict[str, object] = {}
+                for _ in range(50):
+                    status_body = json.loads(data_agent_router.get_run(run_id).body.decode("utf-8"))
+                    if status_body.get("run", {}).get("status") == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+                result_response = data_agent_router.get_run_result(run_id)
+                result_body = json.loads(result_response.body.decode("utf-8"))
+                return body, run_id, status_body, result_response, result_body
+
+            try:
+                body, run_id, status_body, result_response, result_body = asyncio.run(run_job())
+            finally:
+                data_agent_router.service = original_service
+                data_agent_router.run_store = original_run_store
+
+        self.assertTrue(body["success"], body.get("errors"))
+        self.assertNotIn("run_id", body)
+        self.assertTrue(run_id.startswith("run_"))
+        self.assertTrue(status_body["success"])
+        self.assertEqual("completed", status_body["run"]["status"])
+        self.assertTrue(status_body["run"]["result_available"])
+        self.assertEqual(200, result_response.status_code)
+        self.assertTrue(result_body["success"])
+        self.assertEqual(run_id, result_body["result"]["run_id"])
+
     @unittest.skipUnless(hasattr(data_agent_router, "MessagePayload"), "FastAPI route payload is not available.")
     def test_legacy_sync_message_run_recovers_from_conversation_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -193,6 +239,52 @@ class DataAgentApiStatusTest(unittest.TestCase):
                 client = TestClient(app)
                 response = client.post(
                     "/api/data-agent/message",
+                    json={"dataset_id": "ds_missing", "question": "哪个城市销售额最高？"},
+                )
+            finally:
+                data_agent_router.service = original_service
+
+        body = response.json()
+        self.assertEqual(404, response.status_code)
+        self.assertFalse(body["success"])
+        self.assertEqual("FILE_PARSE_ERROR", body["errors"][0]["error_type"])
+        self.assertIn("Dataset not found", body["errors"][0]["error_message"])
+
+    def test_message_job_rejects_invalid_agent_mode_immediately(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            assert data_agent_router is not None
+            original_service = data_agent_router.service
+            data_agent_router.service = DataAgentService(
+                file_store=TempFileStore(Path(temp_dir) / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            try:
+                client = TestClient(app)
+                response = client.post(
+                    "/api/data-agent/message/jobs",
+                    json={"question": "你好", "agent_mode": "invalid_mode"},
+                )
+            finally:
+                data_agent_router.service = original_service
+
+        body = response.json()
+        self.assertEqual(422, response.status_code)
+        self.assertFalse(body["success"])
+        self.assertEqual("LOGIC_FORM_ERROR", body["errors"][0]["error_type"])
+        self.assertIn("Unsupported agent_mode", body["errors"][0]["error_message"])
+
+    def test_message_job_rejects_missing_dataset_immediately(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            assert data_agent_router is not None
+            original_service = data_agent_router.service
+            data_agent_router.service = DataAgentService(
+                file_store=TempFileStore(Path(temp_dir) / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            try:
+                client = TestClient(app)
+                response = client.post(
+                    "/api/data-agent/message/jobs",
                     json={"dataset_id": "ds_missing", "question": "哪个城市销售额最高？"},
                 )
             finally:

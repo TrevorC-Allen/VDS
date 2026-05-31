@@ -160,6 +160,22 @@ class DataAgentService:
                 return _rule_files_response(records)
             if rule_scope:
                 raise ValueError("dataset uploads must not include rule_scope.")
+            if bind_dataset_id and _looks_like_auto_user_rule_file_upload(file_paths, original_filenames):
+                records = self.file_store.save_rule_files(
+                    file_paths,
+                    original_filenames=original_filenames,
+                    rule_scope=USER_ANALYSIS_RULE_SCOPE,
+                    dataset_id=bind_dataset_id,
+                )
+                response = _rule_files_response(records)
+                response["bound_dataset_id"] = bind_dataset_id
+                response["auto_bound_user_rule_file_ids"] = [record.file_id for record in records]
+                response["auto_bound_rule_files"] = [_public_rule_record(record) for record in records]
+                response.setdefault("warnings", [])
+                response["warnings"].append(
+                    "已自动识别并绑定用户分析规则文件：" + ", ".join(record.file_name for record in records)
+                )
+                return to_json_ready(response)
             if _is_source_only_upload(file_paths, original_filenames):
                 stored = self.file_store.save_source_only_files(
                     file_paths,
@@ -2017,7 +2033,8 @@ class DataAgentService:
                     suggested_fix="Use file_role=dataset or file_role=rule for project source uploads.",
                 )
             )
-        if normalized_file_role == DATASET_FILE_ROLE and _is_project_text_source_upload(file_paths, original_filenames):
+        should_auto_bind_rules = bool(bind_dataset_id) and _looks_like_auto_user_rule_file_upload(file_paths, original_filenames)
+        if normalized_file_role == DATASET_FILE_ROLE and _is_project_text_source_upload(file_paths, original_filenames) and not should_auto_bind_rules:
             try:
                 sources: list[dict[str, Any]] = []
                 for index, file_path in enumerate(file_paths):
@@ -2552,6 +2569,11 @@ class DataAgentService:
         bound = self.file_store.get_bound_rule_file_ids(dataset_id, rule_scope=USER_ANALYSIS_RULE_SCOPE)
         if bound:
             response["auto_bound_user_rule_file_ids"] = bound
+            response["auto_bound_rule_files"] = [
+                _public_rule_record(record)
+                for file_id in bound
+                if (record := self.file_store.get_rule_file(file_id)) is not None
+            ]
         return response
 
     def run_agent_with_inline_tables(
@@ -2809,6 +2831,21 @@ def _looks_like_user_rule_file_upload(
                 "计算",
             )
         ):
+            return False
+    return True
+
+
+def _looks_like_auto_user_rule_file_upload(
+    file_paths: list[str | Path],
+    original_filenames: list[str | None] | None,
+) -> bool:
+    """Return true when every uploaded file should be bound as a user analysis rule."""
+
+    if not file_paths:
+        return False
+    for index, file_path in enumerate(file_paths):
+        original_name = None if original_filenames is None else original_filenames[index]
+        if not _looks_like_auto_user_rule_file(file_path, original_name):
             return False
     return True
 

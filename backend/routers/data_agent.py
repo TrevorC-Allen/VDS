@@ -17,7 +17,10 @@ import uuid
 
 from backend.services.export_service import resolve_export_artifact
 from backend.services.data_agent_service import DataAgentService
+from backend.schemas.data_agent_schema import VALID_AGENT_MODES, VALID_EXECUTION_MODES, error_response
 from backend.storage.run_store import RunStore, public_run_status
+from data_agent_core.errors.error_result import ErrorResult
+from data_agent_core.errors.error_types import FILE_PARSE_ERROR, LOGIC_FORM_ERROR
 from data_agent_core.tracing.live_monitor import GLOBAL_MONITOR_RUN_ID, format_sse, live_run_monitor, normalize_monitor_run_id
 
 
@@ -106,6 +109,46 @@ def _message_request_dict(payload: Any) -> dict[str, Any]:
     if hasattr(payload, "dict"):
         return payload.dict()
     return dict(payload or {})
+
+
+def _message_request_preflight_error(request: dict[str, Any]) -> dict[str, Any] | None:
+    execution_mode = str(request.get("execution_mode") or "dual")
+    if execution_mode not in VALID_EXECUTION_MODES:
+        return error_response(
+            dataset_id=str(request.get("dataset_id") or ""),
+            error=ErrorResult(
+                error_type=LOGIC_FORM_ERROR,
+                error_message=f"Unsupported execution_mode: {execution_mode}",
+                failed_step="message_preflight",
+                recoverable=True,
+                suggested_fix="Use one of auto, pandas, sql, or dual.",
+            ),
+        )
+    agent_mode = str(request.get("agent_mode") or "multi_agent")
+    if agent_mode not in VALID_AGENT_MODES:
+        return error_response(
+            dataset_id=str(request.get("dataset_id") or ""),
+            error=ErrorResult(
+                error_type=LOGIC_FORM_ERROR,
+                error_message=f"Unsupported agent_mode: {agent_mode}",
+                failed_step="message_preflight",
+                recoverable=True,
+                suggested_fix="Use multi_agent or single_agent.",
+            ),
+        )
+    dataset_id = str(request.get("dataset_id") or "")
+    if dataset_id and service.file_store.get_tables(dataset_id) is None:
+        return error_response(
+            dataset_id=dataset_id,
+            error=ErrorResult(
+                error_type=FILE_PARSE_ERROR,
+                error_message=f"Dataset not found in temporary store: {dataset_id}",
+                failed_step="message_preflight",
+                recoverable=True,
+                suggested_fix="Upload the dataset again before submitting an analysis question.",
+            ),
+        )
+    return None
 
 
 def _create_message_run_record(request: dict[str, Any], *, retry_of: str = "") -> tuple[str, dict[str, Any]]:
@@ -370,6 +413,9 @@ def _mark_message_run_failed(run_id: str, exc: Exception) -> None:
 
 def _execute_message_sync(payload: Any) -> dict[str, Any]:
     request = _message_request_dict(payload)
+    preflight_error = _message_request_preflight_error(request)
+    if preflight_error is not None:
+        return preflight_error
     run_id, record = _create_message_run_record(request)
     _mark_message_run_running(run_id, summary="后端正在同步处理消息。")
     try:
@@ -383,6 +429,9 @@ def _execute_message_sync(payload: Any) -> dict[str, Any]:
 
 async def _create_message_job(payload: Any, *, retry_of: str = "") -> dict[str, Any]:
     request = _message_request_dict(payload)
+    preflight_error = _message_request_preflight_error(request)
+    if preflight_error is not None:
+        return preflight_error
     run_id, record = _create_message_run_record(request, retry_of=retry_of)
     task = asyncio.create_task(_execute_message_job(run_id))
     _active_jobs[run_id] = task
@@ -802,8 +851,11 @@ try:
         return JSONResponse(content=response, status_code=_http_status_for_response(response))
 
     @router.post("/message/jobs")
-    async def create_message_job(payload: MessagePayload) -> dict[str, Any]:
-        return await _create_message_job(payload)
+    async def create_message_job(payload: MessagePayload) -> Any:
+        response = await _create_message_job(payload)
+        if response.get("success") is False:
+            return JSONResponse(content=response, status_code=_http_status_for_response(response))
+        return response
 
     @router.get("/runs/{run_id}")
     def get_run(run_id: str) -> JSONResponse:
@@ -854,7 +906,7 @@ try:
                 status_code=404,
             )
         payload = await _create_message_job(record.get("request") if isinstance(record.get("request"), dict) else {}, retry_of=run_id)
-        return JSONResponse(content=payload)
+        return JSONResponse(content=payload, status_code=_http_status_for_response(payload))
 
     @router.get("/runs/{run_id}/exports/{artifact_id}")
     def download_run_export(run_id: str, artifact_id: str) -> Response:

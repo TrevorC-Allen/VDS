@@ -223,6 +223,7 @@ class OutputContractTest(unittest.TestCase):
         self.assertFalse(response.success)
         self.assertIn("渠道口径", response.answer)
         self.assertIn("orders.channel_id -> channels.channel_code", response.answer)
+        self.assertIn("拦截这次低可信自动关联", response.answer)
         self.assertNotIn("城市口径", response.answer)
 
 

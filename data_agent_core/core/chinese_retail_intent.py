@@ -356,11 +356,17 @@ def parse_chinese_retail_question(
             output_format=output_format | {"answer_type": "number", "decimals": decimals or 2},
         )
 
-    if "计划拜访线路" in question and "合约店" in question and "分销数量" in question:
+    route_contract_quantity = (
+        ("计划拜访线路" in question or "线路计划" in question or ("计划拜访" in question and "线路" in question))
+        and ("合约店" in question or "合约门店" in question)
+        and ("分销数量" in question or "分销箱数" in question or "签收箱数" in question)
+    )
+    if route_contract_quantity:
         return make_logic_form(
             task_type="aggregation",
             operation="retail_route_contract_product_quantity",
             parameters={"person": person, "date": _date_text(business_date), "ym": ym, "product": product},
+            source_tables=["v_chl_route_plan_cust_cnt_1d_df", "终端客户月度维表", "v_trd_dist_ord_dtl"],
             output_format=output_format | {"answer_type": "number", "decimals": decimals or 3},
         )
 

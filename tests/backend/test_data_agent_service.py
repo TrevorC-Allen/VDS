@@ -357,6 +357,33 @@ class DataAgentServiceTest(unittest.TestCase):
         self.assertNotIn("dataset_id", uploaded_rule)
         self.assertNotIn("tables", uploaded_rule)
 
+    def test_dataset_bound_rule_file_is_auto_detected_without_rule_form_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sales_path = root / "sales.csv"
+            rule_path = root / "analysis_rules.md"
+            sales_path.write_text("city,sales\n上海,100\n北京,150\n", encoding="utf-8")
+            rule_path.write_text("回答只展示城市名称，不要返回数值。", encoding="utf-8")
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_dataset(sales_path, original_filename="sales.csv")
+            rule_upload = service.upload_datasets(
+                [rule_path],
+                original_filenames=["analysis_rules.md"],
+                bind_dataset_id=upload["dataset_id"],
+            )
+            profile = service.get_dataset_profile(upload["dataset_id"])
+
+        self.assertTrue(rule_upload["success"], rule_upload.get("errors"))
+        self.assertEqual("rule", rule_upload["file_role"])
+        self.assertEqual(upload["dataset_id"], rule_upload["bound_dataset_id"])
+        self.assertEqual(rule_upload["file_ids"], rule_upload["auto_bound_user_rule_file_ids"])
+        self.assertEqual(rule_upload["file_ids"], profile["auto_bound_user_rule_file_ids"])
+        self.assertEqual("analysis_rules.md", profile["auto_bound_rule_files"][0]["file_name"])
+
     def test_bound_rule_upload_uses_bound_dataset_id_not_dataset_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

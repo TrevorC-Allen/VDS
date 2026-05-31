@@ -446,6 +446,18 @@ class Phase8MultiTableCapabilityTest(unittest.TestCase):
         self.assertEqual({202601: 350, 202602: 180}, {row["stat_month"]: row["sales"] for row in executed["result"].value})
         self.assertTrue(verification.passed, verification.issues)
 
+    def test_natural_dimension_aliases_bind_to_semantic_fields(self) -> None:
+        source_case = _execute("哪个来源销售额最高？", {"sales": pd.DataFrame({"city": ["北京", "上海"], "source": ["线上", "线下"], "sales": [80, 120]})})
+        category_case = _execute("哪个品类销售额最高？", {"sales": pd.DataFrame({"city": ["北京", "上海"], "product_line": ["饮料", "食品"], "sales": [80, 120]})})
+        month_case = _execute("按月度展示销售额趋势。", {"sales": pd.DataFrame({"city": ["北京", "上海"], "period": ["2026-01", "2026-02"], "sales": [80, 120]})})
+
+        self.assertEqual("source", source_case["logic"].parameters["dimension"])
+        self.assertEqual([{"source": "线下", "sales": 120}], source_case["result"].value)
+        self.assertEqual("product_line", category_case["logic"].parameters["dimension"])
+        self.assertEqual([{"product_line": "食品", "sales": 120}], category_case["result"].value)
+        self.assertEqual("period", month_case["logic"].parameters["dimension"])
+        self.assertEqual({"2026-01": 80, "2026-02": 120}, {row["period"]: row["sales"] for row in month_case["result"].value})
+
     def test_missing_channel_dimension_is_blocked_instead_of_city_fallback(self) -> None:
         tables = {"sales": pd.DataFrame({"city": ["北京", "上海"], "sales": [280, 100]})}
         executed = _execute("哪个渠道销售额最高？", tables)

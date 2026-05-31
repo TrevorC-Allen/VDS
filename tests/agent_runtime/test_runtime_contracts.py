@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import unittest
 
+import pandas as pd
+
 from agent_runtime.agent_result import AgentResult
 from agent_runtime.agent_role import AgentRole
 from agent_runtime.agent_task import AgentTask
@@ -74,6 +76,39 @@ class AgentRuntimeContractTest(unittest.TestCase):
         corrected = result.output_payload["corrected_logic_form"]
         self.assertEqual("sales_channel", corrected["parameters"]["dimension"])
         self.assertIn("corrected_dimension_binding=sales_channel", corrected["table_selection_reason"])
+        self.assertTrue(state.correction_attempts[-1]["needs_correction"])
+
+    def test_dimension_binding_repair_uses_runtime_columns_when_action_lacks_candidates(self) -> None:
+        runtime = DataAnalysisRoleRuntime(
+            dataset_id="ds_1",
+            context={"tables": {"sales": pd.DataFrame({"city": ["北京"], "sales_channel": ["线上"], "sales": [100]})}},
+            llm_client=MockLLMClient(),
+        )
+        state = WorkflowState(dataset_id="ds_1", question="哪个渠道销售额最高？")
+        state.logic_form = {
+            "task_type": "ranking",
+            "operation": "ranking",
+            "parameters": {"table": "sales", "metric": "sales", "dimension": "city"},
+            "output_format": {"answer_type": "table"},
+        }
+        state.verification = {
+            "passed": False,
+            "correction_action": {
+                "action": "repair_dimension_binding",
+                "requested_dimensions": ["channel"],
+                "actual_dimension": "city",
+            },
+        }
+
+        result = runtime.run_correction(
+            AgentTask(task_id="correction", role=AgentRole.CORRECTION, input_payload={}),
+            state,
+            guidelines="",
+        )
+
+        corrected = result.output_payload["corrected_logic_form"]
+        self.assertEqual("sales_channel", corrected["parameters"]["dimension"])
+        self.assertEqual(["city", "sales_channel", "sales"], result.output_payload["correction_action"]["available_columns"])
         self.assertTrue(state.correction_attempts[-1]["needs_correction"])
 
 

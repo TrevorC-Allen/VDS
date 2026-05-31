@@ -5,6 +5,8 @@ const WORKBENCH_SYNC_CHANNEL = "vds-workbench-sync";
 const WORKBENCH_SYNC_PULSE_KEY = "vds-workbench-sync-pulse";
 const LEGACY_MESSAGE_ENDPOINT = "/api/data-agent/message";
 const JOB_MESSAGE_ENDPOINT = "/api/data-agent/message/jobs";
+const SUPPORTED_AGENT_MODES = new Set(["multi_agent", "single_agent"]);
+const SUPPORTED_EXECUTION_MODES = new Set(["auto", "dual", "pandas", "sql"]);
 const MAX_MONITOR_RUN_RECORDS = 80;
 const HISTORY_LOAD_BATCH = 30;
 const SLOW_RUN_THRESHOLD_MS = 15000;
@@ -515,6 +517,55 @@ function setRuleFileStatus(message, tone = "empty") {
   el.ruleFileStatus.title = message;
   el.ruleFileStatus.classList.remove(...RULE_FILE_STATUS_TONES.map((item) => `is-${item}`));
   el.ruleFileStatus.classList.add(`is-${safeTone}`);
+  el.ruleFileStatus.classList.toggle("hidden", safeTone === "empty" || !message);
+}
+
+function profileRuleFileIds(profile) {
+  return uniqueRuleFileIds([
+    ...(Array.isArray(profile?.auto_bound_user_rule_file_ids) ? profile.auto_bound_user_rule_file_ids : []),
+    ...(Array.isArray(profile?.auto_bound_rule_files) ? profile.auto_bound_rule_files.map((file) => file?.file_id) : []),
+  ]);
+}
+
+function ruleUploadFileIds(result) {
+  return uniqueRuleFileIds([
+    result?.file_id,
+    ...(Array.isArray(result?.file_ids) ? result.file_ids : []),
+    ...(Array.isArray(result?.files) ? result.files.map((file) => file?.file_id) : []),
+    ...profileRuleFileIds(result),
+  ]);
+}
+
+function uniqueRuleFileIds(values) {
+  const ids = [];
+  (values || []).forEach((value) => {
+    const id = String(value || "").trim();
+    if (id && !ids.includes(id)) ids.push(id);
+  });
+  return ids;
+}
+
+function applyUserRuleFileIds(ids, { replace = false } = {}) {
+  const nextIds = uniqueRuleFileIds(replace ? ids : [...splitRuleFileIds(state.userRuleFileId), ...ids]);
+  state.userRuleFileId = nextIds.join(",");
+  state.autoRuleFileIds = uniqueRuleFileIds(replace ? ids : [...state.autoRuleFileIds, ...ids]);
+  state.ruleModeEnabled = Boolean(state.userRuleFileId);
+  return nextIds;
+}
+
+function splitRuleFileIds(value) {
+  return uniqueRuleFileIds(String(value || "").split(","));
+}
+
+function ruleUploadFileNames(result, fallbackFiles = []) {
+  const names = [
+    result?.file_name,
+    ...(Array.isArray(result?.files) ? result.files.map((file) => file?.file_name || file?.name) : []),
+    ...(Array.isArray(result?.auto_bound_rule_files) ? result.auto_bound_rule_files.map((file) => file?.file_name || file?.name) : []),
+  ]
+    .map((name) => String(name || "").trim())
+    .filter(Boolean);
+  return uniqueNames(names.length ? names : fallbackFiles.map((file) => file.name));
 }
 
 function updateRuleMode() {
@@ -785,26 +836,44 @@ async function uploadFiles() {
     const payload = new FormData();
     const endpoint = state.projectId
       ? `/api/data-agent/projects/${encodeURIComponent(state.projectId)}/sources/upload`
-      : files.length === 1
-        ? "/api/data-agent/upload"
-        : "/api/data-agent/upload-batch";
-    if (!state.projectId && files.length === 1) {
-      payload.append("file", files[0]);
-    } else {
-      files.forEach((file) => payload.append("files", file));
-    }
+      : "/api/data-agent/upload-batch";
+    files.forEach((file) => payload.append("files", file));
+    if (state.datasetId) payload.append("bind_dataset_id", state.datasetId);
     const response = await fetch(endpoint, { method: "POST", body: payload });
     const profile = await response.json();
     if (!response.ok || !profile.success) {
       throw new Error(errorText(profile) || `HTTP ${response.status}`);
+    }
+    const ruleOnlyFileIds = profile?.file_role === "rule" ? ruleUploadFileIds(profile) : [];
+    if (ruleOnlyFileIds.length) {
+      applyUserRuleFileIds(ruleOnlyFileIds);
+      state.fileRecords = buildReadyFileRecords(files, profile);
+      state.hasPendingUpload = false;
+      setRuleFileStatus(
+        `${ruleUploadFileNames(profile, files).length || ruleOnlyFileIds.length} 个规则文件已自动识别并启用`,
+        "ready",
+      );
+      setApiStatus("ready", "规则文件已自动识别并启用");
+      renderFilePanel();
+      el.fileSummary.textContent = "查看文件";
+      el.fileDetail.textContent = `${files.length} 个文件已就绪`;
+      updateBenchmarkButtons();
+      return profile;
     }
     const hasDatasetProfile = Boolean(profile.dataset_id);
     const hasSourceOnlyProfile = hasDatasetProfile && (profile.dataset_kind === "uploaded_sources" || (profile.source_file_count && !(profile.tables || []).length));
     if (hasDatasetProfile) {
       state.profile = profile;
       state.datasetId = profile.dataset_id;
-      state.autoRuleFileIds = profile.auto_bound_user_rule_file_ids || [];
-      state.userRuleFileId = state.autoRuleFileIds[0] || state.userRuleFileId || "";
+      const autoRuleFileIds = profileRuleFileIds(profile);
+      if (autoRuleFileIds.length) {
+        applyUserRuleFileIds(autoRuleFileIds, { replace: true });
+      } else {
+        state.autoRuleFileIds = [];
+        state.userRuleFileId = "";
+        state.ruleModeEnabled = false;
+        setRuleFileStatus(RULE_FILE_EMPTY_HINT, "empty");
+      }
       state.selectedTable = profile.tables?.[0]?.table_name || "";
     }
     state.fileRecords = buildReadyFileRecords(files, profile);
@@ -912,8 +981,15 @@ async function uploadProjectSourceFiles(files) {
     if (result.dataset_id) {
       state.profile = result;
       state.datasetId = result.dataset_id;
-      state.autoRuleFileIds = result.auto_bound_user_rule_file_ids || [];
-      state.userRuleFileId = state.autoRuleFileIds[0] || state.userRuleFileId || "";
+      const autoRuleFileIds = profileRuleFileIds(result);
+      if (autoRuleFileIds.length) {
+        applyUserRuleFileIds(autoRuleFileIds, { replace: true });
+      } else {
+        state.autoRuleFileIds = [];
+        state.userRuleFileId = "";
+        state.ruleModeEnabled = false;
+        setRuleFileStatus(RULE_FILE_EMPTY_HINT, "empty");
+      }
       state.selectedTable = result.tables?.[0]?.table_name || "";
       renderProfile();
     }
@@ -955,6 +1031,13 @@ async function runAnalysis() {
       return;
     }
   }
+  const requestError = validateRunRequestState();
+  if (requestError) {
+    setApiStatus("error", requestError);
+    renderUserFacingError("无法开始分析", requestError);
+    updateRunButton();
+    return;
+  }
   state.isAnalyzing = true;
   el.runButton.disabled = true;
   const submittedAt = new Date().toISOString();
@@ -980,8 +1063,8 @@ async function runAnalysis() {
         conversation_id: state.conversationId,
         project_id: messageProjectId,
         question,
-        execution_mode: el.executionMode.value,
-        agent_mode: el.agentMode.value,
+        execution_mode: currentExecutionMode(),
+        agent_mode: currentAgentMode(),
         user_rule_file_id: state.userRuleFileId || "",
         monitor_run_id: monitorRunId,
       }),
@@ -2694,6 +2777,33 @@ function updateRunButton() {
   updateBenchmarkButtons();
 }
 
+function currentAgentMode() {
+  const value = el.agentMode?.value || "multi_agent";
+  return SUPPORTED_AGENT_MODES.has(value) ? value : "";
+}
+
+function currentExecutionMode() {
+  const value = el.executionMode?.value || "dual";
+  return SUPPORTED_EXECUTION_MODES.has(value) ? value : "";
+}
+
+function validateRunRequestState() {
+  if (!currentAgentMode()) {
+    return "Agent 模式不支持，请选择 multi_agent 或 single_agent。";
+  }
+  if (!currentExecutionMode()) {
+    return "执行模式不支持，请选择 auto、dual、pandas 或 sql。";
+  }
+  if (state.datasetId) {
+    const profileDatasetId = state.profile?.dataset_id || "";
+    const datasetReady = state.profile && state.profile.can_analyze !== false && (!profileDatasetId || profileDatasetId === state.datasetId);
+    if (!datasetReady) {
+      return "当前数据记录不可用，请重新上传数据文件。";
+    }
+  }
+  return "";
+}
+
 function currentMessageProjectId() {
   if (!state.projectId) return "";
   return state.conversationId || state.projectDraftActive ? state.projectId : "";
@@ -2711,6 +2821,12 @@ function updateBenchmarkButtons() {
 async function runBenchmark() {
   if (!state.datasetId) {
     if (el.benchmarkStatus) el.benchmarkStatus.textContent = "请先上传数据文件";
+    return;
+  }
+  const requestError = validateRunRequestState();
+  if (requestError) {
+    if (el.benchmarkStatus) el.benchmarkStatus.textContent = requestError;
+    setApiStatus("error", requestError);
     return;
   }
   if (state.hasPendingBenchmarkRuleUpload) {
@@ -2731,8 +2847,8 @@ async function runBenchmark() {
         dataset_id: state.datasetId,
         benchmark_rule_file_id: state.benchmarkRuleFileId,
         user_rule_file_id: state.ruleModeEnabled ? state.userRuleFileId : "",
-        execution_mode: el.executionMode.value,
-        agent_mode: el.agentMode.value,
+        execution_mode: currentExecutionMode(),
+        agent_mode: currentAgentMode(),
       }),
     });
     const result = await response.json();
@@ -6205,8 +6321,8 @@ async function restoreDatasetProfile(datasetId) {
     }
     state.profile = profile;
     state.datasetId = profile.dataset_id || datasetId;
-    state.autoRuleFileIds = profile.auto_bound_user_rule_file_ids || [];
-    state.userRuleFileId = state.autoRuleFileIds[0] || "";
+    const autoRuleFileIds = profileRuleFileIds(profile);
+    applyUserRuleFileIds(autoRuleFileIds, { replace: true });
     state.selectedTable = profile.tables?.[0]?.table_name || "";
     renderProfile();
     if (profile.can_analyze === false) {
@@ -6394,8 +6510,8 @@ function startMonitorRun(question) {
     question,
     dataset_id: state.datasetId,
     conversation_id: state.conversationId,
-    execution_mode: el.executionMode.value,
-    agent_mode: el.agentMode.value,
+    execution_mode: currentExecutionMode() || "dual",
+    agent_mode: currentAgentMode() || "multi_agent",
     status: "running",
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),

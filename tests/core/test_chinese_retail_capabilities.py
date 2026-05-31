@@ -250,6 +250,16 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.assertTrue(verification.passed, verification.issues)
         self.assertEqual(answer, "0.000")
 
+    def test_route_contract_product_quantity_accepts_retail_synonyms(self) -> None:
+        question = "张三在2026-05-19线路计划里的合约门店，2026年5月东方树叶签收箱数是多少？"
+        logic, result, verification, answer = self._verified_logic_result(question, "答案只返回数字，保留3位小数。")
+
+        self.assertEqual("retail_route_contract_product_quantity", logic.operation)
+        self.assertEqual(["v_chl_route_plan_cust_cnt_1d_df", "终端客户月度维表", "v_trd_dist_ord_dtl"], logic.source_tables)
+        self.assertTrue(result.success, result.errors)
+        self.assertTrue(verification.passed, verification.issues)
+        self.assertEqual(answer, "0.000")
+
     def test_daily_progress_rate_uses_today_amount_target_and_dist_days(self) -> None:
         answer = self._answer("以2026-05-19为业务日期，张三当天分销金额相对日目标的分销进度是多少？", "答案只返回百分比，保留2位小数。日目标=2026年5月分销目标/2026年5月分销天数。")
         self.assertEqual(answer, "100.00%")

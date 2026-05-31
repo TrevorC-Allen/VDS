@@ -174,8 +174,10 @@ def _semantic_failure_answer(user_question: UserQuestion, plan: AnalysisPlan, ve
             risk = "，且存在多对多风险" if join_plan.get("many_to_many_risk") else ""
             overlap_text = f"，当前键值重叠率约 {float(overlap):.0%}" if isinstance(overlap, (int, float)) else ""
             reason_text = f"；原因是 {reason}" if reason else ""
+            guard_text = "我已拦截这次低可信自动关联，避免把跨表数据误算成已验证结果。"
             return (
                 f"这个问题需要先确认跨表关联，不能直接把单表结果当成{dimension_label}口径。"
+                f"{guard_text}"
                 f"建议检查关联键：{left_table}.{left_key} -> {right_table}.{right_key}{overlap_text}{risk}{reason_text}。"
                 f"确认后我才能按{dimension_label}汇总或排名{metric_label}。"
             )
@@ -186,7 +188,8 @@ def _semantic_failure_answer(user_question: UserQuestion, plan: AnalysisPlan, ve
         reason_text = f"原因是 {reason}，" if reason else ""
         return (
             f"这个问题需要{source_text}之间的可信关联，{actual_text}{reason_text}"
-            f"不能直接把结果当成{dimension_label}口径。请先确认关联键或选择包含{dimension_label}字段的数据表，"
+            f"不能直接把结果当成{dimension_label}口径。我已拦截这次低可信自动关联，避免误算。"
+            f"请先确认关联键或选择包含{dimension_label}字段的数据表，"
             f"确认后我才能按{dimension_label}汇总或排名{metric_label}。"
         )
     if action_name == "repair_dimension_binding":

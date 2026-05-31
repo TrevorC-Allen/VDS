@@ -2618,7 +2618,7 @@ p {
 
 .composer.has-files {
   display: grid;
-  grid-template-columns: 34px auto minmax(180px, 1fr) 36px;
+  grid-template-columns: 36px minmax(180px, 1fr) 36px;
   align-items: center;
   column-gap: 8px;
   row-gap: 8px;
@@ -2631,7 +2631,7 @@ p {
 
 .composer.has-files .composer-input {
   grid-row: 2;
-  grid-column: 3;
+  grid-column: 2;
   min-height: 36px;
   max-height: 92px;
   border-left: 1px solid #d1d5db;
@@ -2657,7 +2657,7 @@ p {
 
 .composer.has-files .button.primary {
   grid-row: 2;
-  grid-column: 4;
+  grid-column: 3;
   margin-right: 0;
 }
 
@@ -2850,12 +2850,15 @@ ms-editor-squiggler,
 }
 
 .data-file-button {
+  width: 36px;
+  height: 36px;
   min-height: 34px;
   flex: 0 0 auto;
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
-  font-weight: 640;
+  border-color: transparent;
+  padding: 0;
+  background: transparent;
+  color: #374151;
+  font-weight: 560;
 }
 
 .data-file-button::before {
@@ -2863,26 +2866,23 @@ ms-editor-squiggler,
 }
 
 .data-file-button:hover {
-  border-color: var(--accent-dark);
-  background: var(--accent-dark);
+  border-color: transparent;
+  background: #f3f4f6;
+  color: #111827;
 }
 
 .data-file-button svg {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
 }
 
 .composer.has-files .data-file-button {
   grid-row: 2;
   grid-column: 1;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   min-height: 34px;
-  border-color: transparent;
-  padding: 0;
-  background: transparent;
-  color: #374151;
-  font-size: 0;
 }
 
 .composer.has-files .data-file-button:hover {
@@ -2891,38 +2891,8 @@ ms-editor-squiggler,
   color: #111827;
 }
 
-.composer.has-files .data-file-button svg,
-.composer.has-files .data-file-button span {
-  display: none;
-}
-
-.composer.has-files .data-file-button::before {
-  content: "+";
-  font-size: 25px;
-  font-weight: 300;
-  line-height: 1;
-}
-
-.composer.has-files .rule-file-button {
-  grid-row: 2;
-  grid-column: 2;
-  min-height: 32px;
-  border: 1px solid #e5e7eb;
-  padding: 5px 10px;
-  background: #fff;
-  color: #4b5563;
-  font-weight: 560;
-  white-space: nowrap;
-}
-
-.composer.has-files .rule-file-button:hover {
-  border-color: #d1d5db;
-  background: #f9fafb;
-  color: #111827;
-}
-
 .rule-file-button {
-  display: inline-flex;
+  display: none;
   min-height: 30px;
   flex: 0 0 auto;
   align-items: center;
@@ -4081,12 +4051,8 @@ select {
     flex-basis: auto;
   }
 
-  .composer.has-files .rule-file-button {
-    display: none;
-  }
-
   .composer.has-files {
-    grid-template-columns: 34px minmax(0, 1fr) 36px;
+    grid-template-columns: 36px minmax(0, 1fr) 36px;
   }
 
   .composer.has-files .composer-input {
