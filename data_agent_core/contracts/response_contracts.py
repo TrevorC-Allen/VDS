@@ -18,6 +18,7 @@ class InsightResult:
     business_suggestions: list[str] = field(default_factory=list)
     caveats: list[str] = field(default_factory=list)
     next_questions: list[str] = field(default_factory=list)
+    next_actions: list[dict[str, Any]] = field(default_factory=list)
     evidence_rows: list[dict[str, Any]] = field(default_factory=list)
     confidence: float = 0.0
 

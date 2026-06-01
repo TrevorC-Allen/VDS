@@ -313,6 +313,7 @@ class Phase10ResultExperienceTest(unittest.TestCase):
         self.assertTrue(insight.business_suggestions)
         self.assertLessEqual(len(insight.business_suggestions), 1)
         self.assertIn("下一步", insight.business_suggestions[0])
+        self.assertNotIn("客户、城市、产品或渠道", insight.business_suggestions[0])
         self.assertGreater(insight.confidence, 0)
 
     def test_insight_generator_tailors_next_questions_to_plan_context(self) -> None:
@@ -338,6 +339,56 @@ class Phase10ResultExperienceTest(unittest.TestCase):
         self.assertIn("销售额", joined)
         self.assertIn("城市", joined)
         self.assertNotIn("异常值来自哪些明细记录", joined)
+
+    def test_retail_trend_next_questions_are_executable_followups(self) -> None:
+        result = ExecutionResult(
+            backend="pandas",
+            success=True,
+            columns=["月份", "天然水", "东方树叶"],
+            rows=[
+                {"月份": "2025年1月", "天然水": 100, "东方树叶": 40},
+                {"月份": "2025年2月", "天然水": 120, "东方树叶": 60},
+            ],
+        )
+        plan = AnalysisPlan(
+            plan_id="plan_retail_trend",
+            logic_form=LogicForm(
+                task_type="trend",
+                operation="retail_category_distribution_monthly_trend",
+                parameters={"start_ym": 202501, "end_ym": 202505},
+            ),
+        )
+
+        insight = generate_insight(
+            question="请展示2025年1月至5月分品类历史分销金额趋势，选总金额最高的5个品类，生成折线图。",
+            plan=plan,
+            execution_result=result,
+            verification_passed=True,
+        )
+
+        joined = " ".join(insight.next_questions)
+        self.assertEqual(
+            [
+                "2025年1月至2025年5月分品类历史分销金额趋势，标出峰值、低点和最大波动期？",
+                "2025年1月至2025年5月历史分销金额按客户拆分来源 Top 排名？",
+                "2025年1月至2025年5月历史分销金额按产品拆分来源 Top 排名？",
+            ],
+            insight.next_questions,
+        )
+        self.assertEqual(
+            [
+                "retail_category_distribution_monthly_trend",
+                "retail_distribution_topn_chart",
+                "retail_distribution_topn_chart",
+            ],
+            [action["operation"] for action in insight.next_actions],
+        )
+        self.assertEqual(["ctg_name", "cust_name", "sku_name"], [action["dimension"] for action in insight.next_actions])
+        self.assertTrue(all(action["status"] == "executable" for action in insight.next_actions))
+        self.assertTrue(all(action["capability_family"] == "chinese_retail_business_metric" for action in insight.next_actions))
+        self.assertNotIn("累计金额和占比", joined)
+        self.assertNotIn("最近一期", joined)
+        self.assertNotIn("城市", joined)
 
     def test_data_quality_report_scans_missing_duplicates_and_outliers(self) -> None:
         df = pd.DataFrame(

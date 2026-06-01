@@ -180,10 +180,10 @@ def _strip_blocked_payload(value: Any) -> Any:
 def _write_result_csv(exports_dir: Path, run_id: str, columns: list[str], rows: list[dict[str, Any]]) -> dict[str, Any]:
     path = exports_dir / "result_table.csv"
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
+        writer = csv.writer(handle)
+        writer.writerow([_safe_spreadsheet_cell(column) for column in columns])
         for row in rows:
-            writer.writerow({column: _safe_spreadsheet_cell(row.get(column)) for column in columns})
+            writer.writerow([_safe_spreadsheet_cell(row.get(column)) for column in columns])
     return _artifact(run_id, "result_table_csv", "result_table", "csv", "结果表 CSV", "text/csv; charset=utf-8", path.name)
 
 
@@ -195,7 +195,7 @@ def _write_result_xlsx(exports_dir: Path, run_id: str, columns: list[str], rows:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Result"
-    sheet.append(columns)
+    sheet.append([_safe_spreadsheet_cell(column) for column in columns])
     for cell in sheet[1]:
         cell.font = Font(bold=True)
     for row in rows:
@@ -222,11 +222,11 @@ def _write_summary_xlsx(
     summary = workbook.active
     summary.title = "Summary"
     summary.append(["Field", "Value"])
-    summary.append(["Question", stable.get("question") or ""])
-    summary.append(["Answer", stable.get("answer") or ""])
-    summary.append(["Insight", (stable.get("insight") or {}).get("summary") or ""])
-    summary.append(["Process", stable.get("process_summary") or ""])
-    summary.append(["Caveats", "\n".join(stable.get("caveats") or [])])
+    summary.append(["Question", _safe_spreadsheet_cell(stable.get("question") or "")])
+    summary.append(["Answer", _safe_spreadsheet_cell(stable.get("answer") or "")])
+    summary.append(["Insight", _safe_spreadsheet_cell((stable.get("insight") or {}).get("summary") or "")])
+    summary.append(["Process", _safe_spreadsheet_cell(stable.get("process_summary") or "")])
+    summary.append(["Caveats", _safe_spreadsheet_cell("\n".join(stable.get("caveats") or []))])
     for cell in summary[1]:
         cell.font = Font(bold=True)
     for row in summary.iter_rows():
@@ -237,7 +237,7 @@ def _write_summary_xlsx(
 
     result_sheet = workbook.create_sheet("Result")
     if columns and rows:
-        result_sheet.append(columns)
+        result_sheet.append([_safe_spreadsheet_cell(column) for column in columns])
         for cell in result_sheet[1]:
             cell.font = Font(bold=True)
         for row in rows[:1000]:
@@ -253,8 +253,10 @@ def _write_summary_xlsx(
             continue
         sources_sheet.append(
             [
-                source.get("file_name") or "",
-                ", ".join(str(table.get("table_name") or "") for table in source.get("tables") or [] if isinstance(table, dict)),
+                _safe_spreadsheet_cell(source.get("file_name") or ""),
+                _safe_spreadsheet_cell(
+                    ", ".join(str(table.get("table_name") or "") for table in source.get("tables") or [] if isinstance(table, dict))
+                ),
                 source.get("row_count") or "",
             ]
         )
@@ -294,7 +296,8 @@ def _write_summary_pdf(exports_dir: Path, run_id: str, stable: dict[str, Any]) -
         f"Process: {stable.get('process_summary') or ''}",
     ]
     if not _write_pdf_with_soffice(path, lines):
-        _write_minimal_pdf(path, lines)
+        if not _write_pdf_with_reportlab(path, lines):
+            _write_minimal_pdf(path, lines)
     return _artifact(run_id, "summary_pdf", "summary_report", "pdf", "PDF 摘要", "application/pdf", path.name)
 
 
@@ -302,14 +305,17 @@ def _write_chart_fallback(exports_dir: Path, run_id: str, chart: dict[str, Any])
     data_uri = str(chart.get("image_data_uri") or "")
     if data_uri.startswith("data:image/"):
         header, _, encoded = data_uri.partition(",")
-        match = re.match(r"data:image/([a-zA-Z0-9.+-]+);base64", header)
+        match = re.match(r"data:image/([^;,]+)(?:;[^,]*)*;base64", header, re.IGNORECASE)
         if match and encoded:
-            extension = "jpg" if match.group(1).lower() in {"jpeg", "jpg"} else match.group(1).lower()
+            extension = _image_extension_from_mime_subtype(match.group(1))
             if extension not in {"png", "jpg", "jpeg", "svg", "webp"}:
                 extension = "png"
             path = exports_dir / f"chart.{extension}"
             path.write_bytes(base64.b64decode(encoded))
-            mime_type = f"image/{'jpeg' if extension in {'jpg', 'jpeg'} else extension}"
+            if extension == "svg":
+                mime_type = "image/svg+xml"
+            else:
+                mime_type = f"image/{'jpeg' if extension in {'jpg', 'jpeg'} else extension}"
             return _artifact(run_id, f"chart_{extension}", "chart", extension, f"图表 {extension.upper()}", mime_type, path.name)
     svg = str(chart.get("svg") or "")
     if svg.strip().startswith("<svg"):
@@ -353,6 +359,37 @@ def _summary_html(lines: list[str]) -> str:
         "p{margin:0 0 10px;white-space:pre-wrap;}</style></head><body>"
         f"{body}</body></html>"
     )
+
+
+def _write_pdf_with_reportlab(path: Path, lines: list[str]) -> bool:
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        from reportlab.pdfgen import canvas
+    except Exception:
+        return False
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+        _, page_height = letter
+        doc = canvas.Canvas(str(path), pagesize=letter)
+        doc.setTitle("VDS Summary Report")
+        y = page_height - 52
+        for line in lines[:60]:
+            wrapped = _wrap_pdf_line(str(line), limit=88) if line else [""]
+            for segment in wrapped:
+                if y < 52:
+                    doc.showPage()
+                    y = page_height - 52
+                doc.setFont("STSong-Light", 12)
+                doc.drawString(52, y, segment)
+                y -= 18
+            if line:
+                y -= 4
+        doc.save()
+        return path.exists() and path.stat().st_size > 0
+    except Exception:
+        return False
 
 
 def _write_minimal_pdf(path: Path, lines: list[str]) -> None:
@@ -476,13 +513,27 @@ def _unavailable(artifact_type: str, fmt: str, reason: str) -> dict[str, str]:
 
 
 def _safe_spreadsheet_cell(value: Any) -> Any:
-    if isinstance(value, str) and value[:1] in {"=", "+", "-", "@"}:
+    if isinstance(value, str) and _looks_like_spreadsheet_formula(value):
         return "'" + value
     return value
 
 
+def _looks_like_spreadsheet_formula(value: str) -> bool:
+    text = str(value or "")
+    return bool(text) and (text[0] in {"=", "+", "-", "@", "\t", "\r", "\n"} or text.lstrip()[:1] in {"=", "+", "-", "@"})
+
+
 def _xlsx_mime() -> str:
     return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _image_extension_from_mime_subtype(value: str) -> str:
+    subtype = str(value or "").strip().lower()
+    if subtype in {"jpeg", "jpg", "pjpeg"}:
+        return "jpg"
+    if subtype in {"svg", "svg+xml"}:
+        return "svg"
+    return subtype
 
 
 def _safe_run_id(value: str) -> str:
@@ -498,6 +549,11 @@ def _safe_artifact_id(value: str) -> str:
 def _clip(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _wrap_pdf_line(value: str, *, limit: int) -> list[str]:
+    text = str(value or "").replace("\n", " ")
+    return [text[index : index + limit] for index in range(0, len(text), limit)] or [""]
 
 
 def _pdf_ascii(value: Any) -> str:

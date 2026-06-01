@@ -69,7 +69,11 @@ def apply_text_answer_framework(response: dict[str, Any], *, question: str) -> d
         if not str(insight.get("summary") or "").strip():
             insight["summary"] = _first_sentence(_strip_heading_prefix(_core_conclusion(context)), limit=180)
         next_questions = _next_questions(context)
-        if next_questions and not insight.get("next_questions"):
+        scalar_value_context = _is_scalar_value_context(
+            answer_type=str(response.get("answer_type") or ""),
+            operation=str(context.logic_form.get("operation") or ""),
+        )
+        if next_questions and (scalar_value_context or not insight.get("next_questions")):
             insight["next_questions"] = next_questions[:3]
         insight["confidence"] = max(float(insight.get("confidence") or 0.0), 0.82)
     _mark_debug(response, applied=True, reason=f"kind={kind}")
@@ -120,6 +124,10 @@ def _classify_kind(question: str, response: dict[str, Any]) -> str:
         return "cleaning"
     if answer_type == "overview" or "overview" in operation or any(token in text for token in ("主要讲什么", "概览", "看一下这个数据", "字段含义", "有哪些字段")):
         return "overview"
+    if operation in {"retail_route_scope_metric_summary", "retail_route_scope_difference_reason"}:
+        return "analysis"
+    if _is_scalar_value_context(answer_type=answer_type, operation=operation):
+        return "analysis"
     if any(token in text for token in ("完成率", "目标", "实际", "达标", "target", "actual", "achievement")):
         return "target_actual"
     if any(token in text for token in ("趋势", "环比", "同比", "增长", "下降", "波动", "trend", "mom", "yoy", "growth")):
@@ -151,6 +159,10 @@ def _compose_frame(context: _FrameContext) -> str:
     for index, question in enumerate(next_questions[:3], start=1):
         parts.append(f"{index}. {_strip_sentence_punctuation(question)}？" if not str(question).strip().endswith(("?", "？")) else f"{index}. {question}")
     return _sanitize_text("\n".join(parts))
+
+
+def _is_scalar_value_context(*, answer_type: str, operation: str) -> bool:
+    return answer_type in {"number", "percentage"} and operation not in {"ranking", "top_count", "topn", "filtered_metric_ranking"}
 
 
 def _core_conclusion(context: _FrameContext) -> str:
@@ -236,11 +248,16 @@ def _fallback_core(context: _FrameContext) -> str:
     first = _first_sentence(context.original_answer, limit=220)
     if first and first.lower() != "not applicable":
         return first
+    answer_type = str(context.response.get("answer_type") or "")
+    if answer_type in {"number", "percentage"}:
+        value = context.result.get("value")
+        if value not in (None, "", []):
+            return f"已基于已验证结果得到 {_format_cell_value(value, 'answer')}"
     row_text = _top_result_text(context)
     if row_text:
         return row_text
     value = context.result.get("value")
-    if value not in {None, "", []}:
+    if value not in (None, "", []):
         return f"已基于已验证结果得到 {str(value)[:120]}"
     return "已基于当前可验证的数据完成分析，具体结果和边界见下方"
 
@@ -726,7 +743,17 @@ def _verification_note_scope(value: Any) -> str:
 def _next_questions(context: _FrameContext) -> list[str]:
     insight = _as_dict(context.response.get("insight"))
     existing = [str(item).strip() for item in insight.get("next_questions") or [] if _safe_question(item)]
-    if context.kind == "overview":
+    if _is_scalar_value_context(
+        answer_type=str(context.response.get("answer_type") or ""),
+        operation=str(context.logic_form.get("operation") or ""),
+    ):
+        existing = []
+        generated = [
+            "按关键维度拆解这个数值",
+            "对比相邻时间段或相关对象的同一指标",
+            "检查异常值、缺失值或规则口径是否影响该数值",
+        ]
+    elif context.kind == "overview":
         generated = [
             "按核心指标做一次 TopN 排名",
             "看时间趋势和最大波动月份",

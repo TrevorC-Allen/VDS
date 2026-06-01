@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.services.data_agent_service import DataAgentService
+from backend.services.data_agent_service import DataAgentService, _looks_like_correction_request
 from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.llm.client import MockLLMClient
 
@@ -130,6 +130,267 @@ class DataAgentMessageSemanticsTest(unittest.TestCase):
         self.assertEqual("missing_revised_formula", response["correction_context"]["reason"])
         self.assertEqual([], response["result"]["rows"])
         self.assertIn("利润率=sum利润/sum销售", response["answer"])
+
+    def test_message_followup_high_low_slash_is_not_formula_correction(self) -> None:
+        self.assertFalse(_looks_like_correction_request("先复核这些异常高/低点是否为真实业务事件，再按客户拆分来源。"))
+        self.assertTrue(_looks_like_correction_request("不是这个口径，用利润率=sum利润/sum销售重新算"))
+
+    def test_message_short_drilldown_followup_reuses_previous_retail_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "v_trd_dist_ord_dtl.csv"
+            csv_path.write_text(
+                "sign_time,sign_amt,emp_name,cust_code,cust_name,ctg_name,sku_name\n"
+                "2026-04-01,100,张三,C1,一号店,天然水,S1\n"
+                "2026-05-01,200,李四,C2,二号店,东方树叶,S2\n"
+                "2026-05-02,50,张三,C1,一号店,天然水,S1\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="v_trd_dist_ord_dtl.csv")
+            first = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="请展示2026年4月至5月分品类历史分销金额趋势，选总金额最高的2个品类，生成折线图。",
+            )
+            response = service.respond_to_message(
+                conversation_id=first["conversation_id"],
+                question="按客户拆分来源",
+            )
+
+        self.assertTrue(first["success"], first["errors"])
+        self.assertTrue(response["success"], response["errors"])
+        self.assertTrue(response["followup_context"]["is_followup"])
+        self.assertEqual("structured_followup_action", response["followup_context"]["reason"])
+        self.assertEqual("retail_distribution_topn_chart", response["logic_form"]["operation"])
+        self.assertEqual("cust_name", response["logic_form"]["parameters"]["dimension"])
+        self.assertEqual("二号店", response["result"]["rows"][0]["客户"])
+        self.assertEqual("analysis_ready", response["current_analysis_context"]["state_name"])
+        self.assertEqual("retail_distribution_topn_chart", response["current_analysis_context"]["operation"])
+        self.assertTrue(response["current_analysis_context"]["available_followup_actions"])
+
+    def test_message_compound_followup_executes_ordered_structured_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "v_trd_dist_ord_dtl.csv"
+            csv_path.write_text(
+                "sign_time,sign_amt,emp_name,cust_code,cust_name,ctg_name,sku_name\n"
+                "2026-04-01,100,张三,C1,一号店,天然水,S1\n"
+                "2026-05-01,200,李四,C2,二号店,东方树叶,S2\n"
+                "2026-05-02,50,张三,C1,一号店,天然水,S1\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="v_trd_dist_ord_dtl.csv")
+            first = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="请展示2026年4月至5月分品类历史分销金额趋势，选总金额最高的2个品类，生成折线图。",
+            )
+            response = service.respond_to_message(
+                conversation_id=first["conversation_id"],
+                question="先复核这些异常高/低点是否为真实业务事件，再按客户拆分来源。",
+            )
+
+        self.assertTrue(first["success"], first["errors"])
+        self.assertTrue(response["success"], response["errors"])
+        self.assertEqual("compound_analysis", response["answer_type"])
+        self.assertEqual("compound_followup_actions", response["followup_context"]["reason"])
+        self.assertEqual(
+            ["retail_category_distribution_monthly_trend", "retail_distribution_topn_chart"],
+            [action["result_operation"] for action in response["agent_actions"]],
+        )
+        self.assertEqual(
+            ["retail_category_distribution_monthly_trend", "retail_distribution_topn_chart"],
+            [item["logic_form"]["operation"] for item in response["result"]["sub_results"]],
+        )
+        self.assertIn("2 个结构化动作", response["answer"])
+        self.assertEqual("retail_distribution_topn_chart", response["current_analysis_context"]["operation"])
+        self.assertEqual("cust_name", response["current_analysis_context"]["scope"]["dimension"])
+
+    def test_message_llm_simulated_random_followup_sequence_keeps_agent_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "v_trd_dist_ord_dtl.csv"
+            csv_path.write_text(
+                "sign_time,sign_amt,emp_name,cust_code,cust_name,ctg_name,sku_name\n"
+                "2026-04-01,100,张三,C1,一号店,天然水,S1\n"
+                "2026-04-02,130,王五,C3,三号店,天然水,S3\n"
+                "2026-05-01,260,李四,C2,二号店,东方树叶,S2\n"
+                "2026-05-02,50,张三,C1,一号店,天然水,S1\n"
+                "2026-05-03,90,王五,C3,三号店,东方树叶,S2\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="v_trd_dist_ord_dtl.csv")
+            turns = [
+                "请展示2026年4月至5月分品类历史分销金额趋势，选总金额最高的2个品类，生成折线图。",
+                "这些高低点先复核一下",
+                "按客户拆分来源",
+                "按产品也看一下",
+            ]
+            responses = [service.respond_to_message(dataset_id=upload["dataset_id"], question=turns[0])]
+            for question in turns[1:]:
+                responses.append(service.respond_to_message(conversation_id=responses[-1]["conversation_id"], question=question))
+
+        self.assertTrue(all(response["success"] for response in responses), [response.get("errors") for response in responses])
+        self.assertEqual(responses[0]["conversation_id"], responses[-1]["conversation_id"])
+        self.assertEqual("retail_category_distribution_monthly_trend", responses[1]["logic_form"]["operation"])
+        self.assertEqual("retail_distribution_topn_chart", responses[2]["logic_form"]["operation"])
+        self.assertEqual("cust_name", responses[2]["logic_form"]["parameters"]["dimension"])
+        self.assertEqual("retail_distribution_topn_chart", responses[3]["logic_form"]["operation"])
+        self.assertEqual("sku_name", responses[3]["logic_form"]["parameters"]["dimension"])
+        self.assertEqual("analysis_ready", responses[-1]["current_analysis_context"]["state_name"])
+        self.assertGreaterEqual(responses[-1]["current_analysis_context"]["history_depth"], 4)
+
+    def test_message_retail_trend_uses_guardrail_when_llm_provider_fails(self) -> None:
+        class FailingLLMClient:
+            def complete_json(self, messages, temperature=0.0):  # noqa: ANN001
+                raise RuntimeError("provider unavailable")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "v_trd_dist_ord_dtl.csv"
+            csv_path.write_text(
+                "sign_time,sign_amt,cust_name,ctg_name,sku_name\n"
+                "2026-04-01,100,一号店,天然水,S1\n"
+                "2026-05-01,200,二号店,东方树叶,S2\n"
+                "2026-05-02,50,一号店,天然水,S1\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=FailingLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="v_trd_dist_ord_dtl.csv")
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="请展示2026年4月至5月分品类历史分销金额趋势，选总金额最高的2个品类，生成折线图。",
+            )
+
+        self.assertTrue(response["success"], response["errors"])
+        self.assertIn(response["logic_form"]["operation"], {"retail_category_distribution_monthly_trend", "aggregation"})
+        self.assertGreaterEqual(len(response["result"]["rows"]), 1)
+        self.assertNotIn("provider unavailable", response["answer"])
+
+    def test_message_retail_sales_composition_uses_fact_table_without_overview_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "v_trd_dist_ord_dtl.csv"
+            csv_path.write_text(
+                "ctg_name,sign_amt,sign_sales_amt_550_6d1_share,sign_time,cooperate_start_date,capacity,cmdt_name,emp_name,cust_code\n"
+                "天然水,100,0.2,2026-05-01,2024-01-01,550mL,天然水550,张三,C1\n"
+                "茶π,50,0.1,2026-05-02,2024-01-02,500mL,茶π500,李四,C2\n"
+                "天然水,80,0.3,2026-06-01,2024-02-01,550mL,天然水550,张三,C1\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="v_trd_dist_ord_dtl.csv")
+            response = service.respond_to_message(dataset_id=upload["dataset_id"], question="看一下天然水的销售组成")
+
+        self.assertTrue(response["success"], response["errors"])
+        self.assertEqual("aggregation", response["logic_form"]["operation"])
+        self.assertEqual("v_trd_dist_ord_dtl", response["logic_form"]["parameters"]["table"])
+        self.assertEqual("sign_amt", response["logic_form"]["parameters"]["metric"])
+        self.assertEqual("capacity", response["logic_form"]["parameters"]["dimension"])
+        self.assertEqual({"ctg_name": "天然水"}, response["logic_form"]["filters"])
+        self.assertEqual([{"capacity": "550mL", "sign_amt": 180}], response["result"]["rows"])
+        self.assertIsNone(response["debug"].get("raw_detail_answer_guard"))
+
+    def test_message_explicit_time_column_does_not_turn_rate_substring_into_share_metric(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "v_trd_dist_ord_dtl.csv"
+            csv_path.write_text(
+                "ctg_name,sign_amt,sign_sales_amt_550_6d1_share,sign_time,cooperate_start_date,capacity,emp_name,cust_code\n"
+                "天然水,100,0.2,2026-05-01,2024-01-01,550mL,张三,C1\n"
+                "天然水,80,0.3,2026-06-01,2024-02-01,550mL,张三,C1\n"
+                "茶π,50,0.1,2026-05-02,2024-01-02,500mL,李四,C2\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="v_trd_dist_ord_dtl.csv")
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="天然水销售金额随时间（cooperate_start_date）的趋势是怎样的？",
+            )
+
+        self.assertTrue(response["success"], response["errors"])
+        self.assertEqual("sign_amt", response["logic_form"]["parameters"]["metric"])
+        self.assertEqual("cooperate_start_date", response["logic_form"]["parameters"]["dimension"])
+        self.assertEqual(
+            [
+                {"cooperate_start_date": "2024-01-01", "sign_amt": 100},
+                {"cooperate_start_date": "2024-02-01", "sign_amt": 80},
+            ],
+            response["result"]["rows"],
+        )
+
+    def test_message_retail_route_scope_followups_keep_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            history = root / "v_trd_dist_ord_dtl.csv"
+            route = root / "v_chl_route_plan_cust_cnt_1d_df.csv"
+            customer = root / "终端客户月度维表.csv"
+            history.write_text(
+                "sign_time,sign_amt,sign_box_cnt,emp_name,p_emp_name,cust_code,cust_name,ctg_name,ord_status_name\n"
+                "2026-05-05,3275.093626,118.588969,赵云,刘备,C_IN,线路内店,天然水,已签收\n"
+                "2026-05-06,5000,200,马超振,刘备,C_OUT1,线路外店1,天然水,已签收\n"
+                "2026-05-07,3000,120,姜维,刘备,C_OUT2,线路外店2,东方树叶,已签收\n"
+                "2026-05-08,2417.495328,114.150701,俞恺,刘备,C_OUT3,线路外店3,茶π,已签收\n",
+                encoding="utf-8",
+            )
+            route.write_text(
+                "visit_date,cust_code,cust_name,emp_name,route_code\n"
+                "2026-05-19,C_IN,线路内店,赵云,R1\n",
+                encoding="utf-8",
+            )
+            customer.write_text(
+                "年月,终端客户编码,终端客户,是否合约店,业代,主任\n"
+                "202605,C_IN,线路内店,是,赵云,刘备\n"
+                "202605,C_OUT1,线路外店1,否,马超振,刘备\n"
+                "202605,C_OUT2,线路外店2,否,姜维,刘备\n"
+                "202605,C_OUT3,线路外店3,否,俞恺,刘备\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_datasets(
+                [history, route, customer],
+                original_filenames=[history.name, route.name, customer.name],
+            )
+            first = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="线路内/线路外的签收金额和签收箱数分别是多少？",
+                execution_mode="dual",
+            )
+            why = service.respond_to_message(conversation_id=first["conversation_id"], question="为什么线路外会更高", execution_mode="dual")
+            split = service.respond_to_message(conversation_id=first["conversation_id"], question="刚才线路外里按业代拆开", execution_mode="dual")
+            top = service.respond_to_message(conversation_id=first["conversation_id"], question="刚才贡献最大的人", execution_mode="dual")
+            boxes = service.respond_to_message(conversation_id=first["conversation_id"], question="不要看签收金额，改看签收箱数", execution_mode="dual")
+
+        self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertTrue(first["success"], first["errors"])
+        self.assertEqual("retail_route_scope_metric_summary", first["logic_form"]["operation"])
+        first_rows = {row["线路范围"]: row for row in first["result"]["rows"]}
+        self.assertAlmostEqual(10417.495328, first_rows["线路外"]["签收金额"])
+        self.assertAlmostEqual(434.150701, first_rows["线路外"]["签收箱数"])
+        self.assertAlmostEqual(3275.093626, first_rows["线路内"]["签收金额"])
+        self.assertAlmostEqual(118.588969, first_rows["线路内"]["签收箱数"])
+
+        self.assertTrue(why["success"], why["errors"])
+        self.assertEqual("retail_route_scope_difference_reason", why["logic_form"]["operation"])
+        self.assertTrue(why["followup_context"]["is_followup"])
+        self.assertIn("线路外签收金额更高", why["answer"])
+        self.assertIn("马超振", why["answer"])
+
+        self.assertTrue(split["success"], split["errors"])
+        self.assertEqual("retail_route_scope_employee_ranking", split["logic_form"]["operation"])
+        self.assertEqual("线路外", split["logic_form"]["parameters"]["route_scope"])
+        self.assertEqual(["马超振", "姜维", "俞恺"], [row["业代"] for row in split["result"]["rows"]])
+
+        self.assertTrue(top["success"], top["errors"])
+        self.assertEqual("retail_route_scope_employee_ranking", top["logic_form"]["operation"])
+        self.assertEqual([{"业代": "马超振", "线路范围": "线路外", "签收金额": 5000.0}], top["result"]["rows"])
+
+        self.assertTrue(boxes["success"], boxes["errors"])
+        self.assertEqual("retail_route_scope_employee_ranking", boxes["logic_form"]["operation"])
+        self.assertEqual("sign_box_cnt", boxes["logic_form"]["parameters"]["metric"])
+        self.assertEqual(["马超振", "姜维", "俞恺"], [row["业代"] for row in boxes["result"]["rows"]])
 
     def test_message_trusted_join_returns_joined_city_top1_without_audit_noise(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -10,6 +10,7 @@ from typing import Any
 import uuid
 
 from backend.schemas.data_agent_schema import to_json_ready
+from data_agent_core.core.conversation_actions import build_analysis_context
 
 
 class ConversationStore:
@@ -49,6 +50,7 @@ class ConversationStore:
             "pinned_at": "",
             "created_at": now,
             "updated_at": now,
+            "current_analysis_context": {},
             "messages": [],
         }
         self._write(record)
@@ -92,6 +94,12 @@ class ConversationStore:
             record["owner_context"] = to_json_ready(owner_context)
         if not _has_user_title(record) and not record.get("messages"):
             record["title"] = _derive_title(question)
+        analysis_context = build_analysis_context(
+            response,
+            previous_context=record.get("current_analysis_context") if isinstance(record.get("current_analysis_context"), dict) else {},
+            original_question=question,
+        )
+        record["current_analysis_context"] = to_json_ready(analysis_context)
         record.setdefault("messages", []).extend(
             [
                 {
@@ -285,6 +293,7 @@ def _conversation_summary(record: dict[str, Any]) -> dict[str, Any]:
         "created_at": record.get("created_at"),
         "updated_at": record.get("updated_at"),
         "message_count": len(messages),
+        "current_analysis_context": record.get("current_analysis_context") or {},
         "last_role": last_message.get("role"),
         "last_answer_type": last_assistant.get("answer_type"),
         "last_success": last_assistant.get("success"),

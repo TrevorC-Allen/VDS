@@ -2542,10 +2542,14 @@ async function downloadChartFromMessage(message, format) {
   }
   const dataUri = result.chart?.image_data_uri;
   if (dataUri) {
-    if (format === "png" && dataUri.startsWith("data:image/svg")) {
+    if (dataUri.startsWith("data:image/svg")) {
       try {
-        const svgSource = await (await fetch(dataUri)).text();
-        downloadSvgAsPng(svgSource, downloadBaseName(result, "chart") + ".png");
+        const svgSource = normalizeSvgSourceForExport(await (await fetch(dataUri)).text());
+        if (format === "svg") {
+          downloadBlob(new Blob([svgSource], { type: "image/svg+xml;charset=utf-8" }), downloadBaseName(result, "chart") + ".svg");
+        } else {
+          downloadSvgAsPng(svgSource, downloadBaseName(result, "chart") + ".png");
+        }
         return;
       } catch {
         // Fall back to downloading the original image data below.
@@ -2558,7 +2562,124 @@ async function downloadChartFromMessage(message, format) {
 function serializeSvg(svg) {
   const clone = svg.cloneNode(true);
   clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  return new XMLSerializer().serializeToString(clone);
+  const viewBox = parseSvgViewBox(clone.getAttribute("viewBox"));
+  if (viewBox) {
+    clone.setAttribute("width", String(viewBox.width));
+    clone.setAttribute("height", String(viewBox.height));
+  }
+  clone.querySelectorAll(".chart-hit.is-active").forEach((node) => node.classList.remove("is-active"));
+  clone.querySelectorAll(".chart-hover-card, .chart-hover-guide").forEach((node) => node.remove());
+
+  const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
+  style.textContent = chartSvgExportStyles();
+  clone.insertBefore(style, clone.firstChild);
+
+  const background = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  background.setAttribute("class", "chart-export-background");
+  background.setAttribute("x", viewBox ? String(viewBox.x) : "0");
+  background.setAttribute("y", viewBox ? String(viewBox.y) : "0");
+  background.setAttribute("width", viewBox ? String(viewBox.width) : "100%");
+  background.setAttribute("height", viewBox ? String(viewBox.height) : "100%");
+  clone.insertBefore(background, style.nextSibling);
+
+  return `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clone)}`;
+}
+
+function normalizeSvgSourceForExport(svgSource) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(String(svgSource || ""), "image/svg+xml");
+  if (doc.querySelector("parsererror") || doc.documentElement?.tagName?.toLowerCase() !== "svg") {
+    return svgSource;
+  }
+  const svg = document.importNode(doc.documentElement, true);
+  svg.classList.add("chart-svg");
+  return serializeSvg(svg);
+}
+
+function parseSvgViewBox(viewBox) {
+  const parts = String(viewBox || "")
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) return null;
+  const [x, y, width, height] = parts;
+  if (width <= 0 || height <= 0) return null;
+  return { x, y, width, height };
+}
+
+function chartSvgExportStyles() {
+  return `
+    .chart-svg {
+      display: block;
+      background: #ffffff;
+      overflow: visible;
+    }
+    .chart-export-background {
+      fill: #ffffff;
+    }
+    .chart-svg text {
+      font-family: "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-synthesis: none;
+      font-weight: 400 !important;
+      letter-spacing: 0;
+      stroke: none !important;
+      text-rendering: optimizeLegibility;
+    }
+    .axis-line {
+      stroke: #e5e7eb;
+      stroke-width: 1;
+    }
+    .grid-line {
+      stroke: #edf0f4;
+      stroke-width: 1;
+    }
+    .axis-label,
+    .value-label {
+      fill: #1f2937;
+      font-size: 11px;
+      font-weight: 400 !important;
+    }
+    .axis-title {
+      fill: #111827;
+      font-size: 11px;
+      font-weight: 400 !important;
+    }
+    .line-path {
+      fill: none;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .line-dot {
+      fill: #ffffff;
+      stroke-width: 1.6;
+    }
+    .line-hit-area {
+      fill: transparent;
+      stroke: transparent;
+    }
+    .chart-hit {
+      outline: none;
+    }
+    .chart-tooltip-bg {
+      fill: rgba(17, 24, 39, 0.94);
+      stroke: rgba(255, 255, 255, 0.2);
+    }
+    .chart-tooltip-label {
+      fill: #d1d5db;
+      font-size: 12px;
+    }
+    .chart-tooltip-value {
+      fill: #ffffff;
+      font-size: 13px;
+      font-weight: 400;
+    }
+    .chart-legend-label {
+      fill: #1f2937;
+      font-size: 11px;
+      font-weight: 400;
+    }
+  `;
 }
 
 function downloadSvgAsPng(svgSource, fileName) {
@@ -4063,7 +4184,7 @@ function renderInsight(insight, result = {}) {
     .map((item) => item?.message)
     .filter(isUserFacingInsightText);
   const caveats = (insight?.caveats || []).filter(isUserFacingInsightText);
-  const nextQuestions = hasInsightPayload ? resolveInsightNextQuestions(insight?.next_questions || [], result).slice(0, 2) : [];
+  const nextQuestions = hasInsightPayload ? resolveInsightNextQuestions(insight?.next_questions || [], result, insight?.next_actions || []).slice(0, 2) : [];
   const summary = cleanInsightSummary(insight?.summary || "") || buildContextualInsightSummary(result);
   const primaryAdvice = pickInsightAdvice(suggestions, findings, caveats);
   const hasInsight = Boolean(summary || primaryAdvice || nextQuestions.length);
@@ -4088,12 +4209,23 @@ function pickInsightAdvice(suggestions, findings, caveats) {
   return candidates.find(isUserFacingInsightText) || "";
 }
 
-function resolveInsightNextQuestions(nextQuestions, result = {}) {
+function resolveInsightNextQuestions(nextQuestions, result = {}, nextActions = []) {
+  const actionQuestions = resolveInsightActionQuestions(nextActions);
   const cleaned = uniqueStrings((Array.isArray(nextQuestions) ? nextQuestions : []).filter(isUserFacingInsightText));
+  if (actionQuestions.length) return uniqueStrings([...actionQuestions, ...cleaned]);
   const contextual = buildContextualNextQuestions(result);
   if (!cleaned.length) return contextual;
   if (isGenericNextQuestionSet(cleaned)) return contextual;
   return uniqueStrings([...cleaned, ...contextual]);
+}
+
+function resolveInsightActionQuestions(nextActions = []) {
+  return uniqueStrings(
+    (Array.isArray(nextActions) ? nextActions : [])
+      .filter((action) => action && typeof action === "object" && action.status !== "unsupported")
+      .map((action) => String(action.question || "").trim())
+      .filter(isUserFacingInsightText),
+  );
 }
 
 function isGenericNextQuestionSet(nextQuestions) {

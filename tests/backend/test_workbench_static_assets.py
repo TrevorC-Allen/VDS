@@ -68,6 +68,25 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("font-weight: 400 !important;", css)
         self.assertIn("function resolveLineYAxisName", js)
 
+    def test_workbench_chart_svg_download_is_standalone(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function serializeSvg(svg)", js)
+        self.assertIn("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", js)
+        self.assertIn("parseSvgViewBox(clone.getAttribute(\"viewBox\"))", js)
+        self.assertIn("clone.setAttribute(\"width\", String(viewBox.width))", js)
+        self.assertIn("clone.setAttribute(\"height\", String(viewBox.height))", js)
+        self.assertIn("chartSvgExportStyles()", js)
+        self.assertIn(".chart-export-background", js)
+        self.assertIn(".chart-hover-card, .chart-hover-guide", js)
+        self.assertIn(".line-path", js)
+        self.assertIn(".axis-line", js)
+        self.assertIn(".chart-legend-label", js)
+        self.assertIn("function normalizeSvgSourceForExport", js)
+        self.assertIn("parser.parseFromString(String(svgSource || \"\"), \"image/svg+xml\")", js)
+        self.assertIn("document.importNode(doc.documentElement, true)", js)
+        self.assertIn("downloadBlob(new Blob([svgSource], { type: \"image/svg+xml;charset=utf-8\" })", js)
+
     def test_workbench_prefers_interactive_chart_svg_over_backend_images(self) -> None:
         js = Path("frontend/app.js").read_text(encoding="utf-8")
         css = Path("frontend/styles.css").read_text(encoding="utf-8")
@@ -240,6 +259,9 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("function resolveInsightAdviceCandidates", js)
         self.assertIn("const directSuggestions = [insight?.next_step", js)
         self.assertIn("return uniqueStrings([...directSuggestions, ...businessSuggestions])", js)
+        self.assertIn("insight?.next_actions || []", js)
+        self.assertIn("function resolveInsightActionQuestions", js)
+        self.assertIn("action.status !== \"unsupported\"", js)
         self.assertIn("function isDistinctInsightText", js)
         self.assertIn("normalizeInsightText(value) !== normalizeInsightText(summary)", js)
         self.assertIn("const rawAdvice = isActionableInsightAdvice(advice) ? advice : \"\"", js)

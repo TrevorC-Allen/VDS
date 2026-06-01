@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from backend.services.data_agent_service import DataAgentService
+from backend.services.export_service import generate_export_artifacts
 from backend.storage.temp_file_store import TempFileStore
 import backend.routers.data_agent as data_agent_router
 from data_agent_core.llm.client import MockLLMClient
@@ -323,6 +325,61 @@ class DataAgentApiStatusTest(unittest.TestCase):
         self.assertGreaterEqual(summary.json()["total"], 1)
         self.assertEqual("ok", health.json()["status"])
         self.assertEqual("in_memory_sse", health_alias.json()["transport"])
+
+    def test_run_export_download_route_returns_named_files_with_mime_types(self) -> None:
+        svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 120 80\"><rect width=\"120\" height=\"80\" fill=\"#fff\"/></svg>"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            assert data_agent_router is not None
+            original_service = data_agent_router.service
+            data_agent_router.service = DataAgentService(
+                file_store=TempFileStore(Path(temp_dir) / "storage"),
+                llm_client=MockLLMClient(),
+            )
+            response_payload = {
+                "success": True,
+                "run_id": "run_export_http",
+                "dataset_id": "ds_demo",
+                "question": "哪个城市销售额最高？",
+                "answer": "上海销售额最高。",
+                "result": {"columns": ["city", "sales"], "rows": [{"city": "上海", "sales": 120}]},
+                "chart": {"image_data_uri": "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")},
+            }
+            generate_export_artifacts(response_payload, runs_root=data_agent_router.service.file_store.runs_root)
+            try:
+                client = TestClient(app)
+                expectations = {
+                    "result_table_csv": ("text/csv", "result_table.csv", b"city"),
+                    "result_table_xlsx": (
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "result_table.xlsx",
+                        b"PK",
+                    ),
+                    "chart_svg": ("image/svg+xml", "chart.svg", b"<svg"),
+                    "summary_xlsx": (
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "summary.xlsx",
+                        b"PK",
+                    ),
+                    "summary_pptx": (
+                        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        "summary.pptx",
+                        b"PK",
+                    ),
+                    "summary_pdf": ("application/pdf", "summary.pdf", b"%PDF"),
+                }
+                responses = {
+                    artifact_id: client.get(f"/api/data-agent/runs/run_export_http/exports/{artifact_id}")
+                    for artifact_id in expectations
+                }
+            finally:
+                data_agent_router.service = original_service
+
+        for artifact_id, http_response in responses.items():
+            mime_type, file_name, prefix = expectations[artifact_id]
+            self.assertEqual(200, http_response.status_code, artifact_id)
+            self.assertIn(mime_type, http_response.headers.get("content-type", ""), artifact_id)
+            self.assertIn(f'filename="{file_name}"', http_response.headers.get("content-disposition", ""), artifact_id)
+            self.assertTrue(http_response.content.startswith(prefix), artifact_id)
 
 
 if __name__ == "__main__":

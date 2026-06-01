@@ -446,6 +446,53 @@ class Phase8MultiTableCapabilityTest(unittest.TestCase):
         self.assertEqual({202601: 350, 202602: 180}, {row["stat_month"]: row["sales"] for row in executed["result"].value})
         self.assertTrue(verification.passed, verification.issues)
 
+    def test_retail_sales_trend_uses_fact_table_without_untrusted_join(self) -> None:
+        tables = _retail_sales_tables()
+        executed = _execute("天然水销售金额随时间的趋势是怎样的，生成曲线图", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="天然水销售金额随时间的趋势是怎样的，生成曲线图"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("aggregation", executed["logic"].operation)
+        self.assertEqual("v_trd_dist_ord_dtl", executed["logic"].parameters["table"])
+        self.assertEqual("sign_amt", executed["logic"].parameters["metric"])
+        self.assertEqual("sign_time", executed["logic"].parameters["dimension"])
+        self.assertEqual({"ctg_name": "天然水"}, executed["logic"].filters)
+        self.assertEqual({}, executed["logic"].join_plan)
+        self.assertEqual(
+            [
+                {"sign_time": "2026-05-01", "sign_amt": 100.0},
+                {"sign_time": "2026-06-01", "sign_amt": 80.0},
+            ],
+            executed["result"].value,
+        )
+        self.assertTrue(verification.passed, verification.issues)
+
+    def test_retail_sales_may_amount_keeps_month_filter_executable(self) -> None:
+        executed = _execute("天然水五月的销售金额", _retail_sales_tables())
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("aggregation", executed["logic"].operation)
+        self.assertEqual("v_trd_dist_ord_dtl", executed["logic"].parameters["table"])
+        self.assertEqual("sign_amt", executed["logic"].parameters["metric"])
+        self.assertEqual({"ctg_name": "天然水", "sign_time": {"month": 5}}, executed["logic"].filters)
+        self.assertEqual({}, executed["logic"].join_plan)
+        self.assertEqual(100.0, executed["result"].value)
+
+    def test_retail_sales_composition_uses_amount_metric_and_category_filter(self) -> None:
+        executed = _execute("看一下天然水的销售组成", _retail_sales_tables())
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("aggregation", executed["logic"].operation)
+        self.assertEqual("v_trd_dist_ord_dtl", executed["logic"].parameters["table"])
+        self.assertEqual("sign_amt", executed["logic"].parameters["metric"])
+        self.assertEqual("capacity", executed["logic"].parameters["dimension"])
+        self.assertEqual({"ctg_name": "天然水"}, executed["logic"].filters)
+        self.assertEqual([{"capacity": "550mL", "sign_amt": 180.0}], executed["result"].value)
+
     def test_natural_dimension_aliases_bind_to_semantic_fields(self) -> None:
         source_case = _execute("哪个来源销售额最高？", {"sales": pd.DataFrame({"city": ["北京", "上海"], "source": ["线上", "线下"], "sales": [80, 120]})})
         category_case = _execute("哪个品类销售额最高？", {"sales": pd.DataFrame({"city": ["北京", "上海"], "product_line": ["饮料", "食品"], "sales": [80, 120]})})
@@ -542,6 +589,29 @@ def _orders_products_customers() -> dict[str, pd.DataFrame]:
         ),
         "products": pd.DataFrame({"product_id": ["P1", "P2", "P3"], "category": ["水果", "水果", "零食"]}),
         "customers": pd.DataFrame({"customer_id": ["C1", "C2"], "city": ["北京", "上海"]}),
+    }
+
+
+def _retail_sales_tables() -> dict[str, pd.DataFrame]:
+    return {
+        "终端客户月度维表": pd.DataFrame(
+            {
+                "统计日期": ["2026-05-01"],
+                "所属销售客户SAP编码": [123456],
+                "终端客户": ["便利店A"],
+            }
+        ),
+        "v_trd_dist_ord_dtl": pd.DataFrame(
+            {
+                "ctg_name": ["天然水", "茶π", "天然水"],
+                "sign_amt": [100.0, 50.0, 80.0],
+                "sign_sales_amt_550_6d1_share": [0.2, 0.1, 0.3],
+                "sign_time": ["2026-05-01", "2026-05-02", "2026-06-01"],
+                "create_time": ["2026-04-30", "2026-05-01", "2026-05-31"],
+                "capacity": ["550mL", "500mL", "550mL"],
+                "cmdt_name": ["农夫山泉-天然水", "茶π", "农夫山泉-天然水"],
+            }
+        ),
     }
 
 

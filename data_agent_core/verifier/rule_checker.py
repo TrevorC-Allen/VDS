@@ -291,11 +291,11 @@ DIMENSION_CONCEPT_ALIASES = {
     "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "source", "origin", "来源", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
     "customer": ("customer", "cust", "client", "客户", "终端"),
     "month": ("month", "month_id", "month_code", "stat_month", "ym", "year_month", "biz_month", "period", "month_period", "period_month", "年月", "月份", "月度", "业务月份", "统计月份", "期间"),
-    "time": ("date", "day", "week", "period", "日期", "时间", "周期", "业务日期", "统计日期"),
+    "time": ("date", "day", "week", "period", "time", "sign_time", "create_time", "日期", "时间", "周期", "业务日期", "统计日期", "签收时间", "创建时间"),
 }
 
 METRIC_CONCEPT_ALIASES = {
-    "sales": ("sales", "sale", "revenue", "amount", "销售额", "销售金额", "销售", "收入", "金额", "订单金额"),
+    "sales": ("sales", "sale", "revenue", "amount", "amt", "sales_amt", "sign_amt", "ord_amt", "dist_sign_amt", "销售额", "销售金额", "销售", "收入", "金额", "订单金额", "签收金额", "分销金额"),
     "profit": ("profit", "gross_profit", "grossprofit", "利润", "毛利"),
 }
 
@@ -643,15 +643,39 @@ def _verify_requested_shape_contract(
         notes.append("Grouped metric/chart request returned no inspectable rows.")
         return False, notes, {"action": "repair_result_shape", "reason": "missing_rows"}
     sample_keys = set(rows[0])
-    if dimension and dimension not in sample_keys:
+    if dimension and not _result_has_requested_column(sample_keys, dimension):
         notes.append(f"Grouped metric/chart result is missing requested dimension column: {dimension}.")
         return False, notes, {"action": "repair_result_shape", "required_column": dimension}
     aggregation = str(params.get("aggregation") or "")
-    if aggregation != "count" and metric and metric not in sample_keys:
+    if aggregation != "count" and metric and not _result_has_requested_column(sample_keys, metric):
         notes.append(f"Grouped metric/chart result is missing requested metric column: {metric}.")
         return False, notes, {"action": "repair_result_shape", "required_column": metric}
     notes.append("Grouped metric/chart result shape contains requested dimension and metric columns.")
     return True, notes, None
+
+
+def _result_has_requested_column(sample_keys: set[str], requested: str) -> bool:
+    if requested in sample_keys:
+        return True
+    aliases = _result_column_aliases(requested)
+    return any(alias in sample_keys for alias in aliases)
+
+
+def _result_column_aliases(column: str) -> set[str]:
+    aliases = {
+        "cust_name": {"客户", "终端", "门店", "客户名称", "终端客户"},
+        "cust_code": {"客户编码", "终端客户编码"},
+        "channel_name": {"渠道"},
+        "p_channel_name": {"父渠道", "大渠道"},
+        "sku_name": {"SKU", "产品", "商品"},
+        "ctg_name": {"品类", "分类"},
+        "capacity": {"容量", "规格"},
+        "emp_name": {"业代", "人员", "员工"},
+        "p_emp_name": {"主任", "主管"},
+        "sign_amt": {"分销金额", "签收金额", "销售金额", "金额"},
+        "sign_box_cnt": {"分销箱数", "签收箱数", "箱数", "数量"},
+    }
+    return aliases.get(str(column), set())
 
 
 def _execution_rows(primary: ExecutionResult) -> list[dict[str, Any]]:

@@ -1168,28 +1168,29 @@ Phase 9 禁止：
 6. 不允许绕过 Verifier 直接输出最终结论
 7. 不允许一次任务混合多个无关目标
 8. 每次修改前必须读取 MAIN_GOAL.md、CHANGELOG_AI.md、BRANCH_RULES.md
-9. 每次修改后必须更新 CHANGELOG_AI.md
-10. 不允许核心算法依赖 Microsoft Agent Framework
-11. 不允许在适配层中实现核心业务逻辑
-12. 不允许每个模块随意返回不同结构的 dict
-13. 不允许没有 run_id 的 analyze 链路
-14. 不允许没有错误类型的失败结果
-15. 不允许没有 trace 的分析链路设计
-16. 不允许工程文档要求输出完整 Chain of Thought
-17. CHANGELOG_AI.md 新增记录必须写日期时间，格式为 YYYY-MM-DD HH:MM TZ，精确到分钟
-18. 不允许为了补齐格式而给历史 CHANGELOG 记录编造分钟级时间
-19. 不允许把中文支持当作可选增强；中文问题理解、字段映射、业务术语、日期/金额/百分比格式和最终回答必须作为主路径能力设计。
-20. 不允许只用英文样例、英文字段或英文 Benchmark 声称能力完成；英文必须持续支持，但中文必须优先验收。
-21. 不允许为中文能力写只适配当前脱敏数据、当前字段值或当前问法的伪泛化补丁；中文能力同样必须抽象为可复用能力族并有合成/非 Benchmark 验证。
-22. Phase 12 必须保持阶段边界：Phase 10 是首版结果体验，Phase 11 是会话 / 历史持久化，Phase 12 才负责 general 回答、Insight、代码 artifact、活动流、图表语义和规则文件自动绑定的体验收敛。
-23. Phase 12 不允许展示完整 Chain of Thought、raw prompt、raw reasoning tokens、API key、后端完整 trace JSON、benchmark hidden answer、standard answer、proxy answer 或 scorer 信息。
-24. Phase 12 不允许让前端实现公式、join、排序、聚合、图表选择、评分、数据清洗或任何核心数据分析逻辑。
-25. Phase 12 不允许按当前截图、payments 字段、固定文件名、固定问法或当前样本值写伪泛化补丁；overview / insight / chart 能力必须用非 payments 合成表证明同类泛化。
-26. Phase 12 不允许绕过 ToolDispatcher、Result Normalizer、Verifier 或 Correction Planner 直接生成最终结论；代码展示只能作为后端安全 artifact，不代表开放任意代码执行。
-27. Phase 12 不允许只以“功能可用”或“测试通过”作为体验验收；凡是与 GPT / ChatGPT Data Analysis 参考结果差距很大的文件解析、回答结构、排版样式、表格/图表呈现和活动流，都必须打回重写。
-28. Phase 13 不允许把项目 memory 做成全局 memory，也不允许跨 project 读取 conversation、memory 或 file。
-29. Phase 13 不允许把前端 localStorage、单页内存或未落盘状态冒充共享 Project 存储。
-30. Phase 13 不允许让前端实现检索、join、聚合、排序、评分、图表选择或数据清洗；这些能力必须继续由后端和 data_agent_core 受控链路负责。
-31. Phase 13 不允许把 Project 当成左侧历史过滤器；进入 Project 后必须保持左侧全局导航、Project 列表和最近历史可见，项目内聊天 / 来源列表只能在主区域 Project home 中呈现。
-32. Phase 13 不允许用与 ChatGPT Project 明显不相似的排版、入口命名或回答结构冒充 GPT-like；Project UX 和项目内回答必须对照 ChatGPT 截图、冻结参考或标准 GPT answer，差距大时打回重写。
-33. 每次测试必须写文档；任何被用于验收结论的测试都必须留下 `docs/test-runs/*.md` 证据，不能只存在于终端输出、对话说明、截图或 CHANGELOG_AI.md。
+9. 每次运行、修改或测试前，如果根据项目规则读取 MAIN_GOAL.md、CHANGELOG_AI.md、BRANCH_RULES.md、AGENTS.md、README 或其他治理 / 红线文件内容，必须先用单独醒目的中文提示告知用户，至少列出读取文件、读取目的，并说明读取本身是否会修改文件
+10. 每次修改后必须更新 CHANGELOG_AI.md
+11. 不允许核心算法依赖 Microsoft Agent Framework
+12. 不允许在适配层中实现核心业务逻辑
+13. 不允许每个模块随意返回不同结构的 dict
+14. 不允许没有 run_id 的 analyze 链路
+15. 不允许没有错误类型的失败结果
+16. 不允许没有 trace 的分析链路设计
+17. 不允许工程文档要求输出完整 Chain of Thought
+18. CHANGELOG_AI.md 新增记录必须写日期时间，格式为 YYYY-MM-DD HH:MM TZ，精确到分钟
+19. 不允许为了补齐格式而给历史 CHANGELOG 记录编造分钟级时间
+20. 不允许把中文支持当作可选增强；中文问题理解、字段映射、业务术语、日期/金额/百分比格式和最终回答必须作为主路径能力设计。
+21. 不允许只用英文样例、英文字段或英文 Benchmark 声称能力完成；英文必须持续支持，但中文必须优先验收。
+22. 不允许为中文能力写只适配当前脱敏数据、当前字段值或当前问法的伪泛化补丁；中文能力同样必须抽象为可复用能力族并有合成/非 Benchmark 验证。
+23. Phase 12 必须保持阶段边界：Phase 10 是首版结果体验，Phase 11 是会话 / 历史持久化，Phase 12 才负责 general 回答、Insight、代码 artifact、活动流、图表语义和规则文件自动绑定的体验收敛。
+24. Phase 12 不允许展示完整 Chain of Thought、raw prompt、raw reasoning tokens、API key、后端完整 trace JSON、benchmark hidden answer、standard answer、proxy answer 或 scorer 信息。
+25. Phase 12 不允许让前端实现公式、join、排序、聚合、图表选择、评分、数据清洗或任何核心数据分析逻辑。
+26. Phase 12 不允许按当前截图、payments 字段、固定文件名、固定问法或当前样本值写伪泛化补丁；overview / insight / chart 能力必须用非 payments 合成表证明同类泛化。
+27. Phase 12 不允许绕过 ToolDispatcher、Result Normalizer、Verifier 或 Correction Planner 直接生成最终结论；代码展示只能作为后端安全 artifact，不代表开放任意代码执行。
+28. Phase 12 不允许只以“功能可用”或“测试通过”作为体验验收；凡是与 GPT / ChatGPT Data Analysis 参考结果差距很大的文件解析、回答结构、排版样式、表格/图表呈现和活动流，都必须打回重写。
+29. Phase 13 不允许把项目 memory 做成全局 memory，也不允许跨 project 读取 conversation、memory 或 file。
+30. Phase 13 不允许把前端 localStorage、单页内存或未落盘状态冒充共享 Project 存储。
+31. Phase 13 不允许让前端实现检索、join、聚合、排序、评分、图表选择或数据清洗；这些能力必须继续由后端和 data_agent_core 受控链路负责。
+32. Phase 13 不允许把 Project 当成左侧历史过滤器；进入 Project 后必须保持左侧全局导航、Project 列表和最近历史可见，项目内聊天 / 来源列表只能在主区域 Project home 中呈现。
+33. Phase 13 不允许用与 ChatGPT Project 明显不相似的排版、入口命名或回答结构冒充 GPT-like；Project UX 和项目内回答必须对照 ChatGPT 截图、冻结参考或标准 GPT answer，差距大时打回重写。
+34. 每次测试必须写文档；任何被用于验收结论的测试都必须留下 `docs/test-runs/*.md` 证据，不能只存在于终端输出、对话说明、截图或 CHANGELOG_AI.md。

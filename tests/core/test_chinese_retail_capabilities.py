@@ -580,6 +580,14 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.assertEqual(2, len(result.rows))
         self.assertIn("红茶SKU:150.00", answer)
 
+    def test_distribution_topn_chart_supports_customer_drilldown_followup(self) -> None:
+        logic, result, answer = self._logic_result("请生成2026年5月历史分销金额按客户拆分来源Top排名。")
+
+        self.assertEqual("retail_distribution_topn_chart", logic.operation)
+        self.assertEqual("cust_name", logic.parameters["dimension"])
+        self.assertEqual(["客户", "分销金额"], result.columns)
+        self.assertIn("二号店:200.00", answer)
+
 
 if __name__ == "__main__":
     unittest.main()

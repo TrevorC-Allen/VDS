@@ -879,6 +879,11 @@ class DataAgentServiceTest(unittest.TestCase):
                 question="manual.md 是干什么用的？",
                 execution_mode="dual",
             )
+            fees_response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="fees.json 是干什么用的？",
+                execution_mode="dual",
+            )
             form_content_response = service.respond_to_message(
                 dataset_id=upload["dataset_id"],
                 question="这些表单有什么内容",
@@ -891,7 +896,7 @@ class DataAgentServiceTest(unittest.TestCase):
             )
 
         self.assertTrue(upload["success"], upload.get("errors"))
-        for payload in (response, manual_response, form_content_response, colloquial_content_response):
+        for payload in (response, manual_response, fees_response, form_content_response, colloquial_content_response):
             serialized = json.dumps(payload, ensure_ascii=False)
             self.assertTrue(payload["success"], payload.get("errors"))
             self.assertEqual("overview", payload["answer_type"])
@@ -912,6 +917,29 @@ class DataAgentServiceTest(unittest.TestCase):
             self.assertIn("import pandas as pd", payload["execution_artifacts"][0]["code"])
             self.assertIn("sql", {item["language"] for item in payload["execution_artifacts"]})
             self.assertTrue(any("source_manifest" in item["code"] for item in payload["execution_artifacts"] if item["language"] == "sql"))
+
+    def test_dabstep_total_fees_question_uses_analysis_not_source_overview(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            file_paths = _write_dabstep_context_package(root)
+            service = DataAgentService(
+                file_store=TempFileStore(root / "storage"),
+                llm_client=MockLLMClient(),
+            )
+
+            upload = service.upload_datasets(file_paths, original_filenames=[path.name for path in file_paths])
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="For the 1st of the year 2023, what is the total fees that SyntheticMerchant should pay?",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(upload["success"], upload.get("errors"))
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("total_fees", response["logic_form"]["operation"])
+        self.assertEqual("number", response["answer_type"])
+        self.assertNotEqual("overview", response["answer_type"])
+        self.assertAlmostEqual(0.1, response["result"]["value"])
 
     def test_dabstep_upload_keeps_extra_common_document_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

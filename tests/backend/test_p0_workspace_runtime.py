@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import base64
 import json
 import tempfile
 import unittest
@@ -193,6 +194,64 @@ class P0WorkspaceRuntimeTest(unittest.TestCase):
             self.assertNotIn("secret", manifest_text)
             self.assertNotIn("raw_prompt", ppt_text)
             self.assertNotIn("secret", ppt_text)
+
+    def test_export_spreadsheets_escape_formula_like_user_content(self) -> None:
+        from openpyxl import load_workbook
+
+        response = {
+            "success": True,
+            "run_id": "run_export_formula_escape",
+            "dataset_id": "ds_demo",
+            "question": '=HYPERLINK("http://example.test","q")',
+            "answer": "+answer should be text",
+            "result": {
+                "columns": ["=city", "+sales", "@note"],
+                "rows": [{"=city": "上海", "+sales": 120, "@note": " \t=cmd"}],
+            },
+            "insight": {"summary": "-insight should be text", "caveats": ["=caveat"]},
+            "source_references": [{"file_name": "=sales.csv", "tables": [{"table_name": "+sales"}], "row_count": 1}],
+            "process_view_v2": {"summary": "@process should be text"},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generate_export_artifacts(response, runs_root=Path(temp_dir) / "runs")
+            exports_dir = Path(temp_dir) / "runs" / "run_export_formula_escape" / "exports"
+            with (exports_dir / "result_table.csv").open(encoding="utf-8-sig", newline="") as handle:
+                csv_rows = list(csv.reader(handle))
+            result_workbook = load_workbook(exports_dir / "result_table.xlsx", data_only=False)
+            summary_workbook = load_workbook(exports_dir / "summary.xlsx", data_only=False)
+
+        self.assertEqual(["'=city", "'+sales", "'@note"], csv_rows[0])
+        self.assertEqual("' \t=cmd", csv_rows[1][2])
+        self.assertEqual(["'=city", "'+sales", "'@note"], [result_workbook["Result"][f"{column}1"].value for column in "ABC"])
+        self.assertEqual("' \t=cmd", result_workbook["Result"]["C2"].value)
+        self.assertEqual(
+            ['\'=HYPERLINK("http://example.test","q")', "'+answer should be text", "'-insight should be text", "'@process should be text", "'=caveat"],
+            [summary_workbook["Summary"][f"B{row}"].value for row in range(2, 7)],
+        )
+        self.assertEqual(["'=sales.csv", "'+sales", 1], [summary_workbook["Sources"][f"{column}2"].value for column in "ABC"])
+        self.assertEqual(["'=city", "'+sales", "'@note"], [summary_workbook["Result"][f"{column}1"].value for column in "ABC"])
+
+    def test_export_chart_svg_data_uri_keeps_svg_format(self) -> None:
+        svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 120 80\"><rect width=\"120\" height=\"80\" fill=\"#fff\"/></svg>"
+        response = {
+            "success": True,
+            "run_id": "run_export_chart_svg",
+            "question": "生成图表",
+            "answer": "已生成图表。",
+            "chart": {"image_data_uri": "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest = generate_export_artifacts(response, runs_root=Path(temp_dir) / "runs")
+            exports_dir = Path(temp_dir) / "runs" / "run_export_chart_svg" / "exports"
+            chart_path = exports_dir / "chart.svg"
+
+            chart_artifact = next(artifact for artifact in manifest["artifacts"] if artifact["artifact_type"] == "chart")
+            self.assertEqual("chart_svg", chart_artifact["artifact_id"])
+            self.assertEqual("svg", chart_artifact["format"])
+            self.assertEqual("image/svg+xml", chart_artifact["mime_type"])
+            self.assertEqual("chart.svg", chart_artifact["file_name"])
+            self.assertTrue(chart_path.read_text(encoding="utf-8").startswith("<svg"))
+            self.assertFalse((exports_dir / "chart.png").exists())
 
 
 if __name__ == "__main__":
