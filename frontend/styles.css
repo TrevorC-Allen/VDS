@@ -1523,6 +1523,12 @@ p {
   opacity: 1;
 }
 
+.composer > .composer-actions > .button.primary {
+  grid-row: 1;
+  grid-column: 3;
+  margin-right: 0;
+}
+
 .button.secondary {
   border-color: rgba(37, 99, 235, 0.18);
   background: rgba(37, 99, 235, 0.07);
@@ -2603,10 +2609,16 @@ p {
 }
 
 .composer {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 8px;
   max-width: var(--composer);
   margin: 0 auto;
   border: 1px solid #d9d9e3;
   border-radius: 28px;
+  padding: 10px;
   background: #fff;
   box-shadow: 0 16px 48px rgba(15, 23, 42, 0.1);
 }
@@ -2617,12 +2629,8 @@ p {
 }
 
 .composer.has-files {
-  display: grid;
   grid-template-columns: 36px minmax(180px, 1fr) 36px;
-  align-items: center;
-  column-gap: 8px;
-  row-gap: 8px;
-  padding: 10px 10px 8px;
+  padding-bottom: 8px;
 }
 
 .composer.has-files .composer-file-tray {
@@ -2738,13 +2746,15 @@ p {
 
 .composer-input {
   display: block;
+  grid-row: 1;
+  grid-column: 2;
   width: 100%;
-  min-height: 54px;
+  min-height: 36px;
   max-height: 150px;
   overflow-y: auto;
   resize: none;
   border: 0;
-  padding: 15px 18px 5px;
+  padding: 7px 4px 6px;
   white-space: pre-wrap;
   word-break: break-word;
   color: #111827;
@@ -2793,14 +2803,14 @@ ms-editor-squiggler,
 }
 
 .composer-actions {
-  display: flex;
+  display: contents;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px 10px;
+  padding: 0;
 }
 
 .upload-controls {
-  display: flex;
+  display: contents;
   min-width: 0;
   flex: 1 1 auto;
   flex-wrap: wrap;
@@ -2850,6 +2860,8 @@ ms-editor-squiggler,
 }
 
 .data-file-button {
+  grid-row: 1;
+  grid-column: 1;
   width: 36px;
   height: 36px;
   min-height: 34px;
@@ -2914,6 +2926,8 @@ ms-editor-squiggler,
 }
 
 .rule-file-status {
+  grid-row: 2;
+  grid-column: 1 / -1;
   min-width: 0;
   max-width: 360px;
   overflow: hidden;
