@@ -1517,7 +1517,7 @@ function closeContextSubmenus() {
 
 function closeContextMenuFromOutside(event) {
   if (!el.contextMenu || el.contextMenu.classList.contains("hidden")) return;
-  if (event.target.closest(".context-menu, .history-menu-button, .project-menu-button, .project-conversation-menu-button")) return;
+  if (event.target.closest(".context-menu, .history-menu-button, .project-menu-button, .project-conversation-menu-button, .download-artifacts-button")) return;
   closeContextMenu();
 }
 
@@ -6493,7 +6493,10 @@ function bindResultMessage(message) {
     el.saveResponseButton.onclick = () => saveAssistantResponseToProject(message);
   }
   if (el.downloadArtifactsButton) {
-    el.downloadArtifactsButton.onclick = () => openDownloadMenu(el.downloadArtifactsButton, message);
+    el.downloadArtifactsButton.onclick = (event) => {
+      event.stopPropagation();
+      openDownloadMenu(event.currentTarget, message);
+    };
   }
   if (el.cancelRunButton) {
     el.cancelRunButton.onclick = () => cancelRunFromMessage(message);
