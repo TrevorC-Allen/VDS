@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -66,8 +67,13 @@ class RealUserCaseRunnerTest(unittest.TestCase):
             output_dir = temp_path / "out"
 
             summary = run_manifest(manifest, target, output_dir=output_dir)
+            scored = json.loads((output_dir / "comparison_scored.json").read_text(encoding="utf-8"))
 
             self.assertEqual(4, summary["case_count"])
+            self.assertEqual("comparison_scored:llm", summary["acceptance_source"])
+            self.assertEqual("llm", scored["judge_mode"])
+            self.assertEqual(scored["summary"]["candidate_acceptable_count"], summary["passed"])
+            self.assertEqual(summary["case_count"] - summary["passed"], summary["failed"])
             self.assertTrue((output_dir / "comparison.md").exists())
             self.assertTrue((output_dir / "comparison.jsonl").exists())
             self.assertTrue((output_dir / "comparison_scored.md").exists())

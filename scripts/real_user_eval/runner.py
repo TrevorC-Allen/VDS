@@ -19,6 +19,9 @@ from scripts.run_generic_dataset_eval import comparison_markdown, write_json, wr
 from scripts.score_comparison_answers import WEIGHTS, score_markdown, score_rows, summarize
 
 
+DEFAULT_SCORE_JUDGE = "llm"
+
+
 def run_manifest(
     manifest: Mapping[str, Any],
     target: EvalTarget,
@@ -26,12 +29,11 @@ def run_manifest(
     output_dir: Path,
     max_variants_per_case: int | None = None,
     include_conversations: bool = True,
-    score_judge: str = "heuristic",
+    score_judge: str = DEFAULT_SCORE_JUDGE,
     min_acceptable: float = 75.0,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
-    failure_rows: list[dict[str, Any]] = []
     raw_results: list[dict[str, Any]] = []
     dataset_id_cache: dict[str, str] = {}
 
@@ -45,30 +47,31 @@ def run_manifest(
         ):
             rows.append(row)
             raw_results.append(raw)
-            if row["comparison_status"] != "passed":
-                failure_rows.append(row)
     if include_conversations:
         for conversation in manifest_conversations(manifest):
             for row, raw in run_conversation(manifest, conversation, target, dataset_id_cache=dataset_id_cache):
                 rows.append(row)
                 raw_results.append(raw)
-                if row["comparison_status"] != "passed":
-                    failure_rows.append(row)
 
+    actual_judge, scored_rows = score_rows(rows, judge=score_judge, min_acceptable=min_acceptable)
+    scored_summary = summarize(scored_rows)
     summary = {
         "name": "real_user_case_eval",
         "dataset_name": manifest.get("name") or "real_user_case_manifest",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "case_count": len(rows),
-        "passed": sum(1 for row in rows if row["comparison_status"] == "passed"),
-        "failed": sum(1 for row in rows if row["comparison_status"] != "passed"),
+        "passed": int(scored_summary.get("candidate_acceptable_count") or 0),
+        "failed": max(0, len(rows) - int(scored_summary.get("candidate_acceptable_count") or 0)),
         "target": getattr(target, "target_name", target.__class__.__name__),
+        "acceptance_source": f"comparison_scored:{actual_judge}",
+        "scored_summary": scored_summary,
         "comparison": rows,
-        "candidate_score": _candidate_score(rows),
+        "candidate_score": _candidate_score_from_scored_summary(scored_summary),
         "candidate_answer_generation": {
             "provider": getattr(target, "target_name", target.__class__.__name__),
             "model": "n/a",
             "formal_candidate_answers": True,
+            "judge_mode": actual_judge,
         },
         "standard_answer_generation": {
             "source": "direct_computation",
@@ -81,18 +84,17 @@ def run_manifest(
     write_json(output_dir / "comparison.json", {"comparison": rows})
     write_jsonl(output_dir / "comparison.jsonl", rows)
     write_jsonl(output_dir / "agent_results.jsonl", raw_results)
-    write_jsonl(output_dir / "failure_index.jsonl", failure_rows)
-    (output_dir / "comparison.md").write_text(comparison_markdown(summary), encoding="utf-8")
-    actual_judge, scored_rows = score_rows(rows, judge=score_judge, min_acceptable=min_acceptable)
     scored = {
         "source": str(output_dir / "comparison.jsonl"),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "judge_mode": actual_judge,
         "weights": WEIGHTS,
         "min_acceptable": min_acceptable,
-        "summary": summarize(scored_rows),
+        "summary": scored_summary,
         "rows": scored_rows,
     }
+    write_jsonl(output_dir / "failure_index.jsonl", _failure_rows_from_scored_rows(rows, scored_rows))
+    (output_dir / "comparison.md").write_text(comparison_markdown(summary), encoding="utf-8")
     write_json(output_dir / "comparison_scored.json", scored)
     write_jsonl(output_dir / "comparison_scored.jsonl", scored_rows)
     (output_dir / "comparison_scored.md").write_text(score_markdown(scored), encoding="utf-8")
@@ -233,7 +235,8 @@ def _row_and_raw(
         failure_reasons.append("missing_required_terms")
     if not all(item["passed"] for item in number_checks):
         failure_reasons.append("missing_expected_numbers")
-    status = "passed" if not failure_reasons else "failed"
+    execution_failed = (not result.success) or not result.answer_text.strip()
+    status = "execution_failed" if execution_failed else "response_collected"
     row = {
         "case_id": case_id,
         "ae_group": ae_group,
@@ -280,17 +283,36 @@ def _row_and_raw(
     return row, raw
 
 
-def _candidate_score(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    passed = sum(1 for row in rows if row["comparison_status"] == "passed")
-    total = len(rows)
+def _candidate_score_from_scored_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
+    passed = int(summary.get("candidate_acceptable_count") or 0)
+    total = int(summary.get("case_count") or 0)
     return {
         "passed": passed,
         "total": total,
-        "pass_rate": passed / total if total else 0.0,
+        "pass_rate": float(summary.get("candidate_acceptance_rate") or (passed / total if total else 0.0)),
         "gpt_like_passed": passed,
-        "gpt_like_pass_rate": passed / total if total else 0.0,
-        "unexpected_not_applicable_count": sum(1 for row in rows if row.get("unexpected_not_applicable")),
+        "gpt_like_pass_rate": float(summary.get("candidate_acceptance_rate") or (passed / total if total else 0.0)),
+        "unexpected_not_applicable_count": int(summary.get("unexpected_not_applicable_count") or 0),
     }
+
+
+def _failure_rows_from_scored_rows(rows: list[dict[str, Any]], scored_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows_by_case = {str(row.get("case_id")): row for row in rows}
+    failures: list[dict[str, Any]] = []
+    for scored in scored_rows:
+        candidate = (scored.get("answers") or {}).get("candidate") or {}
+        if candidate.get("acceptable") is True:
+            continue
+        source = dict(rows_by_case.get(str(scored.get("case_id")), {}))
+        source["llm_judge"] = {
+            "judge_mode": scored.get("judge_mode"),
+            "candidate_total_score": candidate.get("total_score"),
+            "candidate_acceptable": candidate.get("acceptable"),
+            "candidate_issues": candidate.get("issues") or [],
+            "verdict": scored.get("verdict") or {},
+        }
+        failures.append(source)
+    return failures
 
 
 def _dataset_table_names(manifest: Mapping[str, Any], dataset_name: str) -> list[str]:

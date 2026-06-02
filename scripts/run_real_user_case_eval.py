@@ -16,7 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.real_user_eval.http_target import HttpEvalTarget
 from scripts.real_user_eval.manifest import load_manifest, validate_v1_coverage
-from scripts.real_user_eval.runner import run_manifest
+from scripts.real_user_eval.runner import DEFAULT_SCORE_JUDGE, run_manifest
 from scripts.real_user_eval.service_target import ServiceEvalTarget
 
 
@@ -32,7 +32,7 @@ def main() -> None:
     parser.add_argument("--max-variants-per-case", type=int)
     parser.add_argument("--skip-conversations", action="store_true")
     parser.add_argument("--enforce-v1-coverage", action="store_true")
-    parser.add_argument("--score-judge", choices=("heuristic", "llm", "auto"), default="heuristic")
+    parser.add_argument("--score-judge", choices=("heuristic", "llm", "auto"), default=DEFAULT_SCORE_JUDGE)
     parser.add_argument("--min-acceptable", type=float, default=75.0)
     parser.add_argument("--print-summary", action="store_true")
     args = parser.parse_args()
@@ -61,6 +61,7 @@ def main() -> None:
                     "cases": summary["case_count"],
                     "passed": summary["passed"],
                     "failed": summary["failed"],
+                    "acceptance_source": summary.get("acceptance_source"),
                     "coverage": coverage,
                 },
                 ensure_ascii=False,
