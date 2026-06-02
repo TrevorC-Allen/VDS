@@ -114,7 +114,7 @@ def generate_variant_proposals(
     rng = random.Random(seed)
     for case in selected_cases:
         case_seed = rng.randint(1, 2_147_483_647)
-        raw = client.complete_json(_variant_messages(case, count=count, seed=case_seed), temperature=temperature)
+        raw = _complete_variant_json(client, _variant_messages(case, count=count, seed=case_seed), temperature=temperature)
         accepted, rejected = sanitize_generated_variants(
             raw.get("variants"),
             canonical_question=case.canonical_question,
@@ -135,6 +135,26 @@ def generate_variant_proposals(
             )
         )
     return proposals
+
+
+def _complete_variant_json(client: Any, messages: list[dict[str, str]], *, temperature: float) -> dict[str, Any]:
+    try:
+        return client.complete_json(messages, temperature=temperature)
+    except ValueError as exc:
+        retry_messages = [
+            *messages,
+            {
+                "role": "user",
+                "content": (
+                    '上一次输出格式不合格。必须只返回一个 JSON object，顶层格式严格为 '
+                    '{"variants":["问法1","问法2"]}。不要返回 JSON array、markdown、解释文字或代码块。'
+                ),
+            },
+        ]
+        try:
+            return client.complete_json(retry_messages, temperature=0.2)
+        except ValueError as retry_exc:
+            raise ValueError(f"LLM variant response was not a JSON object after retry: {retry_exc}") from exc
 
 
 def sanitize_generated_variants(
@@ -197,7 +217,7 @@ def _variant_messages(case: Any, *, count: int, seed: int) -> list[dict[str, str
                 "你是 VDS 真实用户问法变体生成器。只生成用户可能真实输入的问题，不回答问题。"
                 "不要生成标准答案、oracle、SQL、字段计算结果、task_id、raw prompt 或内部评测信息。"
                 "需要覆盖口语、省略、模糊表达、字段别名、错别字、中英混合和追问式表达。"
-                "只返回 JSON。"
+                '只返回 JSON object，顶层必须是 {"variants": [...]}，不能返回数组或 markdown。'
             ),
         },
         {
