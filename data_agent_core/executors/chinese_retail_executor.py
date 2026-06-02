@@ -30,6 +30,9 @@ CHINESE_RETAIL_OPERATIONS = {
     "retail_distribution_topn_chart",
     "retail_route_store_count",
     "retail_route_history_category_top",
+    "retail_route_scope_metric_summary",
+    "retail_route_scope_difference_reason",
+    "retail_route_scope_employee_ranking",
     "retail_display_item_top",
     "retail_contract_store_count",
     "retail_service_customer_count",
@@ -130,6 +133,12 @@ def execute_chinese_retail_operation(logic: LogicForm, context: dict[str, Any]) 
         return _retail_route_store_count(tables, params)
     if op == "retail_route_history_category_top":
         return _retail_route_history_category_top(tables, params)
+    if op == "retail_route_scope_metric_summary":
+        return _retail_route_scope_metric_summary(tables, params)
+    if op == "retail_route_scope_difference_reason":
+        return _retail_route_scope_difference_reason(tables, params)
+    if op == "retail_route_scope_employee_ranking":
+        return _retail_route_scope_employee_ranking(tables, params)
     if op == "retail_display_item_top":
         return _retail_display_item_top(tables, params)
     if op == "retail_contract_store_count":
@@ -470,6 +479,72 @@ def _retail_route_history_category_top(tables: dict[str, pd.DataFrame], params: 
     if params.get("include_metric"):
         return f"{ranking.index[0]}:{_format_decimal(float(ranking.iloc[0]), int(params.get('decimals') or 2))}"
     return str(ranking.index[0])
+
+
+def _retail_route_scope_metric_summary(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    rows = _route_scope_metric_rows(tables, params)
+    if not rows:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    primary_metric = str(params.get("primary_metric") or params.get("metric") or "sign_amt")
+    primary_label = _sign_metric_label(primary_metric)
+    dominant = max(rows, key=lambda row: float(row.get(primary_label, 0.0)))
+    decimals = int(params.get("decimals") or 3)
+    answer_parts = []
+    for row in rows:
+        scope = str(row["线路范围"])
+        metrics_text = "、".join(
+            f"{label}{_format_decimal(float(value), decimals)}"
+            for label, value in row.items()
+            if label != "线路范围" and isinstance(value, (int, float))
+        )
+        answer_parts.append(f"{scope}：{metrics_text}")
+    answer = "；".join(answer_parts) + f"。按{primary_label}比较，{dominant['线路范围']}更高。"
+    return {
+        "answer": answer,
+        "candidate_table": rows,
+        "x": "线路范围",
+        "metric": primary_label,
+        "dominant_scope": dominant["线路范围"],
+    }
+
+
+def _retail_route_scope_difference_reason(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    rows = _route_scope_metric_rows(tables, params)
+    if not rows:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    metric = str(params.get("metric") or "sign_amt")
+    metric_label = _sign_metric_label(metric)
+    by_scope = {str(row["线路范围"]): row for row in rows}
+    outside = float((by_scope.get("线路外") or {}).get(metric_label) or 0.0)
+    inside = float((by_scope.get("线路内") or {}).get(metric_label) or 0.0)
+    higher_scope = "线路外" if outside >= inside else "线路内"
+    ranking_payload = _route_scope_employee_ranking_payload(tables, params | {"route_scope": higher_scope, "metric": metric})
+    top_rows = ranking_payload.get("candidate_table") if isinstance(ranking_payload, dict) else []
+    decimals = int(params.get("decimals") or 3)
+    top_text = "、".join(
+        f"{row['业代']}({_format_decimal(float(row.get(metric_label) or 0.0), decimals)})"
+        for row in top_rows[: int(params.get("limit") or 3)]
+        if isinstance(row, dict)
+    )
+    gap = abs(outside - inside)
+    answer = (
+        f"{higher_scope}{metric_label}更高，{metric_label}为{_format_decimal(max(outside, inside), decimals)}，"
+        f"比另一侧高{_format_decimal(gap, decimals)}。"
+    )
+    if top_text:
+        answer += f" 主要贡献来自{higher_scope}业代：{top_text}。"
+    return {
+        "answer": answer,
+        "candidate_table": rows,
+        "x": "线路范围",
+        "metric": metric_label,
+        "dominant_scope": higher_scope,
+        "top_contributors": top_rows,
+    }
+
+
+def _retail_route_scope_employee_ranking(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any] | str:
+    return _route_scope_employee_ranking_payload(tables, params)
 
 
 def _retail_display_item_top(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> str:
@@ -1271,18 +1346,45 @@ def _retail_distribution_monthly_yoy_compare(tables: dict[str, Any], params: dic
 
 def _retail_category_distribution_periodic_trend(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
     product = params.get("product")
-    months = _month_range(params.get("start_ym"), params.get("end_ym"))
-    if not product or not months:
+    if not product:
         return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
-    hist = _filter_date_month_range(_history_table(tables), "sign_time", months)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    hist = _history_table(tables)
+    if months:
+        hist = _filter_date_month_range(hist, "sign_time", months)
+    elif params.get("ym"):
+        hist = _filter_ym(hist, "sign_time", params.get("ym"))
     hist = _filter_product(hist, product)
     if hist.empty:
         return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     hist = hist.copy()
-    hist["month"] = pd.to_datetime(hist["sign_time"], errors="coerce").dt.strftime("%Y%m").astype(int)
+    dates = pd.to_datetime(hist["sign_time"], errors="coerce")
+    hist = hist[dates.notna()].copy()
+    dates = pd.to_datetime(hist["sign_time"], errors="coerce")
+    if hist.empty:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     hist["sign_amt_n"] = _numeric(hist["sign_amt"])
+    if str(params.get("granularity") or "").lower() == "day":
+        hist["period"] = dates.dt.strftime("%Y-%m-%d")
+        totals = hist.groupby("period", dropna=True)["sign_amt_n"].sum().sort_index()
+        rows = [{"日期": str(day), "分销金额": float(value)} for day, value in totals.items()]
+        if not rows:
+            return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+        highest = max(rows, key=lambda row: float(row["分销金额"]))
+        return {
+            "answer": f"{product}销售金额随时间趋势已生成；峰值日期为{highest['日期']}。",
+            "candidate_table": rows,
+            "x": "日期",
+            "metric": "分销金额",
+            "highest_period": highest["日期"],
+        }
+    hist["month"] = dates.dt.strftime("%Y%m").astype(int)
+    if not months:
+        months = sorted(int(month) for month in hist["month"].dropna().unique())
     totals = hist.groupby("month", dropna=True)["sign_amt_n"].sum().reindex(months, fill_value=0.0)
     rows = [{"月份": _ym_label(month), "分销金额": float(totals.loc[month])} for month in months]
+    if not rows:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     directions = []
     for prev, curr in zip(rows, rows[1:]):
         directions.append("上升" if float(curr["分销金额"]) > float(prev["分销金额"]) else "下降" if float(curr["分销金额"]) < float(prev["分销金额"]) else "持平")
@@ -1592,9 +1694,11 @@ def _dimension_label(dimension: str) -> str:
     return {
         "sku_name": "SKU",
         "ctg_name": "品类",
+        "cust_name": "客户",
         "emp_name": "业代",
         "p_emp_name": "主任",
         "channel_name": "渠道",
+        "cust_code": "客户",
     }.get(dimension, dimension)
 
 
@@ -1605,6 +1709,13 @@ def _metric_label(metric: str) -> str:
         "target": "目标金额",
         "target_amt": "目标金额",
     }.get(metric, metric)
+
+
+def _sign_metric_label(metric: str) -> str:
+    return {
+        "sign_amt": "签收金额",
+        "sign_box_cnt": "签收箱数",
+    }.get(metric, _metric_label(metric))
 
 
 def _route_customer_codes(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> set[str]:
@@ -1619,6 +1730,57 @@ def _route_rows(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> pd.D
     if person:
         data = data[data["emp_name"].astype(str) == str(person)]
     return data
+
+
+def _route_scope_history_rows(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> pd.DataFrame:
+    route_codes = _route_customer_codes(tables, params)
+    hist = _filter_ym(_history_table(tables), "sign_time", params.get("ym")).copy()
+    if hist.empty:
+        return hist
+    hist["_route_scope"] = hist["cust_code"].dropna().astype(str).apply(lambda code: "线路内" if code in route_codes else "线路外")
+    return hist
+
+
+def _route_scope_metric_rows(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> list[dict[str, Any]]:
+    hist = _route_scope_history_rows(tables, params)
+    if hist.empty or "_route_scope" not in hist.columns:
+        return []
+    metrics = [str(metric) for metric in params.get("metrics") or [params.get("metric") or params.get("primary_metric") or "sign_amt"]]
+    metrics = [metric for metric in metrics if metric in hist.columns]
+    if not metrics:
+        return []
+    grouped = hist.groupby("_route_scope", dropna=False)[metrics].sum()
+    primary_metric = str(params.get("primary_metric") or params.get("metric") or metrics[0])
+    sort_metric = primary_metric if primary_metric in grouped.columns else metrics[0]
+    grouped = grouped.sort_values(by=sort_metric, ascending=False)
+    rows: list[dict[str, Any]] = []
+    for scope, values in grouped.iterrows():
+        row: dict[str, Any] = {"线路范围": str(scope)}
+        for metric in metrics:
+            row[_sign_metric_label(metric)] = float(values[metric])
+        rows.append(row)
+    return rows
+
+
+def _route_scope_employee_ranking_payload(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> dict[str, Any]:
+    hist = _route_scope_history_rows(tables, params)
+    route_scope = str(params.get("route_scope") or "线路外")
+    metric = str(params.get("metric") or "sign_amt")
+    metric_label = _sign_metric_label(metric)
+    if hist.empty or metric not in hist.columns or "emp_name" not in hist.columns:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    scoped = hist[hist["_route_scope"].astype(str) == route_scope]
+    if scoped.empty:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    ranking = _numeric(scoped[metric]).groupby(scoped["emp_name"].fillna("").astype(str)).sum().sort_values(ascending=False)
+    ranking = ranking[(ranking.index.astype(str).str.strip() != "") & (ranking > 0)]
+    if ranking.empty:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+    limit = int(params.get("limit") or 3)
+    rows = [{"业代": str(name), "线路范围": route_scope, metric_label: float(value)} for name, value in ranking.head(limit).items()]
+    decimals = int(params.get("decimals") or 3)
+    answer = "、".join(f"{row['业代']}:{_format_decimal(float(row[metric_label]), decimals)}" for row in rows)
+    return {"answer": answer, "candidate_table": rows, "x": "业代", "metric": metric_label}
 
 
 def _visit_rows(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> pd.DataFrame:

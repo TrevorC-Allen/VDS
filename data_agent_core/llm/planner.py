@@ -28,6 +28,7 @@ SUPPORTED_OPERATIONS = {
     "outlier_count",
     "top_k_share",
     "filtered_metric_ranking",
+    "growth_ranking",
     "top_count",
     "ranking",
     "filtering",

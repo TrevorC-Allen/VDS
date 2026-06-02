@@ -30,10 +30,11 @@ class TextAnswerFrameworkTest(unittest.TestCase):
 
         framed = apply_text_answer_framework(response, question="这个数据主要讲什么？")["answer"]
 
-        self.assertIn("核心结论是", framed)
-        self.assertIn("简要结论：", framed)
-        self.assertIn("口径说明：", framed)
-        self.assertIn("如果你愿意，下一步可以继续看：", framed)
+        self.assertIn("数据摘要（关键指标）", framed)
+        self.assertIn("分析洞察（发现了什么）", framed)
+        self.assertIn("业务建议（可以采取什么行动）", framed)
+        self.assertIn("口径与边界", framed)
+        self.assertIn("下一步可继续分析", framed)
         self.assertIn("订单或交易明细", framed)
         self.assertIn("指标=销售额", framed)
         self.assertNotEqual("这张表有 120 行、8 列。", framed.strip())
@@ -96,7 +97,7 @@ class TextAnswerFrameworkTest(unittest.TestCase):
         self.assertIn("不会直接修改原始数据", framed)
         self.assertIn("用户确认", framed)
         self.assertIn("缺失值", framed)
-        self.assertIn("口径说明：", framed)
+        self.assertIn("口径与边界", framed)
 
     def test_not_applicable_becomes_clarification_frame(self) -> None:
         response = {
@@ -116,6 +117,7 @@ class TextAnswerFrameworkTest(unittest.TestCase):
         self.assertIn("时间范围或周期粒度", framed)
         self.assertIn("指标口径", framed)
         self.assertIn("最少需要补充", framed)
+        self.assertNotIn("业务建议（可以采取什么行动）\n- 优先复核", framed)
 
     def test_framework_removes_internal_artifact_markers(self) -> None:
         response = {
@@ -219,6 +221,51 @@ class TextAnswerFrameworkTest(unittest.TestCase):
         self.assertNotIn("当前结果表只返回", framed)
         self.assertNotIn("仍需按当前数据范围和指标口径解读", framed)
 
+    def test_scalar_number_delta_does_not_use_ranking_template(self) -> None:
+        response = {
+            "success": True,
+            "answer_type": "number",
+            "answer": "",
+            "logic_form": {
+                "operation": "mcc_change_delta",
+                "source_tables": ["payments"],
+                "filters": {"merchant": "Crossfit_Hanna", "year": 2023},
+                "parameters": {"new_mcc": 5999},
+            },
+            "result": {
+                "columns": ["answer"],
+                "rows": [{"answer": 26210.609907000045}],
+                "value": 26210.609907000045,
+            },
+            "debug": {"operation": "ranking_candidate_debug"},
+            "insight": {
+                "next_questions": [
+                    "比较 Top 结果之间的answer差距有多大？",
+                    "看低排名对象是否受缺失值影响？",
+                ]
+            },
+        }
+
+        framed = apply_text_answer_framework(
+            response,
+            question="Imagine the merchant Crossfit_Hanna had changed its MCC code to 5999 before 2023 started, what amount delta will it have to pay in fees for the year 2023?",
+        )["answer"]
+
+        self.assertIn("26,210.61", framed)
+        self.assertNotIn("排名结果", framed)
+        self.assertNotIn("关键排序结果", framed)
+        self.assertNotIn("第 1 位", framed)
+        self.assertNotIn("Top 结果", framed)
+        self.assertNotIn("低排名", framed)
+        self.assertEqual(
+            [
+                "按关键维度拆解这个数值",
+                "对比相邻时间段或相关对象的同一指标",
+                "检查异常值、缺失值或规则口径是否影响该数值",
+            ],
+            response["insight"]["next_questions"],
+        )
+
     def test_multi_series_trend_frame_summarizes_top5_overall_patterns(self) -> None:
         response = {
             "success": True,
@@ -242,7 +289,55 @@ class TextAnswerFrameworkTest(unittest.TestCase):
         self.assertIn("天然水 持续领先", framed)
         self.assertIn("纯净水 在 2026年5月 明显跃升", framed)
         self.assertIn("东方树叶 在 2026年4月 达到阶段峰值", framed)
-        self.assertNotIn("水溶C100", framed.split("核心结论是：", 1)[1].split("。", 1)[0])
+        self.assertNotIn("水溶C100", framed.split("数据摘要（关键指标）", 1)[1].split("。", 1)[0])
+
+    def test_repeated_sku_topn_result_surfaces_boundary_not_fake_grouping(self) -> None:
+        response = {
+            "success": True,
+            "answer_type": "table",
+            "answer": "返回 10 行 SKU 数据。",
+            "logic_form": {"operation": "ranking", "parameters": {"metric": "分销金额", "dimension": "SKU编码"}},
+            "result": {
+                "columns": ["SKU编码", "SKU名称", "品类", "分销金额"],
+                "rows": [
+                    {
+                        "SKU编码": "SK00100015",
+                        "SKU名称": "农夫山泉-长白山天然矿泉水-380mL",
+                        "品类": "天然矿泉水",
+                        "分销金额": 100,
+                    }
+                    for _ in range(10)
+                ],
+            },
+        }
+
+        framed = apply_text_answer_framework(response, question="这 10 个 SKU 按品类分组汇总")["answer"]
+
+        self.assertIn("口径与边界", framed)
+        self.assertIn("没有返回 10 个不同SKU", framed)
+        self.assertIn("未按 SKU 去重/聚合", framed)
+        self.assertIn("先按 SKU 编码去重", framed)
+        self.assertNotIn("头部品类集中度非常高", framed)
+
+    def test_reasonableness_comparison_states_boundary_without_fake_judgment(self) -> None:
+        response = {
+            "success": True,
+            "answer_type": "table",
+            "answer": "深圳销售额 284，工单量 44。",
+            "logic_form": {
+                "operation": "aggregation",
+                "filters": {"city": "深圳", "month": {"month": 3}},
+                "parameters": {"dimension": "city", "metric": "sales", "metrics": ["sales", "tickets"]},
+            },
+            "result": {"columns": ["city", "sales", "tickets"], "rows": [{"city": "深圳", "sales": 284, "tickets": 44}]},
+        }
+
+        framed = apply_text_answer_framework(response, question="这个城市3月份的工单数量与销售额相比是否合理？")["answer"]
+
+        self.assertIn("深圳 的sales 为 284，tickets 为 44", framed)
+        self.assertIn("是否合理需要历史基准、业务阈值或同类对比", framed)
+        self.assertIn("不能仅凭本次结果直接判断合理性", framed)
+        self.assertIn("先定义合理性的业务基准", framed)
 
 
 if __name__ == "__main__":

@@ -873,6 +873,14 @@ p {
   white-space: nowrap;
 }
 
+#dataset-status.ready {
+  color: #2563eb;
+}
+
+#dataset-status.error {
+  color: #b42318;
+}
+
 .status-strip {
   display: flex;
   align-items: center;
@@ -1022,6 +1030,7 @@ p {
   margin-top: 8px;
 }
 
+.message-action-button,
 .copy-reply-button {
   position: relative;
   display: grid;
@@ -1036,6 +1045,8 @@ p {
   transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
 }
 
+.message-action-button:hover,
+.message-action-button:focus-visible,
 .copy-reply-button:hover,
 .copy-reply-button:focus-visible {
   border-color: #111827;
@@ -1044,6 +1055,13 @@ p {
   outline: none;
 }
 
+.message-action-button[disabled],
+.copy-reply-button[disabled] {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.message-action-button::after,
 .copy-reply-button::after {
   position: absolute;
   top: calc(100% + 6px);
@@ -1064,10 +1082,18 @@ p {
   white-space: nowrap;
 }
 
+.message-action-button:hover::after,
+.message-action-button:focus-visible::after,
 .copy-reply-button:hover::after,
 .copy-reply-button:focus-visible::after {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
+}
+
+.message-action-button.is-active {
+  border-color: #111827;
+  background: #fff;
+  color: #111827;
 }
 
 .copy-reply-button.copied {
@@ -1082,6 +1108,7 @@ p {
   color: #111827;
 }
 
+.message-action-button svg,
 .copy-reply-button svg {
   width: 18px;
   height: 18px;
@@ -1494,6 +1521,12 @@ p {
   background: #e5e7eb;
   color: #9ca3af;
   opacity: 1;
+}
+
+.composer > .composer-actions > .button.primary {
+  grid-row: 1;
+  grid-column: 3;
+  margin-right: 0;
 }
 
 .button.secondary {
@@ -1979,8 +2012,8 @@ p {
 .artifact-card code {
   display: block;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  white-space: pre;
+  overflow-wrap: normal;
   word-break: normal;
 }
 
@@ -2227,7 +2260,7 @@ p {
   right: 0;
   z-index: 90;
   display: grid;
-  width: min(430px, calc(100vw - 280px));
+  width: min(560px, calc(100vw - 280px));
   height: 100vh;
   grid-template-rows: auto auto minmax(0, 1fr);
   border-left: 1px solid var(--line);
@@ -2268,7 +2301,7 @@ p {
   justify-content: space-between;
   gap: 16px;
   border-bottom: 1px solid #eef0f3;
-  padding: 16px 18px 12px;
+  padding: 18px 20px 13px;
 }
 
 .activity-drawer-header span {
@@ -2290,7 +2323,7 @@ p {
 .activity-drawer-summary {
   margin: 0;
   border-bottom: 1px solid #f1f2f4;
-  padding: 11px 18px;
+  padding: 12px 20px;
   color: #6b7280;
   font-size: 13px;
   line-height: 1.45;
@@ -2302,7 +2335,7 @@ p {
   gap: 0;
   min-height: 0;
   margin: 0;
-  padding: 14px 18px 26px;
+  padding: 16px 20px 28px;
   overflow: auto;
   overscroll-behavior: contain;
   list-style: none;
@@ -2529,11 +2562,30 @@ p {
 .activity-tool-row,
 .activity-artifact-card {
   display: grid;
-  gap: 6px;
+  min-width: 0;
+  gap: 8px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
-  padding: 8px;
+  padding: 10px;
   background: #fbfbfc;
+}
+
+.activity-artifact-card .artifact-card-header {
+  align-items: flex-start;
+}
+
+.activity-artifact-card .artifact-card-header strong {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.activity-artifact-card .artifact-card-header span {
+  flex: 0 0 auto;
+  border: 1px solid #d7dde7;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #fff;
+  color: #475569;
 }
 
 .activity-tool-row strong {
@@ -2550,7 +2602,7 @@ p {
 .activity-artifact-card pre {
   width: 100%;
   min-width: 0;
-  max-height: 260px;
+  max-height: 340px;
   margin: 0;
   overflow: auto;
   border: 1px solid #e5e7eb;
@@ -2565,9 +2617,10 @@ p {
 .activity-artifact-card code {
   display: block;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  white-space: pre;
+  overflow-wrap: normal;
   word-break: normal;
+  tab-size: 2;
 }
 
 .composer-shell {
@@ -2576,10 +2629,16 @@ p {
 }
 
 .composer {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 8px;
   max-width: var(--composer);
   margin: 0 auto;
   border: 1px solid #d9d9e3;
   border-radius: 28px;
+  padding: 10px;
   background: #fff;
   box-shadow: 0 16px 48px rgba(15, 23, 42, 0.1);
 }
@@ -2590,12 +2649,8 @@ p {
 }
 
 .composer.has-files {
-  display: grid;
-  grid-template-columns: 34px auto minmax(180px, 1fr) 36px;
-  align-items: center;
-  column-gap: 8px;
-  row-gap: 8px;
-  padding: 10px 10px 8px;
+  grid-template-columns: 36px minmax(180px, 1fr) 36px;
+  padding-bottom: 8px;
 }
 
 .composer.has-files .composer-file-tray {
@@ -2604,7 +2659,7 @@ p {
 
 .composer.has-files .composer-input {
   grid-row: 2;
-  grid-column: 3;
+  grid-column: 2;
   min-height: 36px;
   max-height: 92px;
   border-left: 1px solid #d1d5db;
@@ -2630,7 +2685,7 @@ p {
 
 .composer.has-files .button.primary {
   grid-row: 2;
-  grid-column: 4;
+  grid-column: 3;
   margin-right: 0;
 }
 
@@ -2711,13 +2766,15 @@ p {
 
 .composer-input {
   display: block;
+  grid-row: 1;
+  grid-column: 2;
   width: 100%;
-  min-height: 54px;
+  min-height: 36px;
   max-height: 150px;
   overflow-y: auto;
   resize: none;
   border: 0;
-  padding: 15px 18px 5px;
+  padding: 7px 4px 6px;
   white-space: pre-wrap;
   word-break: break-word;
   color: #111827;
@@ -2766,14 +2823,14 @@ ms-editor-squiggler,
 }
 
 .composer-actions {
-  display: flex;
+  display: contents;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px 10px;
+  padding: 0;
 }
 
 .upload-controls {
-  display: flex;
+  display: contents;
   min-width: 0;
   flex: 1 1 auto;
   flex-wrap: wrap;
@@ -2823,12 +2880,17 @@ ms-editor-squiggler,
 }
 
 .data-file-button {
+  grid-row: 1;
+  grid-column: 1;
+  width: 36px;
+  height: 36px;
   min-height: 34px;
   flex: 0 0 auto;
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
-  font-weight: 640;
+  border-color: transparent;
+  padding: 0;
+  background: transparent;
+  color: #374151;
+  font-weight: 560;
 }
 
 .data-file-button::before {
@@ -2836,26 +2898,23 @@ ms-editor-squiggler,
 }
 
 .data-file-button:hover {
-  border-color: var(--accent-dark);
-  background: var(--accent-dark);
+  border-color: transparent;
+  background: #f3f4f6;
+  color: #111827;
 }
 
 .data-file-button svg {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
 }
 
 .composer.has-files .data-file-button {
   grid-row: 2;
   grid-column: 1;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   min-height: 34px;
-  border-color: transparent;
-  padding: 0;
-  background: transparent;
-  color: #374151;
-  font-size: 0;
 }
 
 .composer.has-files .data-file-button:hover {
@@ -2864,38 +2923,8 @@ ms-editor-squiggler,
   color: #111827;
 }
 
-.composer.has-files .data-file-button svg,
-.composer.has-files .data-file-button span {
-  display: none;
-}
-
-.composer.has-files .data-file-button::before {
-  content: "+";
-  font-size: 25px;
-  font-weight: 300;
-  line-height: 1;
-}
-
-.composer.has-files .rule-file-button {
-  grid-row: 2;
-  grid-column: 2;
-  min-height: 32px;
-  border: 1px solid #e5e7eb;
-  padding: 5px 10px;
-  background: #fff;
-  color: #4b5563;
-  font-weight: 560;
-  white-space: nowrap;
-}
-
-.composer.has-files .rule-file-button:hover {
-  border-color: #d1d5db;
-  background: #f9fafb;
-  color: #111827;
-}
-
 .rule-file-button {
-  display: inline-flex;
+  display: none;
   min-height: 30px;
   flex: 0 0 auto;
   align-items: center;
@@ -2917,6 +2946,8 @@ ms-editor-squiggler,
 }
 
 .rule-file-status {
+  grid-row: 2;
+  grid-column: 1 / -1;
   min-width: 0;
   max-width: 360px;
   overflow: hidden;
@@ -4054,12 +4085,8 @@ select {
     flex-basis: auto;
   }
 
-  .composer.has-files .rule-file-button {
-    display: none;
-  }
-
   .composer.has-files {
-    grid-template-columns: 34px minmax(0, 1fr) 36px;
+    grid-template-columns: 36px minmax(0, 1fr) 36px;
   }
 
   .composer.has-files .composer-input {
@@ -4099,7 +4126,7 @@ select {
   }
 
   .activity-drawer {
-    width: min(100vw, 430px);
+    width: min(100vw, 560px);
   }
 
   .monitor-grid {

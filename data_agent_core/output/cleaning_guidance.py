@@ -300,10 +300,10 @@ def _cleaning_question_kind(question: str) -> str:
     compact = str(question or "").replace(" ", "")
     if any(token in compact for token in ("日期字段", "日期", "时间字段", "时间范围", "无法解析", "范围异常")):
         return "temporal_quality"
-    if any(token in compact for token in ("数值字段", "负值", "0值", "零值", "极端值", "离群值")):
-        return "numeric_quality"
     if any(token in compact for token in ("异常规则", "数量", "占比", "样例说明")) and any(token in compact for token in ("异常", "规则", "样例")):
         return "anomaly_rules"
+    if any(token in compact for token in ("数值字段", "负值", "0值", "零值", "极端值", "离群值")):
+        return "numeric_quality"
     if "结论会不会变" in compact or "会不会变" in compact:
         return "conclusion_change"
     if any(token in compact for token in ("如果先处理", "删除明显异常", "核心指标会受什么影响")):

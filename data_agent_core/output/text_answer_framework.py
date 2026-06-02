@@ -37,7 +37,13 @@ FORBIDDEN_MARKERS = (
     "评分器",
 )
 
-FRAMEWORK_HEADINGS = ("核心结论是", "简要结论：", "口径说明：", "如果你愿意，下一步可以继续看：")
+FRAMEWORK_HEADINGS = (
+    "数据摘要（关键指标）",
+    "分析洞察（发现了什么）",
+    "业务建议（可以采取什么行动）",
+    "口径与边界",
+    "下一步可继续分析",
+)
 
 
 def apply_text_answer_framework(response: dict[str, Any], *, question: str) -> dict[str, Any]:
@@ -54,22 +60,24 @@ def apply_text_answer_framework(response: dict[str, Any], *, question: str) -> d
 
     kind = _classify_kind(question, response)
     context = _FrameContext(question=question, response=response, original_answer=answer, kind=kind)
-    if kind == "ranking" and _is_simple_top1_ranking(context):
-        response["answer"] = _simple_top1_ranking_answer(context)
-        _mark_debug(response, applied=True, reason="kind=ranking_simple_top1")
-        return response
-    framed = _compose_frame(context)
+    sections = _compose_structured_sections(context)
+    framed = _render_structured_sections(sections)
     if not framed:
         _mark_debug(response, applied=False, reason="empty_composition")
         return response
 
     response["answer"] = framed
+    response["structured_answer_sections"] = sections
     insight = response.get("insight")
     if isinstance(insight, dict):
         if not str(insight.get("summary") or "").strip():
             insight["summary"] = _first_sentence(_strip_heading_prefix(_core_conclusion(context)), limit=180)
         next_questions = _next_questions(context)
-        if next_questions and not insight.get("next_questions"):
+        scalar_value_context = _is_scalar_value_context(
+            answer_type=str(response.get("answer_type") or ""),
+            operation=str(context.logic_form.get("operation") or ""),
+        )
+        if next_questions and (scalar_value_context or not insight.get("next_questions")):
             insight["next_questions"] = next_questions[:3]
         insight["confidence"] = max(float(insight.get("confidence") or 0.0), 0.82)
     _mark_debug(response, applied=True, reason=f"kind={kind}")
@@ -99,10 +107,34 @@ def _should_skip_response(response: dict[str, Any]) -> bool:
     debug = _as_dict(response.get("debug"))
     operation = str(logic.get("operation") or "")
     route = str(debug.get("operation") or debug.get("message_intent") or "")
+    output_format = _as_dict(logic.get("output_format"))
+    guidelines = str(output_format.get("guidelines") or "")
+    answer = str(response.get("answer") or "").strip()
+    if answer in {"没有匹配记录", "No matching records", "NO_MATCHING_RECORDS"} and answer_type not in {"list", "table"}:
+        return True
+    if _guidelines_request_raw_answer(guidelines):
+        return True
     if answer_type == "chat":
         if operation not in {"cleaning_boundary", "not_applicable"} and "cleaning" not in route:
             return True
     return False
+
+
+def _guidelines_request_raw_answer(guidelines: str) -> bool:
+    lowered = guidelines.lower()
+    return any(
+        token in lowered
+        for token in (
+            "just a number",
+            "return only a number",
+            "only the number",
+            "return only",
+            "answer only",
+            "answer must be just",
+            "must be just",
+            "just the country code",
+        )
+    ) or any(token in guidelines for token in ("只返回数字", "只返回整数", "只需数字", "只返回百分比", "只返回姓名", "只返回SKU名称", "只返回"))
 
 
 def _classify_kind(question: str, response: dict[str, Any]) -> str:
@@ -114,12 +146,16 @@ def _classify_kind(question: str, response: dict[str, Any]) -> str:
     answer = str(response.get("answer") or "")
     if response.get("success") is False or answer.strip() == "Not Applicable" or operation == "not_applicable" or answer_type == "clarification":
         return "clarification"
-    if answer_type == "cleaning_simulation" or "cleaning" in operation or "清洗" in text or "质量" in text:
+    if answer_type == "cleaning_simulation" or operation in {"data_quality_report", "outlier_count", "null_check"} or "cleaning" in operation or "清洗" in text or "质量" in text or "异常" in text:
         if any(token in text for token in ("缺失", "重复", "异常", "质量", "clean")):
             return "quality"
         return "cleaning"
     if answer_type == "overview" or "overview" in operation or any(token in text for token in ("主要讲什么", "概览", "看一下这个数据", "字段含义", "有哪些字段")):
         return "overview"
+    if operation in {"retail_route_scope_metric_summary", "retail_route_scope_difference_reason"}:
+        return "analysis"
+    if _is_scalar_value_context(answer_type=answer_type, operation=operation):
+        return "analysis"
     if any(token in text for token in ("完成率", "目标", "实际", "达标", "target", "actual", "achievement")):
         return "target_actual"
     if any(token in text for token in ("趋势", "环比", "同比", "增长", "下降", "波动", "trend", "mom", "yoy", "growth")):
@@ -129,28 +165,48 @@ def _classify_kind(question: str, response: dict[str, Any]) -> str:
     return "analysis"
 
 
-def _compose_frame(context: _FrameContext) -> str:
+def _compose_structured_sections(context: _FrameContext) -> dict[str, list[str]]:
     core = _core_conclusion(context)
     evidence = _evidence_paragraph(context)
-    conclusions = _brief_conclusions(context)
-    scopes = _scope_lines(context)
+    summary = _dedupe_points([core, evidence], limit=3)
+    analysis = _dedupe_points(_brief_conclusions(context), limit=4)
+    suggestions = _business_suggestion_lines(context)
+    boundaries = _boundary_lines(context)
     next_questions = _next_questions(context)
 
-    parts = [f"已帮你看了这个数据，核心结论是：{_strip_sentence_punctuation(core)}。"]
-    if evidence:
-        parts.extend(["", _strip_sentence_punctuation(evidence) + "。"])
+    if not suggestions:
+        suggestions = ["当前结果只适合先确认口径和数据完整性，暂不生成经营动作建议"]
 
-    parts.extend(["", "简要结论："])
-    parts.extend(f"- {_strip_sentence_punctuation(item)}。" for item in conclusions[:3])
+    return {
+        "数据摘要（关键指标）": summary or ["已基于当前可验证的数据完成分析，具体结果和边界见下方"],
+        "分析洞察（发现了什么）": analysis or ["当前结果不足以形成更多洞察，需要结合结果表和口径边界继续复核"],
+        "业务建议（可以采取什么行动）": suggestions[:3],
+        "口径与边界": boundaries[:5],
+        "下一步可继续分析": _dedupe_points(next_questions, limit=3) or ["补充字段、时间范围或过滤条件后重新分析"],
+    }
 
-    parts.extend(["", "口径说明："])
-    for label, value in scopes:
-        parts.append(f"- {label}：{_strip_sentence_punctuation(value)}。")
 
-    parts.extend(["", "如果你愿意，下一步可以继续看："])
-    for index, question in enumerate(next_questions[:3], start=1):
-        parts.append(f"{index}. {_strip_sentence_punctuation(question)}？" if not str(question).strip().endswith(("?", "？")) else f"{index}. {question}")
+def _render_structured_sections(sections: dict[str, list[str]]) -> str:
+    parts: list[str] = []
+    for heading in FRAMEWORK_HEADINGS:
+        lines = [str(item).strip() for item in sections.get(heading, []) if str(item or "").strip()]
+        if not lines:
+            continue
+        if parts:
+            parts.append("")
+        parts.append(heading)
+        for index, line in enumerate(lines[:5], start=1):
+            text = _strip_sentence_punctuation(line)
+            if heading == "下一步可继续分析":
+                suffix = "？" if not text.endswith(("?", "？", "。")) else ""
+                parts.append(f"{index}. {text}{suffix}")
+            else:
+                parts.append(f"- {text}。")
     return _sanitize_text("\n".join(parts))
+
+
+def _is_scalar_value_context(*, answer_type: str, operation: str) -> bool:
+    return answer_type in {"number", "percentage"} and operation not in {"ranking", "top_count", "topn", "filtered_metric_ranking"}
 
 
 def _core_conclusion(context: _FrameContext) -> str:
@@ -173,6 +229,9 @@ def _core_conclusion(context: _FrameContext) -> str:
         if trend:
             return trend
     if context.kind == "ranking":
+        original = _useful_original_ranking_core(context)
+        if original:
+            return original
         top = _top_result_text(context)
         if top:
             return top
@@ -217,6 +276,9 @@ def _overview_table_role_summary(tables: list[Any]) -> str:
 
 
 def _cleaning_core(context: _FrameContext) -> str:
+    outlier_text = _outlier_count_text(context)
+    if outlier_text:
+        return outlier_text
     original = _original_points(context, limit=1)
     if original:
         return original[0]
@@ -233,14 +295,22 @@ def _cleaning_core(context: _FrameContext) -> str:
 
 
 def _fallback_core(context: _FrameContext) -> str:
+    multi_metric_text = _multi_metric_result_text(context)
+    if multi_metric_text:
+        return multi_metric_text
     first = _first_sentence(context.original_answer, limit=220)
     if first and first.lower() != "not applicable":
         return first
+    answer_type = str(context.response.get("answer_type") or "")
+    if answer_type in {"number", "percentage"}:
+        value = context.result.get("value")
+        if value not in (None, "", []):
+            return f"已基于已验证结果得到 {_format_cell_value(value, 'answer')}"
     row_text = _top_result_text(context)
     if row_text:
         return row_text
     value = context.result.get("value")
-    if value not in {None, "", []}:
+    if value not in (None, "", []):
         return f"已基于已验证结果得到 {str(value)[:120]}"
     return "已基于当前可验证的数据完成分析，具体结果和边界见下方"
 
@@ -322,6 +392,9 @@ def _overview_evidence(context: _FrameContext) -> str:
 
 
 def _cleaning_evidence(context: _FrameContext) -> str:
+    outlier_text = _outlier_count_text(context)
+    if outlier_text:
+        return f"异常检查基于已验证结果：{outlier_text}"
     rows = context.rows[:4]
     if rows:
         items = []
@@ -398,6 +471,13 @@ def _overview_conclusions(context: _FrameContext) -> list[str]:
 
 
 def _cleaning_conclusions(context: _FrameContext) -> list[str]:
+    outlier_text = _outlier_count_text(context)
+    if outlier_text:
+        return [
+            outlier_text,
+            "异常判断只覆盖当前筛选后的数值分布，样本量过少时不能代表整体风险",
+            "如果要判断业务是否异常，还需要和相邻月份、同类城市或历史基线对比",
+        ]
     value = _as_dict(context.result.get("value"))
     direct = value.get("direct_action_rows")
     impacted = value.get("estimated_impacted_rows")
@@ -409,6 +489,17 @@ def _cleaning_conclusions(context: _FrameContext) -> list[str]:
         "我不会直接修改原始数据，不能覆盖原始文件；删除、填充、覆盖或导出清洗后数据都需要用户确认，必须等用户明确确认",
     ]
     return _merge_points(_original_points(context, limit=2), fallback, limit=3)
+
+
+def _outlier_count_text(context: _FrameContext) -> str:
+    if str(context.logic_form.get("operation") or "") != "outlier_count":
+        return ""
+    value = context.result.get("value")
+    if value in (None, "") and context.rows:
+        value = context.rows[0].get("answer")
+    if value in (None, ""):
+        return ""
+    return f"当前筛选口径下异常值数量为 {_format_plain_value(value)}"
 
 
 def _cleaning_suggestion_text(value: Any) -> str:
@@ -437,9 +528,18 @@ def _ranking_conclusions(context: _FrameContext) -> list[str]:
     for index, row in enumerate(rows, start=1):
         name = str(row.get(label) if label else _first_non_empty_value(row))
         value = _format_cell_value(row.get(metric), metric) if metric else _describe_row(row, context.columns)
-        conclusions.append(f"第 {index} 位是 {name}，{metric or '结果'}为 {value}")
+        extras = _supplemental_row_metrics(row, context.columns, label=label, metric=metric)
+        conclusions.append(f"第 {index} 位是 {name}，{metric or '结果'}为 {value}{extras}")
+    if len(conclusions) < 3 and _is_simple_top1_ranking(context):
+        conclusions.append("当前问题只要求最高或最低项，结果表已收敛到首位")
+        conclusions.append("如需复核完整排序，可以扩大 TopN 范围或查看完整结果表")
+        return conclusions[:3]
     if len(conclusions) < 3:
-        conclusions.append(f"当前结果表只返回 {len(rows)} 条排序结果，未展示的候选项不能从当前结果推断完整排名")
+        requested_n = _requested_topn_count(context.question)
+        if requested_n >= 2:
+            conclusions.append(f"当前结果表只返回 {len(rows)} 条排序结果，未展示的候选项不能从当前结果推断完整排名")
+        else:
+            conclusions.append("该结论来自已验证排序结果，未把未返回明细行展开成额外结论")
     if len(conclusions) < 3:
         conclusions.append("排序口径应以结果表的聚合字段和排序字段为准，避免把明细行顺序当排名")
     if len(conclusions) < 3:
@@ -536,6 +636,18 @@ def _specific_clarification_core(context: _FrameContext) -> str:
     return ""
 
 
+def _useful_original_ranking_core(context: _FrameContext) -> str:
+    original = _first_sentence(context.original_answer, limit=260)
+    if not original or original.lower() == "not applicable":
+        return ""
+    lowered = original.lower()
+    if any(token in lowered for token in ("trace", "debug", "not applicable")):
+        return ""
+    if any(token in original for token in ("最高", "最低", "Top", "top", "第 1", "1.", "第一")):
+        return original
+    return ""
+
+
 def _sentence_fallbacks(context: _FrameContext) -> list[str]:
     sentences = _sentences(context.original_answer)
     result = [sentence for sentence in sentences if sentence.lower() != "not applicable"][:3]
@@ -611,12 +723,198 @@ def _merge_points(primary: list[str], fallback: list[str], *, limit: int) -> lis
     return result
 
 
-def _scope_lines(context: _FrameContext) -> list[tuple[str, str]]:
+def _dedupe_points(values: list[Any], *, limit: int) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        text = _strip_sentence_punctuation(str(value or "").strip())
+        if text and not _has_forbidden_marker(text) and text not in result:
+            result.append(text)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _business_suggestion_lines(context: _FrameContext) -> list[str]:
+    shape_issue = _result_shape_issue(context)
+    if shape_issue:
+        return [
+            "先按 SKU 编码去重，或按 SKU 聚合金额、数量后再做品类汇总",
+            "确认 TopN 的排序指标、时间范围和品类字段，避免把明细重复当成 SKU 排名",
+            "等结果满足口径后，再分析头部品类贡献和长尾品类机会",
+        ]
+    if context.kind == "clarification":
+        return [
+            f"先补充{_missing_information(context)}，再重新计算",
+            "不要用猜测字段或外部映射替代当前上传数据里不存在的口径",
+            "补齐口径后优先输出可复核结果表，再做业务解读",
+        ]
+    if context.kind in {"cleaning", "quality"}:
+        return [
+            "先确认影响行数最高的质量规则，再决定删除、填充、标记或暂不处理",
+            "正式清洗前导出副本并保留原始数据，避免覆盖不可恢复",
+            "清洗后重新跑关键指标，比较清洗前后结果差异",
+        ]
+    if _asks_reasonableness_comparison(context):
+        return [
+            "先定义合理性的业务基准、阈值或同类对照口径，再判断当前指标关系是否异常",
+            "补充历史趋势、同城市同月基准或同类城市对比，避免只凭两个指标值下经营结论",
+            "确认工单、销售等指标是否属于同一时间、同一对象和同一统计粒度",
+        ]
+    insight = _as_dict(context.response.get("insight"))
+    existing = []
+    for key in ("business_suggestions", "suggestions"):
+        for item in insight.get(key) or []:
+            text = _strip_sentence_punctuation(str(item or "").strip())
+            if text and not _has_forbidden_marker(text):
+                existing.append(text)
+    if existing:
+        return _dedupe_points(existing, limit=3)
+    if not context.rows and context.kind != "overview":
+        return [
+            "先扩大或修正筛选条件，确认是否确实没有符合条件的数据",
+            "补充可计算字段和时间范围后再生成经营建议",
+        ]
+    if context.kind == "overview":
+        return [
+            "优先确认事实表、维表、时间字段和核心指标字段",
+            "先做一版 TopN、趋势和质量检查，建立可复核的数据地图",
+            "多表分析前先确认关联键和时间粒度，避免误 join",
+        ]
+    if context.kind == "target_actual":
+        return [
+            "优先复盘完成率最低项的目标来源、实际来源和周期完整性",
+            "把未达标项继续拆到产品、区域或负责人，定位差距来源",
+            "对完成率异常高或异常低的对象做质量和口径复核",
+        ]
+    if context.kind == "trend":
+        return [
+            "优先复核峰值、低点和最大变化周期对应的业务事件或数据完整性",
+            "把主要变化按区域、产品或渠道拆分，判断是整体变化还是结构变化",
+            "检查最近一个周期是否完整，避免把未完结周期当成下降",
+        ]
+    if context.kind == "ranking":
+        return [
+            "优先复核 Top 项的时间、区域或渠道拆分，确认贡献来源",
+            "比较第一名和第二名的差距，判断是否存在头部集中",
+            "同时查看低排名项，排除缺失值或异常值导致的排名偏差",
+        ]
     return [
+        "围绕当前已验证结果继续下钻关键维度",
+        "复核异常值、缺失值和筛选口径是否影响结论",
+        "将结果表和图表一起保存，便于后续复查",
+    ]
+
+
+def _boundary_lines(context: _FrameContext) -> list[str]:
+    lines: list[str] = []
+    shape_issue = _result_shape_issue(context)
+    if shape_issue:
+        lines.append(shape_issue)
+    if not context.rows and context.kind not in {"overview", "clarification", "cleaning", "quality"}:
+        lines.append("当前结果没有返回可分析明细或聚合行，不能据此生成经营判断")
+    for label, value in _scope_lines(context):
+        if value:
+            lines.append(f"{label}：{value}")
+    return _dedupe_points(lines, limit=5)
+
+
+def _scope_lines(context: _FrameContext) -> list[tuple[str, str]]:
+    lines = [
         ("数据范围", _data_scope(context)),
         ("指标口径", _metric_scope(context)),
-        ("注意事项", _caveat_scope(context)),
     ]
+    join_scope = _join_scope(context)
+    if join_scope:
+        lines.append(("关联口径", join_scope))
+    lines.append(("注意事项", _caveat_scope(context)))
+    return lines
+
+
+def _result_shape_issue(context: _FrameContext) -> str:
+    if not context.rows:
+        return ""
+    question = context.question.lower().replace(" ", "")
+    asks_sku = "sku" in question or "商品" in question or "产品" in question
+    asks_category_group = "按品类" in question or "品类分组" in question or "category" in question
+    requested_n = _requested_topn_count(context.question)
+    if not asks_sku and not asks_category_group and requested_n < 2:
+        return ""
+    sku_col = _first_matching_column(context.columns, ("sku", "商品编码", "商品编号", "产品编码", "产品编号"))
+    label_col = sku_col or _preferred_label_column(context.columns, _preferred_metric_column(context.columns, context.rows))
+    if not label_col:
+        return ""
+    values = [str(row.get(label_col) or "").strip() for row in context.rows if str(row.get(label_col) or "").strip()]
+    distinct_values = sorted(set(values))
+    if len(context.rows) <= 1 or len(distinct_values) != 1:
+        return ""
+    expected = requested_n if requested_n >= 2 else len(context.rows)
+    sample = distinct_values[0]
+    entity = "SKU" if asks_sku or (sku_col and "sku" in sku_col.lower()) else label_col
+    group_suffix = "，也不能直接作为按品类分组汇总结果" if asks_category_group else ""
+    return (
+        f"当前结果没有返回 {expected} 个不同{entity}；{label_col} 只有 1 个不同值（{sample}），"
+        f"更像明细重复或未按 {entity} 去重/聚合{group_suffix}"
+    )
+
+
+def _requested_topn_count(question: str) -> int:
+    text = _normalize_digits(str(question or "").lower())
+    for pattern in (
+        r"(?:top|前|最高的|最低的)\s*(\d{1,3})",
+        r"这\s*(\d{1,3})\s*个",
+        r"(\d{1,3})\s*(?:个|名|条)\s*(?:sku|商品|产品|品类)",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return 0
+    return 0
+
+
+def _normalize_digits(value: str) -> str:
+    table = str.maketrans("０１２３４５６７８９", "0123456789")
+    return value.translate(table)
+
+
+def _first_matching_column(columns: list[str], tokens: tuple[str, ...]) -> str | None:
+    for token in tokens:
+        for column in columns:
+            if token.lower() in column.lower():
+                return column
+    return None
+
+
+def _join_scope(context: _FrameContext) -> str:
+    params = _as_dict(context.logic_form.get("parameters"))
+    join_plan = _as_dict(params.get("join_plan") or context.logic_form.get("join_plan"))
+    if not join_plan:
+        return ""
+    if join_plan.get("trusted") is False:
+        return "当前关联计划未通过可信校验，不能把跨表结果当成已验证业务口径"
+    steps = join_plan.get("steps") if isinstance(join_plan.get("steps"), list) else []
+    links: list[str] = []
+    for step in steps[:3]:
+        step_dict = _as_dict(step)
+        link = _join_link_text(step_dict)
+        if link:
+            links.append(link)
+    if not links:
+        link = _join_link_text(join_plan)
+        if link:
+            links.append(link)
+    return "；".join(links)
+
+
+def _join_link_text(join_plan: dict[str, Any]) -> str:
+    left = str(join_plan.get("left_table") or "").strip()
+    right = str(join_plan.get("right_table") or "").strip()
+    left_key = str(join_plan.get("left_key") or "").strip()
+    right_key = str(join_plan.get("right_key") or "").strip()
+    if left and right and left_key and right_key:
+        return f"{left}.{left_key} -> {right}.{right_key}"
+    return ""
 
 
 def _data_scope(context: _FrameContext) -> str:
@@ -651,9 +949,15 @@ def _metric_scope(context: _FrameContext) -> str:
             f"完成率={_short_join(rate_cols, limit=2) or '实际/目标'}"
         )
     if context.kind == "ranking":
+        params = _as_dict(context.logic_form.get("parameters"))
         metric = _preferred_metric_column(context.columns, context.rows)
         group = _preferred_label_column(context.columns, metric)
-        return f"按 {group or context.logic_form.get('group_by') or '分组字段'} 聚合后，用 {metric or context.logic_form.get('metric') or '结果字段'} 排序"
+        base = (
+            f"按 {group or context.logic_form.get('group_by') or params.get('dimension') or params.get('group_by') or '分组字段'} 聚合后，"
+            f"用 {metric or context.logic_form.get('metric') or params.get('metric') or '结果字段'} 排序"
+        )
+        derived = _derived_metric_scope(context)
+        return f"{base}；{derived}" if derived else base
     if context.kind == "trend":
         metric = _preferred_metric_column(context.columns, context.rows)
         period = _preferred_period_column(context.columns)
@@ -675,14 +979,56 @@ def _metric_scope(context: _FrameContext) -> str:
     if context.kind == "clarification":
         return "尚未形成可计算口径；需要先补齐字段、时间、指标定义、维表或过滤条件"
     operation = str(context.logic_form.get("operation") or "已验证分析")
+    params = _as_dict(context.logic_form.get("parameters"))
+    metrics = [str(item) for item in params.get("metrics") or [] if str(item)]
     metric = context.logic_form.get("metric") or _preferred_metric_column(context.columns, context.rows)
     group = context.logic_form.get("group_by") or _preferred_label_column(context.columns, str(metric or ""))
     pieces = [f"operation={operation}"]
-    if metric:
+    if len(metrics) > 1:
+        pieces.append("指标=" + "、".join(metrics))
+    elif metric:
         pieces.append(f"指标={metric}")
     if group:
         pieces.append(f"分组={group}")
+    derived = _derived_metric_scope(context)
+    if derived:
+        pieces.append(derived)
     return "；".join(pieces)
+
+
+def _derived_metric_scope(context: _FrameContext) -> str:
+    params = _as_dict(context.logic_form.get("parameters"))
+    derived_metric = _as_dict(params.get("derived_metric"))
+    if not derived_metric:
+        return ""
+    name = str(derived_metric.get("name") or "派生指标").strip()
+    formula = str(derived_metric.get("formula") or "").strip()
+    numerator = str(derived_metric.get("numerator") or "").strip()
+    denominator = str(derived_metric.get("denominator") or "").strip()
+    if formula:
+        return f"{name}={formula}"
+    if numerator and denominator:
+        return f"{name}=sum({numerator})/sum({denominator})"
+    return ""
+
+
+def _multi_metric_result_text(context: _FrameContext) -> str:
+    params = _as_dict(context.logic_form.get("parameters"))
+    metrics = [str(item) for item in params.get("metrics") or [] if str(item)]
+    if len(metrics) <= 1 or not context.rows:
+        return ""
+    row = context.rows[0]
+    values = [
+        f"{metric} 为 {_format_cell_value(row.get(metric), metric)}"
+        for metric in metrics
+        if metric in row and row.get(metric) not in {None, ""}
+    ]
+    if not values:
+        return ""
+    dimension = str(params.get("dimension") or "").strip()
+    if dimension and dimension in row:
+        return f"{row.get(dimension)} 的" + "，".join(values)
+    return "本次多指标汇总结果：" + "，".join(values)
 
 
 def _caveat_scope(context: _FrameContext) -> str:
@@ -692,6 +1038,8 @@ def _caveat_scope(context: _FrameContext) -> str:
         return "在缺口补齐前，不能把猜测字段、猜测口径或外部映射当成事实"
     if context.kind == "overview":
         return "没有展示原始明细行；字段含义和可分析方向来自概览报告与已验证表画像"
+    if _asks_reasonableness_comparison(context):
+        return "是否合理需要历史基准、业务阈值或同类对比；当前只展示已验证指标对照，不能仅凭本次结果直接判断合理性"
     verification = _as_dict(context.response.get("verification"))
     notes = verification.get("notes") if isinstance(verification.get("notes"), list) else []
     for note in notes:
@@ -707,6 +1055,28 @@ def _caveat_scope(context: _FrameContext) -> str:
     return "主回答只引用已验证结果、概览报告和来源引用中的事实，未展开原始明细行"
 
 
+def _asks_reasonableness_comparison(context: _FrameContext) -> bool:
+    params = _as_dict(context.logic_form.get("parameters"))
+    if params.get("requires_reasonableness_baseline") is True:
+        return True
+    question = context.question.replace(" ", "")
+    if not any(token in question for token in ("是否合理", "合不合理", "合理", "相比", "对比", "比较")):
+        return False
+    metrics = [str(item) for item in params.get("metrics") or [] if str(item)]
+    if len(metrics) > 1:
+        return True
+    metric_signals = (
+        ("销售额", "销售金额", "销售总额", "收入", "sales", "revenue"),
+        ("工单数量", "工单量", "工单数", "工单", "tickets", "ticket"),
+        ("利润率", "毛利率", "profitmargin", "margin"),
+        ("利润", "毛利", "profit"),
+        ("订单金额", "订单总额", "订单总金额", "订单", "amount"),
+    )
+    lowered = question.lower()
+    matched = sum(1 for signals in metric_signals if any(token in question or token in lowered for token in signals))
+    return matched >= 2
+
+
 def _verification_note_scope(value: Any) -> str:
     text = _sanitize_inline(value)
     if not text:
@@ -715,18 +1085,28 @@ def _verification_note_scope(value: Any) -> str:
     if "verifier checked execution success" in lowered or (
         "execution success" in lowered and "semantic metric" in lowered
     ):
-        return "已通过执行成功、后端一致性和语义口径校验；仍需按当前数据范围和指标口径解读"
+        return "执行、后端一致性和语义口径已校验；解读范围以本次数据和当前指标口径为准"
     if _has_cjk(text):
         return text
     if any(token in lowered for token in ("verified", "execution success", "backend consistency", "semantic metric")):
-        return "执行结果已通过基础校验；仍需按当前数据范围和指标口径解读"
+        return "执行结果已通过基础校验；解读范围以本次数据和当前指标口径为准"
     return ""
 
 
 def _next_questions(context: _FrameContext) -> list[str]:
     insight = _as_dict(context.response.get("insight"))
     existing = [str(item).strip() for item in insight.get("next_questions") or [] if _safe_question(item)]
-    if context.kind == "overview":
+    if _is_scalar_value_context(
+        answer_type=str(context.response.get("answer_type") or ""),
+        operation=str(context.logic_form.get("operation") or ""),
+    ):
+        existing = []
+        generated = [
+            "按关键维度拆解这个数值",
+            "对比相邻时间段或相关对象的同一指标",
+            "检查异常值、缺失值或规则口径是否影响该数值",
+        ]
+    elif context.kind == "overview":
         generated = [
             "按核心指标做一次 TopN 排名",
             "看时间趋势和最大波动月份",
@@ -804,7 +1184,8 @@ def _top_result_text(context: _FrameContext) -> str:
     label = _preferred_label_column(context.columns, metric)
     name = str(row.get(label) if label else _first_non_empty_value(row)).strip()
     if metric:
-        return f"排名结果里首位是 {name}，{metric}为 {_format_cell_value(row.get(metric), metric)}"
+        extras = _supplemental_row_metrics(row, context.columns, label=label, metric=metric)
+        return f"排名结果里首位是 {name}，{metric}为 {_format_cell_value(row.get(metric), metric)}{extras}"
     return f"结果首项是 {_describe_row(row, context.columns)}"
 
 
@@ -815,10 +1196,34 @@ def _top_rows_text(context: _FrameContext) -> str:
     for index, row in enumerate(context.rows[:3], start=1):
         name = str(row.get(label) if label else _first_non_empty_value(row)).strip()
         if metric:
-            items.append(f"第 {index} 位 {name}（{metric}={_format_cell_value(row.get(metric), metric)}）")
+            extras = _supplemental_row_metrics(row, context.columns, label=label, metric=metric, prefix="；")
+            items.append(f"第 {index} 位 {name}（{metric}={_format_cell_value(row.get(metric), metric)}{extras}）")
         else:
             items.append(f"第 {index} 位 {_describe_row(row, context.columns)}")
     return "；".join(items)
+
+
+def _supplemental_row_metrics(
+    row: dict[str, Any],
+    columns: list[str],
+    *,
+    label: str | None,
+    metric: str | None,
+    prefix: str = "，",
+) -> str:
+    excluded = {str(value) for value in (label, metric) if value}
+    extras: list[str] = []
+    for column in columns:
+        name = str(column or "")
+        if not name or name in excluded:
+            continue
+        value = row.get(name)
+        if value in (None, "", []):
+            continue
+        extras.append(f"{name}为 {_format_cell_value(value, name)}")
+        if len(extras) >= 3:
+            break
+    return f"{prefix}{'，'.join(extras)}" if extras else ""
 
 
 def _best_metric_row(context: _FrameContext, *, prefer_rate: bool, highest: bool) -> dict[str, str] | None:
@@ -1170,7 +1575,7 @@ def _safe_question(value: Any) -> bool:
 
 
 def _looks_frameworked(text: str) -> bool:
-    return all(heading in str(text or "") for heading in FRAMEWORK_HEADINGS[1:])
+    return all(heading in str(text or "") for heading in FRAMEWORK_HEADINGS)
 
 
 def _sanitize_text(value: Any) -> str:
@@ -1207,7 +1612,10 @@ def _strip_sentence_punctuation(text: str) -> str:
 
 
 def _strip_heading_prefix(text: str) -> str:
-    return str(text or "").replace("已帮你看了这个数据，核心结论是：", "", 1).strip()
+    value = str(text or "").replace("已帮你看了这个数据，核心结论是：", "", 1).strip()
+    for heading in FRAMEWORK_HEADINGS:
+        value = value.replace(heading, "", 1).strip(" ：:\n")
+    return value
 
 
 def _mark_debug(response: dict[str, Any], *, applied: bool, reason: str) -> None:
@@ -1216,7 +1624,7 @@ def _mark_debug(response: dict[str, Any], *, applied: bool, reason: str) -> None
         debug["text_answer_framework"] = {
             "applied": applied,
             "reason": reason,
-            "version": "gpt_like_text_frame_v1",
+            "version": "bigcat_evidence_report_v2",
         }
 
 
@@ -1227,14 +1635,14 @@ def _attach_process_note(response: dict[str, Any]) -> None:
     steps = process.setdefault("steps", [])
     if not isinstance(steps, list):
         return
-    if any(isinstance(step, dict) and step.get("title") == "整理文字回答框架" for step in steps):
+    if any(isinstance(step, dict) and step.get("title") == "整理结构化回答" for step in steps):
         return
     steps.append(
         {
-            "title": "整理文字回答框架",
-            "summary": "已把已验证结果整理为结论、简要结论、口径说明和下一步建议；没有重新计算数字。",
+            "title": "整理结构化回答",
+            "summary": "已把已验证结果整理为数据摘要、分析洞察、业务建议、口径边界和下一步；没有重新计算数字。",
             "status": "completed",
-            "evidence": ["text_framework=gpt_like_text_frame_v1"],
+            "evidence": ["text_framework=bigcat_evidence_report_v2"],
             "assumptions": [],
             "caveats": ["只使用 response 中已有的验证结果、概览报告、质量报告和来源引用。"],
             "confidence": 0.86,

@@ -51,6 +51,101 @@ def parse_chinese_retail_question(
     start_ym, end_ym = _extract_year_month_range(question)
     ym_mentions = _extract_year_month_mentions(question)
 
+    product_sales_question = product and _asks_sales_amount_metric(question) and not _asks_share_or_composition(question)
+    if product_sales_question and _asks_for_chart(question) and not _has_explicit_column_hint(question, tables):
+        trend_start = start_ym or ym
+        trend_end = end_ym or ym
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_category_distribution_periodic_trend",
+            parameters={
+                "product": product,
+                "start_ym": trend_start,
+                "end_ym": trend_end,
+                "ym": ym,
+                "granularity": "day" if _asks_daily_time_trend(question) else "month",
+            },
+            source_tables=["v_trd_dist_ord_dtl"],
+            table_selection_reason="产品销售金额趋势使用历史分销明细表中的签收时间、签收金额和产品维度，不需要跨表关联。",
+            output_format=output_format | {"answer_type": "text", "chart_type": "line", "decimals": decimals or 2},
+        )
+
+    if product_sales_question and not _asks_for_chart(question):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="retail_distribution_sum",
+            parameters={
+                "person": person,
+                "ym": ym,
+                "metric": "sign_amt",
+                "product": product,
+                "role": _person_role(question, person, tables),
+            },
+            source_tables=["v_trd_dist_ord_dtl"],
+            table_selection_reason="产品销售金额汇总使用历史分销明细表中的签收金额和产品维度，不需要跨表关联。",
+            output_format=output_format
+            | {
+                "answer_type": "number",
+                "decimals": decimals or 2,
+                "not_applicable_type": "true_unsupported",
+            },
+        )
+
+    if _asks_route_scope_comparison(question):
+        return make_logic_form(
+            task_type="comparison",
+            operation="retail_route_scope_metric_summary",
+            parameters={
+                "date": _date_text(business_date),
+                "ym": ym,
+                "person": person,
+                "metrics": _route_scope_metrics(question),
+                "primary_metric": _route_scope_metric(question),
+            },
+            source_tables=["v_chl_route_plan_cust_cnt_1d_df", "v_trd_dist_ord_dtl"],
+            table_selection_reason="线路内/线路外比较需要以线路计划客户集合标记历史签收明细中的客户，再按线路范围汇总签收指标。",
+            output_format=output_format | {"answer_type": "text", "decimals": decimals or 3},
+        )
+
+    if _asks_route_scope_reason(question):
+        route_scope = _route_scope_from_question(question) or "线路外"
+        metric = _route_scope_metric(question)
+        return make_logic_form(
+            task_type="attribution",
+            operation="retail_route_scope_difference_reason",
+            parameters={
+                "date": _date_text(business_date),
+                "ym": ym,
+                "person": person,
+                "route_scope": route_scope,
+                "metric": metric,
+                "metrics": _route_scope_metrics(question),
+                "limit": _extract_limit(question, default=3),
+            },
+            source_tables=["v_chl_route_plan_cust_cnt_1d_df", "v_trd_dist_ord_dtl"],
+            table_selection_reason="线路内外差异解释以同一线路客户集合和历史签收明细为基础，并下钻到业代贡献。",
+            output_format=output_format | {"answer_type": "text", "decimals": decimals or 3},
+        )
+
+    if _asks_route_scope_employee_breakdown(question):
+        route_scope = _route_scope_from_question(question) or "线路外"
+        metric = _route_scope_metric(question)
+        return make_logic_form(
+            task_type="ranking",
+            operation="retail_route_scope_employee_ranking",
+            parameters={
+                "date": _date_text(business_date),
+                "ym": ym,
+                "person": person,
+                "route_scope": route_scope,
+                "metric": metric,
+                "limit": _extract_limit(question, default=1 if "最大" in question else 3),
+            },
+            source_tables=["v_chl_route_plan_cust_cnt_1d_df", "v_trd_dist_ord_dtl"],
+            table_selection_reason="线路范围内的业代贡献拆解需要先按线路计划客户集合过滤历史签收明细，再按业代汇总指标。",
+            output_format=output_format | {"answer_type": "text", "decimals": decimals or 3},
+        )
+
     if "主任" in question and "日目标缺口" in question and ("下属" in question or "贡献" in question):
         return make_logic_form(
             task_type="attribution",
@@ -356,11 +451,17 @@ def parse_chinese_retail_question(
             output_format=output_format | {"answer_type": "number", "decimals": decimals or 2},
         )
 
-    if "计划拜访线路" in question and "合约店" in question and "分销数量" in question:
+    route_contract_quantity = (
+        ("计划拜访线路" in question or "线路计划" in question or ("计划拜访" in question and "线路" in question))
+        and ("合约店" in question or "合约门店" in question)
+        and ("分销数量" in question or "分销箱数" in question or "签收箱数" in question)
+    )
+    if route_contract_quantity:
         return make_logic_form(
             task_type="aggregation",
             operation="retail_route_contract_product_quantity",
             parameters={"person": person, "date": _date_text(business_date), "ym": ym, "product": product},
+            source_tables=["v_chl_route_plan_cust_cnt_1d_df", "终端客户月度维表", "v_trd_dist_ord_dtl"],
             output_format=output_format | {"answer_type": "number", "decimals": decimals or 3},
         )
 
@@ -692,9 +793,7 @@ def parse_chinese_retail_question(
 
 
 def _looks_like_chinese_retail_dataset(tables: dict[str, pd.DataFrame]) -> bool:
-    return any(_has_columns(df, HISTORY_REQUIRED_COLUMNS) for df in tables.values()) and any(
-        _has_columns(df, CUSTOMER_REQUIRED_COLUMNS) for df in tables.values()
-    )
+    return any(_has_columns(df, HISTORY_REQUIRED_COLUMNS) for df in tables.values())
 
 
 def _has_columns(df: pd.DataFrame, required: set[str]) -> bool:
@@ -711,7 +810,38 @@ def _extract_year_month(question: str, tables: dict[str, pd.DataFrame]) -> tuple
     business_date = _infer_business_date(tables)
     if ("今日" in question or "今天" in question or "当天" in question) and business_date:
         return business_date.year, business_date.month
+    month = _extract_month_without_year(question)
+    if month and business_date:
+        return business_date.year, month
     return None, None
+
+
+def _extract_month_without_year(question: str) -> int | None:
+    if any(token in question for token in ("至", "到", "~", "—")):
+        return None
+    compact = question.replace(" ", "")
+    numeric = re.search(r"(?<!年)(?<!20\d{2})(\d{1,2})月", compact)
+    if numeric:
+        month = int(numeric.group(1))
+        return month if 1 <= month <= 12 else None
+    chinese_months = {
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+        "十一": 11,
+        "十二": 12,
+    }
+    for text, month in sorted(chinese_months.items(), key=lambda item: len(item[0]), reverse=True):
+        if f"{text}月" in compact:
+            return month
+    return None
 
 
 def _extract_year_month_range(question: str) -> tuple[int | None, int | None]:
@@ -757,14 +887,23 @@ def _extract_year_month_mentions(question: str) -> list[int]:
 
 
 def _infer_business_date(tables: dict[str, pd.DataFrame]) -> date | None:
+    today = tables.get("v_trd_dist_ord_dtl_1d_rt")
+    if today is not None and _has_columns(today, TODAY_REQUIRED_COLUMNS) and "sign_time" in today.columns:
+        values = pd.to_datetime(today["sign_time"], errors="coerce").dropna()
+        if not values.empty:
+            return values.max().date()
     for names, required, column in (
-        (("v_trd_dist_ord_dtl_1d_rt",), TODAY_REQUIRED_COLUMNS, "sign_time"),
         (("v_chl_route_plan_cust_cnt_1d_df",), ROUTE_REQUIRED_COLUMNS, "visit_date"),
     ):
         df = _find_table(tables, required, names)
         if df is None or column not in df.columns:
             continue
         values = pd.to_datetime(df[column], errors="coerce").dropna()
+        if not values.empty:
+            return values.max().date()
+    history = _find_table(tables, HISTORY_REQUIRED_COLUMNS, ("v_trd_dist_ord_dtl",))
+    if history is not None and "sign_time" in history.columns:
+        values = pd.to_datetime(history["sign_time"], errors="coerce").dropna()
         if not values.empty:
             return values.max().date()
     return None
@@ -798,7 +937,54 @@ def _extract_limit(question: str, default: int) -> int:
 
 
 def _is_ranking_question(question: str) -> bool:
-    return any(token in question for token in ("最高", "最多", "排名", "前三", "Top", "top"))
+    return any(token in question for token in ("最高", "最多", "最大", "排名", "前三", "Top", "top"))
+
+
+def _asks_route_scope_comparison(question: str) -> bool:
+    return (
+        "线路内" in question
+        and "线路外" in question
+        and any(token in question for token in ("签收金额", "签收箱数", "分销金额", "分销数量", "分销箱数"))
+    )
+
+
+def _asks_route_scope_reason(question: str) -> bool:
+    return (
+        "为什么" in question
+        and ("线路内" in question or "线路外" in question)
+        and any(token in question for token in ("更高", "更大", "高", "大"))
+    )
+
+
+def _asks_route_scope_employee_breakdown(question: str) -> bool:
+    has_scope = "线路内" in question or "线路外" in question
+    has_employee = "业代" in question or "人" in question
+    has_breakdown = any(token in question for token in ("拆开", "拆解", "贡献", "排名", "最高", "最大", "Top", "top", "前三"))
+    has_metric = any(token in question for token in ("签收金额", "签收箱数", "分销金额", "分销数量", "分销箱数"))
+    return has_scope and has_employee and (has_breakdown or has_metric)
+
+
+def _route_scope_from_question(question: str) -> str | None:
+    if "线路外" in question:
+        return "线路外"
+    if "线路内" in question:
+        return "线路内"
+    return None
+
+
+def _route_scope_metric(question: str) -> str:
+    if any(token in question for token in ("签收箱数", "分销箱数", "分销数量", "箱数", "数量")):
+        return "sign_box_cnt"
+    return "sign_amt"
+
+
+def _route_scope_metrics(question: str) -> list[str]:
+    metrics: list[str] = []
+    if any(token in question for token in ("签收金额", "分销金额", "金额")):
+        metrics.append("sign_amt")
+    if any(token in question for token in ("签收箱数", "分销箱数", "分销数量", "箱数", "数量")):
+        metrics.append("sign_box_cnt")
+    return metrics or [_route_scope_metric(question)]
 
 
 def _asks_for_metric_value(question: str) -> bool:
@@ -817,8 +1003,30 @@ def _asks_for_metric_value(question: str) -> bool:
     )
 
 
+def _asks_sales_amount_metric(question: str) -> bool:
+    if "历史分销金额" in question:
+        return False
+    return any(token in question for token in ("销售金额", "销售额", "签收金额"))
+
+
+def _asks_share_or_composition(question: str) -> bool:
+    return any(token in question for token in ("占比", "比例", "份额", "组成", "构成", "结构"))
+
+
 def _asks_for_chart(question: str) -> bool:
     return any(token in question for token in ("展示", "生成", "图", "趋势", "可视化", "折线", "柱状", "多折线", "堆叠"))
+
+
+def _asks_daily_time_trend(question: str) -> bool:
+    return any(token in question for token in ("随时间", "每日", "每天", "日期", "曲线", "折线"))
+
+
+def _has_explicit_column_hint(question: str, tables: dict[str, pd.DataFrame]) -> bool:
+    matches = re.findall(r"[（(]([^）)]+)[）)]", question)
+    if not matches:
+        return False
+    columns = {str(column) for df in tables.values() for column in df.columns}
+    return any(match.strip() in columns for match in matches)
 
 
 def _prefers_horizontal_bar(question: str) -> bool:
@@ -827,13 +1035,15 @@ def _prefers_horizontal_bar(question: str) -> bool:
 
 
 def _distribution_dimension(question: str) -> str:
+    if "客户" in question or "终端" in question or "门店" in question:
+        return "cust_name"
     if "渠道" in question:
         return "channel_name"
     if "主任" in question:
         return "p_emp_name"
     if "品类" in question:
         return "ctg_name"
-    if "SKU" in question or "sku" in question.lower():
+    if "SKU" in question or "sku" in question.lower() or "产品" in question or "商品" in question:
         return "sku_name"
     return "emp_name"
 

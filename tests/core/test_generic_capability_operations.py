@@ -109,6 +109,24 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertEqual("yes", result.value["answer"])
         self.assertEqual(2, result.value["duplicate_row_count"])
 
+    def test_prefixed_numeric_like_metric_column_binds_by_semantic_suffix(self) -> None:
+        table = pd.DataFrame(
+            [
+                {"城市": "上海", "经营指标_销售": "1000", "经营指标_利润": "180"},
+                {"城市": "北京", "经营指标_销售": "800", "经营指标_利润": "200"},
+                {"城市": "广州", "经营指标_销售": "600", "经营指标_利润": "90"},
+            ]
+        )
+
+        logic = parse_generic_table_question("哪个城市利润最高？", {"城市销售": table})
+        result = pandas_executor.execute_plan(build_analysis_plan(logic), {"tables": {"城市销售": table}})
+
+        self.assertEqual("ranking", logic.operation)
+        self.assertEqual("经营指标_利润", logic.parameters["metric"])
+        self.assertEqual("城市", logic.parameters["dimension"])
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual([{"城市": "北京", "经营指标_利润": 200}], result.value)
+
     def test_null_check_counts_missing_values_in_pandas_and_sql(self) -> None:
         table = pd.DataFrame(
             [
@@ -932,7 +950,7 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertTrue(result.success, result.errors)
         self.assertEqual("A", result.value)
 
-    def test_fee_rate_delta_uses_period_rounded_totals(self) -> None:
+    def test_fee_rate_delta_uses_raw_period_totals(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             fee = _fee_rule(10, "GlobalCard", ["A"], fixed_amount=0.0, rate=1000)
@@ -950,7 +968,7 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
             result = pandas_executor.execute_plan(build_analysis_plan(logic), {"context_dir": root})
 
         self.assertTrue(result.success, result.errors)
-        self.assertAlmostEqual(0.02, float(result.value), places=9)
+        self.assertAlmostEqual(0.0201, float(result.value), places=9)
 
     def test_best_fraud_aci_choice_limits_candidates_to_d_and_e(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -169,6 +169,7 @@ def runtime_generate_insight() -> Any:
         return _json_ready(
             generate_insight(
                 question=question,
+                plan=arguments.get("analysis_plan"),
                 execution_result=verified_result.get("pandas_result") or verified_result,
                 verification_passed=_verification_passed(verified_result),
                 quality_report=verified_result.get("quality_report"),

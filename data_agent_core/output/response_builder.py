@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -15,6 +15,7 @@ from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import CAPABILITY_GAP, OUTPUT_CONTRACT_VALIDATION_FAILED
 from data_agent_core.output.execution_artifacts import build_execution_artifacts
 from data_agent_core.output.output_contract import canonicalize_final_answer
+from data_agent_core.output.text_answer_framework import apply_text_answer_framework
 
 
 def build_response(
@@ -111,7 +112,7 @@ def build_response(
         )
     if not_applicable_attribution.get("category"):
         debug_payload["not_applicable_attribution"] = not_applicable_attribution
-    return FinalResponse(
+    response = FinalResponse(
         response_version="v1",
         success=success,
         run_id=run_id,
@@ -136,6 +137,7 @@ def build_response(
         errors=errors,
         debug=debug_payload,
     )
+    return _apply_structured_answer_framework(response)
 
 
 def format_answer(value: Any, output_format: dict[str, Any]) -> str:
@@ -154,20 +156,43 @@ def _semantic_failure_answer(user_question: UserQuestion, plan: AnalysisPlan, ve
     logic = plan.logic_form
     params = logic.parameters or {}
     join_plan = logic.join_plan or params.get("join_plan") or {}
-    if isinstance(join_plan, dict) and join_plan and action_name in {"clarify_join_key", "repair_table_selection_or_join"}:
-        left_table = str(join_plan.get("left_table") or params.get("table") or "左表")
-        right_table = str(join_plan.get("right_table") or "右表")
-        left_key = str(join_plan.get("left_key") or "待确认字段")
-        right_key = str(join_plan.get("right_key") or "待确认字段")
-        reason = str(join_plan.get("reason") or action.get("reason") or "")
-        overlap = join_plan.get("overlap_rate")
-        risk = "，且存在多对多风险" if join_plan.get("many_to_many_risk") else ""
-        overlap_text = f"，当前键值重叠率约 {float(overlap):.0%}" if isinstance(overlap, (int, float)) else ""
-        reason_text = f"；原因是 {reason}" if reason else ""
+    if action_name in {"clarify_join_key", "repair_table_selection_or_join"}:
+        target_dimension = (
+            params.get("dimension")
+            or params.get("group_by")
+            or logic.group_by
+            or "、".join(str(item) for item in action.get("requested_dimensions") or [])
+        )
+        dimension_label = _semantic_dimension_label(str(target_dimension or "目标维度"))
+        metric_label = str(params.get("metric") or logic.metric or "目标指标")
+        reason = str(action.get("reason") or "")
+        if isinstance(join_plan, dict) and join_plan:
+            left_table = str(join_plan.get("left_table") or params.get("table") or "左表")
+            right_table = str(join_plan.get("right_table") or "右表")
+            left_key = str(join_plan.get("left_key") or "待确认字段")
+            right_key = str(join_plan.get("right_key") or "待确认字段")
+            reason = str(join_plan.get("reason") or reason)
+            overlap = join_plan.get("overlap_rate")
+            risk = "，且存在多对多风险" if join_plan.get("many_to_many_risk") else ""
+            overlap_text = f"，当前键值重叠率约 {float(overlap):.0%}" if isinstance(overlap, (int, float)) else ""
+            reason_text = f"；原因是 {reason}" if reason else ""
+            guard_text = "我已拦截这次低可信自动关联，避免把跨表数据误算成已验证结果。"
+            return (
+                f"这个问题需要先确认跨表关联，不能直接把单表结果当成{dimension_label}口径。"
+                f"{guard_text}"
+                f"建议检查关联键：{left_table}.{left_key} -> {right_table}.{right_key}{overlap_text}{risk}{reason_text}。"
+                f"确认后我才能按{dimension_label}汇总或排名{metric_label}。"
+            )
+        source_tables = list(logic.source_tables or params.get("source_tables") or action.get("source_tables") or [])
+        source_text = "、".join(str(item) for item in source_tables if str(item)) or "相关表"
+        actual_dimension = str(action.get("actual_dimension") or params.get("dimension") or logic.group_by or "")
+        actual_text = f"当前计划绑定到 {actual_dimension}，" if actual_dimension else ""
+        reason_text = f"原因是 {reason}，" if reason else ""
         return (
-            "这个问题需要先确认跨表关联，不能直接把单表结果当成城市口径。"
-            f"建议检查关联键：{left_table}.{left_key} -> {right_table}.{right_key}{overlap_text}{risk}{reason_text}。"
-            "确认后我才能按城市汇总销售额。"
+            f"这个问题需要{source_text}之间的可信关联，{actual_text}{reason_text}"
+            f"不能直接把结果当成{dimension_label}口径。我已拦截这次低可信自动关联，避免误算。"
+            f"请先确认关联键或选择包含{dimension_label}字段的数据表，"
+            f"确认后我才能按{dimension_label}汇总或排名{metric_label}。"
         )
     if action_name == "repair_dimension_binding":
         requested = "、".join(str(item) for item in action.get("requested_dimensions") or []) or "用户点名维度"
@@ -197,7 +222,29 @@ def _semantic_dimension_label(value: str) -> str:
         "month": "月份",
         "time": "时间",
     }
-    parts = [labels.get(item.strip(), item.strip()) for item in value.split("、") if item.strip()]
+    alias_labels = (
+        ("channel", "渠道"),
+        ("渠道", "渠道"),
+        ("category", "品类"),
+        ("ctg", "品类"),
+        ("品类", "品类"),
+        ("类目", "品类"),
+        ("month", "月份"),
+        ("月份", "月份"),
+        ("月度", "月份"),
+        ("statmonth", "月份"),
+        ("yearmonth", "月份"),
+    )
+    parts: list[str] = []
+    for raw in value.split("、"):
+        item = raw.strip()
+        if not item:
+            continue
+        if item in labels:
+            parts.append(labels[item])
+            continue
+        normalized = "".join(char for char in item.lower() if char.isalnum() or "\u4e00" <= char <= "\u9fff")
+        parts.append(next((label for token, label in alias_labels if token in normalized), item))
     return "、".join(parts) if parts else value
 
 
@@ -571,6 +618,29 @@ def _format_grouped_amounts(rows: list[dict[str, Any]], decimals: int | None) ->
     group_key = next(key for key in rows[0] if key != "eur_amount")
     parts = [f"{row[group_key]}: {_format_number(float(row['eur_amount']), decimals)}" for row in rows]
     return "[" + ", ".join(parts) + "]"
+
+
+def _apply_structured_answer_framework(response: FinalResponse) -> FinalResponse:
+    """Attach the shared sectioned answer frame without changing result payloads."""
+
+    try:
+        payload = apply_text_answer_framework(response.to_dict(), question=response.question)
+    except Exception:  # noqa: BLE001 - final response construction must stay stable.
+        return response
+    response.answer = payload.get("answer", response.answer)
+    response.debug = payload.get("debug", response.debug)
+    sections = payload.get("structured_answer_sections")
+    if isinstance(sections, dict):
+        response.structured_answer_sections = {
+            str(key): [str(item) for item in value if str(item or "").strip()]
+            for key, value in sections.items()
+            if isinstance(value, list)
+        }
+    insight_payload = payload.get("insight")
+    if isinstance(insight_payload, dict):
+        allowed = {field.name for field in fields(InsightResult)}
+        response.insight = InsightResult(**{key: value for key, value in insight_payload.items() if key in allowed})
+    return response
 
 
 def _to_dict(value: Any) -> Any:

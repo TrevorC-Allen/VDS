@@ -26,12 +26,13 @@ def build_dataset_overview_response(
     """Build a full-table, user-facing dataset overview response."""
 
     profile_payload = _profile_payload(profile)
-    if _wants_multi_table_overview(question, tables):
+    overview_tables = _tables_with_profile_only_sources(tables, profile_payload)
+    if _wants_multi_table_overview(question, overview_tables):
         return _build_multi_table_overview_response(
             run_id=run_id,
             dataset_id=dataset_id,
             question=question,
-            tables=tables,
+            tables=overview_tables,
             profile_payload=profile_payload,
             agent_mode=agent_mode,
         )
@@ -231,6 +232,38 @@ def _wants_multi_table_overview(question: str, tables: dict[str, pd.DataFrame]) 
     )
     single_signals = ("这个表", "这张表", "当前表", "这个文件")
     return any(signal in compact for signal in multi_signals) and not any(signal in compact for signal in single_signals)
+
+
+def _tables_with_profile_only_sources(tables: dict[str, pd.DataFrame], profile_payload: dict[str, Any]) -> dict[str, pd.DataFrame]:
+    if not isinstance(profile_payload, dict):
+        return tables
+    combined = dict(tables)
+    for table in profile_payload.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        table_name = str(table.get("table_name") or "")
+        if not table_name or table_name in combined:
+            continue
+        combined[table_name] = _dataframe_from_table_profile(table)
+    return combined
+
+
+def _dataframe_from_table_profile(table: dict[str, Any]) -> pd.DataFrame:
+    columns = [str(column.get("name") or "") for column in table.get("columns") or [] if isinstance(column, dict) and column.get("name")]
+    if not columns:
+        columns = [f"column_{index + 1}" for index in range(int(table.get("column_count") or 0))]
+    row_count = max(0, int(table.get("row_count") or 0))
+    rows: list[dict[str, Any]] = []
+    for row_index in range(row_count):
+        row: dict[str, Any] = {}
+        for column_payload in table.get("columns") or []:
+            if not isinstance(column_payload, dict):
+                continue
+            name = str(column_payload.get("name") or "")
+            samples = column_payload.get("sample_values") if isinstance(column_payload.get("sample_values"), list) else []
+            row[name] = samples[row_index] if row_index < len(samples) else None
+        rows.append(row)
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _wants_shape_summary(question: str) -> bool:
@@ -1346,7 +1379,7 @@ def _overview_insight(report: dict[str, Any]) -> InsightResult:
         suggestion = f"观察：{distributions[0]['field']} 中 {top['value']} 记录最多（{top['count']:,} 条）；依据：字段分布统计；建议：下一步先按这个维度拆 {metric}，确认集中度是否来自真实业务结构。"
     metric_summary = report.get("metric_summary") or {}
     if not suggestion and metric_summary.get("max_description"):
-        suggestion = f"观察：{metric} 的最高记录为 {metric_summary['max_description']}；依据：数值字段最大值；建议：下一步复核这个高点是否为真实业务峰值，再按来源维度拆解。"
+        suggestion = f"观察：{metric} 的最高记录为 {metric_summary['max_description']}；依据：数值字段最大值；建议：下一步先按 {dimension} 汇总 {metric}，看构成和集中度。"
     if not suggestion:
         for rate in (report.get("boolean_rates") or [])[:1]:
             suggestion = f"观察：{rate['field']} 的 true 占比为 {rate['true_rate']}；依据：布尔字段计数；建议：下一步结合 {dimension} 查看这个状态的驱动因素。"
@@ -1526,27 +1559,45 @@ def _preferred_metric_column(df: pd.DataFrame, question: str) -> str | None:
     if not numeric_columns:
         return None
     lowered_question = question.lower()
-    preferred_tokens = (
-        "订阅收入",
-        "销售额",
-        "收入",
-        "订单金额",
-        "成交金额",
-        "金额",
-        "毛利",
-        "利润",
-        "arr",
-        "gmv",
-        "sales",
-        "revenue",
-        "amount",
-    )
-    for token in preferred_tokens:
-        for column in numeric_columns:
-            if token in column.lower() or column.lower() in lowered_question:
-                return column
+    scored = [
+        (_overview_metric_score(column, lowered_question, index), index, column)
+        for index, column in enumerate(numeric_columns)
+    ]
+    scored = [item for item in scored if item[0] > 0]
+    if scored:
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return scored[0][2]
     non_identifier = [column for column in numeric_columns if not _looks_like_identifier_or_score(column)]
     return non_identifier[0] if non_identifier else numeric_columns[0]
+
+
+def _overview_metric_score(column: str, lowered_question: str, index: int) -> int:
+    lowered = column.lower()
+    compact = lowered.replace("_", "")
+    asks_amount = any(token in lowered_question for token in ("销售", "金额", "收入", "分销", "sales", "revenue", "amount"))
+    asks_ratio = any(token in lowered_question for token in ("占比", "比例", "率", "ratio", "rate", "share", "percent"))
+    score = 0
+    if lowered in lowered_question:
+        score += 40
+    if "利润" in lowered_question or "profit" in lowered_question:
+        if "profit" in lowered or "利润" in lowered or "毛利" in lowered:
+            score += 35
+    if asks_amount:
+        if "signamt" in compact or ("sign" in compact and "amt" in compact):
+            score += 40
+        elif "distsignamt" in compact:
+            score += 36
+        elif "ordamt" in compact or ("ord" in compact and "amt" in compact):
+            score += 30
+        elif "salesamt" in compact or "sales" in compact or "revenue" in compact:
+            score += 24
+        elif "amt" in compact or "amount" in compact or "金额" in column:
+            score += 18
+    if any(token in compact for token in ("share", "ratio", "rate", "pct", "percent")) and not asks_ratio:
+        score -= 60
+    if any(token in compact for token in ("id", "code", "sap", "编号", "编码", "代码")):
+        score -= 30
+    return score - min(index, 20)
 
 
 def _preferred_dimension_column(columns: list[str], metric_column: str | None) -> str | None:
@@ -1561,11 +1612,26 @@ def _preferred_dimension_column(columns: list[str], metric_column: str | None) -
 
 
 def _preferred_period_column(columns: list[str]) -> str | None:
-    for token in ("月份", "周标签", "日期", "month", "week", "date"):
-        for column in columns:
-            if token in column.lower():
-                return column
-    return None
+    scored = [(_period_column_score(column), index, column) for index, column in enumerate(columns)]
+    scored = [item for item in scored if item[0] > 0]
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return scored[0][2]
+
+
+def _period_column_score(column: str) -> int:
+    lowered = column.lower()
+    score = 0
+    if "sign_time" in lowered or "签收" in column:
+        score += 40
+    if any(token in lowered for token in ("month", "week", "date", "time", "ym")) or any(token in column for token in ("月份", "周标签", "日期", "年月")):
+        score += 20
+    if "create" in lowered or "创建" in column:
+        score += 4
+    if any(token in lowered for token in ("cooperate", "etl", "end")) or any(token in column for token in ("合作", "结束")):
+        score -= 20
+    return score
 
 
 def _period_range(df: pd.DataFrame, period_column: str | None) -> dict[str, str]:
