@@ -4609,8 +4609,8 @@ function renderArtifactCards(artifacts) {
   return `
     <li class="completed process-artifacts">
       <div>
-        <strong>复现代码</strong>
-        <p>这里收起展示安全复现片段，不在主答案区域占位。</p>
+        <strong>本次代码</strong>
+        <p>这里收起展示后端返回的本次代码，不在主答案区域占位。</p>
         <div class="artifact-list inline">
           ${safeArtifacts
     .slice(0, 3)
@@ -4618,10 +4618,10 @@ function renderArtifactCards(artifacts) {
       (artifact) => `
         <article class="artifact-card">
           <div class="artifact-card-header">
-            <strong>${escapeHtml(artifact.title || artifact.language || "代码")}</strong>
-            <span>${escapeHtml((artifact.language || "").toUpperCase())}</span>
+            <strong>${escapeHtml(activityArtifactTitle(artifact))}</strong>
+            <span>${escapeHtml(activityArtifactLanguageLabel(artifact))}</span>
           </div>
-          <p>${escapeHtml(artifact.purpose || "安全复现片段。")}</p>
+          <p>${escapeHtml(activityArtifactPurpose(artifact))}</p>
           <pre><code>${escapeHtml(artifact.code || "")}</code></pre>
           ${artifact.output_summary ? `<small>${escapeHtml(artifact.output_summary)}</small>` : ""}
         </article>
@@ -4790,7 +4790,7 @@ function activityStepFromMonitorEvent(event) {
     dependency_note: cleanActivityText(event.summary) || "正在检查依赖和读取方式。",
     data_scan_note: cleanActivityText(event.summary) || "正在检查文件结构和字段。",
     plan_note: cleanActivityText(event.summary) || "正在制定分析计划。",
-    code_artifact_ready: cleanActivityText(event.summary) || "复现代码片段已准备好，稍后放在处理过程里。",
+    code_artifact_ready: cleanActivityText(event.summary) || "本次代码已准备好，稍后放在处理过程里。",
     answer_outline_ready: cleanActivityText(event.summary) || "正在整理最终回答结构。",
   };
   if (!titleByType[type]) return null;
@@ -4940,8 +4940,8 @@ function activityNodeFromMonitorEvent(event) {
       kind: "artifact",
       role: "code_artifact",
       status: "completed",
-      title: "复现代码",
-      summary: cleanActivityText(event.summary) || "复现代码已准备好。",
+      title: "本次代码",
+      summary: cleanActivityText(event.summary) || "本次代码已准备好。",
       outputs_summary: event.payload || {},
     });
   }
@@ -5149,7 +5149,7 @@ function buildDrawerActivityTrace(result = {}, options = {}) {
         role: "code_artifact",
         status: "completed",
         title: "Execution Artifacts",
-        summary: `生成 ${artifacts.length} 个安全复现代码片段。`,
+        summary: `生成 ${artifacts.length} 个本次代码片段。`,
         artifacts,
       }),
     );
@@ -5159,10 +5159,10 @@ function buildDrawerActivityTrace(result = {}, options = {}) {
 
 function drawerSummary(result, trace) {
   if (result?.question) {
-    return `围绕“${shortLabel(result.question, 36)}”展示思考过程、真实执行节点、工具调用和安全复现代码。`;
+    return `围绕“${shortLabel(result.question, 36)}”展示思考过程、真实执行节点、工具调用和后端返回的本次代码。`;
   }
   if (trace.some((node) => node.status === "active")) return "正在接收后端实时活动。";
-  return "发送问题后，这里会显示思考过程、真实执行节点、工具调用和安全复现代码。";
+  return "发送问题后，这里会显示思考过程、真实执行节点、工具调用和后端返回的本次代码。";
 }
 
 function activityTraceFromProcessView(result = {}) {
@@ -5186,6 +5186,7 @@ function renderActivityDrawerNode(node, index = 0, nodes = []) {
   const toolCalls = Array.isArray(node.tool_calls) ? node.tool_calls : [];
   const artifacts = normalizeActivityArtifacts(node.artifacts);
   const digest = activityNodeDigest(node, index, nodes);
+  const summary = activityNodeSummary(node);
   return `
     <li class="activity-node ${escapeHtml(node.status || "completed")} ${escapeHtml(node.kind || "agent")}">
       <div class="activity-node-marker" aria-hidden="true"></div>
@@ -5197,15 +5198,21 @@ function renderActivityDrawerNode(node, index = 0, nodes = []) {
           </div>
           <em>${escapeHtml(activityStatusLabel(node.status))}</em>
         </header>
-        ${node.summary ? `<p class="activity-node-summary">${escapeHtml(node.summary)}</p>` : ""}
+        ${summary ? `<p class="activity-node-summary">${escapeHtml(summary)}</p>` : ""}
         ${renderActivityNodeDigest(digest)}
         ${actions.length ? `<ul class="activity-action-list">${actions.slice(0, 6).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
         ${toolCalls.length ? renderActivityToolCalls(toolCalls) : ""}
         ${artifacts.length ? renderActivityArtifactCards(artifacts) : ""}
-        ${node.safety_note ? `<small>${escapeHtml(node.safety_note)}</small>` : ""}
       </article>
     </li>
   `;
+}
+
+function activityNodeSummary(node = {}) {
+  const summary = cleanActivityText(node.summary || "");
+  if (String(node.role || node.kind || "") !== "code_artifact") return summary;
+  const artifactCount = Number(node.outputs_summary?.artifact_count || node.artifacts?.length || 0);
+  return artifactCount ? `生成 ${artifactCount} 个本次代码片段。` : "本次代码已准备好。";
 }
 
 function renderActivityDrawerSection(section) {
@@ -5485,10 +5492,10 @@ function renderActivityArtifactCards(artifacts) {
       (artifact) => `
         <article class="activity-artifact-card">
           <div class="artifact-card-header">
-            <strong>${escapeHtml(artifact.title || artifact.language || "代码")}</strong>
-            <span>${escapeHtml((artifact.language || "").toUpperCase())}</span>
+            <strong>${escapeHtml(activityArtifactTitle(artifact))}</strong>
+            <span>${escapeHtml(activityArtifactLanguageLabel(artifact))}</span>
           </div>
-          ${artifact.purpose ? `<p>${escapeHtml(artifact.purpose)}</p>` : ""}
+          <p class="activity-artifact-purpose">${escapeHtml(activityArtifactPurpose(artifact))}</p>
           <pre><code>${escapeHtml(artifact.code || "")}</code></pre>
           ${artifact.output_summary ? `<small>${escapeHtml(artifact.output_summary)}</small>` : ""}
         </article>
@@ -5497,6 +5504,33 @@ function renderActivityArtifactCards(artifacts) {
     .join("")}
     </div>
   `;
+}
+
+function activityArtifactTitle(artifact = {}) {
+  const language = String(artifact.language || "").trim().toLowerCase();
+  const rawTitle = cleanActivityText(artifact.title || "");
+  const shouldReplace = !rawTitle || /参考|思路|复现|片段/.test(rawTitle);
+  if (language === "sql") return shouldReplace ? "SQL 本次代码" : rawTitle;
+  if (language.includes("python") || language.includes("pandas")) {
+    return shouldReplace ? "Python / Pandas 本次代码" : rawTitle;
+  }
+  return shouldReplace ? "本次代码" : rawTitle;
+}
+
+function activityArtifactLanguageLabel(artifact = {}) {
+  const language = String(artifact.language || "").trim();
+  return language ? language.toUpperCase() : "CODE";
+}
+
+function activityArtifactPurpose(artifact = {}) {
+  const language = String(artifact.language || "").trim().toLowerCase();
+  const rawPurpose = cleanActivityText(artifact.purpose || "");
+  const fallback =
+    language === "sql"
+      ? "后端返回的本次 SQL 代码如下，已过滤隐藏推理、raw prompt、密钥和 benchmark 答案。"
+      : "后端返回的本次代码如下，已过滤隐藏推理、raw prompt、密钥和 benchmark 答案。";
+  if (!rawPurpose) return fallback;
+  return /参考|思路|不开放浏览器执行|真实执行仍由后端|安全复现|复现片段/.test(rawPurpose) ? fallback : rawPurpose;
 }
 
 function normalizeActivityTrace(trace) {
@@ -5620,7 +5654,7 @@ function monitorRoleName(role) {
     insight: "洞察节点",
     visualization: "图表节点",
     response_builder: "回答节点",
-    code_artifact: "复现代码",
+    code_artifact: "本次代码",
     single_agent: "单 Agent",
   };
   return names[key] || key || "后端节点";

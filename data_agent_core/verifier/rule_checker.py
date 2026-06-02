@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan, UserQuestion
@@ -224,7 +225,12 @@ def _verify_generalization_contract(
     if _asks_grouped_metric_visual(question) and logic.operation in {"detail_lookup", "row_count"}:
         notes.append("Question asks for grouped metric output or a chart, but the plan returns detail rows or a scalar count.")
         return False, notes, {"action": "replace_operation", "to_operation": "aggregation", "reason": "grouped_metric_chart_required"}
-    if _asks_multi_entity_comparison(question) and logic.filters and not _filter_scope_preserves_multi_entity(question, logic.filters):
+    if (
+        _asks_multi_entity_comparison(question)
+        and logic.filters
+        and _filters_include_entity_scope(logic.filters)
+        and not _filter_scope_preserves_multi_entity(question, logic.filters)
+    ):
         notes.append("Question compares multiple named entities, but the plan collapsed scope into an implicit single-entity filter.")
         return False, notes, {"action": "repair_filters", "reason": "multi_entity_scope_collapsed"}
     semantic_binding_passed, semantic_binding_notes, semantic_binding_action = _verify_requested_metric_dimension_binding(logic, question, primary)
@@ -289,7 +295,10 @@ DIMENSION_CONCEPT_ALIASES = {
     "store": ("store", "shop", "branch", "门店", "店铺"),
     "city": ("city", "城市", "市"),
     "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "source", "origin", "来源", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
+    "segment": ("segment", "customer_segment", "cust_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分"),
+    "service_line": ("service_line", "business_line", "service", "line", "服务线", "业务线", "服务", "业务"),
     "customer": ("customer", "cust", "client", "客户", "终端"),
+    "service_line": ("service_line", "business_line", "service", "line", "服务线", "业务线", "服务", "业务"),
     "month": ("month", "month_id", "month_code", "stat_month", "ym", "year_month", "biz_month", "period", "month_period", "period_month", "年月", "月份", "月度", "业务月份", "统计月份", "期间"),
     "time": ("date", "day", "week", "period", "time", "sign_time", "create_time", "日期", "时间", "周期", "业务日期", "统计日期", "签收时间", "创建时间"),
 }
@@ -308,7 +317,7 @@ def _verify_requested_metric_dimension_binding(
     params = getattr(logic, "parameters", {}) or {}
     notes: list[str] = []
     dimension_fields = _semantic_dimension_fields(logic)
-    requested_dimensions = _requested_dimension_concepts(question)
+    requested_dimensions = _target_dimension_concepts(question) or _requested_dimension_concepts(question)
     schema_backed_semantics = _uses_schema_backed_semantic_binding(logic)
     if _card_scheme_steering_uses_temporal_scope_filters(logic, requested_dimensions):
         notes.append("Card scheme steering uses month/year language as filter scope, not as a grouped output dimension.")
@@ -348,12 +357,60 @@ def _verify_requested_metric_dimension_binding(
             }
         rows = _execution_rows(primary)
         if rows and not any(field in rows[0] for field in matched_dimensions):
+            if _scalar_share_operation(logic):
+                notes.append("Top-K share returns a scalar percentage; requested dimension is used for grouping but not exposed as an output column.")
+                return True, notes, None
             notes.append(f"Question requests dimension {matched_dimensions[0]}, but execution rows do not contain it.")
             return False, notes, {"action": "repair_result_shape", "required_column": matched_dimensions[0]}
+
+    requested_metrics = _requested_metric_concepts(question)
+    explicit_formula_components_bound = _explicit_formula_components_bound(logic, question, requested_metrics)
+    derived_metric_components_bound = _derived_metric_components_bound(logic, requested_metrics) if _asks_profit_margin(question) else False
+    if explicit_formula_components_bound:
+        notes.append("Explicit derived metric formula binds requested base metric components; output may expose the derived metric only.")
+    if derived_metric_components_bound:
+        notes.append("Derived metric components bind requested base metric concepts; output may expose the derived metric only.")
+    if len(requested_metrics) > 1 and not schema_backed_semantics and not explicit_formula_components_bound and not derived_metric_components_bound:
+        metric_fields = _semantic_metric_fields(logic)
+        candidate_metric_fields = _candidate_filter_metric_fields(logic)
+        missing_metrics = [
+            concept
+            for concept in requested_metrics
+            if not any(_column_matches_concept(field, concept, METRIC_CONCEPT_ALIASES) for field in metric_fields)
+            and not any(_column_matches_concept(field, concept, METRIC_CONCEPT_ALIASES) for field in candidate_metric_fields)
+        ]
+        if missing_metrics:
+            available = [str(item) for item in params.get("available_columns") or []]
+            notes.append(f"Question requests multiple metrics {requested_metrics}, but plan only binds {metric_fields}.")
+            return False, notes, {
+                "action": "repair_metric_binding",
+                "requested_metrics": requested_metrics,
+                "missing_metrics": missing_metrics,
+                "actual_metrics": metric_fields,
+                "available_columns": available,
+            }
+        if candidate_metric_fields:
+            notes.append("Candidate-set metric bound as TopN filter: " + ", ".join(candidate_metric_fields))
+        rows = _execution_rows(primary)
+        if rows:
+            sample_keys = set(rows[0])
+            missing_result_columns = [
+                field
+                for field in metric_fields
+                if any(_column_matches_concept(field, concept, METRIC_CONCEPT_ALIASES) for concept in requested_metrics)
+                and field not in sample_keys
+            ]
+            if missing_result_columns:
+                notes.append("Multi-metric result is missing requested metric column(s): " + ", ".join(missing_result_columns))
+                return False, notes, {"action": "repair_result_shape", "required_columns": missing_result_columns}
+        notes.append("Multiple requested metrics are bound and exposed in the result.")
 
     if _asks_profit_margin(question):
         if _logic_uses_schema_backed_profit_margin(logic):
             notes.append("Schema-backed business ratio metric verified for profit margin/rate.")
+            return True, notes, None
+        if _profit_margin_bound_as_candidate_filter(logic, question):
+            notes.append("Profit margin is bound as a derived candidate-set metric; result metric answers the scoped ranking question.")
             return True, notes, None
         derived_metric = params.get("derived_metric")
         if not isinstance(derived_metric, dict) or not derived_metric:
@@ -408,6 +465,69 @@ def _semantic_dimension_fields(logic: Any) -> list[str]:
     return fields
 
 
+def _semantic_metric_fields(logic: Any) -> list[str]:
+    params = getattr(logic, "parameters", {}) or {}
+    raw_fields: list[Any] = []
+    metrics = params.get("metrics")
+    if isinstance(metrics, (list, tuple)):
+        raw_fields.extend(metrics)
+    raw_fields.extend([params.get("metric"), getattr(logic, "metric", None)])
+    metric_definition = getattr(logic, "metric_definition", {}) or {}
+    if isinstance(metric_definition, dict):
+        definition_metrics = metric_definition.get("metrics")
+        if isinstance(definition_metrics, (list, tuple)):
+            raw_fields.extend(definition_metrics)
+        elif "," not in str(metric_definition.get("name") or ""):
+            raw_fields.append(metric_definition.get("name"))
+    fields: list[str] = []
+    for field in raw_fields:
+        text = str(field or "").strip()
+        if text and text not in fields:
+            fields.append(text)
+    return fields
+
+
+def _candidate_filter_metric_fields(logic: Any) -> list[str]:
+    params = getattr(logic, "parameters", {}) or {}
+    candidate_filter = params.get("candidate_filter")
+    if not isinstance(candidate_filter, dict):
+        return []
+    metric = str(candidate_filter.get("metric") or "").strip()
+    return [metric] if metric else []
+
+
+def _explicit_formula_components_bound(logic: Any, question: str, requested_metrics: list[str]) -> bool:
+    if len(requested_metrics) <= 1 or not _asks_explicit_metric_formula(question):
+        return False
+    return _derived_metric_components_bound(logic, requested_metrics)
+
+
+def _derived_metric_components_bound(logic: Any, requested_metrics: list[str]) -> bool:
+    if len(requested_metrics) <= 1:
+        return False
+    params = getattr(logic, "parameters", {}) or {}
+    derived_metric = params.get("derived_metric")
+    if not isinstance(derived_metric, dict) or not derived_metric:
+        return False
+    component_fields = [
+        str(derived_metric.get("numerator") or ""),
+        str(derived_metric.get("denominator") or ""),
+    ]
+    if not all(component_fields):
+        return False
+    return all(
+        any(_column_matches_concept(field, concept, METRIC_CONCEPT_ALIASES) for field in component_fields)
+        for concept in requested_metrics
+    )
+
+
+def _scalar_share_operation(logic: Any) -> bool:
+    operation = str(getattr(logic, "operation", "") or "")
+    output_format = getattr(logic, "output_format", {}) or {}
+    answer_type = str(output_format.get("answer_type") or "")
+    return operation == "top_k_share" and answer_type in {"percentage", "number"}
+
+
 def _logic_uses_schema_backed_profit_margin(logic: Any) -> bool:
     operation = str(getattr(logic, "operation", "") or "")
     capability = capability_for_operation(operation)
@@ -419,6 +539,20 @@ def _logic_uses_schema_backed_profit_margin(logic: Any) -> bool:
     return normalized in {"PM", "GM"} or any(token in metric for token in ("利润率", "毛利率"))
 
 
+def _profit_margin_bound_as_candidate_filter(logic: Any, question: str) -> bool:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    if not re.search(r"(?:利润率|毛利率)[^，,。？?；;]{0,20}(?:排名)?前(?:\d+|[一二两三四五六七八九十]+)", compact):
+        return False
+    params = getattr(logic, "parameters", {}) or {}
+    candidate_filter = params.get("candidate_filter")
+    if not isinstance(candidate_filter, dict):
+        return False
+    derived_metric = candidate_filter.get("derived_metric")
+    if not isinstance(derived_metric, dict):
+        return False
+    return bool(derived_metric.get("name") and derived_metric.get("numerator") and derived_metric.get("denominator"))
+
+
 def _uses_schema_backed_semantic_binding(logic: Any) -> bool:
     capability = capability_for_operation(str(getattr(logic, "operation", "") or ""))
     return capability.capability_family in {"vds_period_comparison", "chinese_retail_business_metric"}
@@ -427,6 +561,182 @@ def _uses_schema_backed_semantic_binding(logic: Any) -> bool:
 def _requested_dimension_concepts(question: str) -> list[str]:
     requested: list[str] = []
     for concept, aliases in DIMENSION_CONCEPT_ALIASES.items():
+        if concept == "customer" and not _explicit_customer_dimension_request(question):
+            continue
+        if any(_alias_in_question(question, alias) for alias in aliases):
+            requested.append(concept)
+    if _question_requests_time_series(question) and "month" not in requested:
+        requested.append("month")
+    return requested
+
+
+def _target_dimension_concepts(question: str) -> list[str]:
+    """Return dimensions that the user asks to receive, not merely scope phrases.
+
+    In questions like "all cities中利润率前3的服务线", city is the universe/scope
+    and service_line is the answer dimension. Dimension repair must preserve
+    that distinction or it can "fix" a valid plan back to the scope field.
+    """
+
+    import re
+
+    compact = re.sub(r"\s+", "", str(question or ""))
+    lowered = str(question or "").lower()
+    result_dimension = _result_dimension_after_extreme_time_scope(question)
+    if result_dimension:
+        return [result_dimension]
+    scoped_answer_dimension = _dimension_after_growth_entity_scope(compact, lowered)
+    if scoped_answer_dimension:
+        return [scoped_answer_dimension]
+    growth_entity_dimension = _growth_ranking_entity_target(compact, lowered)
+    ordered_patterns = (
+        ("segment", ("客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "细分市场", "哪个客户群", "哪些客户群", "哪个客群", "哪些客群", "客群是什么", "客群是哪", "按客群", "客群排名", "segment")),
+        ("product", ("哪个产品", "哪种产品", "哪些产品", "产品是哪个", "产品是哪", "产品有哪些", "产品是哪些", "按产品", "产品贡献", "产品排名", "which product", "by product")),
+        ("customer", ("哪个客户", "哪些客户", "客户是哪个", "客户是哪", "客户是谁", "客户是什么", "客户有哪些", "客户是哪些", "按客户", "客户贡献", "客户排名", "which customer", "by customer")),
+        ("service_line", ("哪个服务线", "哪些服务线", "服务线是哪个", "服务线是哪", "服务线有哪些", "按服务线", "服务线排名", "哪个业务线", "哪些业务线", "业务线是哪个", "业务线是哪", "业务线有哪些", "按业务线", "业务线排名", "which service line", "by service line", "business line")),
+        ("city", ("各城市", "各个城市", "每个城市", "哪个城市", "哪些城市", "城市是哪个", "城市是哪", "城市有哪些", "城市是哪些", "这些城市", "这几个城市", "按城市", "城市贡献", "城市排名", "which city", "by city")),
+        ("category", ("哪个品类", "哪些品类", "品类是哪个", "品类是哪", "品类有哪些", "品类是哪些", "按品类", "品类贡献", "品类排名", "which category", "by category")),
+        ("month", ("按月份", "哪个月份", "月度趋势", "趋势", "各月", "每月", "变化趋势", "如何变化", "怎么变化", "怎样变化", "by month", "monthly", "change over time")),
+    )
+    targets: list[str] = []
+    for concept, patterns in ordered_patterns:
+        if any((pattern in compact if any("\u4e00" <= char <= "\u9fff" for char in pattern) else pattern in lowered) for pattern in patterns):
+            targets.append(concept)
+    quantity_targets = (
+        ("city", r"哪(?:\d+|[一二两三四五六七八九十]+)?个城市"),
+        ("customer", r"哪(?:\d+|[一二两三四五六七八九十]+)?个客户"),
+        ("product", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|种)?产品"),
+        ("service_line", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|条)?(?:服务线|业务线)"),
+    )
+    for concept, pattern in quantity_targets:
+        if re.search(pattern, compact) and concept not in targets:
+            targets.append(concept)
+    if "segment" in targets and any(token in compact for token in ("客户群", "客户群体", "客户细分", "客户分区", "客户分段", "客户段", "客群", "细分市场")):
+        targets = [target for target in targets if target != "customer"]
+    if growth_entity_dimension:
+        return targets or [growth_entity_dimension]
+    if _question_requests_time_series(question):
+        return ["month", "time"]
+    return targets
+
+
+def _growth_ranking_entity_target(compact: str, lowered: str) -> str:
+    growth_tokens = (
+        "增长最快",
+        "增长最多",
+        "增速最快",
+        "增幅最大",
+        "提升最快",
+        "提升最多",
+        "下降最快",
+        "下降最多",
+        "变化最明显",
+        "变化最大",
+        "变化最多",
+        "变动最大",
+        "变动最多",
+        "波动最大",
+        "波动最多",
+    )
+    if not any(token in compact for token in growth_tokens) and not any(
+        token in lowered for token in ("fastest growth", "largest growth", "highest growth", "biggest increase", "largest increase", "fastest decline")
+    ):
+        return ""
+    scoped_answer_dimension = _dimension_after_growth_entity_scope(compact, lowered)
+    if scoped_answer_dimension:
+        return scoped_answer_dimension
+    targets = (
+        ("city", ("哪个城市", "哪些城市", "这些城市", "几个城市", "个城市", "城市中", "城市里", "which city", "city growth")),
+        ("customer", ("哪个客户", "哪些客户", "这些客户", "几个客户", "个客户", "客户中", "客户里", "which customer", "customer growth")),
+        ("product", ("哪个产品", "哪些产品", "哪种产品", "这些产品", "几个产品", "个产品", "产品中", "产品里", "which product", "product growth")),
+        ("service_line", ("哪个服务线", "哪些服务线", "几个服务线", "个服务线", "服务线中", "业务线中", "which service line", "service line growth", "business line growth")),
+    )
+    for concept, patterns in targets:
+        if any((pattern in compact if any("\u4e00" <= char <= "\u9fff" for char in pattern) else pattern in lowered) for pattern in patterns):
+            return concept
+    return ""
+
+
+def _dimension_after_growth_entity_scope(compact: str, lowered: str) -> str:
+    scope_match = re.search(
+        r"(?:增长最快|增长最多|增速最快|增幅最大|提升最快|提升最多|下降最快|下降最多|变化最明显|变化最大|变化最多|变动最大|变动最多|波动最大|波动最多)的?(?:那个|该|这个)?(?:城市|客户|产品|服务线|业务线)(?:中|里|内)?",
+        compact,
+    )
+    suffix = compact[scope_match.end() :] if scope_match else ""
+    if not suffix and any(token in lowered for token in ("fastest growing city", "city with fastest growth", "fastest growth city")):
+        suffix = lowered
+    if not suffix:
+        return ""
+    targets = (
+        ("segment", ("客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "细分市场", "哪个客户群", "哪些客户群", "哪个客群", "哪些客群", "segment")),
+        ("customer", ("哪个客户", "哪些客户", "客户是哪个", "客户是哪", "客户是谁", "按客户", "which customer", "by customer")),
+        ("product", ("哪个产品", "哪种产品", "哪些产品", "产品是哪个", "产品是哪", "按产品", "which product", "by product")),
+        ("service_line", ("哪个服务线", "哪些服务线", "哪个业务线", "哪些业务线", "按服务线", "按业务线", "which service line", "by service line", "business line")),
+        ("city", ("哪个城市", "哪些城市", "按城市", "which city", "by city")),
+    )
+    for concept, patterns in targets:
+        if any((pattern in suffix if any("\u4e00" <= char <= "\u9fff" for char in pattern) else pattern in lowered) for pattern in patterns):
+            return concept
+    return ""
+
+
+def _result_dimension_after_extreme_time_scope(question: str) -> str:
+    import re
+
+    compact = re.sub(r"\s+", "", str(question or ""))
+    lowered = str(question or "").lower()
+    asks_extreme_time = (
+        any(token in compact for token in ("哪个月份", "哪个月", "哪月份", "哪月"))
+        and any(token in compact for token in ("最高", "最大", "最多", "最低", "最小", "最少"))
+    ) or bool(re.search(r"(?:which|what)\s+month.+(?:highest|top|largest|most|lowest|smallest|least)", lowered))
+    if not asks_extreme_time:
+        return ""
+    suffix_target_patterns = (
+        ("city", r"前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:大)?的?城市"),
+        ("customer", r"前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:大)?的?客户"),
+        ("product", r"前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:大)?的?(?:产品|商品)"),
+        ("service_line", r"前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位|条)?(?:大)?的?(?:服务线|业务线)"),
+    )
+    for concept, pattern in suffix_target_patterns:
+        if re.search(pattern, compact):
+            return concept
+    if "top" in lowered:
+        if "city" in lowered:
+            return "city"
+        if "customer" in lowered:
+            return "customer"
+        if "product" in lowered:
+            return "product"
+        if "service line" in lowered or "business line" in lowered:
+            return "service_line"
+    return ""
+
+
+def _question_requests_time_series(question: str) -> bool:
+    compact = "".join(str(question or "").split())
+    lowered = str(question or "").lower()
+    return any(
+        token in compact
+        for token in ("趋势", "月度变化", "季度变化", "按月份", "按月度", "按季度", "每月", "各月", "变化趋势", "如何变化", "怎么变化", "怎样变化")
+    ) or any(token in lowered for token in ("trend", "monthly", "quarterly", "by quarter", "month by month", "change over time"))
+
+
+def _explicit_customer_dimension_request(question: str) -> bool:
+    compact = "".join(str(question or "").split())
+    lowered = str(question or "").lower()
+    if any(token in compact for token in ("客户群", "客户群体", "客户细分", "客户分区", "客户分段", "客户段", "客群", "细分市场")):
+        return False
+    return any(
+        token in compact
+        for token in ("哪个客户", "哪些客户", "哪位客户", "客户是谁", "客户是哪", "客户是哪位", "客户是哪一位", "客户是什么", "按客户", "客户排名", "客户贡献", "客户维度")
+    ) or bool(
+        re.search(r"前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:大)?的?客户", compact)
+    ) or any(token in lowered for token in ("by customer", "which customer", "customer ranking", "customer segment"))
+
+
+def _requested_metric_concepts(question: str) -> list[str]:
+    requested: list[str] = []
+    for concept, aliases in METRIC_CONCEPT_ALIASES.items():
         if any(_alias_in_question(question, alias) for alias in aliases):
             requested.append(concept)
     return requested
@@ -495,8 +805,12 @@ def _asks_explicit_filter(question: str) -> bool:
 
 
 def _looks_like_metric_formula(text: str) -> bool:
-    segment = text.split("。", 1)[0].split(".", 1)[0].split("?", 1)[0].split("？", 1)[0]
-    return "=" in segment and any(operator in segment for operator in ("/", "+", "*"))
+    import re
+
+    for segment in re.split(r"[。.!?？\n]+", str(text or "")):
+        if "=" in segment and any(operator in segment for operator in ("/", "+", "*")):
+            return True
+    return False
 
 
 def _asks_explicit_metric_formula(question: str) -> bool:
@@ -573,13 +887,17 @@ def _verify_join_contract(
             "source_tables": source_tables,
             "requested_dimensions": _requested_dimension_concepts(question),
         }
+    dimension = params.get("dimension") or getattr(logic, "group_by", None)
     if not join_plan:
-        if _asks_named_dimension(question) and _dimension_looks_like_id(params.get("dimension") or getattr(logic, "group_by", None)):
+        if _asks_named_dimension(question) and _dimension_looks_like_id(dimension):
+            if _id_dimension_is_acceptable_entity_binding(question, dimension, params):
+                notes.append("Requested entity dimension is represented by a stable ID column because no non-ID label column is available.")
+                return True, notes, None
             notes.append("Question asks for a named dimension, but the plan would return an ID field.")
             return False, notes, {
                 "action": "repair_table_selection_or_join",
                 "reason": "dimension_fell_back_to_id",
-                "actual_dimension": params.get("dimension") or getattr(logic, "group_by", None),
+                "actual_dimension": dimension,
                 "requested_dimensions": _requested_dimension_concepts(question),
             }
         return True, notes, None
@@ -621,7 +939,10 @@ def _verify_join_contract(
         notes.append("Trusted join plan exists, but execution did not report join materialization.")
         return False, notes, {"action": "repair_executor_join_trace", "reason": "missing_join_execution_summary"}
 
-    if _asks_named_dimension(question) and _dimension_looks_like_id(params.get("dimension") or getattr(logic, "group_by", None)):
+    if _asks_named_dimension(question) and _dimension_looks_like_id(dimension):
+        if _id_dimension_is_acceptable_entity_binding(question, dimension, params):
+            notes.append("Requested entity dimension is represented by a stable ID column because no non-ID label column is available.")
+            return True, notes, None
         notes.append("Question asks for a named dimension, but the plan would return an ID field.")
         return False, notes, {"action": "repair_table_selection_or_join", "reason": "dimension_fell_back_to_id"}
     return True, notes, None
@@ -640,6 +961,9 @@ def _verify_requested_shape_contract(
     rows = _execution_rows(primary)
     notes: list[str] = []
     if not rows:
+        if getattr(logic, "filters", {}):
+            notes.append("Grouped metric/chart request returned no rows after explicit filters; treated as an empty-result boundary.")
+            return True, notes, None
         notes.append("Grouped metric/chart request returned no inspectable rows.")
         return False, notes, {"action": "repair_result_shape", "reason": "missing_rows"}
     sample_keys = set(rows[0])
@@ -676,6 +1000,19 @@ def _result_column_aliases(column: str) -> set[str]:
         "sign_box_cnt": {"分销箱数", "签收箱数", "箱数", "数量"},
     }
     return aliases.get(str(column), set())
+
+
+def _empty_result_shape_is_inspectable(primary: ExecutionResult, dimension: str, metric: str, aggregation: str) -> bool:
+    columns = set(str(column) for column in (primary.columns or []))
+    if not columns and isinstance(primary.value, dict):
+        columns = set(str(column) for column in (primary.value.get("columns") or []))
+    if not columns:
+        return bool(dimension and (metric or aggregation in {"count", "nunique", "distinct_count"}))
+    if dimension and not _result_has_requested_column(columns, dimension):
+        return False
+    if aggregation not in {"count", "nunique", "distinct_count"} and metric and not _result_has_requested_column(columns, metric):
+        return False
+    return True
 
 
 def _execution_rows(primary: ExecutionResult) -> list[dict[str, Any]]:
@@ -736,6 +1073,29 @@ def _asks_named_dimension(question: str) -> bool:
     )
 
 
+def _id_dimension_is_acceptable_entity_binding(question: str, dimension: Any, params: dict[str, Any]) -> bool:
+    """Allow stable entity IDs only when they match the requested entity and no label exists."""
+
+    dimension_text = str(dimension or "")
+    requested = _requested_dimension_concepts(question)
+    if not dimension_text or not requested:
+        return False
+    matching_concepts = [
+        concept
+        for concept in requested
+        if _column_matches_concept(dimension_text, concept, DIMENSION_CONCEPT_ALIASES)
+    ]
+    if not matching_concepts:
+        return False
+    available_columns = [str(column) for column in params.get("available_columns") or [] if str(column)]
+    for column in available_columns:
+        if column == dimension_text or _dimension_looks_like_id(column):
+            continue
+        if any(_column_matches_concept(column, concept, DIMENSION_CONCEPT_ALIASES) for concept in matching_concepts):
+            return False
+    return True
+
+
 def _dimension_looks_like_id(value: Any) -> bool:
     text = str(value or "").lower()
     return bool(text) and ("id" in text or text.endswith("编号") or text.endswith("代码"))
@@ -791,6 +1151,21 @@ def _filter_scope_preserves_multi_entity(question: str, filters: dict[str, Any])
     return len(matched_values) >= 2
 
 
+def _filters_include_entity_scope(filters: dict[str, Any]) -> bool:
+    for key, value in filters.items():
+        column = str(key or "").lower()
+        if _filter_key_is_time_like(column):
+            continue
+        if isinstance(value, dict) and any(_filter_key_is_time_like(str(item).lower()) for item in value):
+            continue
+        return True
+    return False
+
+
+def _filter_key_is_time_like(column: str) -> bool:
+    return any(token in column for token in ("date", "day", "month", "year", "week", "time", "日期", "时间", "月份", "年份", "周"))
+
+
 def _flatten_filter_values(value: Any) -> list[str]:
     if value is None or (isinstance(value, str) and value == ""):
         return []
@@ -824,6 +1199,13 @@ def _asks_count_metric(question: str) -> bool:
 
 
 def _count_metric_request_satisfied(logic: Any, question: str) -> bool:
+    params = getattr(logic, "parameters", {}) or {}
+    specs = params.get("metric_specs")
+    if isinstance(specs, list) and any(
+        isinstance(spec, dict) and str(spec.get("aggregation") or "") in {"count", "distinct_count", "nunique"}
+        for spec in specs
+    ):
+        return True
     if _metric_aggregation(logic) in {"count", "distinct_count", "nunique"}:
         return True
     if logic.operation in {"row_count", "top_count", "distinct_count"}:

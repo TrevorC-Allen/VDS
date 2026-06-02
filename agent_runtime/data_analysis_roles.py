@@ -884,6 +884,18 @@ def _repair_dimension_binding_logic_form(logic_payload: dict[str, Any], action: 
     if actual_dimension and _same_dimension_field(actual_dimension, repaired_dimension):
         return None
 
+    params = dict(logic_payload.get("parameters") or {})
+    candidate_filter = params.get("candidate_filter") if isinstance(params, dict) else None
+    candidate_dimension = str(candidate_filter.get("dimension") or "") if isinstance(candidate_filter, dict) else ""
+    current_dimension = str(params.get("dimension") or logic_payload.get("group_by") or actual_dimension or "")
+    if (
+        candidate_dimension
+        and current_dimension
+        and _same_dimension_field(candidate_dimension, repaired_dimension)
+        and not _same_dimension_field(current_dimension, repaired_dimension)
+    ):
+        return None
+
     corrected = dict(logic_payload)
     params = dict(corrected.get("parameters") or {})
     params["dimension"] = repaired_dimension

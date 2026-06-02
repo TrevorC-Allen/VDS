@@ -250,7 +250,8 @@ def _extract_entity_list_only(value: Any, output_format: dict[str, Any]) -> Any:
         value = value["candidate_table"]
     if isinstance(value, (list, tuple)):
         entities = [_extract_entity_only(item, output_format) for item in value]
-        return [entity for entity in entities if entity not in {None, ""}]
+        non_empty = [entity for entity in entities if entity not in {None, ""}]
+        return non_empty or None
     entity = _extract_entity_only(value, output_format)
     return [entity] if entity not in {None, ""} else None
 
