@@ -586,6 +586,35 @@ class TempFileStore:
             record = self._load_uploaded_table_record_from_disk(dataset_id)
         return None if record is None else record.tables
 
+    def has_dataset_in_memory(self, dataset_id: str) -> bool:
+        """Return whether the dataset is already restored in this process."""
+
+        return bool(dataset_id and dataset_id in self._datasets)
+
+    def restore_dataset_from_disk(self, dataset_id: str) -> tuple[bool, str]:
+        """Try to restore a persisted dataset without raising raw parser errors."""
+
+        if not dataset_id:
+            return False, "dataset_id is required."
+        if dataset_id in self._datasets:
+            return True, ""
+        try:
+            record = self._load_dabstep_record_from_disk(dataset_id)
+            if record is None:
+                record = self._load_uploaded_table_record_from_disk(dataset_id)
+        except Exception as exc:  # noqa: BLE001 - profile endpoint must return a stable restore contract.
+            return False, str(exc)
+        if record is not None:
+            return True, ""
+        profile = self.get_profile(dataset_id)
+        dataset_dir = self.datasets_root / dataset_id
+        source_dir = dataset_dir / "source_file"
+        if profile is None:
+            return False, "profile.json is missing."
+        if not source_dir.exists() and not (dataset_dir / "dab_context").exists():
+            return False, "source files are missing."
+        return False, "source files could not be parsed."
+
     def get_analysis_context(self, dataset_id: str) -> dict[str, Any] | None:
         """Return the executor context for a stored dataset."""
 

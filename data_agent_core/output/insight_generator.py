@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 import math
+import re
 from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan
 from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.contracts.response_contracts import InsightResult
+from data_agent_core.core.conversation_actions import build_next_actions
 
 
 def generate_insight(
@@ -35,6 +37,7 @@ def generate_insight(
     caveats = _quality_caveats(quality_report)
     suggestions = _suggestions(anomaly_findings, volatility_findings, quality_report, rows)
     summary = _summary(question, key_numbers, rows)
+    next_actions = build_next_actions(question=question, plan=plan, rows=rows)
     return InsightResult(
         summary=summary,
         key_numbers=key_numbers,
@@ -44,6 +47,7 @@ def generate_insight(
         business_suggestions=suggestions,
         caveats=caveats,
         next_questions=_next_questions(question, plan, rows),
+        next_actions=next_actions,
         evidence_rows=rows[:5],
         confidence=0.82 if rows else 0.72,
     )
@@ -150,7 +154,7 @@ def _volatility_findings(rows: list[dict[str, Any]], columns: list[str]) -> list
                     "type": "period_volatility",
                     "metric": column,
                     "count": len(changes),
-                    "message": f"观察：{column} 存在 {len(changes)} 次超过 30% 的阶段波动；依据：相邻周期变化率；建议：继续按客户、城市、产品或渠道拆分驱动因素。",
+                    "message": f"观察：{column} 存在 {len(changes)} 次超过 30% 的阶段波动；依据：相邻周期变化率；建议：继续按客户、产品或渠道拆分来源 Top 排名。",
                     "evidence_rows": changes[:3],
                 }
             )
@@ -177,14 +181,14 @@ def _suggestions(
         metric = str(first.get("metric") or "核心指标")
         count = int(first.get("count") or 0)
         return [
-            f"观察：{metric} 出现 {count} 个明显离群点；依据：已验证结果的 IQR 边界；建议：下一步先复核这些异常高/低点是否为真实业务事件，再按客户、城市、产品或渠道拆分来源。"
+            f"观察：{metric} 出现 {count} 个明显离群点；依据：已验证结果的 IQR 边界；建议：下一步先标出{metric}的峰值、低点和最大波动期。"
         ]
     if volatility_findings:
         first = volatility_findings[0]
         metric = str(first.get("metric") or "核心指标")
         count = int(first.get("count") or 0)
         return [
-            f"观察：{metric} 有 {count} 次较大阶段波动；依据：相邻周期变化率；建议：下一步按同一周期口径拆到区域、客户或产品，先找出波动最大的贡献项。"
+            f"观察：{metric} 有 {count} 次较大阶段波动；依据：相邻周期变化率；建议：下一步先标出{metric}变化最大的周期。"
         ]
     if isinstance(quality_report, dict) and int(quality_report.get("issue_count") or 0) > 0:
         issue_count = int(quality_report.get("issue_count") or 0)
@@ -218,13 +222,26 @@ def _next_questions(question: str, plan: AnalysisPlan | dict[str, Any] | None, r
 
     candidates: list[str] = []
     if _looks_like_trend(operation, question_text):
-        candidates.extend(
-            [
-                f"把{metric}的峰值、低点和最大波动期标出来？",
-                f"按{dimension}拆分同一趋势，看看是谁拉动变化？",
-                f"检查最近一期{time_column}是否完整、是否影响趋势判断？",
-            ]
-        )
+        retail_candidates = _retail_distribution_trend_followups(operation, parameters, question)
+        if retail_candidates:
+            return _dedupe_questions(retail_candidates)[:3]
+        numeric_series = [column for column in _numeric_columns(rows, columns) if column != time_column]
+        if len(numeric_series) > 1 and has_time_column:
+            candidates.extend(
+                [
+                    "把各系列的峰值、低点和最大波动期标出来？",
+                    "计算各系列在当前时间范围内的累计金额和占比？",
+                    f"检查最近一期{time_column}是否完整、是否影响趋势判断？",
+                ]
+            )
+        else:
+            candidates.extend(
+                [
+                    f"把{metric}的峰值、低点和最大波动期标出来？",
+                    f"计算{metric}在当前时间范围内的累计值和占比？",
+                    f"检查最近一期{time_column}是否完整、是否影响趋势判断？",
+                ]
+            )
     elif _looks_like_ranking(operation, question_text):
         candidates.extend(
             [
@@ -265,6 +282,53 @@ def _next_questions(question: str, plan: AnalysisPlan | dict[str, Any] | None, r
             ]
         )
     return _dedupe_questions(candidates)[:3]
+
+
+def _retail_distribution_trend_followups(operation: str, parameters: dict[str, Any], question: str) -> list[str]:
+    compact = str(question or "").replace(" ", "")
+    if operation != "retail_category_distribution_monthly_trend" and not (
+        "分品类" in compact and "历史分销金额" in compact and "趋势" in compact
+    ):
+        return []
+    window = _retail_month_window_text(parameters.get("start_ym"), parameters.get("end_ym")) or _retail_month_window_from_question(question)
+    prefix = f"{window}" if window else ""
+    return [
+        f"{prefix}分品类历史分销金额趋势，标出峰值、低点和最大波动期？",
+        f"{prefix}历史分销金额按客户拆分来源 Top 排名？",
+        f"{prefix}历史分销金额按产品拆分来源 Top 排名？",
+    ]
+
+
+def _retail_month_window_from_question(question: str) -> str:
+    match = re.search(r"(\d{4})年\s*(\d{1,2})月?\s*至\s*(?:(\d{4})年)?\s*(\d{1,2})月", str(question or ""))
+    if not match:
+        return ""
+    start_year = int(match.group(1))
+    start_month = int(match.group(2))
+    end_year = int(match.group(3) or start_year)
+    end_month = int(match.group(4))
+    if not (1 <= start_month <= 12 and 1 <= end_month <= 12):
+        return ""
+    return f"{start_year}年{start_month}月至{end_year}年{end_month}月"
+
+
+def _retail_month_window_text(start_ym: Any, end_ym: Any) -> str:
+    start_text = _ym_text(start_ym)
+    end_text = _ym_text(end_ym)
+    if start_text and end_text and start_text != end_text:
+        return f"{start_text}至{end_text}"
+    return start_text or end_text
+
+
+def _ym_text(value: Any) -> str:
+    try:
+        ym_value = int(value)
+    except (TypeError, ValueError):
+        return ""
+    year, month = divmod(ym_value, 100)
+    if year <= 0 or month <= 0 or month > 12:
+        return ""
+    return f"{year}年{month}月"
 
 
 def _logic_form_dict(plan: AnalysisPlan | dict[str, Any] | None) -> dict[str, Any]:

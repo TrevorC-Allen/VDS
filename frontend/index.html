@@ -246,6 +246,18 @@
                 <ol class="answer-source-list"></ol>
               </details>
               <div class="message-actions" aria-label="回复操作">
+                <button class="save-response-button message-action-button hidden" type="button" title="保存到 Project" aria-label="保存到 Project" data-tooltip="保存到 Project">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"></path><path d="M17 21v-8H7v8"></path><path d="M7 3v5h8"></path></svg>
+                </button>
+                <button class="download-artifacts-button message-action-button hidden" type="button" title="下载产物" aria-label="下载产物" data-tooltip="下载产物">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg>
+                </button>
+                <button class="cancel-run-button message-action-button hidden" type="button" title="取消运行" aria-label="取消运行" data-tooltip="取消运行">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
+                </button>
+                <button class="retry-run-button message-action-button hidden" type="button" title="重试" aria-label="重试" data-tooltip="重试">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg>
+                </button>
                 <button class="copy-reply-button hidden" type="button" title="复制回复" aria-label="复制回复" data-tooltip="复制回复">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2"></path><path d="M6 8h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z"></path></svg>
                 </button>
@@ -278,15 +290,10 @@
             <div class="composer-actions">
               <div class="upload-controls" aria-label="文件上传">
                 <input id="file-input" class="visually-hidden" type="file" multiple accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md,.txt,.yaml,.yml,.doc,.docx,.docm,.rtf,.odt,.pdf,.pages,.html,.htm" />
-                <input id="rule-file-input" class="visually-hidden" type="file" multiple accept=".yaml,.yml,.json,.txt,.md,.doc,.docx,.docm,.rtf,.odt,.pdf,.pages,.html,.htm" />
-                <label class="button data-file-button upload-pick-button" for="file-input" title="上传数据文件" aria-label="上传数据文件">
-                  <svg viewBox="0 0 24 24"><path d="m21.4 11.6-8.5 8.5a5 5 0 0 1-7.1-7.1l9-9a3.2 3.2 0 0 1 4.5 4.5l-9.1 9.1a1.5 1.5 0 0 1-2.1-2.1l8.3-8.3" /></svg>
-                  <span>上传数据文件</span>
+                <label class="button data-file-button upload-pick-button" for="file-input" title="添加文件" aria-label="添加文件" data-tooltip="添加文件">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
                 </label>
-                <button id="rule-upload-button" class="rule-file-button" type="button" aria-describedby="rule-file-status" title="上传语义模型、指标口径或计算方法规则，后续分析会基于此规则">
-                  <span>添加规则</span>
-                </button>
-                <span id="rule-file-status" class="rule-file-status is-empty">可选：上传规则文件可以补充语义模型、指标口径和计算方法</span>
+                <span id="rule-file-status" class="rule-file-status is-empty hidden" aria-live="polite"></span>
                 <button id="upload-button" class="button secondary upload-button" type="button" disabled>上传</button>
               </div>
               <div class="controls-row">

@@ -21,6 +21,22 @@
 
 ## Backlog
 
+### Phase 14 P0 Real File Understanding / Semantic Correctness / Multi-turn Correction
+
+目标：补齐 GPT-like 文件分析第一步的真实文件理解能力，并把显式业务公式、多轮口径修正和语义校验接成可重跑闭环。Phase 14 仍属于 core hardening，前端只展示后端结构化结果，不实现解析、公式、join、排序、聚合或纠错逻辑。
+
+影响模块：data_agent_core/contracts、data_agent_core/core/file_parser.py、schema_profiler.py、intent_parser.py、verifier、executors、output/chart_planner.py、backend/services、frontend、tests/backend、tests/core、docs。
+
+优先级：P0，阶段：Phase 14。
+
+验收标准：复杂 Excel 能识别可分析表、说明/规则、字段字典、空 sheet、header rows 和 range；CSV 能记录编码、分隔符和坏行诊断；PDF/图片表格不能伪造 DataFrame，必须说明转换/OCR 边界；显式公式如 `利润率=sum利润/sum销售` 必须进入 derived metric / formula lineage；多轮修正必须基于上一轮 conversation 重跑并返回 `correction_context`；不完整修正必须澄清，不能复用旧结果。
+
+风险：候选表识别不能按当前 fixture 或文件名特调；规则/说明页不能混进普通 DataFrame 计算；显式公式只支持当前可解析的分子/分母 ratio，复杂嵌套公式仍需后续能力族；PDF/OCR 仍是边界能力，不代表图片表格识别完成；多轮口径默认只作用于当前 conversation，不自动写 Project memory。
+
+泛化验证方式：用合成复杂 Excel、多 sheet、合并表头、说明页、字段字典页、GBK/GB18030 CSV、坏行 CSV、图片边界和多轮 formula correction 测试；同时保留 Phase 12 message semantics、多文件/join、VDS 95、Microsoft 300、DAB mock 等非回归门禁。
+
+状态：2026-05-29 已完成首轮代码落点和 focused tests：文件解析候选表/profile diagnostics、显式 ratio formula lineage、多轮 correction rerun、前端展示 table role/range 和 correction summary。全量非回归、benchmark gate 和真实 runtime 验证以 `docs/test-runs/2026-05-29-phase14-p0-file-semantic-correction.md` 的实际结果为准。
+
 ### Phase 12 Correctness + GPT-like Hardening
 
 目标：修复普通上传表链路中“答案看起来成功但语义错算”的问题，并同步收敛 overview / details 体验。重点是文件点名与维度绑定、利润率派生指标、可信 join、untrusted join 澄清、overview 表角色和简单 Top1 减噪。

@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agent_runtime.agent_result import AgentResult
 from agent_runtime.agent_role import AgentRole
@@ -138,10 +138,19 @@ class DataAnalysisMultiAgentWorkflow:
         execution_mode: str = "auto",
         *,
         monitor_run_id: str = "",
+        run_id: str | None = None,
+        cancel_checker: Callable[[], bool] | None = None,
     ) -> tuple[FinalResponse, RunTrace]:
         """Run the canonical Phase 6 role sequence and return stable outputs."""
 
-        result = self.run(question=question, guidelines=guidelines, execution_mode=execution_mode, monitor_run_id=monitor_run_id)
+        result = self.run(
+            question=question,
+            guidelines=guidelines,
+            execution_mode=execution_mode,
+            monitor_run_id=monitor_run_id,
+            run_id=run_id,
+            cancel_checker=cancel_checker,
+        )
         return result.response, result.trace
 
     def run(
@@ -151,11 +160,13 @@ class DataAnalysisMultiAgentWorkflow:
         execution_mode: str = "auto",
         *,
         monitor_run_id: str = "",
+        run_id: str | None = None,
+        cancel_checker: Callable[[], bool] | None = None,
     ) -> MultiAgentWorkflowResult:
         """Run all internal AgentRole steps."""
 
         start = time.perf_counter()
-        run_id = "run_" + uuid.uuid4().hex[:16]
+        run_id = run_id or "run_" + uuid.uuid4().hex[:16]
         state = build_initial_state(self.dataset_id, question)
         task_results: list[AgentResult] = []
         task_by_role = {task.role: task for task in build_end_to_end_tasks(self.dataset_id, question)}
@@ -175,7 +186,12 @@ class DataAnalysisMultiAgentWorkflow:
             },
         )
 
+        def check_cancelled() -> None:
+            if cancel_checker is not None and cancel_checker():
+                raise RuntimeError("Execution cancelled")
+
         def run_role(role: AgentRole, runner: Any) -> AgentResult:
+            check_cancelled()
             task = task_by_role[role]
             before_tool_count = len(state.tool_call_trace)
             emit_monitor_event(
@@ -190,6 +206,7 @@ class DataAnalysisMultiAgentWorkflow:
             )
             try:
                 result = runner(task)
+                check_cancelled()
             except Exception as exc:
                 emit_monitor_event(
                     monitor_run_id,
@@ -241,6 +258,7 @@ class DataAnalysisMultiAgentWorkflow:
             )
             return result
 
+        check_cancelled()
         planner_result = run_role(AgentRole.PLANNER, lambda task: self.runtime.run_planner(task, state, guidelines=guidelines))
         task_results.append(planner_result)
         task_results.append(run_role(AgentRole.DATA_ENGINEER, lambda task: self.runtime.run_data_engineer(task, state)))
@@ -289,6 +307,7 @@ class DataAnalysisMultiAgentWorkflow:
         task_results.append(run_role(AgentRole.VISUALIZATION, lambda task: self.runtime.run_visualization(task, state, guidelines=guidelines)))
 
         response_task = task_by_role[AgentRole.RESPONSE_BUILDER]
+        check_cancelled()
         emit_monitor_event(
             monitor_run_id,
             "agent_started",

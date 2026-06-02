@@ -206,12 +206,13 @@ def _aggregation_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> Any:
     metric = params.get("metric")
     dimension = params.get("dimension")
     aggregation = str(params.get("aggregation") or "sum")
+    where_sql, values = _where_from_filters(plan.logic_form.filters)
     if dimension:
-        return _grouped_aggregation_sql(conn, str(dimension), None if metric is None else str(metric), aggregation)
+        return _grouped_aggregation_sql(conn, str(dimension), None if metric is None else str(metric), aggregation, where_sql=where_sql, values=values)
     if aggregation == "count" or metric is None:
-        return int(conn.execute("SELECT COUNT(*) FROM analysis_table").fetchone()[0])
+        return int(conn.execute(f"SELECT COUNT(*) FROM analysis_table{where_sql}", values).fetchone()[0])
     sql_func = _sql_agg_func(aggregation)
-    value = conn.execute(f"SELECT {sql_func}({_quote_identifier(str(metric))}) FROM analysis_table").fetchone()[0]
+    value = conn.execute(f"SELECT {sql_func}({_quote_identifier(str(metric))}) FROM analysis_table{where_sql}", values).fetchone()[0]
     return 0.0 if value is None else value
 
 
@@ -220,7 +221,8 @@ def _ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> list[dict[str,
     dimension = str(params["dimension"])
     metric = None if params.get("metric") is None else str(params.get("metric"))
     aggregation = str(params.get("aggregation") or "sum")
-    rows = _grouped_aggregation_sql(conn, dimension, metric, aggregation)
+    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    rows = _grouped_aggregation_sql(conn, dimension, metric, aggregation, where_sql=where_sql, values=values)
     if not rows:
         return rows
     metric_column = next(key for key in rows[0] if key != dimension)
@@ -566,17 +568,28 @@ def _fraud_rate_filtered_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> fl
     return float(rows[1] or 0) / total_volume * 100
 
 
-def _grouped_aggregation_sql(conn: sqlite3.Connection, dimension: str, metric: str | None, aggregation: str) -> list[dict[str, Any]]:
+def _grouped_aggregation_sql(
+    conn: sqlite3.Connection,
+    dimension: str,
+    metric: str | None,
+    aggregation: str,
+    *,
+    where_sql: str = "",
+    values: list[Any] | None = None,
+) -> list[dict[str, Any]]:
+    values = values or []
     if aggregation == "count" or metric is None:
         rows = conn.execute(
-            f"SELECT {_quote_identifier(dimension)}, COUNT(*) AS count FROM analysis_table GROUP BY {_quote_identifier(dimension)}"
+            f"SELECT {_quote_identifier(dimension)}, COUNT(*) AS count FROM analysis_table{where_sql} GROUP BY {_quote_identifier(dimension)}",
+            values,
         ).fetchall()
         return [{dimension: row[0], "count": row[1]} for row in rows]
     sql_func = _sql_agg_func(aggregation)
     q_dimension = _quote_identifier(dimension)
     q_metric = _quote_identifier(str(metric))
     rows = conn.execute(
-        f"SELECT {q_dimension}, {sql_func}({q_metric}) AS {q_metric} FROM analysis_table GROUP BY {q_dimension}"
+        f"SELECT {q_dimension}, {sql_func}({q_metric}) AS {q_metric} FROM analysis_table{where_sql} GROUP BY {q_dimension}",
+        values,
     ).fetchall()
     return [{dimension: row[0], metric: row[1]} for row in rows]
 
@@ -613,6 +626,12 @@ def _where_from_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
             where.append("CAST(strftime('%m', date(year || '-01-01', '+' || (day_of_year - 1) || ' days')) AS INTEGER) BETWEEN ? AND ?")
             values.extend([int(start), int(end)])
             continue
+        if isinstance(expected, dict) and ("year" in expected or "month" in expected or "month_range" in expected):
+            clause, clause_values = _date_part_filter_sql(str(column), expected)
+            if clause:
+                where.append(clause)
+                values.extend(clause_values)
+            continue
         if _is_day_of_year_range_filter(column, expected):
             start, end = expected
             q_column = _quote_identifier(str(column))
@@ -631,6 +650,23 @@ def _where_from_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
         where.append(f"{_quote_identifier(str(column))} = ?")
         values.append(expected)
     return (" WHERE " + " AND ".join(where) if where else ""), values
+
+
+def _date_part_filter_sql(column: str, expected: dict[str, Any]) -> tuple[str, list[Any]]:
+    q_column = _quote_identifier(column)
+    clauses: list[str] = []
+    values: list[Any] = []
+    if expected.get("year") is not None:
+        clauses.append(f"CAST(strftime('%Y', {q_column}) AS INTEGER) = ?")
+        values.append(int(expected["year"]))
+    if expected.get("month") is not None:
+        clauses.append(f"CAST(strftime('%m', {q_column}) AS INTEGER) = ?")
+        values.append(int(expected["month"]))
+    if expected.get("month_range"):
+        start, end = expected["month_range"]
+        clauses.append(f"CAST(strftime('%m', {q_column}) AS INTEGER) BETWEEN ? AND ?")
+        values.extend([int(start), int(end)])
+    return " AND ".join(clauses), values
 
 
 def _is_day_of_year_range_filter(column: Any, expected: Any) -> bool:

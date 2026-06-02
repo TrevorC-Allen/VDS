@@ -113,9 +113,13 @@ def build_chart_spec(
             confidence=0.7,
         )
 
-    x_column = _time_column(safe_columns) or _preferred_category_column(categorical_columns, metric_numeric_columns)
+    parameters = logic.get("parameters") if isinstance(logic.get("parameters"), dict) else {}
+    bound_dimension = str(parameters.get("dimension") or logic.get("group_by") or "").strip()
+    bound_metric = _bound_metric_name(logic, parameters)
+    x_column = bound_dimension if bound_dimension in safe_columns and bound_dimension not in metric_numeric_columns else None
+    x_column = x_column or _time_column(safe_columns) or _preferred_category_column(categorical_columns, metric_numeric_columns)
     y_columns = [column for column in metric_numeric_columns if column != x_column]
-    y_column = y_columns[0] if y_columns else metric_numeric_columns[0]
+    y_column = bound_metric if bound_metric in y_columns else y_columns[0] if y_columns else metric_numeric_columns[0]
     if not x_column or _looks_like_identifier_metric(y_column):
         return ChartSpec(
             chart_type=None,
@@ -190,6 +194,13 @@ def build_chart_spec(
         confidence=0.86,
         selection_reason=selection_reason,
     )
+
+
+def _bound_metric_name(logic: dict[str, Any], parameters: dict[str, Any]) -> str:
+    derived_metric = parameters.get("derived_metric") if isinstance(parameters.get("derived_metric"), dict) else {}
+    if derived_metric.get("name"):
+        return str(derived_metric["name"])
+    return str(parameters.get("metric") or logic.get("metric") or "").strip()
 
 
 def _requested_chart_type(output_format: dict[str, Any], logic: dict[str, Any]) -> str | None:

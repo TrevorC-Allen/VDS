@@ -21,7 +21,7 @@ from data_agent_core.core.intent_parser import parse_generic_table_question, par
 from data_agent_core.core.planner_guardrails import available_columns_by_table_from_context, validate_logic_form_with_guardrails
 from data_agent_core.executors import pandas_executor, sql_executor
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
-from data_agent_core.llm.planner import LLMStageResult, complete_stage_with_llm, plan_with_llm
+from data_agent_core.llm.planner import LLMPlanResult, LLMStageResult, complete_stage_with_llm, plan_with_llm
 from data_agent_core.output.activity_trace import build_activity_trace_v2
 from data_agent_core.output.chart_planner import build_chart_spec
 from data_agent_core.output.chart_renderer import attach_rendered_chart
@@ -86,11 +86,11 @@ class DataAnalysisAgent:
             llm_intent=llm_intent,
             rule_column_mapping=column_mapping,
         )
-        llm_plan = plan_with_llm(
-            llm_client=self.llm_client,
+        llm_plan = self._safe_plan_with_llm(
             question=question,
             guidelines=guidelines,
             context_summary=context_summary | {"rule_column_mapping": column_mapping},
+            guardrail_logic_form=guardrail_logic_form,
         )
         logic_form = self._validated_logic_form(llm_plan.logic_form, guardrail_logic_form)
         plan = build_analysis_plan(logic_form)
@@ -280,8 +280,7 @@ class DataAnalysisAgent:
         guidelines: str,
         context_summary: dict[str, Any],
     ) -> LLMStageResult:
-        return complete_stage_with_llm(
-            llm_client=self.llm_client,
+        return self._safe_complete_stage_with_llm(
             stage_name="intent_parser",
             stage_goal="Convert the user's natural-language data question into a structured intent draft.",
             question=question,
@@ -308,8 +307,7 @@ class DataAnalysisAgent:
         llm_intent: LLMStageResult,
         rule_column_mapping: dict[str, Any],
     ) -> LLMStageResult:
-        return complete_stage_with_llm(
-            llm_client=self.llm_client,
+        return self._safe_complete_stage_with_llm(
             stage_name="column_mapping",
             stage_goal="Map intent fields to uploaded dataset columns and rule-knowledge fields using LLM semantics plus rule guardrails.",
             question=question,
@@ -339,8 +337,7 @@ class DataAnalysisAgent:
         sql_result: Any,
         verification: Any,
     ) -> LLMStageResult:
-        return complete_stage_with_llm(
-            llm_client=self.llm_client,
+        return self._safe_complete_stage_with_llm(
             stage_name="verifier_critic",
             stage_goal="Critique the rule-based verification notes and flag unsupported or suspicious conclusions without changing execution results.",
             question=question,
@@ -370,8 +367,7 @@ class DataAnalysisAgent:
         verification: Any,
         verifier_critic: LLMStageResult,
     ) -> LLMStageResult:
-        return complete_stage_with_llm(
-            llm_client=self.llm_client,
+        return self._safe_complete_stage_with_llm(
             stage_name="correction_planner",
             stage_goal="Plan bounded correction directions when verification fails; do not execute code and do not fabricate a final answer.",
             question=question,
@@ -400,8 +396,7 @@ class DataAnalysisAgent:
         answer: str,
         verification: Any,
     ) -> LLMStageResult:
-        return complete_stage_with_llm(
-            llm_client=self.llm_client,
+        return self._safe_complete_stage_with_llm(
             stage_name="insight_generator",
             stage_goal="Generate concise insight only from verified data results; if verification failed, state that no trusted insight should be generated.",
             question=question,
@@ -431,8 +426,7 @@ class DataAnalysisAgent:
         rule_chart: ChartSpec,
         verification: Any,
     ) -> LLMStageResult:
-        return complete_stage_with_llm(
-            llm_client=self.llm_client,
+        return self._safe_complete_stage_with_llm(
             stage_name="chart_planner",
             stage_goal="Select a frontend-neutral chart spec using LLM semantics and rule-based chart constraints.",
             question=question,
@@ -452,6 +446,49 @@ class DataAnalysisAgent:
                 "confidence": "number between 0 and 1",
                 "reasoning_summary": "short summary, not chain of thought",
             },
+        )
+
+    def _safe_complete_stage_with_llm(self, **kwargs: Any) -> LLMStageResult:
+        try:
+            return complete_stage_with_llm(llm_client=self.llm_client, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - provider failures must not block rule-backed execution.
+            return self._fallback_stage_result(str(kwargs.get("stage_name") or "llm_stage"), exc)
+
+    def _safe_plan_with_llm(
+        self,
+        *,
+        question: str,
+        guidelines: str,
+        context_summary: dict[str, Any],
+        guardrail_logic_form: Any,
+    ) -> LLMPlanResult:
+        try:
+            return plan_with_llm(
+                llm_client=self.llm_client,
+                question=question,
+                guidelines=guidelines,
+                context_summary=context_summary,
+            )
+        except Exception as exc:  # noqa: BLE001 - fall back to deterministic parser when provider is unavailable.
+            return LLMPlanResult(
+                logic_form=guardrail_logic_form,
+                raw=self._fallback_stage_result("analysis_planner", exc).raw,
+                confidence=0.0,
+                reasoning_summary=f"LLM planner unavailable; used deterministic guardrail plan ({type(exc).__name__}).",
+            )
+
+    def _fallback_stage_result(self, stage_name: str, exc: Exception) -> LLMStageResult:
+        return LLMStageResult(
+            stage_name=stage_name,
+            raw={
+                "stage_name": stage_name,
+                "used": False,
+                "fallback": "deterministic_guardrail",
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:240],
+            },
+            confidence=0.0,
+            reasoning_summary=f"LLM stage unavailable; used deterministic guardrails ({type(exc).__name__}).",
         )
 
     def _validated_logic_form(self, llm_logic_form: Any, guardrail_logic_form: Any) -> Any:
@@ -536,6 +573,7 @@ class DataAnalysisAgent:
             business_suggestions=(base.business_suggestions if base.business_suggestions else suggestions)[:1],
             caveats=existing_caveats,
             next_questions=base.next_questions,
+            next_actions=base.next_actions,
             evidence_rows=base.evidence_rows,
             confidence=max(base.confidence, stage.confidence),
         )
@@ -638,11 +676,11 @@ class UploadedDatasetAgent(DataAnalysisAgent):
             llm_intent=llm_intent,
             rule_column_mapping=column_mapping,
         )
-        llm_plan = plan_with_llm(
-            llm_client=self.llm_client,
+        llm_plan = self._safe_plan_with_llm(
             question=question,
             guidelines=guidelines,
             context_summary=context_summary | {"rule_column_mapping": column_mapping},
+            guardrail_logic_form=guardrail_logic_form,
         )
         logic_form = self._validated_logic_form(llm_plan.logic_form, guardrail_logic_form)
         plan = build_analysis_plan(logic_form)
