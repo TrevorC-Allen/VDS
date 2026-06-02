@@ -29,6 +29,15 @@ run_store = RunStore(service.file_store.runs_root)
 _active_jobs: dict[str, asyncio.Task] = {}
 
 
+class _FallbackJSONResponse:
+    def __init__(self, content: Any, status_code: int = 200) -> None:
+        self.status_code = status_code
+        self.body = json.dumps(content, ensure_ascii=False).encode("utf-8")
+
+
+JSONResponse = _FallbackJSONResponse
+
+
 def _current_run_store() -> RunStore:
     """Return the RunStore bound to the active service storage root."""
 
@@ -510,6 +519,32 @@ def _run_status_payload(run_id: str) -> dict[str, Any]:
     if record.get("status") in {"queued", "running", "cancel_requested"} and run_id not in _active_jobs:
         record = store.mark_orphaned_if_active(run_id) or record
     return {"response_version": "v1", "success": True, "run": public_run_status(record)}
+
+
+def get_run(run_id: str) -> JSONResponse:
+    """Non-FastAPI helper mirroring GET /api/data-agent/runs/{run_id}."""
+
+    payload = _run_status_payload(run_id)
+    return JSONResponse(content=payload, status_code=200 if payload.get("success") else 404)
+
+
+def get_run_result(run_id: str) -> JSONResponse:
+    """Non-FastAPI helper mirroring GET /api/data-agent/runs/{run_id}/result."""
+
+    result = _current_run_store().get_result(run_id)
+    if result is None:
+        _recover_missing_message_run(run_id)
+        result = _current_run_store().get_result(run_id)
+    if result is None:
+        return JSONResponse(
+            content={
+                "response_version": "v1",
+                "success": False,
+                "errors": [{"error_type": "LOGIC_FORM_ERROR", "error_message": f"Run result not available: {run_id}"}],
+            },
+            status_code=404,
+        )
+    return JSONResponse(content={"response_version": "v1", "success": True, "result": result})
 
 
 def _failure_category_from_error(message: str, *, failed_step: str = "", error_type: str = "") -> str:

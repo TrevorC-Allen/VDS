@@ -35,6 +35,7 @@ class CapabilityMetadata:
 SQL_NATIVE_OPERATIONS = frozenset(
     {
         "aggregation",
+        "growth_ranking",
         "ranking",
         "row_count",
         "distinct_count",
@@ -44,6 +45,7 @@ SQL_NATIVE_OPERATIONS = frozenset(
         "null_check",
         "top_k_share",
         "filtered_metric_ranking",
+        "grouped_child_ranking",
         "rank_by_metric",
         "top_count",
         "group_average",
@@ -175,7 +177,7 @@ _REGISTRY: dict[str, CapabilityMetadata] = {
     "aggregation": CapabilityMetadata(
         operation="aggregation",
         capability_family="metric_aggregation",
-        input_contract="table, metric, aggregation, optional dimension and filters",
+        input_contract="table, metric or metrics, aggregation, optional dimension and filters",
         output_contract="scalar or grouped rows",
         supports_pandas=True,
         sql_support=SQL_SUPPORT_NATIVE,
@@ -192,6 +194,17 @@ _REGISTRY: dict[str, CapabilityMetadata] = {
         supports_chinese=True,
         supports_english=True,
     ),
+    "growth_ranking": CapabilityMetadata(
+        operation="growth_ranking",
+        capability_family="growth_ranking",
+        input_contract="table, dimension, time column, metric, aggregation, growth mode, optional filters and limit",
+        output_contract="ordered entity rows with start period, end period, delta, and growth rate",
+        supports_pandas=True,
+        sql_support=SQL_SUPPORT_NATIVE,
+        supports_chinese=True,
+        supports_english=True,
+        support_boundary="Ranks entities by first-to-last available period growth after filters; it does not impute missing periods.",
+    ),
     "filtered_metric_ranking": CapabilityMetadata(
         operation="filtered_metric_ranking",
         capability_family="filtered_ranking",
@@ -201,6 +214,17 @@ _REGISTRY: dict[str, CapabilityMetadata] = {
         sql_support=SQL_SUPPORT_NATIVE,
         supports_chinese=True,
         supports_english=True,
+    ),
+    "grouped_child_ranking": CapabilityMetadata(
+        operation="grouped_child_ranking",
+        capability_family="grouped_child_ranking",
+        input_contract="table, parent dimension, child dimension, metric, aggregation, child limit, optional candidate-set filter",
+        output_contract="top child rows per parent group",
+        supports_pandas=True,
+        sql_support=SQL_SUPPORT_NATIVE,
+        supports_chinese=True,
+        supports_english=True,
+        support_boundary="Ranks child groups independently within each parent group after filters; candidate-set filters can restrict the parent universe.",
     ),
     "rank_by_metric": CapabilityMetadata(
         operation="rank_by_metric",
@@ -593,9 +617,10 @@ def native_sql_support_for_logic_form(logic_form: Any, *, available_columns: Ite
     operation = _operation_from_logic_form(logic_form)
     if _has_join_plan(logic_form):
         return False
-    if _has_derived_metric(logic_form):
-        return False
     if not is_native_sql_operation(operation):
+        return False
+    derived_metric = _derived_metric_from_logic_form(logic_form)
+    if derived_metric and not _derived_ratio_metric_sql_supported(operation, derived_metric, available_columns=available_columns):
         return False
     if operation == "field_values" and available_columns is not None:
         field = _field_from_logic_form(logic_form)
@@ -612,10 +637,11 @@ def coverage_summary_for_logic_form(logic_form: Any, *, available_columns: Itera
     sql_support = metadata.sql_support
     native_supported = native_sql_support_for_logic_form(logic_form, available_columns=available_columns)
     reason = ""
+    derived_metric = _derived_metric_from_logic_form(logic_form)
     if _has_join_plan(logic_form):
         reason = "Current native SQL path does not materialize uploaded-table join plans."
-    elif _has_derived_metric(logic_form):
-        reason = "Current native SQL path does not materialize uploaded-table derived ratio metrics."
+    elif derived_metric and not _derived_ratio_metric_sql_supported(operation, derived_metric, available_columns=available_columns):
+        reason = "Current native SQL path only supports simple derived ratio metrics when numerator and denominator columns are available."
     elif sql_support == SQL_SUPPORT_SHARED_RULE_ENGINE:
         reason = "Current native SQL path does not cover shared rule-engine operations."
     elif sql_support == SQL_SUPPORT_UNSUPPORTED:
@@ -659,8 +685,30 @@ def _has_join_plan(logic_form: Any) -> bool:
 
 
 def _has_derived_metric(logic_form: Any) -> bool:
+    return bool(_derived_metric_from_logic_form(logic_form))
+
+
+def _derived_metric_from_logic_form(logic_form: Any) -> Mapping[str, Any]:
     if isinstance(logic_form, Mapping):
         derived_metric = (logic_form.get("parameters") or {}).get("derived_metric")
     else:
         derived_metric = (getattr(logic_form, "parameters", {}) or {}).get("derived_metric")
-    return bool(derived_metric)
+    return derived_metric if isinstance(derived_metric, Mapping) else {}
+
+
+def _derived_ratio_metric_sql_supported(
+    operation: str,
+    derived_metric: Mapping[str, Any],
+    *,
+    available_columns: Iterable[str] | None,
+) -> bool:
+    if operation not in {"aggregation", "ranking", "filtered_metric_ranking", "grouped_child_ranking"}:
+        return False
+    numerator = str(derived_metric.get("numerator") or "")
+    denominator = str(derived_metric.get("denominator") or "")
+    if not numerator or not denominator:
+        return False
+    if available_columns is None:
+        return True
+    columns = {str(column) for column in available_columns}
+    return numerator in columns and denominator in columns

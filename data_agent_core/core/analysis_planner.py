@@ -73,12 +73,14 @@ def complete_generalization_contract(logic_form: LogicForm) -> LogicForm:
     params = logic_form.parameters
     capability = capability_for_operation(logic_form.operation)
     metric = logic_form.metric or params.get("metric")
+    metrics = _metric_list(params.get("metrics"))
     aggregation = _aggregation_for(logic_form, metric)
     group_field = logic_form.group_by or params.get("group_by") or params.get("dimension")
     entity_field = params.get("entity_field") or params.get("entity") or params.get("field")
     if not logic_form.metric_definition:
         logic_form.metric_definition = {
             "name": _metric_name(logic_form, metric),
+            **({"metrics": metrics} if len(metrics) > 1 else {}),
             "capability_family": capability.capability_family,
             "aggregation": aggregation,
             "business_definition": _metric_business_definition(logic_form, metric, aggregation),
@@ -126,6 +128,9 @@ def _aggregation_for(logic_form: LogicForm, metric: Any) -> str:
 
 
 def _metric_name(logic_form: LogicForm, metric: Any) -> str:
+    metrics = _metric_list(logic_form.parameters.get("metrics"))
+    if len(metrics) > 1:
+        return ", ".join(metrics)
     if metric:
         return str(metric)
     return {
@@ -140,6 +145,9 @@ def _metric_name(logic_form: LogicForm, metric: Any) -> str:
 
 
 def _metric_business_definition(logic_form: LogicForm, metric: Any, aggregation: str) -> str:
+    metrics = _metric_list(logic_form.parameters.get("metrics"))
+    if len(metrics) > 1:
+        return f"Aggregate multiple requested metrics ({', '.join(metrics)}) with {aggregation} after applying the plan filters."
     if logic_form.operation == "top_k_share":
         if aggregation == "count" or not metric:
             return "Share of rows represented by the top candidate groups after filters."
@@ -155,6 +163,9 @@ def _metric_business_definition(logic_form: LogicForm, metric: Any, aggregation:
 
 def _numerator(logic_form: LogicForm, metric: Any, aggregation: str) -> dict[str, Any]:
     params = logic_form.parameters
+    metrics = _metric_list(params.get("metrics"))
+    if len(metrics) > 1:
+        return {"aggregation": aggregation, "fields": metrics, "scope": "filtered_rows"}
     if logic_form.operation == "top_k_share":
         return {
             "aggregation": aggregation,
@@ -175,6 +186,17 @@ def _numerator(logic_form: LogicForm, metric: Any, aggregation: str) -> dict[str
     if metric:
         return {"aggregation": aggregation, "field": metric, "scope": "filtered_rows"}
     return {"scope": "not_required"}
+
+
+def _metric_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    metrics: list[str] = []
+    for item in value:
+        metric = str(item or "").strip()
+        if metric and metric not in metrics:
+            metrics.append(metric)
+    return metrics
 
 
 def _denominator(logic_form: LogicForm, metric: Any, aggregation: str, entity_field: Any) -> dict[str, Any]:

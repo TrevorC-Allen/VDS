@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -15,6 +15,7 @@ from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import CAPABILITY_GAP, OUTPUT_CONTRACT_VALIDATION_FAILED
 from data_agent_core.output.execution_artifacts import build_execution_artifacts
 from data_agent_core.output.output_contract import canonicalize_final_answer
+from data_agent_core.output.text_answer_framework import apply_text_answer_framework
 
 
 def build_response(
@@ -111,7 +112,7 @@ def build_response(
         )
     if not_applicable_attribution.get("category"):
         debug_payload["not_applicable_attribution"] = not_applicable_attribution
-    return FinalResponse(
+    response = FinalResponse(
         response_version="v1",
         success=success,
         run_id=run_id,
@@ -136,6 +137,7 @@ def build_response(
         errors=errors,
         debug=debug_payload,
     )
+    return _apply_structured_answer_framework(response)
 
 
 def format_answer(value: Any, output_format: dict[str, Any]) -> str:
@@ -616,6 +618,29 @@ def _format_grouped_amounts(rows: list[dict[str, Any]], decimals: int | None) ->
     group_key = next(key for key in rows[0] if key != "eur_amount")
     parts = [f"{row[group_key]}: {_format_number(float(row['eur_amount']), decimals)}" for row in rows]
     return "[" + ", ".join(parts) + "]"
+
+
+def _apply_structured_answer_framework(response: FinalResponse) -> FinalResponse:
+    """Attach the shared sectioned answer frame without changing result payloads."""
+
+    try:
+        payload = apply_text_answer_framework(response.to_dict(), question=response.question)
+    except Exception:  # noqa: BLE001 - final response construction must stay stable.
+        return response
+    response.answer = payload.get("answer", response.answer)
+    response.debug = payload.get("debug", response.debug)
+    sections = payload.get("structured_answer_sections")
+    if isinstance(sections, dict):
+        response.structured_answer_sections = {
+            str(key): [str(item) for item in value if str(item or "").strip()]
+            for key, value in sections.items()
+            if isinstance(value, list)
+        }
+    insight_payload = payload.get("insight")
+    if isinstance(insight_payload, dict):
+        allowed = {field.name for field in fields(InsightResult)}
+        response.insight = InsightResult(**{key: value for key, value in insight_payload.items() if key in allowed})
+    return response
 
 
 def _to_dict(value: Any) -> Any:

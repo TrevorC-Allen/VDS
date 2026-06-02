@@ -51,6 +51,46 @@ def parse_chinese_retail_question(
     start_ym, end_ym = _extract_year_month_range(question)
     ym_mentions = _extract_year_month_mentions(question)
 
+    product_sales_question = product and _asks_sales_amount_metric(question) and not _asks_share_or_composition(question)
+    if product_sales_question and _asks_for_chart(question) and not _has_explicit_column_hint(question, tables):
+        trend_start = start_ym or ym
+        trend_end = end_ym or ym
+        return make_logic_form(
+            task_type="trend",
+            operation="retail_category_distribution_periodic_trend",
+            parameters={
+                "product": product,
+                "start_ym": trend_start,
+                "end_ym": trend_end,
+                "ym": ym,
+                "granularity": "day" if _asks_daily_time_trend(question) else "month",
+            },
+            source_tables=["v_trd_dist_ord_dtl"],
+            table_selection_reason="产品销售金额趋势使用历史分销明细表中的签收时间、签收金额和产品维度，不需要跨表关联。",
+            output_format=output_format | {"answer_type": "text", "chart_type": "line", "decimals": decimals or 2},
+        )
+
+    if product_sales_question and not _asks_for_chart(question):
+        return make_logic_form(
+            task_type="aggregation",
+            operation="retail_distribution_sum",
+            parameters={
+                "person": person,
+                "ym": ym,
+                "metric": "sign_amt",
+                "product": product,
+                "role": _person_role(question, person, tables),
+            },
+            source_tables=["v_trd_dist_ord_dtl"],
+            table_selection_reason="产品销售金额汇总使用历史分销明细表中的签收金额和产品维度，不需要跨表关联。",
+            output_format=output_format
+            | {
+                "answer_type": "number",
+                "decimals": decimals or 2,
+                "not_applicable_type": "true_unsupported",
+            },
+        )
+
     if _asks_route_scope_comparison(question):
         return make_logic_form(
             task_type="comparison",
@@ -770,7 +810,38 @@ def _extract_year_month(question: str, tables: dict[str, pd.DataFrame]) -> tuple
     business_date = _infer_business_date(tables)
     if ("今日" in question or "今天" in question or "当天" in question) and business_date:
         return business_date.year, business_date.month
+    month = _extract_month_without_year(question)
+    if month and business_date:
+        return business_date.year, month
     return None, None
+
+
+def _extract_month_without_year(question: str) -> int | None:
+    if any(token in question for token in ("至", "到", "~", "—")):
+        return None
+    compact = question.replace(" ", "")
+    numeric = re.search(r"(?<!年)(?<!20\d{2})(\d{1,2})月", compact)
+    if numeric:
+        month = int(numeric.group(1))
+        return month if 1 <= month <= 12 else None
+    chinese_months = {
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+        "十一": 11,
+        "十二": 12,
+    }
+    for text, month in sorted(chinese_months.items(), key=lambda item: len(item[0]), reverse=True):
+        if f"{text}月" in compact:
+            return month
+    return None
 
 
 def _extract_year_month_range(question: str) -> tuple[int | None, int | None]:
@@ -828,6 +899,11 @@ def _infer_business_date(tables: dict[str, pd.DataFrame]) -> date | None:
         if df is None or column not in df.columns:
             continue
         values = pd.to_datetime(df[column], errors="coerce").dropna()
+        if not values.empty:
+            return values.max().date()
+    history = _find_table(tables, HISTORY_REQUIRED_COLUMNS, ("v_trd_dist_ord_dtl",))
+    if history is not None and "sign_time" in history.columns:
+        values = pd.to_datetime(history["sign_time"], errors="coerce").dropna()
         if not values.empty:
             return values.max().date()
     return None
@@ -927,8 +1003,30 @@ def _asks_for_metric_value(question: str) -> bool:
     )
 
 
+def _asks_sales_amount_metric(question: str) -> bool:
+    if "历史分销金额" in question:
+        return False
+    return any(token in question for token in ("销售金额", "销售额", "签收金额"))
+
+
+def _asks_share_or_composition(question: str) -> bool:
+    return any(token in question for token in ("占比", "比例", "份额", "组成", "构成", "结构"))
+
+
 def _asks_for_chart(question: str) -> bool:
     return any(token in question for token in ("展示", "生成", "图", "趋势", "可视化", "折线", "柱状", "多折线", "堆叠"))
+
+
+def _asks_daily_time_trend(question: str) -> bool:
+    return any(token in question for token in ("随时间", "每日", "每天", "日期", "曲线", "折线"))
+
+
+def _has_explicit_column_hint(question: str, tables: dict[str, pd.DataFrame]) -> bool:
+    matches = re.findall(r"[（(]([^）)]+)[）)]", question)
+    if not matches:
+        return False
+    columns = {str(column) for df in tables.values() for column in df.columns}
+    return any(match.strip() in columns for match in matches)
 
 
 def _prefers_horizontal_bar(question: str) -> bool:

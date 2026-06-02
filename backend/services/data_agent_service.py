@@ -1017,7 +1017,9 @@ class DataAgentService:
                 stage_goal=(
                     "Act as the user-facing AI presentation layer for a verified deterministic data result. "
                     "Do not recalculate data, do not add new numbers, and do not change the answer. "
-                    "Produce a concise display answer, one insight summary, one high-value next step, and up to two follow-up questions. "
+                    "Prefer a concise sectioned Chinese display answer using: 数据摘要（关键指标）, 分析洞察（发现了什么）, "
+                    "业务建议（可以采取什么行动）, 口径与边界, 下一步可继续分析. "
+                    "Produce one insight summary, one high-value next step, and up to two follow-up questions. "
                     "The display answer may rephrase and tailor the verified answer to the user's wording, but it must not change facts."
                 ),
                 question=question,
@@ -1025,7 +1027,8 @@ class DataAgentService:
                     "All user-facing fields must be written in Chinese. Field names, country codes, and metric names may stay as-is, "
                     "but do not write English prose in display_answer, summary, next_step, or next_questions. "
                     "Keep Chinese concise and GPT-like. Be specific to the uploaded tables and verified result. "
-                    "Avoid numbered bullets in display_answer so it reads natural and does not introduce unverified numbers."
+                    "If the result shape is insufficient for the user's requested TopN, distinct entity, or grouping口径, say so in 口径与边界 "
+                    "and do not turn it into unsupported business advice. Avoid introducing any number that is not present in the payload."
                 ),
                 context_summary={
                     "route": route,
@@ -1043,7 +1046,7 @@ class DataAgentService:
                     "quality_summary": _quality_summary_for_llm(response.get("quality_report")),
                 },
                 required_output={
-                    "display_answer": "one concise user-facing answer grounded only in verified_answer_excerpt and result_preview; no new numbers",
+                    "display_answer": "one concise Chinese answer, preferably with the five requested section headings, grounded only in verified payload evidence; no new numbers",
                     "summary": "one concise user-facing insight sentence grounded in the verified answer",
                     "next_step": "one concrete next analysis step; no generic advice",
                     "next_questions": "array of up to two useful follow-up questions",
@@ -1301,7 +1304,7 @@ class DataAgentService:
         )
         if correction_context.get("is_correction"):
             guidelines = _combine_guidelines(guidelines, str(correction_context.get("revised_guidelines") or ""))
-        elif followup_context.get("is_followup"):
+        elif followup_context.get("is_followup") and not followup_context.get("self_contained"):
             guidelines = _combine_guidelines(
                 guidelines,
                 "用户本轮是在延续上一轮已验证分析。若本轮只给出拆分、复核、峰值、低点、波动或来源维度，"
@@ -1539,6 +1542,7 @@ class DataAgentService:
             },
             "agent_actions": completed_actions,
         }
+        response = _apply_gpt_like_text_framework(response, question=original_question)
         return to_json_ready(response)
 
     def run_benchmark_from_rule(
@@ -3870,13 +3874,75 @@ def _has_formula_like_expression(question: str) -> bool:
 def _build_turn_followup_context(record: dict[str, Any] | None, *, question: str, dataset_id: str) -> dict[str, Any]:
     if not record or not _looks_like_followup_analysis_request(question):
         return {"is_followup": False}
+    self_contained = _looks_like_self_contained_analysis_request(question)
     previous = _latest_analysis_turn(record, dataset_id=dataset_id)
     if not previous:
         return {"is_followup": False}
     payload = previous["payload"]
     if not isinstance(payload, dict) or payload.get("success") is False:
-        return {"is_followup": False}
-    analysis_context = _current_analysis_context_from_record(record, dataset_id=dataset_id)
+        previous = _latest_successful_analysis_turn(record, dataset_id=dataset_id)
+        if not previous:
+            return {"is_followup": False}
+        payload = previous["payload"]
+        if not isinstance(payload, dict):
+            return {"is_followup": False}
+    analysis_context = _current_analysis_context_from_record(record, dataset_id=dataset_id) or build_analysis_context(
+        payload,
+        original_question=str(previous.get("question") or ""),
+    )
+    if _analysis_context_is_quality_only(analysis_context) and not _looks_like_quality_followup_request(question):
+        prior = _latest_successful_analysis_turn(
+            record,
+            dataset_id=dataset_id,
+            skip_operations={"quality_summary", "data_quality_report", "cleaning_policy", "anomaly_rules", "outlier_count", "null_check"},
+        )
+        if prior and isinstance(prior.get("payload"), dict):
+            previous = prior
+            payload = prior["payload"]
+            analysis_context = build_analysis_context(payload, original_question=str(prior.get("question") or ""))
+    if self_contained and _references_analysis_focus_set(question, analysis_context):
+        self_contained = False
+    contextual_extreme_rewrite = _rewrite_contextual_extreme_time_reference(
+        record,
+        question=question,
+        dataset_id=dataset_id,
+    )
+    if contextual_extreme_rewrite:
+        return {
+            "is_followup": True,
+            "reason": "contextual_extreme_reference",
+            "previous_run_id": analysis_context.get("run_id") or payload.get("run_id") or "",
+            "previous_question": analysis_context.get("question") or previous.get("question") or payload.get("question") or "",
+            "revised_question": contextual_extreme_rewrite,
+            "carried_operation": analysis_context.get("operation") or "",
+            "pending_actions": [],
+        }
+    contextual_dimension_rewrite = _rewrite_contextual_extreme_dimension_reference(
+        record,
+        question=question,
+        dataset_id=dataset_id,
+    )
+    if contextual_dimension_rewrite:
+        return {
+            "is_followup": True,
+            "reason": "contextual_extreme_reference",
+            "previous_run_id": analysis_context.get("run_id") or payload.get("run_id") or "",
+            "previous_question": analysis_context.get("question") or previous.get("question") or payload.get("question") or "",
+            "revised_question": contextual_dimension_rewrite,
+            "carried_operation": analysis_context.get("operation") or "",
+            "pending_actions": [],
+        }
+    if self_contained:
+        return {
+            "is_followup": True,
+            "reason": "self_contained_followup",
+            "previous_run_id": analysis_context.get("run_id") or payload.get("run_id") or "",
+            "previous_question": analysis_context.get("question") or previous.get("question") or payload.get("question") or "",
+            "revised_question": question,
+            "carried_operation": "",
+            "pending_actions": [],
+            "self_contained": True,
+        }
     planned_actions = plan_followup_actions(question, analysis_context)
     if planned_actions:
         rewritten_questions = action_questions(planned_actions)
@@ -3892,7 +3958,15 @@ def _build_turn_followup_context(record: dict[str, Any] | None, *, question: str
     logic = payload.get("logic_form") if isinstance(payload.get("logic_form"), dict) else {}
     rewritten = _rewrite_followup_question(question, previous_question=str(previous.get("question") or ""), logic=logic)
     if not rewritten or rewritten == question:
-        return {"is_followup": False}
+        return {
+            "is_followup": True,
+            "reason": "contextual_followup",
+            "previous_run_id": analysis_context.get("run_id") or payload.get("run_id") or "",
+            "previous_question": analysis_context.get("question") or previous.get("question") or payload.get("question") or "",
+            "revised_question": question,
+            "carried_operation": analysis_context.get("operation") or logic.get("operation") or logic.get("task_type") or "",
+            "pending_actions": [],
+        }
     return {
         "is_followup": True,
         "reason": "short_drilldown_followup",
@@ -3913,6 +3987,313 @@ def _current_analysis_context_from_record(record: dict[str, Any], *, dataset_id:
     return build_analysis_context(previous.get("payload"), original_question=str(previous.get("question") or ""))
 
 
+def _analysis_context_is_quality_only(context: dict[str, Any]) -> bool:
+    operation = str(context.get("operation") or "")
+    return operation in {"quality_summary", "data_quality_report", "cleaning_policy", "anomaly_rules", "outlier_count", "null_check"}
+
+
+def _looks_like_quality_followup_request(question: str) -> bool:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    return any(token in compact for token in ("数据质量", "质量", "缺失", "重复", "异常", "清洗", "异常值", "质量问题"))
+
+
+def _references_analysis_focus_set(question: str, context: dict[str, Any]) -> bool:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    focus_sets = context.get("focus_sets") if isinstance(context, dict) else []
+    if not isinstance(focus_sets, list):
+        return False
+    for focus_set in focus_sets:
+        if not isinstance(focus_set, dict):
+            continue
+        label = _context_dimension_label(str(focus_set.get("dimension") or ""))
+        if label and re.search(
+            rf"(?:这|这些)?(?:排名|排行)?前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:大)?的?{label}",
+            compact,
+        ):
+            return True
+        if label and any(
+            token in compact
+            for token in (
+                f"这些{label}",
+                f"这几个{label}",
+                f"上述{label}",
+                f"这3个{label}",
+                f"这三个{label}",
+                f"这前3个{label}",
+                f"这前三个{label}",
+                f"前3个{label}",
+                f"前三个{label}",
+                f"前3名{label}",
+                f"这些前三{label}",
+                f"这些前3{label}",
+                f"这前三名{label}",
+                f"这前3名{label}",
+                f"排名前三的{label}",
+                f"排名前3的{label}",
+                f"前三的{label}",
+                f"前3的{label}",
+                f"前三{label}",
+                f"前三名{label}",
+                f"最高的{label}",
+                f"最低的{label}",
+                f"最多的{label}",
+                f"最少的{label}",
+                f"排名第一的{label}",
+                f"排名第1的{label}",
+                f"Top1{label}",
+                f"top1{label}",
+            )
+        ):
+            return True
+        if label and re.search(rf"(?:最高|最低|最多|最少)[^，,。？?；;]{{0,8}}{label}", compact):
+            return True
+    return False
+
+
+def _context_dimension_label(dimension: str) -> str:
+    mapping = {
+        "city": "城市",
+        "product": "产品",
+        "customer": "客户",
+        "customer_id": "客户",
+        "segment": "客群",
+        "service_line": "服务线",
+        "business_line": "业务线",
+        "month": "月份",
+    }
+    return mapping.get(str(dimension or "").strip().lower(), "")
+
+
+def _rewrite_contextual_extreme_time_reference(record: dict[str, Any], *, question: str, dataset_id: str) -> str:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    if not compact or not re.search(r"(?:最高|最低)的(?:那?个)?月(?:份)?", compact):
+        return ""
+    metric_hint = _contextual_extreme_metric_hint(compact)
+    month_value = _find_prior_extreme_month_value(record, dataset_id=dataset_id, metric_hint=metric_hint)
+    month_text = _month_value_for_question(month_value)
+    if not month_text:
+        return ""
+    tail = re.sub(r"^在?[^，,。；;]*?(?:最高|最低)的(?:那?个)?月(?:份)?[，,。；;]?", "", str(question).strip())
+    if not tail or tail == str(question).strip():
+        tail = re.sub(r"在?[^，,。；;]*?(?:最高|最低)的(?:那?个)?月(?:份)?", "", str(question)).strip(" ，,。；;")
+    if not tail:
+        return ""
+    return f"在{month_text}，{tail}"
+
+
+def _rewrite_contextual_extreme_dimension_reference(record: dict[str, Any], *, question: str, dataset_id: str) -> str:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    match = re.search(
+        r"(?P<prefix>[^，,。；;]*?(?:最高|最低|最多|最少|排名第一|排名第1|第一名|第1名|首位)的?)(?P<label>城市|客户|产品|商品|客群|客户细分)(?:中|里|，|,|。|；|;|$)",
+        compact,
+    )
+    if not match:
+        return ""
+    label = match.group("label")
+    dimension_hint = {
+        "城市": "city",
+        "客户": "customer",
+        "产品": "product",
+        "商品": "product",
+        "客群": "segment",
+        "客户细分": "segment",
+    }.get(label, "")
+    if not dimension_hint:
+        return ""
+    metric_hint = _contextual_extreme_metric_hint(match.group("prefix"))
+    selected_context = _find_prior_extreme_dimension_context(
+        record,
+        dataset_id=dataset_id,
+        dimension_hint=dimension_hint,
+        metric_hint=metric_hint,
+    )
+    selected_value = selected_context.get("value") if isinstance(selected_context, dict) else None
+    if selected_value in {None, ""}:
+        return ""
+    tail = re.sub(
+        r"^在?[^，,。；;]*?(?:最高|最低|最多|最少|排名第一|排名第1|第一名|第1名|首位)的?(?:城市|客户|产品|商品|客群|客户细分)(?:中|里)?[，,。；;]?",
+        "",
+        str(question).strip(),
+    )
+    if not tail or tail == str(question).strip():
+        tail = re.sub(
+            r"在?[^，,。；;]*?(?:最高|最低|最多|最少|排名第一|排名第1|第一名|第1名|首位)的?(?:城市|客户|产品|商品|客群|客户细分)(?:中|里)?",
+            "",
+            str(question),
+        ).strip(" ，,。；;")
+    if not tail:
+        return ""
+    tail_compact = re.sub(r"\s+", "", tail)
+    if _contextual_extreme_tail_should_use_structured_action(tail_compact):
+        return ""
+    if re.search(rf"(?:哪个|哪些|哪几个){label}", tail_compact):
+        return ""
+    time_prefix = _time_filter_question_prefix_from_filters(selected_context.get("filters") if isinstance(selected_context, dict) else {})
+    return f"{time_prefix}在{selected_value}{label}中，{tail}"
+
+
+def _contextual_extreme_tail_should_use_structured_action(tail_compact: str) -> bool:
+    if any(token in tail_compact for token in ("趋势", "变化趋势", "如何变化", "怎么变化", "怎样变化", "走势", "每月", "每个月", "各月", "月度")):
+        return True
+    if any(token in tail_compact for token in ("占比", "比例", "份额", "贡献占比")):
+        return True
+    return False
+
+
+def _contextual_extreme_metric_hint(compact: str) -> str:
+    if "利润率" in compact or "毛利率" in compact:
+        return "利润率"
+    if any(token in compact for token in ("销售额", "销售金额", "订单总额", "订单金额", "订单额", "总金额", "总额")):
+        return "amount"
+    if "利润" in compact:
+        return "profit"
+    return ""
+
+
+def _find_prior_extreme_dimension_context(record: dict[str, Any], *, dataset_id: str, dimension_hint: str, metric_hint: str = "") -> dict[str, Any]:
+    messages = record.get("messages") if isinstance(record, dict) else []
+    if not isinstance(messages, list):
+        return {}
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or payload.get("success") is False:
+            continue
+        if dataset_id and str(payload.get("dataset_id") or "") not in {"", dataset_id}:
+            continue
+        logic = payload.get("logic_form") if isinstance(payload.get("logic_form"), dict) else {}
+        params = logic.get("parameters") if isinstance(logic.get("parameters"), dict) else {}
+        dimension = str(params.get("dimension") or logic.get("group_by") or "")
+        if not _dimension_hint_matches(dimension, dimension_hint):
+            continue
+        metric = str(params.get("metric") or logic.get("metric") or "")
+        if metric_hint and not _metric_hint_matches(metric, metric_hint):
+            continue
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        rows = result.get("rows") if isinstance(result.get("rows"), list) else []
+        if rows and isinstance(rows[0], dict) and rows[0].get(dimension) not in {None, ""}:
+            return {"value": rows[0].get(dimension), "filters": logic.get("filters") if isinstance(logic.get("filters"), dict) else {}}
+    return {}
+
+
+def _time_filter_question_prefix_from_filters(filters: Any) -> str:
+    if not isinstance(filters, dict):
+        return ""
+    month_filter = filters.get("month")
+    if not isinstance(month_filter, dict):
+        return ""
+    year = month_filter.get("year")
+    month_range = month_filter.get("month_range")
+    if isinstance(month_range, (list, tuple)) and len(month_range) >= 2:
+        start, end = int(month_range[0]), int(month_range[1])
+        return f"{year}年{start}月到{end}月，" if year else f"{start}月到{end}月，"
+    month = month_filter.get("month")
+    if month:
+        return f"{year}年{int(month)}月，" if year else f"{int(month)}月，"
+    return ""
+
+
+def _dimension_hint_matches(column: str, hint: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(column or "").lower())
+    aliases = {
+        "city": ("city", "城市"),
+        "customer": ("customer", "cust", "客户"),
+        "product": ("product", "sku", "item", "产品", "商品"),
+        "segment": ("segment", "客户细分", "客群"),
+        "service_line": ("service_line", "business_line", "服务线", "业务线"),
+    }.get(hint, (hint,))
+    return any(alias and alias in normalized for alias in aliases)
+
+
+def _metric_hint_matches(metric: str, hint: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(metric or "").lower())
+    aliases = {
+        "amount": ("amount", "sales", "revenue", "金额", "订单金额", "订单总额", "收入"),
+        "profit": ("profit", "利润", "毛利"),
+        "利润率": ("利润率", "毛利率", "profitmargin", "margin"),
+    }.get(hint, (hint,))
+    return any(alias and re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", alias.lower()) in normalized for alias in aliases)
+
+
+def _find_prior_extreme_month_value(record: dict[str, Any], *, dataset_id: str, metric_hint: str = "") -> Any:
+    messages = record.get("messages") if isinstance(record, dict) else []
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or payload.get("success") is False:
+            continue
+        if dataset_id and str(payload.get("dataset_id") or "") not in {"", dataset_id}:
+            continue
+        logic = payload.get("logic_form") if isinstance(payload.get("logic_form"), dict) else {}
+        operation = str(logic.get("operation") or logic.get("task_type") or "")
+        if "rank" not in operation and "top" not in operation:
+            continue
+        if metric_hint and not _payload_mentions_metric(payload, metric_hint):
+            continue
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        rows = [row for row in result.get("rows") or [] if isinstance(row, dict)]
+        if not rows:
+            continue
+        params = logic.get("parameters") if isinstance(logic.get("parameters"), dict) else {}
+        dimension = str(logic.get("group_by") or params.get("dimension") or params.get("group_by") or "")
+        month_column = _month_column_from_result(dimension, rows[0])
+        if month_column:
+            return rows[0].get(month_column)
+    return None
+
+
+def _payload_mentions_metric(payload: dict[str, Any], metric_hint: str) -> bool:
+    needle = str(metric_hint or "").strip().lower()
+    if not needle:
+        return True
+    logic = payload.get("logic_form") if isinstance(payload.get("logic_form"), dict) else {}
+    params = logic.get("parameters") if isinstance(logic.get("parameters"), dict) else {}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    candidates: list[Any] = [
+        logic.get("metric"),
+        params.get("metric"),
+        params.get("derived_metric", {}).get("name") if isinstance(params.get("derived_metric"), dict) else "",
+        *(result.get("columns") or []),
+    ]
+    rows = [row for row in result.get("rows") or [] if isinstance(row, dict)]
+    if rows:
+        candidates.extend(rows[0].keys())
+    return any(needle in str(candidate or "").lower() for candidate in candidates)
+
+
+def _month_column_from_result(dimension: str, row: dict[str, Any]) -> str:
+    if re.search(r"month|月份|月度", str(dimension or ""), re.I) and dimension in row:
+        return dimension
+    for column in row.keys():
+        if re.search(r"month|月份|月度", str(column or ""), re.I):
+            return str(column)
+    return ""
+
+
+def _month_value_for_question(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, (int, float)) and 1 <= int(value) <= 12:
+        return f"{int(value)}月"
+    text = str(value).strip()
+    match = re.fullmatch(r"(20\d{2})[-/年](\d{1,2})月?", text)
+    if match:
+        return f"{int(match.group(1))}年{int(match.group(2))}月"
+    match = re.fullmatch(r"(20\d{2})(\d{2})", text)
+    if match:
+        return f"{int(match.group(1))}年{int(match.group(2))}月"
+    match = re.fullmatch(r"0?(\d{1,2})月?", text)
+    if match:
+        month = int(match.group(1))
+        if 1 <= month <= 12:
+            return f"{month}月"
+    return text
+
+
 def _looks_like_followup_analysis_request(question: str) -> bool:
     compact = re.sub(r"\s+", "", str(question or ""))
     if not compact:
@@ -3923,7 +4304,13 @@ def _looks_like_followup_analysis_request(question: str) -> bool:
         token in compact
         for token in (
             "这些",
+            "那",
+            "那么",
+            "它",
+            "其",
             "这个",
+            "那个",
+            "该",
             "同一",
             "上一轮",
             "刚才",
@@ -3941,6 +4328,57 @@ def _looks_like_followup_analysis_request(question: str) -> bool:
             "结论变不变",
             "不要看",
             "复核",
+            "Top",
+            "top",
+            "前",
+            "最高",
+            "最低",
+            "最多",
+            "最少",
+            "最大",
+            "最小",
+            "贡献",
+            "数据质量",
+            "质量",
+            "缺失",
+            "重复",
+            "异常",
+            "影响分析",
+            "其中",
+            "上述",
+            "这几个",
+            "这几",
+            "这三个",
+            "这3个",
+            "这五个",
+            "增长率",
+            "增长最快",
+            "增长最多",
+            "增长",
+            "相比",
+            "相较",
+            "利润率",
+            "表现",
+            "是多少",
+            "多少",
+            "趋势",
+            "如何变化",
+            "怎么变化",
+            "怎样变化",
+            "变化趋势",
+            "按月份",
+            "这个指标",
+            "差距",
+            "占比",
+            "比例",
+            "份额",
+            "排名",
+            "第二高",
+            "第三高",
+            "第",
+            "继续看",
+            "也看一下",
+            "重新看",
             "峰值",
             "低点",
             "高点",
@@ -3955,6 +4393,124 @@ def _looks_like_followup_analysis_request(question: str) -> bool:
             "按产品",
             "按品类",
         )
+    )
+
+
+def _looks_like_self_contained_analysis_request(question: str) -> bool:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    if not compact:
+        return False
+    if _looks_like_extreme_time_scoped_dimension_drilldown_request(compact):
+        return False
+    if any(
+        token in compact
+        for token in (
+            "这个城市",
+            "那个城市",
+            "该城市",
+            "这个最高城市",
+            "那个最高城市",
+            "该最高城市",
+            "最高城市",
+            "最高的城市",
+            "这些城市",
+            "这3个城市",
+            "这三个城市",
+            "这五个城市",
+            "这些前三城市",
+            "这些前3城市",
+            "前三城市",
+            "这个客户",
+            "该客户",
+            "这些客户",
+            "这个指标",
+            "刚才排名",
+            "排名第一",
+            "最高的城市中",
+            "最低的城市中",
+            "增长最快的城市中",
+            "增长最多的城市中",
+            "增速最快的城市中",
+            "增幅最大的城市中",
+            "Top对象",
+            "top对象",
+            "继续",
+        )
+    ):
+        return False
+    if re.search(
+        r"(?:这|这些)?(?:排名|排行)?前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:大)?的?(?:城市|客户|产品|品类|区域|地区|服务线|业务线|团队|客群|客户群|客户群体|月份)",
+        compact,
+    ):
+        return False
+    has_metric = any(
+        token in compact
+        for token in (
+            "销售额",
+            "订单总金额",
+            "订单总额",
+            "订单金额",
+            "总金额",
+            "总额",
+            "金额",
+            "利润率",
+            "利润",
+            "收入",
+            "营收",
+            "订单数",
+            "数量",
+        )
+    )
+    has_dimension = any(
+        token in compact
+        for token in (
+            "城市",
+            "客户",
+            "产品",
+            "品类",
+            "月份",
+            "月度",
+            "区域",
+            "地区",
+            "服务线",
+            "团队",
+        )
+    )
+    has_analysis_operator = any(
+        token in compact
+        for token in (
+            "最高",
+            "最低",
+            "最多",
+            "最少",
+            "排名",
+            "第二高",
+            "第三高",
+            "第",
+            "Top",
+            "top",
+            "前",
+            "趋势",
+            "汇总",
+            "分别",
+        )
+    )
+    return has_metric and has_dimension and has_analysis_operator
+
+
+def _looks_like_extreme_time_scoped_dimension_drilldown_request(compact: str) -> bool:
+    has_extreme_time = (
+        any(token in compact for token in ("哪个月份", "哪个月", "哪月份", "哪月", "几月份", "几月"))
+        and any(token in compact for token in ("最高", "最大", "最多", "最低", "最小", "最少"))
+    )
+    if not has_extreme_time:
+        return False
+    return bool(
+        re.search(
+            r"前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位|条)?(?:大)?的?(?:客户|城市|产品|商品|服务线|业务线|品类|门店|区域|地区)",
+            compact,
+        )
+        or re.search(r"(?:哪个|哪些|哪几个)(?:客户|城市|产品|商品|服务线|业务线|品类|门店|区域|地区)", compact)
     )
 
 
@@ -4061,6 +4617,36 @@ def _latest_analysis_turn(record: dict[str, Any], *, dataset_id: str) -> dict[st
             continue
         payload = message.get("payload")
         if not isinstance(payload, dict) or not payload.get("logic_form"):
+            continue
+        if dataset_id and str(payload.get("dataset_id") or "") not in {"", dataset_id}:
+            continue
+        question = ""
+        if index > 0 and isinstance(messages[index - 1], dict) and messages[index - 1].get("role") == "user":
+            question = str(messages[index - 1].get("content") or "")
+        return {"payload": payload, "question": question}
+    return None
+
+
+def _latest_successful_analysis_turn(
+    record: dict[str, Any],
+    *,
+    dataset_id: str,
+    skip_operations: set[str] | None = None,
+) -> dict[str, Any] | None:
+    messages = record.get("messages") if isinstance(record, dict) else []
+    if not isinstance(messages, list):
+        return None
+    skip_operations = skip_operations or set()
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or not payload.get("logic_form") or payload.get("success") is False:
+            continue
+        logic = payload.get("logic_form") if isinstance(payload.get("logic_form"), dict) else {}
+        operation = str(logic.get("operation") or logic.get("task_type") or "")
+        if operation in skip_operations:
             continue
         if dataset_id and str(payload.get("dataset_id") or "") not in {"", dataset_id}:
             continue
@@ -4425,9 +5011,11 @@ def _question_semantics(compact: str) -> dict[str, bool]:
     quality_diagnostic = bool(re.search(r"(有什么问题|哪里有问题|质量问题|数据质量|异常|缺失|重复|坏数据|脏数据|problem|quality|anomal)", compact))
     calculation = bool(
         re.search(
-            r"(计算|求|多少|几(?!个文件|张表|个表)|最高|最低|最大|最小|排名|top|占比|比例|趋势|环比|同比|增长|下降|筛选|过滤|按.+分组|生成图|图表|预测|关联分析|join)",
+            r"(计算|求|多少|数量|客户数|客户数量|总客户数|总金额|总订单金额|订单总金额|订单金额|总利润|总额|总收入|利润率|合计|几(?!个文件|张表|个表)|最高|最低|最大|最小|最好|最佳|最优|最差|表现|排名|top|占比|比例|趋势|环比|同比|增长|下降|筛选|过滤|按.+分组|生成图|图表|预测|关联分析|join)",
             compact,
         )
+        or re.search(r"(?:各|每个|按).*(?:销售额|销售金额|总销售额|收入|金额|利润率|利润|工单量|工单数|指标)", compact)
+        or re.search(r"(?:各|每个|按).*(?:销售数据|经营数据|业务数据|订单数据|工单数据)", compact)
         or re.search(r"(组成|构成|拆分|下钻|拉动|驱动|按.+拆分|拆分来源)", compact)
         or _looks_like_fee_calculation_question(compact)
     )
@@ -4768,6 +5356,9 @@ def _display_answer_numbers_are_grounded(text: str, response: dict[str, Any]) ->
         [
             str(response.get("answer") or ""),
             json.dumps(to_json_ready(response.get("result") or {}), ensure_ascii=False, default=str),
+            json.dumps(to_json_ready(response.get("insight") or {}), ensure_ascii=False, default=str),
+            json.dumps(to_json_ready(response.get("chart") or {}), ensure_ascii=False, default=str),
+            json.dumps(to_json_ready(response.get("quality_report") or {}), ensure_ascii=False, default=str),
             json.dumps(to_json_ready(response.get("overview_report") or {}), ensure_ascii=False, default=str),
         ]
     )
@@ -4808,7 +5399,7 @@ def _attach_llm_presentation_process_step(response: dict[str, Any], meta: dict[s
     steps.append(
         {
             "title": "LLM 表达整理",
-            "summary": "已调用 LLM 基于已验证结果整理主回答、简要结论和下一步建议；LLM 不重新计算数据，也不改变表格结果。",
+            "summary": "已调用 LLM 基于已验证结果整理五段式主回答、简要洞察和下一步建议；LLM 不重新计算数据，也不改变表格结果。",
             "status": "completed",
             "evidence": [
                 f"stage={meta.get('stage')}",
@@ -4879,7 +5470,7 @@ def _apply_gpt_like_text_framework(response: dict[str, Any], *, question: str) -
             response["debug"]["text_answer_framework"] = {
                 "applied": False,
                 "reason": f"{type(exc).__name__}: {str(exc)[:200]}",
-                "version": "gpt_like_text_frame_v1",
+                "version": "bigcat_evidence_report_v2",
             }
         return response
 

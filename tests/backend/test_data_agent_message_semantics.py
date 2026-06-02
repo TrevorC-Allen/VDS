@@ -88,6 +88,50 @@ class DataAgentMessageSemanticsTest(unittest.TestCase):
         self.assertNotIn("当前结果表只返回", response["answer"])
         self.assertNotIn("仍需按当前数据范围和指标口径解读", response["answer"])
 
+    def test_message_ranking_word_routes_to_ranking_not_plain_aggregation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "monthly_city.csv"
+            csv_path.write_text(
+                "month,city,sales\n"
+                "2026-01,上海,318\n"
+                "2026-01,北京,276\n"
+                "2026-02,上海,245\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="monthly_city.csv")
+            response = service.respond_to_message(dataset_id=upload["dataset_id"], question="2026年1月各城市销售额排名如何？")
+
+        self.assertTrue(response["success"], response["errors"])
+        self.assertEqual("filtered_metric_ranking", response["logic_form"]["operation"])
+        self.assertEqual({"city": "上海", "sales": 318}, response["result"]["rows"][0])
+
+    def test_message_quality_followup_routes_to_cleaning_guidance_not_ranking(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "service_metrics.csv"
+            csv_path.write_text(
+                "month,city,service_line,sales,profit,tickets\n"
+                "2026-01,上海,实施交付,180,42,35\n"
+                "2026-01,北京,客户成功,216,68,28\n"
+                "2026-02,深圳,实施交付,302,96,44\n"
+                "2026-03,深圳,客户成功,284,91,39\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="service_metrics.csv")
+            first = service.respond_to_message(dataset_id=upload["dataset_id"], question="哪个城市销售额最高？")
+            response = service.respond_to_message(
+                conversation_id=first["conversation_id"],
+                question="该城市销售额最高的月份是否存在数据质量问题？",
+            )
+
+        self.assertTrue(response["success"], response["errors"])
+        self.assertIn(response["logic_form"]["operation"], {"cleaning_policy", "quality_summary"})
+        self.assertNotIn(response["logic_form"]["operation"], {"ranking", "filtered_metric_ranking", "detail_lookup"})
+        self.assertTrue(response["followup_context"]["is_followup"])
+
     def test_message_correction_reruns_with_revised_formula_from_conversation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

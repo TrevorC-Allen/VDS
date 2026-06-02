@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 
 def classify_workbench_message(question: str, *, has_dataset: bool) -> str:
     """Classify a workbench message before choosing chat vs analysis flow.
@@ -91,9 +93,19 @@ def is_dataset_overview_question(question: str) -> bool:
     if not text:
         return False
     compact = text.replace(" ", "")
+    if _looks_like_explicit_metric_total_question(compact):
+        return False
+    if _looks_like_grouped_metric_analysis_question(compact):
+        return False
+    if _looks_like_dataset_content_overview_question(compact):
+        return True
+    if _looks_like_explicit_business_overview_request(compact):
+        return True
     if any(phrase in compact for phrase in _CAPABILITY_OVERVIEW_PHRASES):
         return True
     if any(phrase in compact for phrase in _SHAPE_OVERVIEW_PHRASES):
+        return True
+    if _looks_like_broad_business_overview_question(compact):
         return True
     if _looks_like_multi_table_overview_question(compact):
         return True
@@ -110,6 +122,65 @@ def is_dataset_overview_question(question: str) -> bool:
     )
     has_data_subject = any(token in compact for token in _DATA_SUBJECT_TOKENS) or any(token in text for token in _EN_DATA_SUBJECT_TOKENS)
     return has_overview_signal and has_data_subject
+
+
+def _looks_like_explicit_metric_total_question(compact: str) -> bool:
+    return any(
+        token in compact
+        for token in (
+            "总订单金额",
+            "订单总金额",
+            "订单总额",
+            "订单金额",
+            "总金额",
+            "总收入",
+            "总利润",
+            "客户数量",
+            "总客户数",
+            "利润率",
+            "销售总额",
+            "销售总金额",
+        )
+    ) or bool(re.search(r"客户数(?!据)", compact))
+
+
+def _looks_like_grouped_metric_analysis_question(compact: str) -> bool:
+    grouped_subject = any(token in compact for token in ("各城市", "每个城市", "所有城市", "各区域", "各地区", "各服务线", "各业务线", "各产品", "各客户"))
+    metric_subject = any(token in compact for token in ("销售", "订单", "金额", "收入", "营收", "利润", "工单", "票据", "指标"))
+    time_scope = bool(re.search(r"(?:20\d{2}年)?\d{1,2}月(?:(?:到|至|-|~|—)\d{1,2}月)?|第[一二三四]季度", compact))
+    explicit_overview = any(token in compact for token in ("概览", "总览", "整体概况", "总体概况"))
+    strong_calculation = any(
+        token in compact
+        for token in ("排名", "排行", "最高", "最低", "最多", "最少", "总金额", "总额", "总利润", "销售额", "销售金额", "总销售额", "利润", "工单量", "工单数", "合计", "汇总", "分别", "趋势", "占比", "比例", "是多少", "多少")
+    )
+    if explicit_overview and not strong_calculation:
+        return False
+    return grouped_subject and metric_subject and (time_scope or any(token in compact for token in ("情况", "表现", "数据")))
+
+
+def _looks_like_dataset_content_overview_question(compact: str) -> bool:
+    asks_data_content = bool(re.search(r"(?:订单|销售|客户|工单|业务|经营)?数据有哪些", compact))
+    if not asks_data_content:
+        return False
+    entity_targets = ("哪些城市", "哪些客户", "哪些产品", "哪些商品", "哪些服务线", "哪些业务线", "哪些品类")
+    metric_targets = ("销售额", "订单金额", "总金额", "总利润", "利润率", "工单量")
+    return not any(token in compact for token in (*entity_targets, *metric_targets))
+
+
+def _looks_like_explicit_business_overview_request(compact: str) -> bool:
+    overview_signal = any(token in compact for token in ("介绍一下", "介绍下", "概况", "概览", "总览", "整体概况", "总体概况"))
+    if not overview_signal:
+        return False
+    subject_signal = any(token in compact for token in ("数据", "订单", "客户", "销售", "收入", "利润", "工单", "经营", "业务"))
+    if not subject_signal:
+        return False
+    if any(token in compact for token in _STRONG_SPECIFIC_ANALYSIS_TOKENS):
+        return False
+    specific_action = any(
+        token in compact
+        for token in ("哪个", "哪一个", "最高", "最低", "最多", "最少", "排名", "排行", "趋势", "占比", "比例", "对比", "比较", "总金额", "总利润", "总额", "合计", "汇总", "是多少", "多少")
+    )
+    return not specific_action
 
 
 def is_dataset_source_question(question: str) -> bool:
@@ -141,6 +212,56 @@ def _looks_like_multi_table_overview_question(compact: str) -> bool:
     return has_overview_action and not has_specific_analysis
 
 
+def _looks_like_broad_business_overview_question(compact: str) -> bool:
+    """Catch broad business-summary requests even when metric words are present."""
+
+    has_broad_signal = any(token in compact for token in ("整体", "总体", "概览", "总览", "情况", "表现", "看一下", "看看", "分析一下"))
+    has_business_subject = any(token in compact for token in ("销售", "利润", "收入", "订单", "业务", "经营"))
+    if not (has_broad_signal and has_business_subject):
+        return False
+    specific_actions = (
+        "哪个",
+        "哪一个",
+        "最高",
+        "最低",
+        "最大",
+        "最小",
+        "最多",
+        "最少",
+        "排名",
+        "前",
+        "top",
+        "多少",
+        "数量",
+        "客户数量",
+        "客户数",
+        "总客户数",
+        "总金额",
+        "总利润",
+        "总收入",
+        "总额",
+        "合计",
+        "几",
+        "按",
+        "各",
+        "每",
+        "趋势",
+        "增长",
+        "下降",
+        "占比",
+        "比例",
+        "组成",
+        "构成",
+        "拆分",
+        "来源",
+        "质量",
+        "异常",
+        "缺失",
+        "重复",
+    )
+    return not any(token in compact for token in specific_actions)
+
+
 def is_cleaning_guidance_question(question: str) -> bool:
     """Return True for cleaning-policy or cleaning-simulation questions."""
 
@@ -164,6 +285,7 @@ def is_cleaning_guidance_question(question: str) -> bool:
         "删除异常",
         "异常行",
         "异常规则",
+        "异常值",
         "样例说明",
         "缺失字段",
         "有缺失",
@@ -172,18 +294,49 @@ def is_cleaning_guidance_question(question: str) -> bool:
         "保留",
         "影响行数",
         "影响比例",
-        "数量占比",
         "明显异常",
         "数据质量",
+        "质量问题",
+        "是否存在数据质量",
+        "有没有异常",
+        "有没有质量问题",
         "范围异常",
+        "负值",
+        "负数",
+        "小于0",
+        "小于零",
+        "低于0",
+        "低于零",
         "无法解析",
         "极端值",
         "离群",
         "winsorize",
     )
-    if any(signal in compact for signal in boundary_signals) or any(signal in compact for signal in cleaning_signals):
+    if (
+        any(signal in compact for signal in boundary_signals)
+        or any(signal in compact for signal in cleaning_signals)
+        or _looks_like_data_quality_phrase(compact)
+    ):
         return True
     return "异常" in compact and any(token in compact for token in ("规则", "样例", "数量", "占比", "比例"))
+
+
+def _looks_like_data_quality_phrase(compact: str) -> bool:
+    if not any(token in compact for token in ("质量如何", "质量怎么样")):
+        return False
+    data_subject_terms = (
+        "数据",
+        "文件",
+        "表格",
+        "表单",
+        "字段",
+        "列",
+        "dataset",
+        "table",
+        "file",
+        "column",
+    )
+    return any(token in compact for token in data_subject_terms)
 
 
 def _looks_like_schema_consistency_question(compact: str) -> bool:
@@ -267,6 +420,9 @@ _GENERIC_OVERVIEW_PHRASES = (
     "能否做同比",
     "字段是否一致",
     "这些文件有什么区别",
+    "能分析哪些数据",
+    "分析哪些数据",
+    "可以分析哪些数据",
     "哪些字段适合做指标",
     "适合做指标",
     "适合做维度",
@@ -410,6 +566,8 @@ _MULTI_TABLE_SUBJECT_TOKENS = (
     "多张表",
     "所有表",
     "全部表",
+    "两张表",
+    "两个表",
     "这几个文件",
     "这些文件",
     "多个文件",
@@ -434,6 +592,9 @@ _MULTI_TABLE_OVERVIEW_ACTION_TOKENS = (
     "概览",
     "总览",
     "主要",
+    "能分析",
+    "分析哪些",
+    "哪些数据",
     "内容",
     "有什么内容",
     "有哪些内容",
@@ -530,6 +691,9 @@ _EN_SOURCE_ACTION_TOKENS = (
 
 _CAPABILITY_OVERVIEW_PHRASES = (
     "这个数据适合做哪些分析",
+    "能分析哪些数据",
+    "分析哪些数据",
+    "可以分析哪些数据",
     "适合做哪些分析",
     "可以做哪些分析",
     "下一步应该分析什么",
@@ -613,9 +777,26 @@ _STRONG_SPECIFIC_ANALYSIS_TOKENS = (
     "最低",
     "最大",
     "最小",
+    "最好",
+    "最佳",
+    "最优",
+    "最差",
+    "表现",
     "top",
     "排名",
     "多少",
+    "数量",
+    "总金额",
+    "总利润",
+    "总额",
+    "合计",
+    "总收入",
+    "销售额",
+    "销售金额",
+    "利润",
+    "利润率",
+    "客户数量",
+    "订单数量",
     "占比",
     "比例",
     "增长",
@@ -650,9 +831,26 @@ _SPECIFIC_ANALYSIS_TOKENS = (
     "最低",
     "最大",
     "最小",
+    "最好",
+    "最佳",
+    "最优",
+    "最差",
+    "表现",
     "top",
     "排名",
     "多少",
+    "数量",
+    "总金额",
+    "总利润",
+    "总额",
+    "合计",
+    "总收入",
+    "销售额",
+    "销售金额",
+    "利润",
+    "利润率",
+    "客户数量",
+    "订单数量",
     "几",
     "占比",
     "比例",

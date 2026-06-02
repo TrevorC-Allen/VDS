@@ -11,9 +11,9 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
     def test_workbench_uses_backend_mounted_asset_paths(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/frontend/styles.css?v=20260528-rule-upload-chain-v1"', html)
+        self.assertIn('href="/frontend/styles.css?v=20260601-activity-code-drawer-v1"', html)
         self.assertIn('href="/frontend/favicon.svg"', html)
-        self.assertIn('src="/frontend/app.js?v=20260528-rule-upload-chain-v1"', html)
+        self.assertIn('src="/frontend/app.js?v=20260601-activity-code-drawer-v1"', html)
         self.assertNotIn('href="./styles.css"', html)
         self.assertNotIn('src="./app.js"', html)
 
@@ -21,7 +21,7 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         html = Path("frontend/index.html").read_text(encoding="utf-8")
         backend = Path("backend/main.py").read_text(encoding="utf-8")
 
-        self.assertIn("?v=20260528-rule-upload-chain-v1", html)
+        self.assertIn("?v=20260601-activity-code-drawer-v1", html)
         self.assertIn("NO_CACHE_HEADERS", backend)
         self.assertIn('"Cache-Control": "no-store, max-age=0"', backend)
         self.assertIn('"Pragma": "no-cache"', backend)
@@ -230,13 +230,15 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("result.execution_artifacts", js)
         self.assertIn("renderExecutionArtifacts(result.execution_artifacts || [])", js)
         self.assertIn("renderArtifactCards(artifacts)", js)
-        self.assertIn("复现代码", js)
+        self.assertIn("本次代码", js)
+        self.assertIn("后端返回的本次 SQL 代码", js)
+        self.assertIn("activityArtifactPurpose", js)
         self.assertIn("el.artifactPanel?.classList.add(\"hidden\")", js)
         self.assertIn(".artifact-card", css)
         self.assertIn(".artifact-list.inline", css)
-        self.assertIn("white-space: pre-wrap", css)
+        self.assertIn("white-space: pre", css)
         self.assertIn(".activity-artifact-card code", css)
-        self.assertIn("overflow-wrap: anywhere", css)
+        self.assertIn("overflow-wrap: normal", css)
 
     def test_workbench_renders_answer_source_footer(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")
@@ -347,6 +349,7 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("buildDrawerActivityTrace", js)
         self.assertIn("renderActivityNodeDigest", js)
         self.assertIn("activityNodeDigest", js)
+        self.assertNotIn("node.safety_note", js)
         self.assertIn("收到什么（输入）", js)
         self.assertIn("干了什么（处理）", js)
         self.assertIn("发出什么（输出）", js)

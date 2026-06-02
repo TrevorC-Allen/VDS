@@ -1346,18 +1346,45 @@ def _retail_distribution_monthly_yoy_compare(tables: dict[str, Any], params: dic
 
 def _retail_category_distribution_periodic_trend(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | str:
     product = params.get("product")
-    months = _month_range(params.get("start_ym"), params.get("end_ym"))
-    if not product or not months:
+    if not product:
         return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
-    hist = _filter_date_month_range(_history_table(tables), "sign_time", months)
+    months = _month_range(params.get("start_ym"), params.get("end_ym"))
+    hist = _history_table(tables)
+    if months:
+        hist = _filter_date_month_range(hist, "sign_time", months)
+    elif params.get("ym"):
+        hist = _filter_ym(hist, "sign_time", params.get("ym"))
     hist = _filter_product(hist, product)
     if hist.empty:
         return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     hist = hist.copy()
-    hist["month"] = pd.to_datetime(hist["sign_time"], errors="coerce").dt.strftime("%Y%m").astype(int)
+    dates = pd.to_datetime(hist["sign_time"], errors="coerce")
+    hist = hist[dates.notna()].copy()
+    dates = pd.to_datetime(hist["sign_time"], errors="coerce")
+    if hist.empty:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     hist["sign_amt_n"] = _numeric(hist["sign_amt"])
+    if str(params.get("granularity") or "").lower() == "day":
+        hist["period"] = dates.dt.strftime("%Y-%m-%d")
+        totals = hist.groupby("period", dropna=True)["sign_amt_n"].sum().sort_index()
+        rows = [{"日期": str(day), "分销金额": float(value)} for day, value in totals.items()]
+        if not rows:
+            return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
+        highest = max(rows, key=lambda row: float(row["分销金额"]))
+        return {
+            "answer": f"{product}销售金额随时间趋势已生成；峰值日期为{highest['日期']}。",
+            "candidate_table": rows,
+            "x": "日期",
+            "metric": "分销金额",
+            "highest_period": highest["日期"],
+        }
+    hist["month"] = dates.dt.strftime("%Y%m").astype(int)
+    if not months:
+        months = sorted(int(month) for month in hist["month"].dropna().unique())
     totals = hist.groupby("month", dropna=True)["sign_amt_n"].sum().reindex(months, fill_value=0.0)
     rows = [{"月份": _ym_label(month), "分销金额": float(totals.loc[month])} for month in months]
+    if not rows:
+        return {"answer": NO_MATCHING_RECORDS, "candidate_table": []}
     directions = []
     for prev, curr in zip(rows, rows[1:]):
         directions.append("上升" if float(curr["分销金额"]) > float(prev["分销金额"]) else "下降" if float(curr["分销金额"]) < float(prev["分销金额"]) else "持平")
