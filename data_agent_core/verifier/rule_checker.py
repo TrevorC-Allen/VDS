@@ -237,7 +237,11 @@ def _verify_generalization_contract(
     notes.extend(semantic_binding_notes)
     if not semantic_binding_passed:
         return False, notes, semantic_binding_action
-    if _asks_count_metric(question) and not _count_metric_request_satisfied(logic, question):
+    if (
+        _asks_count_metric(question)
+        and not _count_metric_is_secondary_ranking_metric(question)
+        and not _count_metric_request_satisfied(logic, question)
+    ):
         notes.append("Question asks for a count metric, but the plan uses a non-count metric definition.")
         return False, notes, {"action": "repair_metric_definition", "required_aggregation": "count"}
     if _asks_mode_or_most_common(question) and logic.operation != "top_count" and not _business_top_count_operation(logic):
@@ -1196,6 +1200,50 @@ def _asks_count_metric(question: str) -> bool:
     ) or any(
         token in question for token in ("数量", "记录数", "条数", "笔数", "次数", "个数", "行数")
     )
+
+
+def _count_metric_is_secondary_ranking_metric(question: str) -> bool:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    lowered = str(question or "").lower()
+    secondary_count = any(
+        token in compact
+        for token in (
+            "及各自的客户数量",
+            "及各自客户数量",
+            "及各自的客户数",
+            "及各自客户数",
+            "及各自的客户总数",
+            "及各自客户总数",
+            "及其客户数量",
+            "及其客户数",
+            "及其客户总数",
+            "各自的客户数量",
+            "各自客户数量",
+            "各自的客户数",
+            "各自客户数",
+            "各自的客户总数",
+            "各自客户总数",
+            "它们各自的客户数量",
+            "它们各自的客户数",
+            "它们各自的客户总数",
+            "它们的客户数量",
+            "它们客户数量",
+            "它们的客户数",
+            "它们客户数",
+            "它们的客户总数",
+            "它们客户总数",
+        )
+    ) or any(token in lowered for token in ("and their customer count", "with customer count", "with number of customers"))
+    if not secondary_count:
+        return False
+    primary_metric = any(
+        token in compact
+        for token in ("订单总金额", "订单总额", "订单金额", "总金额", "总额", "销售额", "销售金额", "收入", "营收", "利润")
+    ) or any(token in lowered for token in ("amount", "sales", "revenue", "profit"))
+    primary_ranking = any(token in compact for token in ("最高", "最多", "最大", "排名", "前3", "前三", "前5", "前五")) or any(
+        token in lowered for token in ("highest", "top", "rank")
+    )
+    return bool(primary_metric and primary_ranking)
 
 
 def _count_metric_request_satisfied(logic: Any, question: str) -> bool:

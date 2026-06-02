@@ -66,7 +66,7 @@ def _table_issues(table_name: str, df: pd.DataFrame) -> list[DataQualityIssue]:
         )
         return issues
 
-    duplicate_count = int(df.duplicated().sum())
+    duplicate_count = int(df.duplicated(keep=False).sum())
     if duplicate_count:
         issues.append(
             DataQualityIssue(
@@ -137,10 +137,10 @@ def _column_issues(table_name: str, column_name: str, series: pd.Series) -> list
             )
         )
 
-    boolean_like = pd.api.types.is_bool_dtype(non_null)
-    numeric = pd.to_numeric(non_null, errors="coerce")
+    boolean_like = _is_boolean_like_series(non_null)
+    numeric = pd.to_numeric(non_null, errors="coerce") if not boolean_like else pd.Series(dtype=float)
     numeric_rate = 0.0 if len(non_null) == 0 else float(numeric.notna().mean())
-    if not boolean_like and 0.0 < numeric_rate < 0.95 and _looks_metric_name(column_name):
+    if 0.0 < numeric_rate < 0.95 and _looks_metric_name(column_name):
         issues.append(
             DataQualityIssue(
                 severity="medium",
@@ -155,7 +155,7 @@ def _column_issues(table_name: str, column_name: str, series: pd.Series) -> list
             )
         )
 
-    if not boolean_like and numeric_rate >= 0.95 and numeric.notna().sum() >= 8:
+    if numeric_rate >= 0.95 and numeric.notna().sum() >= 8:
         issues.extend(_numeric_outlier_issues(table_name, column_name, numeric))
         negative_count = int((numeric < 0).sum())
         if negative_count and _looks_non_negative_metric(column_name):
@@ -226,13 +226,15 @@ def _column_issues(table_name: str, column_name: str, series: pd.Series) -> list
 
 def _numeric_outlier_issues(table_name: str, column_name: str, numeric: pd.Series) -> list[DataQualityIssue]:
     valid = numeric.dropna()
+    if valid.empty:
+        return []
     q1 = float(valid.quantile(0.25))
     q3 = float(valid.quantile(0.75))
     iqr = q3 - q1
     if iqr == 0:
         return []
-    lower = q1 - 3 * iqr
-    upper = q3 + 3 * iqr
+    lower = q1 - 1.5 * iqr
+    upper = q3 + 1.5 * iqr
     mask = (numeric < lower) | (numeric > upper)
     count = int(mask.sum())
     if not count:
@@ -258,6 +260,15 @@ def _missing_mask(series: pd.Series) -> pd.Series:
     text = series.astype("string")
     placeholders = text.str.strip().str.lower().isin({"", "nan", "none", "null", "na", "n/a", "-", "--"})
     return series.isna() | placeholders.fillna(False)
+
+
+def _is_boolean_like_series(series: pd.Series) -> bool:
+    if series.empty:
+        return False
+    if pd.api.types.is_bool_dtype(series):
+        return True
+    values = {str(value).strip().lower() for value in series.dropna().unique()}
+    return bool(values) and values.issubset({"true", "false", "1", "0", "yes", "no", "y", "n"})
 
 
 def _looks_metric_name(name: str) -> bool:

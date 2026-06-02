@@ -87,9 +87,11 @@ class DataAnalysisMultiAgentWorkflow:
         context: dict[str, Any],
         dataset_profile: DatasetProfile | dict[str, Any] | None = None,
         llm_client: LLMClient | None = None,
+        max_correction_attempts: int = 1,
     ) -> None:
         self.dataset_id = dataset_id
         self.context = context
+        self.max_correction_attempts = max(0, int(max_correction_attempts))
         self.runtime = DataAnalysisRoleRuntime(
             dataset_id=dataset_id,
             context=context,
@@ -104,10 +106,16 @@ class DataAnalysisMultiAgentWorkflow:
         *,
         dataset_id: str = "dabstep_context",
         llm_client: LLMClient | None = None,
+        max_correction_attempts: int = 1,
     ) -> "DataAnalysisMultiAgentWorkflow":
         """Create a multi-agent workflow for DABstep-style context files."""
 
-        return cls(dataset_id=dataset_id, context=load_dabstep_context(context_dir), llm_client=llm_client)
+        return cls(
+            dataset_id=dataset_id,
+            context=load_dabstep_context(context_dir),
+            llm_client=llm_client,
+            max_correction_attempts=max_correction_attempts,
+        )
 
     @classmethod
     def from_uploaded_tables(
@@ -117,6 +125,7 @@ class DataAnalysisMultiAgentWorkflow:
         dataset_id: str,
         dataset_profile: DatasetProfile | dict[str, Any] | None = None,
         llm_client: LLMClient | None = None,
+        max_correction_attempts: int = 1,
     ) -> "DataAnalysisMultiAgentWorkflow":
         """Create a multi-agent workflow for uploaded CSV / Excel tables."""
 
@@ -129,7 +138,13 @@ class DataAnalysisMultiAgentWorkflow:
                 tables=list(profile_tables(tables).values()),
                 quality_report=report_to_dict(build_data_quality_report(tables, generated_from="upload_profile")),
             )
-        return cls(dataset_id=dataset_id, context=context, dataset_profile=dataset_profile, llm_client=llm_client)
+        return cls(
+            dataset_id=dataset_id,
+            context=context,
+            dataset_profile=dataset_profile,
+            llm_client=llm_client,
+            max_correction_attempts=max_correction_attempts,
+        )
 
     def analyze(
         self,
@@ -162,6 +177,7 @@ class DataAnalysisMultiAgentWorkflow:
         monitor_run_id: str = "",
         run_id: str | None = None,
         cancel_checker: Callable[[], bool] | None = None,
+        max_correction_attempts: int | None = None,
     ) -> MultiAgentWorkflowResult:
         """Run all internal AgentRole steps."""
 
@@ -266,10 +282,22 @@ class DataAnalysisMultiAgentWorkflow:
         task_results.append(run_role(AgentRole.SQL_EXECUTOR, lambda task: self.runtime.run_sql_executor(task, state, execution_mode=execution_mode)))
         verifier_result = run_role(AgentRole.VERIFIER, lambda task: self.runtime.run_verifier(task, state, guidelines=guidelines))
         task_results.append(verifier_result)
-        correction_result = run_role(AgentRole.CORRECTION, lambda task: self.runtime.run_correction(task, state, guidelines=guidelines))
-        task_results.append(correction_result)
-        corrected_logic_form = correction_result.output_payload.get("corrected_logic_form") if isinstance(correction_result.output_payload, dict) else None
-        if corrected_logic_form:
+        correction_budget = self.max_correction_attempts if max_correction_attempts is None else max(0, int(max_correction_attempts))
+        for attempt_index in range(1, correction_budget + 1):
+            correction_result = run_role(
+                AgentRole.CORRECTION,
+                lambda task, attempt_index=attempt_index: self.runtime.run_correction(
+                    task,
+                    state,
+                    guidelines=guidelines,
+                    attempt_index=attempt_index,
+                    max_attempts=correction_budget,
+                ),
+            )
+            task_results.append(correction_result)
+            corrected_logic_form = correction_result.output_payload.get("corrected_logic_form") if isinstance(correction_result.output_payload, dict) else None
+            if not corrected_logic_form:
+                break
             self.runtime.apply_corrected_logic_form(state, corrected_logic_form)
             state.correction_attempts[-1]["rerun_triggered"] = True
             emit_monitor_event(
@@ -303,6 +331,12 @@ class DataAnalysisMultiAgentWorkflow:
             task_results.append(run_role(AgentRole.SQL_EXECUTOR, lambda task: self.runtime.run_sql_executor(task, state, execution_mode=execution_mode)))
             verifier_result = run_role(AgentRole.VERIFIER, lambda task: self.runtime.run_verifier(task, state, guidelines=guidelines))
             task_results.append(verifier_result)
+            if verifier_result.success:
+                state.correction_attempts[-1]["retry_stopped_reason"] = "verification_passed"
+                break
+            state.correction_attempts[-1]["retry_stopped_reason"] = (
+                "max_attempts_reached" if attempt_index >= correction_budget else "verification_failed"
+            )
         task_results.append(run_role(AgentRole.INSIGHT, lambda task: self.runtime.run_insight(task, state, guidelines=guidelines)))
         task_results.append(run_role(AgentRole.VISUALIZATION, lambda task: self.runtime.run_visualization(task, state, guidelines=guidelines)))
 

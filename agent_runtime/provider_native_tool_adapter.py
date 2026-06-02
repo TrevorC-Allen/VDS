@@ -8,6 +8,9 @@ goes through ToolDispatcher.
 from __future__ import annotations
 
 import json
+import os
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -33,6 +36,56 @@ class NativeToolChatClient(Protocol):
 
     def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         """Return one assistant message dict, potentially with tool_calls."""
+
+
+@dataclass(frozen=True)
+class NativeToolChatConfig:
+    """Runtime config for opt-in OpenAI-compatible tool-loop smoke."""
+
+    provider: str
+    api_key: str
+    model: str
+    base_url: str
+    timeout_seconds: int = 60
+
+
+class MissingNativeToolConfigError(RuntimeError):
+    """Raised when real provider-native tool smoke is requested without config."""
+
+
+class OpenAICompatibleNativeToolChatClient:
+    """Minimal /chat/completions client for provider-native tool smoke."""
+
+    def __init__(self, config: NativeToolChatConfig) -> None:
+        self.config = config
+
+    def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+        payload = {
+            "model": self.config.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "temperature": 0,
+        }
+        request = urllib.request.Request(
+            url=self.config.base_url.rstrip("/") + "/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.config.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Provider-native tool smoke HTTP error {exc.code}: {body[:500]}") from exc
+        message = data["choices"][0]["message"]
+        if not isinstance(message, dict):
+            raise ValueError("Provider-native tool response message must be an object.")
+        return _strip_reasoning_fields(message)
 
 
 @dataclass
@@ -67,6 +120,44 @@ def build_openai_tool_schemas(registry: ToolRegistry) -> list[dict[str, Any]]:
     """Map internal tool definitions to OpenAI / DeepSeek compatible schemas."""
 
     return [_openai_tool_schema(tool) for tool in registry.list_definitions()]
+
+
+def load_native_tool_chat_client_from_env(provider: str | None = None) -> OpenAICompatibleNativeToolChatClient:
+    """Build an opt-in provider-native tool client from environment variables."""
+
+    selected = (provider or os.environ.get("VDS_LLM_PROVIDER") or "").strip().lower()
+    if not selected:
+        if os.environ.get("DEEPSEEK_API_KEY"):
+            selected = "deepseek"
+        elif os.environ.get("OPENAI_API_KEY"):
+            selected = "openai"
+    if selected == "deepseek":
+        api_key = os.environ.get("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise MissingNativeToolConfigError("DEEPSEEK_API_KEY is required for provider-native DeepSeek tool smoke.")
+        return OpenAICompatibleNativeToolChatClient(
+            NativeToolChatConfig(
+                provider="deepseek",
+                api_key=api_key,
+                model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+                base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+                timeout_seconds=int(os.environ.get("VDS_LLM_TIMEOUT_SECONDS", "60")),
+            )
+        )
+    if selected == "openai":
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise MissingNativeToolConfigError("OPENAI_API_KEY is required for provider-native OpenAI tool smoke.")
+        return OpenAICompatibleNativeToolChatClient(
+            NativeToolChatConfig(
+                provider="openai",
+                api_key=api_key,
+                model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+                base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+                timeout_seconds=int(os.environ.get("VDS_LLM_TIMEOUT_SECONDS", "60")),
+            )
+        )
+    raise MissingNativeToolConfigError("Set VDS_LLM_PROVIDER=openai or deepseek for real provider-native tool smoke.")
 
 
 def parse_openai_tool_calls(message: dict[str, Any]) -> list[ProviderToolCall]:

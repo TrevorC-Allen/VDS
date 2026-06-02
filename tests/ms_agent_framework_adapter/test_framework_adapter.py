@@ -17,6 +17,7 @@ from ms_agent_framework_adapter.framework_tools import (
     build_microsoft_tool_metadata,
 )
 from ms_agent_framework_adapter.framework_workflow import build_microsoft_sequential_workflow
+from ms_agent_framework_adapter.demo import build_microsoft_adapter_demo_plan
 
 
 class MicrosoftFrameworkAdapterTest(unittest.TestCase):
@@ -94,6 +95,15 @@ class MicrosoftFrameworkAdapterTest(unittest.TestCase):
         )
         self.assertEqual("planner_agent", workflow["start"])
         self.assertEqual([("planner_agent", "data_engineer_agent"), ("data_engineer_agent", "verifier_agent")], workflow["edges"])
+
+    def test_demo_plan_is_serializable_and_adapter_only(self) -> None:
+        plan = build_microsoft_adapter_demo_plan()
+
+        self.assertEqual("phase7_9_microsoft_agent_framework_adapter_demo", plan["demo_name"])
+        self.assertGreaterEqual(plan["tool_count"], 7)
+        self.assertIn("planner", plan["workflow_role_order"])
+        self.assertIn("data_agent_core_does_not_import_adapter", plan["boundary_assertions"])
+        self.assertEqual("data_agent_core", plan["core_algorithm_location"])
 
 
 if __name__ == "__main__":

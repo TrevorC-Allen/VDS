@@ -1715,6 +1715,13 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         result_time_filters = candidate_filter.pop("result_time_filters", {}) or {}
     if isinstance(result_time_filters, dict) and result_time_filters:
         filters.update(result_time_filters)
+    if (
+        isinstance(candidate_filter, dict)
+        and _entity_count_is_secondary_ranking_metric(question, lowered)
+        and dimension
+        and str(candidate_filter.get("dimension") or "") != str(dimension)
+    ):
+        candidate_filter = None
 
     if missing_dimension_concepts and (_is_ranking_question(lowered) or _is_grouped_metric_display_question(lowered)):
         return make_logic_form(
@@ -3508,6 +3515,11 @@ def _grouped_child_ranking_spec(
         parent_dimension = _parent_dimension_from_grouped_child_question(question, df) or str(current_dimension or "")
     valid_dimensions = {str(column) for column in df.columns} | {str(column) for column in available_columns or []}
     if not parent_dimension or parent_dimension not in valid_dimensions:
+        return None
+    if (
+        _entity_count_is_secondary_ranking_metric(question, lowered)
+        and (not current_dimension or str(parent_dimension) == str(current_dimension))
+    ):
         return None
 
     child_search_text = _grouped_child_ranking_suffix(question)

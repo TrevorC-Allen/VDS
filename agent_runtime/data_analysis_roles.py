@@ -246,7 +246,15 @@ class DataAnalysisRoleRuntime:
         output = {"verification": state.verification, "verifier_critic": _stage_summary(critic)}
         return _agent_result(task, verification.passed, output, issues=verification.issues, confidence=verification.confidence)
 
-    def run_correction(self, task: AgentTask, state: WorkflowState, *, guidelines: str) -> AgentResult:
+    def run_correction(
+        self,
+        task: AgentTask,
+        state: WorkflowState,
+        *,
+        guidelines: str,
+        attempt_index: int = 1,
+        max_attempts: int = 1,
+    ) -> AgentResult:
         """Run bounded correction planning without executing arbitrary retries."""
 
         rule_action = (state.verification or {}).get("correction_action") if isinstance(state.verification, dict) else None
@@ -258,16 +266,24 @@ class DataAnalysisRoleRuntime:
             question=state.question,
             guidelines=guidelines,
             context_summary=self.context_summary(),
-            payload={"rule_verification": state.verification or {}, "rule_correction_action": rule_action, "max_attempts": 2},
+            payload={
+                "rule_verification": state.verification or {},
+                "rule_correction_action": rule_action,
+                "attempt_index": attempt_index,
+                "max_attempts": max_attempts,
+            },
             required_output={
                 "needs_correction": "boolean",
                 "correction_targets": "array",
-                "max_attempts": 2,
+                "attempt_index": attempt_index,
+                "max_attempts": max_attempts,
                 "confidence": "number between 0 and 1",
                 "reasoning_summary": "short summary, not chain of thought",
             },
         )
         output = _stage_summary(correction)
+        output["attempt_index"] = attempt_index
+        output["max_attempts"] = max_attempts
         if isinstance(rule_action, dict):
             output["needs_correction"] = True
             output["correction_action"] = rule_action
