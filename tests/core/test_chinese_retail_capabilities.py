@@ -242,7 +242,22 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.tables["v_trd_dist_ord_dtl"] = original
 
     def test_route_contract_product_quantity_uses_store_set_join(self) -> None:
-        answer = self._answer("张三在2026-05-19计划拜访线路上的合约店，2026年5月东方树叶分销数量是多少？", "答案只返回数字，保留3位小数。")
+        question = "张三在2026-05-19计划拜访线路上的合约店，2026年5月东方树叶分销数量是多少？"
+        logic, result, verification, answer = self._verified_logic_result(question, "答案只返回数字，保留3位小数。")
+
+        self.assertEqual("retail_route_contract_product_quantity", logic.operation)
+        self.assertTrue(result.success, result.errors)
+        self.assertTrue(verification.passed, verification.issues)
+        self.assertEqual(answer, "0.000")
+
+    def test_route_contract_product_quantity_accepts_retail_synonyms(self) -> None:
+        question = "张三在2026-05-19线路计划里的合约门店，2026年5月东方树叶签收箱数是多少？"
+        logic, result, verification, answer = self._verified_logic_result(question, "答案只返回数字，保留3位小数。")
+
+        self.assertEqual("retail_route_contract_product_quantity", logic.operation)
+        self.assertEqual(["v_chl_route_plan_cust_cnt_1d_df", "终端客户月度维表", "v_trd_dist_ord_dtl"], logic.source_tables)
+        self.assertTrue(result.success, result.errors)
+        self.assertTrue(verification.passed, verification.issues)
         self.assertEqual(answer, "0.000")
 
     def test_daily_progress_rate_uses_today_amount_target_and_dist_days(self) -> None:
@@ -564,6 +579,14 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.assertEqual(["SKU", "分销金额"], result.columns)
         self.assertEqual(2, len(result.rows))
         self.assertIn("红茶SKU:150.00", answer)
+
+    def test_distribution_topn_chart_supports_customer_drilldown_followup(self) -> None:
+        logic, result, answer = self._logic_result("请生成2026年5月历史分销金额按客户拆分来源Top排名。")
+
+        self.assertEqual("retail_distribution_topn_chart", logic.operation)
+        self.assertEqual("cust_name", logic.parameters["dimension"])
+        self.assertEqual(["客户", "分销金额"], result.columns)
+        self.assertIn("二号店:200.00", answer)
 
 
 if __name__ == "__main__":

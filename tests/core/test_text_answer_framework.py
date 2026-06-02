@@ -219,6 +219,51 @@ class TextAnswerFrameworkTest(unittest.TestCase):
         self.assertNotIn("当前结果表只返回", framed)
         self.assertNotIn("仍需按当前数据范围和指标口径解读", framed)
 
+    def test_scalar_number_delta_does_not_use_ranking_template(self) -> None:
+        response = {
+            "success": True,
+            "answer_type": "number",
+            "answer": "",
+            "logic_form": {
+                "operation": "mcc_change_delta",
+                "source_tables": ["payments"],
+                "filters": {"merchant": "Crossfit_Hanna", "year": 2023},
+                "parameters": {"new_mcc": 5999},
+            },
+            "result": {
+                "columns": ["answer"],
+                "rows": [{"answer": 26210.609907000045}],
+                "value": 26210.609907000045,
+            },
+            "debug": {"operation": "ranking_candidate_debug"},
+            "insight": {
+                "next_questions": [
+                    "比较 Top 结果之间的answer差距有多大？",
+                    "看低排名对象是否受缺失值影响？",
+                ]
+            },
+        }
+
+        framed = apply_text_answer_framework(
+            response,
+            question="Imagine the merchant Crossfit_Hanna had changed its MCC code to 5999 before 2023 started, what amount delta will it have to pay in fees for the year 2023?",
+        )["answer"]
+
+        self.assertIn("26,210.61", framed)
+        self.assertNotIn("排名结果", framed)
+        self.assertNotIn("关键排序结果", framed)
+        self.assertNotIn("第 1 位", framed)
+        self.assertNotIn("Top 结果", framed)
+        self.assertNotIn("低排名", framed)
+        self.assertEqual(
+            [
+                "按关键维度拆解这个数值",
+                "对比相邻时间段或相关对象的同一指标",
+                "检查异常值、缺失值或规则口径是否影响该数值",
+            ],
+            response["insight"]["next_questions"],
+        )
+
     def test_multi_series_trend_frame_summarizes_top5_overall_patterns(self) -> None:
         response = {
             "success": True,

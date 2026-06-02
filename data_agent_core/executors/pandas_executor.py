@@ -499,6 +499,13 @@ def _materialize_join_steps(tables: dict[str, pd.DataFrame], params: dict[str, A
 def _join_debug(params: dict[str, Any]) -> dict[str, Any]:
     join_plan = params.get("join_plan")
     debug: dict[str, Any] = {}
+    derived_metric = params.get("derived_metric")
+    if isinstance(derived_metric, dict) and derived_metric:
+        debug["formula_lineage"] = {
+            key: derived_metric.get(key)
+            for key in ("name", "numerator", "denominator", "formula", "formula_source")
+            if derived_metric.get(key)
+        }
     if isinstance(join_plan, dict) and join_plan:
         debug["join_plan"] = {
             key: join_plan.get(key)
@@ -661,7 +668,9 @@ def _aggregate_grouped(data: pd.DataFrame, dimension: str, metric: str | None, a
         return result.to_dict(orient="records")
     if metric not in data.columns:
         raise ValueError(f"Unknown metric column: {metric}")
-    result = data.groupby(dimension, dropna=True)[metric].agg(aggregation).reset_index()
+    working = data[[dimension, metric]].copy()
+    working[metric] = pd.to_numeric(working[metric], errors="coerce")
+    result = working.groupby(dimension, dropna=True)[metric].agg(aggregation).reset_index()
     return result.to_dict(orient="records")
 
 
@@ -1394,6 +1403,9 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
             continue
         if column not in data.columns:
             continue
+        if isinstance(expected, dict) and ("month" in expected or "year" in expected):
+            data = _apply_date_part_filter(data, column, expected)
+            continue
         if expected == "__NULL__":
             data = data[_null_mask(data[column])]
             continue
@@ -1416,6 +1428,35 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
             continue
         data = data[_series_equals(data[column], expected)]
     return data
+
+
+def _apply_date_part_filter(data: pd.DataFrame, column: str, expected: dict[str, Any]) -> pd.DataFrame:
+    series = data[column]
+    dt_values = pd.to_datetime(series, errors="coerce")
+    if dt_values.notna().any():
+        mask = dt_values.notna()
+        if expected.get("year") is not None:
+            mask &= dt_values.dt.year == int(expected["year"])
+        if expected.get("month") is not None:
+            mask &= dt_values.dt.month == int(expected["month"])
+        if expected.get("month_range"):
+            start_month, end_month = expected["month_range"]
+            mask &= (dt_values.dt.month >= int(start_month)) & (dt_values.dt.month <= int(end_month))
+        return data[mask]
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    mask = numeric.notna()
+    if expected.get("year") is not None:
+        years = (numeric // 100).where(numeric >= 10000, numeric)
+        mask &= years == int(expected["year"])
+    if expected.get("month") is not None:
+        months = (numeric % 100).where(numeric >= 10000, numeric)
+        mask &= months == int(expected["month"])
+    if expected.get("month_range"):
+        start_month, end_month = expected["month_range"]
+        months = (numeric % 100).where(numeric >= 10000, numeric)
+        mask &= (months >= int(start_month)) & (months <= int(end_month))
+    return data[mask]
 
 
 def _is_day_of_year_range_filter(column: Any, expected: Any) -> bool:

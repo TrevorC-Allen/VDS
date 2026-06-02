@@ -785,14 +785,14 @@ class DabstepFeeEngine:
         new_kwargs: dict[str, Any],
     ) -> float:
         if month is not None:
-            old = round(self.total_fees(merchant, year=year, month=month, **old_kwargs), 2)
-            new = round(self.total_fees(merchant, year=year, month=month, **new_kwargs), 2)
+            old = self.total_fees(merchant, year=year, month=month, **old_kwargs)
+            new = self.total_fees(merchant, year=year, month=month, **new_kwargs)
             return new - old
         months = sorted({int(row["month"]) for row in self.payments if row["merchant"] == merchant and row["year"] == year})
         delta = 0.0
         for current_month in months:
-            old = round(self.total_fees(merchant, year=year, month=current_month, **old_kwargs), 2)
-            new = round(self.total_fees(merchant, year=year, month=current_month, **new_kwargs), 2)
+            old = self.total_fees(merchant, year=year, month=current_month, **old_kwargs)
+            new = self.total_fees(merchant, year=year, month=current_month, **new_kwargs)
             delta += new - old
         return delta
 

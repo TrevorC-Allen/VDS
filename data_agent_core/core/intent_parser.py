@@ -91,9 +91,15 @@ def _extract_year(question: str, default: int = 2023) -> int:
 def _extract_month(question: str) -> int | None:
     lowered = question.lower()
     for name, number in MONTH_NAME_TO_NUMBER.items():
-        if name in lowered:
+        if _month_name_in_question(name, lowered):
             return number
     return None
+
+
+def _month_name_in_question(name: str, lowered_question: str) -> bool:
+    if re.fullmatch(r"[a-z]+", name):
+        return bool(re.search(rf"(?<![a-z]){re.escape(name)}(?![a-z])", lowered_question))
+    return name in lowered_question
 
 
 def _extract_month_range(question: str) -> tuple[int, int] | None:
@@ -108,6 +114,20 @@ def _extract_month_range(question: str) -> tuple[int, int] | None:
     if start is None or end is None:
         return None
     return start, end
+
+
+def _extract_year_month_range(question: str) -> tuple[int, int] | None:
+    match = re.search(r"(20\d{2})\s*年\s*(\d{1,2})\s*月?\s*(?:至|到|-|~|—)\s*(?:(20\d{2})\s*年\s*)?(\d{1,2})\s*月", question)
+    if match:
+        start_year = int(match.group(1))
+        start_month = int(match.group(2))
+        end_year = int(match.group(3) or start_year)
+        end_month = int(match.group(4))
+        return start_year * 100 + start_month, end_year * 100 + end_month
+    match = re.search(r"(20\d{2})-(\d{1,2})\s*(?:至|到|-|~|—)\s*(20\d{2})-(\d{1,2})", question)
+    if match:
+        return int(match.group(1)) * 100 + int(match.group(2)), int(match.group(3)) * 100 + int(match.group(4))
+    return None
 
 
 def _extract_quarter_month_range(question: str) -> tuple[int, int] | None:
@@ -1513,7 +1533,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
     table_context = _select_table_context(question, tables)
     table_name, df = table_context["table_name"], table_context["df"]
     record_count_requested = _is_record_count_metric_question(lowered)
-    derived_metric = None if record_count_requested else _derived_ratio_metric(question, df)
+    derived_metric = None if record_count_requested else _derived_ratio_metric(question, df, guidelines=guidelines)
     metric = None if record_count_requested else (
         str(derived_metric["name"]) if derived_metric else table_context.get("metric") or _find_metric_column(question, df)
     )
@@ -1546,6 +1566,8 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             None,
             {},
         )
+    time_filter_column = dimension if dimension and _is_time_like_column(dimension) else _find_time_column(df)
+    filters.update(_infer_time_filters(question, time_filter_column))
 
     if missing_dimension_concepts and (_is_ranking_question(lowered) or _is_grouped_metric_display_question(lowered)):
         return make_logic_form(
@@ -1722,6 +1744,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             operation="aggregation",
             metric=metric,
             group_by=dimension,
+            filters=filters,
             parameters=_with_table_context({
                 "table": table_name,
                 "metric": metric,
@@ -1757,6 +1780,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         return make_logic_form(
             task_type="aggregation",
             operation="aggregation",
+            filters=filters,
             parameters=_with_table_context({
                 "table": table_name,
                 "metric": metric,
@@ -1835,6 +1859,7 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
             "source_tables": [explicit_table],
             "join_plan": {},
             "explicit_table": explicit_table,
+            "available_columns": [str(column) for column in primary_df.columns],
             "table_selection_reason": _table_selection_reason(question, explicit_table, metric, dimension, explicit_table, {}),
         }
     metric_table, metric = _best_metric_column(question, tables)
@@ -1845,7 +1870,7 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
     dimension_table, dimension = _best_dimension_column(question, tables, preferred_table=primary_name, metric=metric)
     requested_dimensions = _requested_dimension_concepts(question)
     missing_dimension_concepts = requested_dimensions if requested_dimensions and not dimension else []
-    filter_matches = _infer_filter_matches_across_tables(question, tables, exclude={metric, dimension})
+    filter_matches = _infer_filter_matches_across_tables(question, tables, exclude={metric, dimension}, preferred_table=primary_name)
     filters = {str(match["column"]): match["value"] for match in filter_matches}
     target_tables: list[str] = []
     if dimension and dimension_table and dimension_table != primary_name:
@@ -1886,13 +1911,34 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
         "source_tables": source_tables,
         "join_plan": join_plan,
         "explicit_table": explicit_table,
+        "available_columns": _available_columns_for_sources(tables, source_tables),
         "table_selection_reason": _table_selection_reason(question, primary_name, metric, dimension, explicit_table, join_plan),
     }
+
+
+def _available_columns_for_sources(tables: dict[str, pd.DataFrame], source_tables: list[str]) -> list[str]:
+    columns: list[str] = []
+    for table_name in source_tables:
+        df = tables.get(table_name)
+        if df is None:
+            continue
+        for column in df.columns:
+            name = str(column)
+            if name not in columns:
+                columns.append(name)
+    return columns
 
 
 def _with_table_context(params: dict[str, Any], table_context: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(params)
     enriched.setdefault("source_tables", list(table_context.get("source_tables") or [params.get("table")]))
+    available_columns = table_context.get("available_columns")
+    if not available_columns:
+        df = table_context.get("df")
+        if isinstance(df, pd.DataFrame):
+            available_columns = [str(column) for column in df.columns]
+    if available_columns:
+        enriched.setdefault("available_columns", [str(column) for column in available_columns])
     if table_context.get("table_selection_reason"):
         enriched.setdefault("table_selection_reason", table_context["table_selection_reason"])
     if table_context.get("join_plan"):
@@ -1940,6 +1986,7 @@ def _same_schema_union_context(question: str, tables: dict[str, pd.DataFrame]) -
         "source_tables": table_names,
         "join_plan": {},
         "same_schema_union": union_metadata,
+        "available_columns": first_columns,
         "table_selection_reason": _table_selection_reason(
             question,
             union_name,
@@ -2023,18 +2070,100 @@ def _too_ambiguous_table_mention(normalized: str) -> bool:
 def _best_metric_column(question: str, tables: dict[str, pd.DataFrame]) -> tuple[str | None, str | None]:
     best: tuple[int, str, str] | None = None
     for table_name, df in tables.items():
+        table_filter_score = _implicit_filter_match_score(question, df)
+        table_time_score = 2 if _find_time_column(df) and _asks_time_or_trend(question) else 0
         for column in df.columns:
             column_name = str(column)
-            if not pd.api.types.is_numeric_dtype(df[column]):
+            if not _is_metric_value_column(df[column], column_name):
                 continue
             score = _column_question_score(question, column_name)
             if _metric_name_hint(column_name):
                 score += 2
+            score += _sales_amount_metric_score(question, column_name)
+            score += _retail_distribution_fact_table_score(question, table_name, df)
+            score += table_filter_score + table_time_score
             if score > 0 and (best is None or score > best[0]):
                 best = (score, table_name, column_name)
     if best is not None:
         return best[1], best[2]
     return None, None
+
+
+def _implicit_filter_match_score(question: str, df: pd.DataFrame) -> int:
+    lowered = question.lower()
+    for column in df.columns:
+        series = df[column]
+        if pd.api.types.is_numeric_dtype(series):
+            continue
+        unique_values = [value for value in series.dropna().unique().tolist() if str(value)]
+        if not unique_values or len(unique_values) > 50:
+            continue
+        for value in unique_values:
+            text = str(value)
+            if _is_safe_implicit_filter_value(text) and (
+                _value_in_question(text, question, lowered) or _implicit_value_in_question(text, question, lowered)
+            ):
+                return 6
+    return 0
+
+
+def _asks_time_or_trend(question: str) -> bool:
+    lowered = question.lower()
+    return any(token in lowered for token in ("time", "date", "month", "trend")) or any(
+        token in question for token in ("时间", "日期", "月份", "月度", "趋势", "随时间", "折线图", "曲线图")
+    )
+
+
+def _retail_distribution_fact_table_score(question: str, table_name: str, df: pd.DataFrame) -> int:
+    if not any(token in question.lower() for token in ("sales", "amount", "trend", "composition", "breakdown")) and not any(
+        token in question for token in ("销售", "分销", "金额", "趋势", "随时间", "组成", "构成", "拆分", "来源")
+    ):
+        return 0
+    columns = {str(column) for column in df.columns}
+    score = 0
+    if {"sign_time", "sign_amt", "ctg_name"}.issubset(columns):
+        score += 18
+    normalized_table = _normalize_column_token(table_name)
+    if "trddistorddtl" in normalized_table or "distorddtl" in normalized_table:
+        score += 12
+    if ("1drt" in normalized_table or normalized_table.endswith("rt")) and not any(
+        token in question for token in ("今日", "今天", "当天", "实时")
+    ):
+        score -= 24
+    if "mktdsp" in normalized_table or "execute" in normalized_table or "actv" in normalized_table:
+        score -= 8
+    return score
+
+
+def _sales_amount_metric_score(question: str, column_name: str) -> int:
+    if not any(token in question.lower() for token in ("sales", "revenue", "amount", "composition", "breakdown")) and not any(
+        token in question for token in ("销售额", "销售金额", "销售", "收入", "金额", "分销", "组成", "构成", "拆分", "来源")
+    ):
+        return 0
+    normalized = _normalize_column_token(column_name)
+    score = 0
+    if "signamt" in normalized or ("sign" in normalized and "amt" in normalized):
+        score += 10
+    elif "salesamt" in normalized or "sales" in normalized or "revenue" in normalized:
+        score += 9
+    elif "ordamt" in normalized or ("ord" in normalized and "amt" in normalized):
+        score += 8
+    elif "amt" in normalized or "amount" in normalized or "金额" in normalized:
+        score += 5
+    if any(token in normalized for token in ("target", "goal", "confirm", "目标", "确认")):
+        score -= 4
+    if any(token in normalized for token in ("share", "ratio", "rate", "占比", "比例", "率")) and not _asks_ratio_or_share_metric(question):
+        score -= 40
+    if any(token in normalized for token in ("code", "sap", "编码", "代码")):
+        score -= 8
+    return score
+
+
+def _asks_ratio_or_share_metric(question: str) -> bool:
+    lowered = question.lower()
+    if re.search(r"(?<![a-z0-9_])(share|ratio|rate|percentage|percent)(?![a-z0-9_])", lowered):
+        return True
+    return any(token in question for token in ("占比", "比例", "率"))
 
 
 def _best_dimension_column(
@@ -2044,6 +2173,42 @@ def _best_dimension_column(
     preferred_table: str,
     metric: str | None,
 ) -> tuple[str | None, str | None]:
+    explicit_best: tuple[int, str, str] | None = None
+    for table_name, df in tables.items():
+        explicit = _find_group_by_column(question, df)
+        if not explicit or explicit == metric:
+            continue
+        score = 100 + (1 if table_name == preferred_table else 0)
+        if explicit_best is None or score > explicit_best[0]:
+            explicit_best = (score, table_name, explicit)
+    if explicit_best is not None:
+        return explicit_best[1], explicit_best[2]
+
+    explicit_column_best: tuple[int, str, str] | None = None
+    lowered = question.lower()
+    for table_name, df in tables.items():
+        for column in df.columns:
+            column_name = str(column)
+            if column_name == metric or pd.api.types.is_numeric_dtype(df[column]):
+                continue
+            if not _column_name_explicitly_mentioned(column_name, question, lowered):
+                continue
+            score = 100 + (1 if table_name == preferred_table else 0)
+            if explicit_column_best is None or score > explicit_column_best[0]:
+                explicit_column_best = (score, table_name, column_name)
+    if explicit_column_best is not None:
+        return explicit_column_best[1], explicit_column_best[2]
+
+    preferred_df = tables[preferred_table]
+    preferred_categorical = [
+        str(column)
+        for column in preferred_df.columns
+        if str(column) != metric and not pd.api.types.is_numeric_dtype(preferred_df[column])
+    ]
+    composition_dimension = _preferred_composition_dimension(question, preferred_categorical)
+    if composition_dimension:
+        return preferred_table, composition_dimension
+
     requested_concepts = _requested_dimension_concepts(question)
     best: tuple[int, str, str] | None = None
     for table_name, df in tables.items():
@@ -2055,14 +2220,20 @@ def _best_dimension_column(
             if requested_concepts:
                 concept_scores = [
                     _semantic_concept_column_score(column_name, concept)
+                    or (_semantic_concept_column_score(column_name, "time") - 10 if concept == "month" else 0)
                     for concept in requested_concepts
-                    if _semantic_concept_column_score(column_name, concept) > 0
+                    if (
+                        _semantic_concept_column_score(column_name, concept) > 0
+                        or (concept == "month" and _semantic_concept_column_score(column_name, "time") > 10)
+                    )
                 ]
                 if not concept_scores:
                     continue
                 if is_numeric and not any(concept in {"month", "time"} for concept in requested_concepts):
                     continue
                 score = max(concept_scores)
+                if any(concept in {"month", "time"} for concept in requested_concepts):
+                    score += _time_column_preference(column_name)
                 if _dimension_looks_like_join_identifier(column_name):
                     score -= 10
                 if table_name == preferred_table:
@@ -2083,7 +2254,6 @@ def _best_dimension_column(
         return best[1], best[2]
     if requested_concepts:
         return None, None
-    preferred_df = tables[preferred_table]
     return preferred_table, _find_dimension_column(question, preferred_df, metric)
 
 
@@ -2197,15 +2367,45 @@ def _table_selection_reason(
 
 
 SEMANTIC_COLUMN_ALIASES = {
-    "product": ("product", "sku", "item", "goods", "产品", "商品", "品名"),
-    "category": ("category", "ctg", "type", "class", "classification", "品类", "类别", "类目", "分类"),
+    "product": ("product", "product_name", "sku", "item", "goods", "产品", "商品", "品名", "商品名称", "产品名称"),
+    "category": (
+        "category",
+        "category_name",
+        "ctg",
+        "ctg_name",
+        "prod_category",
+        "product_category",
+        "product_line",
+        "productline",
+        "product_segment",
+        "sku_category",
+        "sku_cat",
+        "cat",
+        "type",
+        "class",
+        "classification",
+        "line",
+        "segment",
+        "品类",
+        "品类名称",
+        "商品品类",
+        "产品品类",
+        "产品线",
+        "商品线",
+        "品项",
+        "类别",
+        "类别名称",
+        "类目",
+        "类目名称",
+        "分类",
+    ),
     "store": ("store", "shop", "branch", "门店", "店铺", "门店名称"),
     "city": ("city", "城市", "市"),
-    "channel": ("channel", "渠道", "通路"),
+    "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "source", "origin", "来源", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
     "customer": ("customer", "cust", "client", "客户", "终端"),
-    "month": ("month", "month_id", "month_code", "stat_month", "ym", "年月", "月份"),
-    "time": ("date", "day", "week", "period", "日期", "时间", "周期"),
-    "sales": ("sales", "sale", "revenue", "amount", "销售额", "销售金额", "销售", "收入", "金额", "订单金额"),
+    "month": ("month", "month_id", "month_code", "stat_month", "ym", "year_month", "biz_month", "period", "month_period", "period_month", "年月", "月份", "月度", "业务月份", "统计月份", "期间"),
+    "time": ("date", "day", "week", "period", "time", "sign_time", "create_time", "日期", "时间", "周期", "业务日期", "统计日期", "签收时间", "创建时间"),
+    "sales": ("sales", "sale", "revenue", "amount", "amt", "sales_amt", "sign_amt", "ord_amt", "dist_sign_amt", "销售额", "销售金额", "销售", "收入", "金额", "订单金额", "签收金额", "分销金额"),
     "profit": ("profit", "gross_profit", "grossprofit", "利润", "毛利"),
 }
 
@@ -2219,6 +2419,64 @@ def _requested_dimension_concepts(question: str) -> list[str]:
         if any(_semantic_alias_in_question(alias, question) for alias in aliases):
             requested.append(concept)
     return requested
+
+
+def _is_time_like_column(column_name: str) -> bool:
+    return _semantic_concept_column_score(column_name, "month") > 0 or _semantic_concept_column_score(column_name, "time") > 0
+
+
+def _find_time_column(df: pd.DataFrame) -> str | None:
+    best: tuple[int, int, str] | None = None
+    for index, column in enumerate(df.columns):
+        name = str(column)
+        score = max(_semantic_concept_column_score(name, "month"), _semantic_concept_column_score(name, "time"))
+        if score <= 0:
+            continue
+        score += _time_column_preference(name)
+        if best is None or score > best[0]:
+            best = (score, index, name)
+    return None if best is None else best[2]
+
+
+def _time_column_preference(column_name: str) -> int:
+    normalized = _normalize_column_token(column_name)
+    score = 0
+    if "sign" in normalized or "签收" in normalized:
+        score += 20
+    if any(token in normalized for token in ("ymd", "年月", "month", "date", "日期", "统计")):
+        score += 10
+    if "create" in normalized or "创建" in normalized:
+        score += 4
+    if any(token in normalized for token in ("etl", "end", "结束")):
+        score -= 20
+    return score
+
+
+def _infer_time_filters(question: str, time_column: str | None) -> dict[str, Any]:
+    if not time_column:
+        return {}
+    year_month_range = _extract_year_month_range(question)
+    if year_month_range:
+        start_ym, end_ym = year_month_range
+        start_year, start_month = divmod(start_ym, 100)
+        end_year, end_month = divmod(end_ym, 100)
+        if start_year == end_year:
+            return {time_column: {"year": start_year, "month_range": (start_month, end_month)}}
+    month = _extract_month(question)
+    explicit_year = _extract_explicit_year(question)
+    if month is None and explicit_year is None:
+        return {}
+    criteria: dict[str, Any] = {}
+    if month is not None:
+        criteria["month"] = month
+    if explicit_year is not None:
+        criteria["year"] = explicit_year
+    return {time_column: criteria} if criteria else {}
+
+
+def _extract_explicit_year(question: str) -> int | None:
+    match = re.search(r"\b(20\d{2})\b", question)
+    return int(match.group(1)) if match else None
 
 
 def _semantic_concept_column_score(column_name: str, concept: str) -> int:
@@ -2248,6 +2506,7 @@ def _infer_filter_matches_across_tables(
     tables: dict[str, pd.DataFrame],
     *,
     exclude: set[str | None] | None = None,
+    preferred_table: str | None = None,
 ) -> list[dict[str, Any]]:
     lowered = question.lower()
     excluded = {str(item) for item in (exclude or set()) if item}
@@ -2273,7 +2532,20 @@ def _infer_filter_matches_across_tables(
             ]
             if len(matched) == 1:
                 matches.append({"table": table_name, "column": name, "value": matched[0]})
-    return matches
+    return _best_filter_matches(question, matches, preferred_table=preferred_table)
+
+
+def _best_filter_matches(question: str, matches: list[dict[str, Any]], *, preferred_table: str | None = None) -> list[dict[str, Any]]:
+    best_by_value: dict[str, tuple[int, dict[str, Any]]] = {}
+    for match in matches:
+        value_key = str(match.get("value"))
+        score = _implicit_filter_column_score(question, str(match.get("column") or ""))
+        if preferred_table and str(match.get("table") or "") == preferred_table:
+            score += 20
+        current = best_by_value.get(value_key)
+        if current is None or score > current[0]:
+            best_by_value[value_key] = (score, match)
+    return [match for _, match in best_by_value.values()]
 
 
 def _strict_missing_dimension_guard(question: str) -> bool:
@@ -2348,7 +2620,7 @@ def _column_question_score(question: str, column_name: str) -> int:
     normalized_question = _normalize_text(searchable_question)
     normalized_column = _normalize_text(column_name)
     if normalized_column and normalized_column in normalized_question:
-        return 8 + len(normalized_column)
+        return 80 + len(normalized_column)
     semantic_score = _semantic_column_question_score(question, column_name)
     if semantic_score:
         return semantic_score
@@ -2396,7 +2668,10 @@ def _semantic_alias_in_question(alias: str, question: str) -> bool:
     return bool(re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(alias.lower())}(?![A-Za-z0-9_.-])", lowered))
 
 
-def _derived_ratio_metric(question: str, df: pd.DataFrame) -> dict[str, str] | None:
+def _derived_ratio_metric(question: str, df: pd.DataFrame, *, guidelines: str = "") -> dict[str, str] | None:
+    explicit = _explicit_ratio_metric(question, df, guidelines=guidelines)
+    if explicit is not None:
+        return explicit
     if not _asks_profit_margin(question):
         return None
     numerator = _find_semantic_column(df, "profit")
@@ -2410,6 +2685,53 @@ def _derived_ratio_metric(question: str, df: pd.DataFrame) -> dict[str, str] | N
         "denominator": denominator,
         "formula": f"sum({numerator})/sum({denominator})",
     }
+
+
+def _explicit_ratio_metric(question: str, df: pd.DataFrame, *, guidelines: str = "") -> dict[str, str] | None:
+    text = f"{question}\n{guidelines}"
+    patterns = (
+        r"(?P<name>[\w\u4e00-\u9fff]{1,20})\s*=\s*sum\s*\(?\s*(?P<num>[\w\u4e00-\u9fff_ -]{1,40})\s*\)?\s*/\s*sum\s*\(?\s*(?P<den>[\w\u4e00-\u9fff_ -]{1,40})\s*\)?",
+        r"(?P<name>[\w\u4e00-\u9fff]{1,20})\s*=\s*(?P<num>[\w\u4e00-\u9fff_ -]{1,40})\s*/\s*(?P<den>[\w\u4e00-\u9fff_ -]{1,40})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if not match:
+            continue
+        name = re.sub(r"^(用|按|以|按照|改成|改为)", "", match.group("name").strip()).strip() or "ratio"
+        numerator = _resolve_formula_column(match.group("num"), df)
+        denominator = _resolve_formula_column(match.group("den"), df)
+        if numerator and denominator and numerator != denominator:
+            return {
+                "name": name,
+                "numerator": numerator,
+                "denominator": denominator,
+                "formula": f"sum({numerator})/sum({denominator})",
+            }
+    return None
+
+
+def _resolve_formula_column(raw_name: str, df: pd.DataFrame) -> str | None:
+    cleaned = re.sub(r"^(字段|列|column|field)\s*", "", str(raw_name or "").strip(), flags=re.I)
+    cleaned = cleaned.strip(" ：:，,。.;；()（）[]【】")
+    cleaned = re.sub(r"(重新计算|重新算|重算|再算|计算|这个口径|口径)$", "", cleaned).strip()
+    if not cleaned:
+        return None
+    normalized = _normalize_column_token(cleaned)
+    for column in df.columns:
+        column_name = str(column)
+        if _normalize_column_token(column_name) == normalized:
+            return column_name
+    for concept, aliases in SEMANTIC_COLUMN_ALIASES.items():
+        if any(_normalize_column_token(alias) == normalized or normalized in _normalize_column_token(alias) for alias in aliases):
+            found = _find_semantic_column(df, concept)
+            if found:
+                return found
+    for column in df.columns:
+        column_name = str(column)
+        normalized_column = _normalize_column_token(column_name)
+        if normalized and (normalized in normalized_column or normalized_column in normalized):
+            return column_name
+    return None
 
 
 def _asks_profit_margin(question: str) -> bool:
@@ -2452,9 +2774,9 @@ def _find_metric_column(question: str, df: pd.DataFrame) -> str | None:
     for column in df.columns:
         name = str(column)
         if name.lower() in lowered or name in question:
-            if pd.api.types.is_numeric_dtype(df[column]):
+            if _is_metric_value_column(df[column], name):
                 return name
-    numeric_columns = [str(column) for column in df.columns if pd.api.types.is_numeric_dtype(df[column])]
+    numeric_columns = [str(column) for column in df.columns if _is_metric_value_column(df[column], str(column))]
     if not numeric_columns:
         return None
     metric_keywords = ("sales", "revenue", "amount", "fee", "cost", "price", "profit", "销售", "金额", "收入", "费用", "利润")
@@ -2462,6 +2784,27 @@ def _find_metric_column(question: str, df: pd.DataFrame) -> str | None:
         if any(keyword in column.lower() for keyword in metric_keywords):
             return column
     return numeric_columns[0]
+
+
+def _is_metric_value_column(series: pd.Series, column_name: str) -> bool:
+    if pd.api.types.is_numeric_dtype(series):
+        return not _metric_identifier_like(column_name)
+    if _metric_identifier_like(column_name):
+        return False
+    non_empty = series.dropna()
+    if non_empty.empty:
+        return False
+    text = non_empty.astype(str).str.strip()
+    text = text[text != ""]
+    if text.empty:
+        return False
+    converted = pd.to_numeric(text.str.replace(",", "", regex=False), errors="coerce")
+    return float(converted.notna().sum()) / float(len(text)) >= 0.85
+
+
+def _metric_identifier_like(column_name: str) -> bool:
+    normalized = _normalize_column_token(column_name)
+    return any(token in normalized for token in ("id", "code", "编号", "编码", "代码", "sap", "手机号", "电话", "邮编"))
 
 
 def _find_dimension_column(
@@ -2479,11 +2822,44 @@ def _find_dimension_column(
             continue
         if _column_name_explicitly_mentioned(name, searchable_question, lowered):
             return name
+    requested_concepts = _requested_dimension_concepts(question)
+    if requested_concepts:
+        semantic_candidates: list[tuple[int, int, str]] = []
+        allows_numeric_dimension = any(concept in {"month", "time"} for concept in requested_concepts)
+        for index, column in enumerate(df.columns):
+            name = str(column)
+            if name == metric or name in excluded:
+                continue
+            if pd.api.types.is_numeric_dtype(df[column]) and not allows_numeric_dimension:
+                continue
+            concept_scores = [
+                _semantic_concept_column_score(name, concept)
+                or (_semantic_concept_column_score(name, "time") - 10 if concept == "month" else 0)
+                for concept in requested_concepts
+                if (
+                    _semantic_concept_column_score(name, concept) > 0
+                    or (concept == "month" and _semantic_concept_column_score(name, "time") > 10)
+                )
+            ]
+            if not concept_scores:
+                continue
+            score = max(concept_scores)
+            if any(concept in {"month", "time"} for concept in requested_concepts):
+                score += _time_column_preference(name)
+            if _dimension_looks_like_join_identifier(name):
+                score -= 10
+            semantic_candidates.append((score, index, name))
+        if semantic_candidates:
+            semantic_candidates.sort(key=lambda item: (-item[0], item[1]))
+            return semantic_candidates[0][2]
     categorical = [
         str(column)
         for column in df.columns
         if str(column) != metric and str(column) not in excluded and not pd.api.types.is_numeric_dtype(df[column])
     ]
+    composition_dimension = _preferred_composition_dimension(question, categorical)
+    if composition_dimension:
+        return composition_dimension
     semantic_matches = [
         (_semantic_column_question_score(question, column), column)
         for column in categorical
@@ -2522,12 +2898,37 @@ def _find_dimension_column(
         "渠道",
         "客户",
         "月份",
+        "月度",
+        "年月",
         "日期",
     )
     for column in categorical:
         if any(keyword in column.lower() for keyword in dimension_keywords):
             return column
     return categorical[0] if categorical else None
+
+
+def _preferred_composition_dimension(question: str, categorical_columns: list[str]) -> str | None:
+    if not any(token in question.lower() for token in ("composition", "breakdown")) and not any(token in question for token in ("组成", "构成", "拆分")):
+        return None
+    normalized_by_column = {_normalize_column_token(column): column for column in categorical_columns}
+    for preferred in (
+        "capacity",
+        "spec_desc",
+        "sku_spec",
+        "cmdt_name",
+        "sku_name",
+        "sales_ana_type_name",
+        "ctg_name",
+    ):
+        normalized = _normalize_column_token(preferred)
+        if normalized in normalized_by_column:
+            return normalized_by_column[normalized]
+    for column in categorical_columns:
+        normalized = _normalize_column_token(column)
+        if any(token in normalized for token in ("capacity", "spec", "sku", "cmdt", "product", "商品", "规格", "容量")):
+            return column
+    return None
 
 
 def _column_name_explicitly_mentioned(name: str, question: str, lowered: str) -> bool:
@@ -2542,7 +2943,7 @@ def _find_group_by_column(question: str, df: pd.DataFrame) -> str | None:
     lowered = question.lower()
     phrases: list[str] = []
     for pattern in (
-        r"按\s*([^，,。？?]+?)\s*(?:统计|分组|汇总|计算|展示|显示|生成|画|出|看)",
+        r"按\s*([^，,。？?]+?)\s*(?:统计|分组|汇总|计算|展示|显示|生成|画|出|看|拆分|构成|组成)",
         r"(?:group(?:ed)?\s+by|by)\s+([A-Za-z0-9_ \-\u4e00-\u9fff]+?)(?:\s+(?:统计|计算|sum|total|average|count|share|percentage|占比)|[,，。？?]|$)",
     ):
         phrases.extend(match.strip() for match in re.findall(pattern, question, flags=re.I) if match.strip())
@@ -2683,6 +3084,12 @@ def _is_aggregation_question(lowered: str) -> bool:
             "笔数",
             "次数",
             "个数",
+            "金额",
+            "销售额",
+            "销售金额",
+            "组成",
+            "构成",
+            "拆分",
         )
     )
 
@@ -2692,7 +3099,7 @@ def _is_filtering_question(lowered: str) -> bool:
 
 
 def _has_grouping_language(lowered: str) -> bool:
-    return any(token in lowered for token in (" by ", "group", "per ", "each", "按", "各", "每"))
+    return any(token in lowered for token in (" by ", "group", "per ", "each", "按", "各", "每", "随时间", "趋势", "trend", "组成", "构成", "拆分"))
 
 
 def _is_grouped_metric_display_question(lowered: str) -> bool:
@@ -2719,6 +3126,11 @@ def _is_grouped_metric_display_question(lowered: str) -> bool:
             "折线图",
             "饼图",
             "可视化",
+            "趋势",
+            "trend",
+            "组成",
+            "构成",
+            "拆分",
         )
     )
 
@@ -3087,6 +3499,7 @@ def _infer_value_filters(question: str, df: pd.DataFrame, exclude: set[str | Non
     lowered = question.lower()
     excluded = {str(item) for item in (exclude or set()) if item}
     filters: dict[str, Any] = {}
+    implicit_matches: list[tuple[int, str, Any]] = []
     for column in df.columns:
         name = str(column)
         if name in excluded:
@@ -3121,11 +3534,37 @@ def _infer_value_filters(question: str, df: pd.DataFrame, exclude: set[str | Non
         matched = [
             value
             for value in unique_values
-            if _is_safe_implicit_filter_value(str(value)) and _implicit_value_in_question(str(value), question, lowered)
+            if _is_safe_implicit_filter_value(str(value))
+            and (_value_in_question(str(value), question, lowered) or _implicit_value_in_question(str(value), question, lowered))
         ]
         if len(matched) == 1:
-            filters[name] = matched[0]
-    return filters
+            implicit_matches.append((_implicit_filter_column_score(question, name), name, matched[0]))
+    return _best_implicit_filters(implicit_matches)
+
+
+def _implicit_filter_column_score(question: str, column_name: str) -> int:
+    requested = _requested_dimension_concepts(question)
+    score = 0
+    for concept in requested or ("product", "category", "store", "city", "channel", "customer"):
+        score = max(score, _semantic_concept_column_score(column_name, concept))
+    normalized = _normalize_column_token(column_name)
+    if any(token in normalized for token in ("ctg", "category", "品类", "产品", "商品")):
+        score += 12
+    if any(token in normalized for token in ("name", "名称")):
+        score += 4
+    if any(token in normalized for token in ("code", "id", "编码", "代码", "sap")):
+        score -= 12
+    return score
+
+
+def _best_implicit_filters(matches: list[tuple[int, str, Any]]) -> dict[str, Any]:
+    best_by_value: dict[str, tuple[int, str, Any]] = {}
+    for score, column, value in matches:
+        key = str(value)
+        current = best_by_value.get(key)
+        if current is None or score > current[0]:
+            best_by_value[key] = (score, column, value)
+    return {column: value for _, column, value in best_by_value.values()}
 
 
 def _is_safe_implicit_filter_value(text: str) -> bool:

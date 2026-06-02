@@ -6,6 +6,8 @@
 
 本文件只记录真实发生过的修改，不允许虚构历史记录，不允许补写不存在的修改。
 
+每次运行、修改或测试前，如果根据项目规则读取 `MAIN_GOAL.md`、`CHANGELOG_AI.md`、`BRANCH_RULES.md`、`AGENTS.md`、`README` 或其他治理 / 红线文件内容，必须先用单独醒目的中文提示告知用户，至少列出读取文件、读取目的，并说明读取本身是否会修改文件。
+
 每次记录必须包含：
 
 1. 日期时间
@@ -67,6 +69,377 @@ YYYY-MM-DD HH:MM TZ
 ### 是否新增或修改运行追踪逻辑
 
 ### 是否已同步 README
+
+2026-06-01 13:23 CST
+
+### 本次目标
+
+按用户要求收口当前代码和 git 状态，确保工作区最终可以保持 clean；在提交前修复 targeted regression 中暴露的旧能力回归，并补充实际测试证据。
+
+### 修改文件
+
+- agent_runtime/data_agent_tool_impl.py
+- agent_runtime/data_analysis_roles.py
+- backend/services/data_agent_service.py
+- backend/storage/conversation_store.py
+- data_agent_core/agent/single_agent.py
+- data_agent_core/contracts/response_contracts.py
+- data_agent_core/core/conversation_actions.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/output/insight_generator.py
+- docs/test-runs/2026-06-01-1323-git-clean-regression.md
+- frontend/app.js
+- tests/backend/test_data_agent_message_semantics.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_phase10_result_experience.py
+- CHANGELOG_AI.md
+
+本次提交还包含此前已存在但未提交的业务、前端、测试和治理文档 diff；这些文件在本轮通过显式 diff 检查和 targeted unittest 模块一起收口。
+
+### 修改内容
+
+- 调整 dataset message 路由优先级：显式 dataset overview / shape 问法先走 overview，避免 “多少行、多少列”“这个数据适合做哪些分析”“哪里有问题” 被 calculation / quality diagnostic 兜底误路由到 table analysis。
+- 保留明确 fee calculation 问法的 analysis 优先级，避免 `fees.json` source overview 抢走 `total fees` 计算问题。
+- 修正英文月份解析：英文月份缩写只按独立词匹配，避免 `Martinis_Fine_Steakhouse` 中的 `mar` 被误判为 3 月。
+- 修正指标列选择优先级：用户问题中显式出现的列名优先于泛化 sales / amount 偏好，保证项目派生指标如“项目净销售额”按项目公式结果排序。
+- 纳入结构化 follow-up action helper，并将 `next_actions` 贯穿 insight、runtime、conversation store，保证 clean checkout 中引用模块完整。
+- 前端 insight next questions 优先使用后端 `next_actions` 中的可执行问题，并补充静态和语义测试覆盖。
+- 新增本轮测试证据文档，记录失败回归、修复点、实际命令和通过结果。
+
+### 测试方式
+
+- `git diff --check`
+- `git diff --check -- AGENTS.md CHANGELOG_AI.md MAIN_GOAL.md agent_runtime/data_analysis_roles.py backend/services/data_agent_service.py backend/services/export_service.py data_agent_core/agent/single_agent.py data_agent_core/core/capability_registry.py data_agent_core/core/chinese_retail_intent.py data_agent_core/core/date_utils.py data_agent_core/core/intent_parser.py data_agent_core/core/message_intent.py data_agent_core/executors/chinese_retail_executor.py data_agent_core/executors/pandas_executor.py data_agent_core/executors/sql_executor.py data_agent_core/output/dataset_overview.py data_agent_core/output/insight_generator.py data_agent_core/output/text_answer_framework.py data_agent_core/verifier/rule_checker.py frontend/app.js tests/backend/test_data_agent_api_status.py tests/backend/test_data_agent_message_semantics.py tests/backend/test_data_agent_service.py tests/backend/test_p0_workspace_runtime.py tests/backend/test_workbench_static_assets.py tests/core/test_chinese_retail_capabilities.py tests/core/test_phase10_result_experience.py tests/core/test_phase8_multitable_capabilities.py tests/core/test_text_answer_framework.py`
+- `python3 scripts/run_tests.py tests.backend.test_data_agent_service.DataAgentServiceTest.test_broad_dataset_readiness_questions_do_not_return_row_count_only tests.backend.test_data_agent_service.DataAgentServiceTest.test_multi_file_shape_question_returns_gpt_like_counts_not_value_dump tests.backend.test_data_agent_service.DataAgentServiceTest.test_project_memory_formula_affects_dataset_calculation tests.backend.test_data_agent_service.DataAgentServiceTest.test_card_scheme_steering_monthly_scope_question_2644_passes_verifier tests.backend.test_data_agent_service.DataAgentServiceTest.test_card_scheme_steering_monthly_scope_with_explicit_year_passes_verifier`
+- `python3 scripts/run_tests.py tests.backend.test_data_agent_service.DataAgentServiceTest.test_dabstep_total_fees_question_uses_analysis_not_source_overview`
+- `python3 scripts/run_tests.py tests.backend.test_data_agent_api_status tests.backend.test_data_agent_message_semantics tests.backend.test_data_agent_service tests.backend.test_p0_workspace_runtime tests.backend.test_workbench_static_assets tests.core.test_chinese_retail_capabilities tests.core.test_phase10_result_experience tests.core.test_phase8_multitable_capabilities tests.core.test_text_answer_framework`
+- `python3 scripts/run_tests.py tests.agent_runtime.test_runtime_contracts tests.backend.test_data_agent_message_semantics tests.core.test_phase10_result_experience`
+- `python3 scripts/run_tests.py tests.backend.test_data_agent_service tests.backend.test_data_agent_api_status tests.backend.test_data_agent_message_semantics tests.core.test_phase10_result_experience`
+- `python3 scripts/run_tests.py tests.backend.test_workbench_static_assets tests.backend.test_data_agent_message_semantics tests.core.test_phase10_result_experience`
+
+### 测试结果
+
+- `git diff --check` 通过，无空白错误输出。
+- 初次 targeted unittest 模块运行发现 5 个旧回归；修复后 5 个失败回归单独重跑通过。
+- fee calculation 单测单独重跑通过：`Ran 1 test in 1.454s - OK`。
+- 完整 targeted 模块重跑通过：`Ran 220 tests in 146.764s - OK (skipped=5)`。
+- 结构化 next actions 相关 runtime / conversation / insight 回归通过：`Ran 46 tests in 18.007s - OK`。
+- 服务层组合回归通过：`Ran 121 tests in 197.360s - OK (skipped=5)`。
+- 前端静态 / message semantics / insight 回归通过：`Ran 72 tests in 35.492s - OK`。
+
+### 遗留问题
+
+- 本轮未运行全量 `scripts/run_tests.py` discover、浏览器 `/workbench` runtime 验证或 benchmark comparison scorer。
+- 当前提交收口的是已有大批 dirty diff 加本轮窄修复；若后续要进入主线，仍建议按合并目标补齐全量 gate。
+
+### 是否影响主流程
+
+是。影响 dataset message 路由、generic parser 月份解析和指标列选择；目的是恢复旧回归并保持新增 fee / retail / export 能力可用。
+
+### 是否涉及 Benchmark
+
+是，间接涉及 DABstep-style fee calculation 问法路由，但本轮未修改 benchmark runner、标准答案、scorer 或 comparison 产物。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。路由和解析边界更稳定，LLM / deterministic guardrail 分工更清楚。
+
+### 是否修改核心数据契约
+
+否。未新增或删除公开响应字段。
+
+### 是否修改 API 契约
+
+否。未修改请求 / 响应字段契约。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮是代码回归修复、测试证据和 changelog 收口，不改变 README 中的项目阶段、API、benchmark 口径或用户可见总览。
+
+2026-06-01 10:13 CST
+
+### 本次目标
+
+按用户要求补写此前遗漏的 changelog 文档内容。该记录基于当前重新验证的 dirty diff，覆盖当前工作区中尚未提交、且未在最新 changelog 中单独记录的业务改动；不虚构历史完成时间，不把未运行的测试写成已运行。
+
+### 修改文件
+
+- CHANGELOG_AI.md
+
+补写记录覆盖的当前未提交业务文件：
+
+- backend/services/data_agent_service.py
+- backend/services/export_service.py
+- data_agent_core/output/text_answer_framework.py
+- frontend/app.js
+- tests/backend/test_data_agent_service.py
+- tests/backend/test_p0_workspace_runtime.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_text_answer_framework.py
+
+### 修改内容
+
+- 记录 DABstep fee calculation 问法路由修正：包含 `fee` 且表达 total / amount / delta / MCC 变化等计算意图的问题应进入 analysis，而不是被普通 source overview / dataset overview 兜底吞掉；新增 fee calculation 语义识别与对应后端测试。
+- 记录导出产物安全与格式修正：CSV / XLSX 表头、summary 字段、source 信息继续做 spreadsheet formula escaping；summary PDF 在 soffice 不可用时优先尝试 reportlab Unicode PDF fallback，再落到 minimal PDF；SVG data URI 导出保留 `svg+xml` mime / 扩展名，不误写成 PNG。
+- 记录标量数值回答模板修正：number / percentage 且非 ranking/topn 的结果不再套用排名模板；空 answer 但有 scalar value 时可以基于已验证数值生成核心结论，并替换不适用的 next questions。
+- 记录 Workbench 图表 SVG 下载修正：前端 `serializeSvg` 为导出 SVG 补 width / height、白底、内联图表样式，并移除 hover 辅助元素，避免下载 SVG 丢样式或带交互残留。
+- 记录相应回归测试：补充 fee 问法走 analysis、导出公式注入防护、SVG chart data URI 保留格式、SVG 下载独立样式、scalar number 不套 ranking 模板。
+
+### 测试方式
+
+- `git diff --name-status`
+- `git diff -- backend/services/data_agent_service.py backend/services/export_service.py`
+- `git diff -- data_agent_core/output/text_answer_framework.py frontend/app.js`
+- `git diff -- tests/backend/test_data_agent_service.py tests/backend/test_p0_workspace_runtime.py tests/backend/test_workbench_static_assets.py tests/core/test_text_answer_framework.py`
+- `rg -n "export|artifact|download|下载|SVG|fee|MCC|标量|number|percentage|活动|产物" README.md MAIN_GOAL.md`
+- `git diff --check -- backend/services/data_agent_service.py backend/services/export_service.py data_agent_core/output/text_answer_framework.py frontend/app.js tests/backend/test_data_agent_service.py tests/backend/test_p0_workspace_runtime.py tests/backend/test_workbench_static_assets.py tests/core/test_text_answer_framework.py`
+
+### 测试结果
+
+- 当前重新验证显示上述 8 个业务 / 测试文件仍处于 dirty 状态，且 diff 内容与本条记录一致。
+- 业务文件 `git diff --check` 通过，无空白错误输出。
+- README / MAIN_GOAL 检索已确认当前高层文档已有 DAB context、fee what-if、artifact / Workbench 图表和 README 同步规则相关上下文；本轮只补写 changelog，不修改 README。
+- 本轮未重新运行 Python unittest、浏览器 smoke、runtime smoke 或 benchmark；不能把这些业务改动视为已完成验收，只能视为当前 diff 的文档补记。
+
+### 遗留问题
+
+- 当前 worktree 仍有未提交业务改动和治理文档改动；本条 changelog 是补写记录，不代表这些业务改动已完成提交、已合并或已通过完整验收。
+- 如果后续要把这些业务改动作为完成项，需要按实际任务边界运行对应单测 / smoke / benchmark，并按测试文档规则留下证据。
+
+### 是否影响主流程
+
+本条文档补写本身不影响主流程；被补写记录的当前业务 diff 会影响 fee 计算路由、导出产物生成、文本回答框架和 Workbench 图表下载。
+
+### 是否涉及 Benchmark
+
+是。涉及 DABstep-style fee calculation 问法进入 analysis 的能力边界，但本轮未修改 benchmark runner、scorer、标准答案或 comparison 口径。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。fee 计算路由和标量回答模板收敛到可复用能力边界；导出和 SVG 下载修正保持在后端服务 / 前端渲染边界，不把核心分析逻辑移到前端或 adapter。
+
+### 是否修改核心数据契约
+
+否。当前 diff 未新增公开必填响应字段；导出文件内容更安全，文本 answer / insight 内容更贴近标量结果。
+
+### 是否修改 API 契约
+
+否。未修改请求 / 响应字段契约；导出 artifact 的 SVG mime / 文件扩展名更精确。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。README 已检查；本轮是 changelog 补写，且当前高层 README 已覆盖 DAB context、fee what-if、artifact / Workbench 图表和治理文档分工，不改变阶段状态、主目标、API、Benchmark 口径或新的用户可见产品总览，因此不修改 README。
+
+2026-06-01 10:09 CST
+
+### 本次目标
+
+按用户要求补强 VDS 多 Codex 治理规则：以后每次运行、修改或测试前，如果读取 MAIN_GOAL.md、CHANGELOG_AI.md、BRANCH_RULES.md、AGENTS.md、README 或其他治理 / 红线文件内容，必须先用显眼提示告知用户。
+
+### 修改文件
+
+- AGENTS.md
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- AGENTS.md 新增“治理文件读取提示”章节，要求读取治理 / 红线文件前使用单独醒目的中文提示，列出读取文件、读取目的，并说明读取本身是否会修改文件。
+- MAIN_GOAL.md 在项目红线中新增同等规则，并顺延后续编号。
+- CHANGELOG_AI.md 使用规则新增同等要求，并记录本次项目治理规则修改。
+
+### 测试方式
+
+- `rg -n "显眼提示|治理文件读取提示|读取 MAIN_GOAL.md|每次运行、修改或测试前" AGENTS.md MAIN_GOAL.md CHANGELOG_AI.md`
+- `git diff --check -- AGENTS.md MAIN_GOAL.md CHANGELOG_AI.md`
+
+### 测试结果
+
+- `rg` 检查通过：`AGENTS.md`、`MAIN_GOAL.md`、`CHANGELOG_AI.md` 均能检索到显眼提示 / 治理文件读取提示规则。
+- `git diff --check -- AGENTS.md MAIN_GOAL.md CHANGELOG_AI.md` 通过，无空白错误输出。
+- `MAIN_GOAL.md` 本轮触及的红线编号已检查，8-34 连续，无重复编号。
+
+### 遗留问题
+
+- 当前 worktree 已存在其他未提交业务改动，本轮不处理、不回滚。
+
+### 是否影响主流程
+
+否。仅修改项目治理规则，不改变后端、前端、核心分析、文件解析、benchmark 或输出逻辑。
+
+### 是否涉及 Benchmark
+
+否。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。该规则让多 Codex / 多 Agent 协作时的治理文件读取动作更透明，减少隐藏上下文读取导致的误解。
+
+### 是否修改核心数据契约
+
+否。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。README 已检查，其当前只需要概述 README、MAIN_GOAL、CHANGELOG_AI 等文档分工；本轮新增的是 Codex 执行提示细则，不改变 README 首屏状态摘要、API、Benchmark 口径或用户可见产品能力，故仅同步 AGENTS.md、MAIN_GOAL.md 和 CHANGELOG_AI.md。
+
+2026-05-30 12:36 CST
+
+### 本次目标
+
+按当前 dirty worktree 的真实状态补写 changelog，覆盖本分支所有未提交项目变更，包括其他 Codex 实例已落下但尚未提交的后端、前端、核心算法、文档和测试改动。该记录只基于当前文件 diff、现有测试记录和本轮实际复核命令，不把未完成的 runtime / full benchmark gate 写成已完成。
+
+### 修改文件
+
+- CHANGELOG_AI.md
+- MAIN_GOAL.md
+- docs/FEATURE_BACKLOG.md
+- docs/test-runs/2026-05-29-phase14-p0-file-semantic-correction.md
+- agent_runtime/data_analysis_roles.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- backend/routers/data_agent.py
+- backend/services/data_agent_service.py
+- backend/services/export_service.py
+- backend/storage/project_store.py
+- backend/storage/run_store.py
+- backend/storage/temp_file_store.py
+- data_agent_core/contracts/dataset_contracts.py
+- data_agent_core/contracts/response_contracts.py
+- data_agent_core/core/dabstep_fee_engine.py
+- data_agent_core/core/file_parser.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/core/schema_profiler.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/output/chart_planner.py
+- data_agent_core/output/dataset_overview.py
+- data_agent_core/output/response_builder.py
+- data_agent_core/verifier/rule_checker.py
+- frontend/app.js
+- frontend/index.html
+- frontend/styles.css
+- tests/agent_runtime/test_runtime_contracts.py
+- tests/backend/test_data_agent_api_status.py
+- tests/backend/test_data_agent_message_semantics.py
+- tests/backend/test_p0_workspace_runtime.py
+- tests/backend/test_workbench_static_assets.py
+- tests/core/test_chinese_retail_capabilities.py
+- tests/core/test_file_parser.py
+- tests/core/test_generic_capability_operations.py
+- tests/core/test_output_contract.py
+- tests/core/test_phase8_multitable_capabilities.py
+
+### 修改内容
+
+- Phase 14 P0 文件理解：`DatasetProfile` / `TableProfile` 新增 `source_kind`、`range_ref`、`header_rows`、`table_role`、`role_confidence`、`parse_diagnostics`；Excel 解析开始拆分 sheet/block，识别可分析表、规则/说明、字段字典、空 sheet 和 range；CSV 记录 encoding / delimiter / bad-line diagnostics；图片表格明确要求 OCR/转换，不伪造 DataFrame。
+- 语义正确性：parser / verifier / correction 增强渠道、品类、月度等自然语言维度到真实字段的绑定；`repair_dimension_binding` 可在存在可修复字段时生成 `corrected_logic_form`，由现有 workflow 触发 Pandas / SQL / Verifier 重跑；缺字段仍保持 clarification，不用 city 等无关字段替代。
+- 显式公式和口径纠错：显式 `sum(numerator)/sum(denominator)` 进入 derived metric / formula lineage；conversation correction 可基于上一轮 `conversation_id` 和 run 结果重构有效问题并强制重跑，不完整“不是这个口径”请求返回 clarification 和 `correction_context`。
+- Join / retail 边界：untrusted join 的用户提示改为按实际维度、指标和关联键说明，不再硬写“城市口径”；retail schema-backed operation 继续绕开泛化 join 误拦截，并补充计划拜访线路、合约店、分销数量的 verification 覆盖。
+- Workbench run/job 化：同步 `/api/data-agent/message` 会创建并完成 run-store 记录；新增异步 `/message/jobs`、`/runs/{run_id}`、`/runs/{run_id}/result`、cancel、retry、export 下载等契约；RunStore 以 JSON 持久化 status/result，支持重试 attempt、取消请求、孤儿 active run 标记和 legacy sync message recovery。
+- 导出产物：新增 `export_service`，从稳定 response 字段生成 result CSV/XLSX、summary XLSX/PPTX/PDF、chart fallback 和 manifest；导出时剥离 debug、trace、raw prompt、standard answer / scorer 等内部字段；`FinalResponse` 新增 `artifacts_manifest`。
+- Project / workspace 状态：Project instructions 和 sources 增加版本、hash、source_status、replaces_source_id；dataset profile 支持服务重启后的磁盘恢复状态、`can_analyze`、`source_status` 和 source files；message response 暴露 assistant `message_id` 以便保存回答。
+- 前端 workbench：从同步 message 调用切到 job endpoint；增加 URL project/conversation 恢复、BroadcastChannel/storage 跨窗口 invalidation、run polling、slow-run 状态、取消/重试、保存到 Project、下载结果/图表/报告按钮；避免把 project_id / conversation_id / dataset_id 等业务 workspace 状态写入 localStorage。
+- 图表和执行：chart planner 优先使用 logic form 绑定的 dimension / derived metric；Pandas grouped aggregation 先把 metric 转数值再聚合；join debug 带 formula lineage；DAB fee delta 改为使用 raw period totals 后再求差，避免逐月提前四舍五入。
+- 文档：`MAIN_GOAL.md` 和 `docs/FEATURE_BACKLOG.md` 增加 Phase 14 P0 real file understanding / semantic correctness / multi-turn correction 阶段口径；`docs/test-runs/2026-05-29-phase14-p0-file-semantic-correction.md` 记录 focused checks、pending gates 和 residual risks。
+- 测试：新增/扩展 file parser、message correction、workspace runtime、run store、export artifact、frontend static wiring、agent runtime correction、semantic dimension binding、join clarification、retail verification、generic numeric-like metric 和 output artifact contract 测试。
+
+### 测试方式
+
+- 本轮实际复核：`python3 -m unittest tests.backend.test_data_agent_api_status tests.agent_runtime.test_runtime_contracts tests.core.test_phase8_multitable_capabilities tests.core.test_output_contract tests.core.test_chinese_retail_capabilities`
+- 本轮实际复核：`python3 -m compileall agent_runtime/data_analysis_roles.py data_agent_core/core/intent_parser.py data_agent_core/verifier/rule_checker.py data_agent_core/output/response_builder.py`
+- 本轮实际复核：`git diff --check -- agent_runtime/data_analysis_roles.py data_agent_core/core/intent_parser.py data_agent_core/verifier/rule_checker.py data_agent_core/output/response_builder.py tests/agent_runtime/test_runtime_contracts.py tests/core/test_phase8_multitable_capabilities.py tests/core/test_output_contract.py tests/core/test_chinese_retail_capabilities.py tests/backend/test_data_agent_api_status.py`
+- dirty 文档中已有记录但本轮未重跑：`tests.core.test_file_parser -v`、`tests.backend.test_data_agent_message_semantics -v`、`node --check frontend/app.js`，见 `docs/test-runs/2026-05-29-phase14-p0-file-semantic-correction.md`。
+
+### 测试结果
+
+- 本轮实际复核：72 tests OK，2 个 FastAPI/TestClient 相关测试按当前可选依赖环境 skip。
+- 本轮实际复核：Python compileall 通过。
+- 本轮实际复核：目标文件 `git diff --check` 通过。
+- dirty 文档记录：`tests.core.test_file_parser` 为 4 tests OK，`tests.backend.test_data_agent_message_semantics` 为 13 tests OK，`node --check frontend/app.js` passed。
+- 未完成 / 未复核：本轮没有运行 full `scripts/run_tests.py`，没有运行 VDS 95 / Microsoft 300 / DAB 全量 gate，没有同步并重启真实 `127.0.0.1:8001/workbench` runtime。
+
+### 遗留问题
+
+- 当前 worktree 仍是大范围 dirty 状态，存在其他 Codex 实例或上轮遗留改动；本条 changelog 汇总当前文件状态，不代表已完成提交边界。
+- `.DS_Store` 处于未跟踪状态，属于本地系统文件，不作为项目功能变更记录；提交前建议删除或忽略。
+- Excel candidate detection 仍是启发式，不能按当前 fixture 或文件名特调；PDF/图片表格仍是边界能力，不代表 OCR 已完成。
+- 显式公式当前以 ratio-first 为主，复杂嵌套公式、多指标表达式和跨表公式仍需要后续能力族。
+- Run/job、export、workspace frontend 的真实 8001 runtime 验证尚未在本轮完成；浏览器可见行为需同步 runtime 后复测。
+
+### 是否影响主流程
+
+是。影响普通 `/api/data-agent/message` 分析主链路、multi-agent workflow、文件上传解析、结果验证、回答构造、workbench 运行方式和导出/保存体验。
+
+### 是否涉及 Benchmark
+
+是，但不是 benchmark runner / scorer / 标准答案改动。涉及 DAB fee engine 计算口径、benchmark 相关非回归风险说明，以及 Phase 14 pending gate 文档；本轮未运行 full benchmark gate。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。没有引入或修改 Microsoft Agent Framework 适配层；只修改本地 `agent_runtime` 和 VDS workflow 契约。
+
+### 是否影响未来多 Agent 迁移
+
+是。`corrected_logic_form`、RunStore status/result、cancel checker、formula lineage、verifier correction action、FinalResponse artifact manifest 都属于未来多 Agent 编排必须保留的跨角色契约。
+
+### 是否修改核心数据契约
+
+是。`DatasetProfile` / `TableProfile`、`LogicForm.parameters` 中的语义证据和 derived metric lineage、`FinalResponse.artifacts_manifest`、dataset profile restore 状态、project source/version/hash 字段均属于核心或后端稳定数据契约扩展。
+
+### 是否修改 API 契约
+
+是。新增或扩展 `/api/data-agent/message/jobs`、`/api/data-agent/runs/{run_id}`、`/api/data-agent/runs/{run_id}/result`、`/cancel`、`/retry`、`/exports/{artifact_id}`，并要求同步 `/message` 返回的 `run_id` 可被 run/result 查询追踪。
+
+### 是否新增或修改错误类型
+
+未新增全局错误类型。继续复用 `FILE_PARSE_ERROR`、`LOGIC_FORM_ERROR`、`VERIFICATION_FAILED` 等错误类型；新增 run failure category / status 文案，如 dataset restore、parser、executor、verifier、provider timeout、cancelled、unknown。
+
+### 是否新增或修改运行追踪逻辑
+
+是。新增 JSON RunStore、message job active task map、run status/result recovery、cancel/retry/orphaned 状态、formula lineage debug、export artifacts manifest，以及前端 run polling / slow-run / reconnect 展示。
+
+### 是否已同步 README
+
+否。本轮和当前 dirty worktree 已同步 `MAIN_GOAL.md`、`docs/FEATURE_BACKLOG.md` 和 test-run 文档，但没有修改 README；README 是否需要同步应在 Phase 14 runtime/full gate 完成后再单独处理。
 
 2026-05-28 10:39 CST
 

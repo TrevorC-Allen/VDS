@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -67,6 +68,25 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("font-weight: 400 !important;", css)
         self.assertIn("function resolveLineYAxisName", js)
 
+    def test_workbench_chart_svg_download_is_standalone(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function serializeSvg(svg)", js)
+        self.assertIn("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", js)
+        self.assertIn("parseSvgViewBox(clone.getAttribute(\"viewBox\"))", js)
+        self.assertIn("clone.setAttribute(\"width\", String(viewBox.width))", js)
+        self.assertIn("clone.setAttribute(\"height\", String(viewBox.height))", js)
+        self.assertIn("chartSvgExportStyles()", js)
+        self.assertIn(".chart-export-background", js)
+        self.assertIn(".chart-hover-card, .chart-hover-guide", js)
+        self.assertIn(".line-path", js)
+        self.assertIn(".axis-line", js)
+        self.assertIn(".chart-legend-label", js)
+        self.assertIn("function normalizeSvgSourceForExport", js)
+        self.assertIn("parser.parseFromString(String(svgSource || \"\"), \"image/svg+xml\")", js)
+        self.assertIn("document.importNode(doc.documentElement, true)", js)
+        self.assertIn("downloadBlob(new Blob([svgSource], { type: \"image/svg+xml;charset=utf-8\" })", js)
+
     def test_workbench_prefers_interactive_chart_svg_over_backend_images(self) -> None:
         js = Path("frontend/app.js").read_text(encoding="utf-8")
         css = Path("frontend/styles.css").read_text(encoding="utf-8")
@@ -118,12 +138,13 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn('id="file-status-wrap"', topbar)
         self.assertIn("查看文件", topbar)
         self.assertNotIn('id="file-status-wrap"', composer)
-        self.assertIn('id="rule-file-input"', html)
-        self.assertIn('id="rule-upload-button"', html)
-        self.assertIn("上传数据文件", html)
-        self.assertIn("添加规则", html)
-        self.assertIn('id="rule-file-status" class="rule-file-status is-empty"', html)
-        self.assertIn("可选：上传规则文件可以补充语义模型、指标口径和计算方法", html)
+        self.assertIn('aria-label="添加文件"', composer)
+        self.assertIn('data-tooltip="添加文件"', composer)
+        self.assertNotIn('id="rule-file-input"', html)
+        self.assertNotIn('id="rule-upload-button"', html)
+        self.assertNotIn("上传数据文件</span>", composer)
+        self.assertNotIn("添加规则", composer)
+        self.assertIn('id="rule-file-status" class="rule-file-status is-empty hidden"', html)
         self.assertIn('accept=".csv,.xlsx,.xls,.json,.parquet,.arrow,.feather,.md,.txt,.yaml,.yml,.doc,.docx,.docm,.rtf,.odt,.pdf,.pages,.html,.htm"', html)
         self.assertIn("上传数据文件，然后直接提问", html)
         self.assertNotIn("高级选项", html)
@@ -175,15 +196,25 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("ATTACHED_FILE_QUESTION_PLACEHOLDER", js)
         self.assertIn("RULE_FILE_STATUS_TONES", js)
         self.assertIn('setRuleFileStatus(`规则上传失败：${String(error.message || error)}`, "error")', js)
+        self.assertIn('payload.append("bind_dataset_id", state.datasetId)', js)
+        self.assertIn("profileRuleFileIds", js)
+        self.assertIn("applyUserRuleFileIds", js)
         self.assertIn("const showComposerFiles = state.hasPendingUpload && hasRecords", js)
         self.assertIn("renderComposerFileTray(showComposerFiles ? records : [])", js)
+        self.assertIn(".composer {", css)
+        self.assertIn("display: grid;", css)
         self.assertIn(".composer.has-files", css)
-        self.assertIn("grid-template-columns: 34px auto minmax(180px, 1fr) 36px", css)
-        self.assertIn(".composer.has-files .rule-file-button", css)
+        self.assertIn("grid-template-columns: 36px minmax(180px, 1fr) 36px", css)
+        self.assertIn(".composer > .composer-actions > .button.primary", css)
+        self.assertIn(".composer-actions {\n  display: contents;", css)
+        self.assertIn(".upload-controls {\n  display: contents;", css)
+        self.assertIn(".rule-file-button", css)
+        self.assertNotIn(".composer.has-files .rule-file-button", css)
         self.assertIn(".rule-file-status.is-error", css)
         self.assertIn("grid-row: 3", css)
         self.assertIn("border-left: 1px solid #d1d5db", css)
         self.assertIn("来源文件已就绪", js)
+        self.assertNotIn("添加规则", html)
         self.assertNotIn("fees.json", js)
         self.assertNotIn("merchant_data.json", js)
         self.assertNotIn("manual.md", js)
@@ -228,6 +259,9 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("function resolveInsightAdviceCandidates", js)
         self.assertIn("const directSuggestions = [insight?.next_step", js)
         self.assertIn("return uniqueStrings([...directSuggestions, ...businessSuggestions])", js)
+        self.assertIn("insight?.next_actions || []", js)
+        self.assertIn("function resolveInsightActionQuestions", js)
+        self.assertIn("action.status !== \"unsupported\"", js)
         self.assertIn("function isDistinctInsightText", js)
         self.assertIn("normalizeInsightText(value) !== normalizeInsightText(summary)", js)
         self.assertIn("const rawAdvice = isActionableInsightAdvice(advice) ? advice : \"\"", js)
@@ -611,6 +645,73 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn(".project-conversation-menu-button", css)
         self.assertNotIn('id="project-select"', html)
         self.assertNotIn(".project-controls", css)
+
+    def test_p0_workspace_url_sync_and_cross_window_invalidation(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function applyWorkspaceFromUrl", js)
+        self.assertIn("new URLSearchParams(window.location.search || \"\")", js)
+        self.assertIn("project_id", js)
+        self.assertIn("conversation_id", js)
+        self.assertIn("function syncUrlWithWorkspace", js)
+        self.assertIn("window.history[method]({}, \"\", nextUrl)", js)
+        self.assertIn("replaceState", js)
+        self.assertIn("new BroadcastChannel(WORKBENCH_SYNC_CHANNEL)", js)
+        self.assertIn("handleWorkspaceInvalidation", js)
+        self.assertIn("window.addEventListener(\"storage\"", js)
+        self.assertIn("loadProjectWorkspace(state.projectId)", js)
+        self.assertIn("loadConversation(state.conversationId)", js)
+
+    def test_p0_run_jobs_cancel_retry_and_download_controls_are_wired(self) -> None:
+        html = Path("frontend/index.html").read_text(encoding="utf-8")
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        self.assertIn('class="save-response-button message-action-button hidden"', html)
+        self.assertIn('class="download-artifacts-button message-action-button hidden"', html)
+        self.assertIn('class="cancel-run-button message-action-button hidden"', html)
+        self.assertIn('class="retry-run-button message-action-button hidden"', html)
+        self.assertIn('const JOB_MESSAGE_ENDPOINT = "/api/data-agent/message/jobs"', js)
+        self.assertIn("async function waitForRunResult", js)
+        self.assertIn("fetchRunStatus", js)
+        self.assertIn("fetchRunResult", js)
+        self.assertIn("SUPPORTED_AGENT_MODES", js)
+        self.assertIn("validateRunRequestState", js)
+        self.assertIn("当前数据记录不可用，请重新上传数据文件。", js)
+        self.assertIn('fetch(`/api/data-agent/runs/${encodeURIComponent(runId)}/cancel`', js)
+        self.assertIn('fetch(`/api/data-agent/runs/${encodeURIComponent(runId)}/retry`', js)
+        self.assertIn("SLOW_RUN_THRESHOLD_MS", js)
+        self.assertIn("实时过程重连中", js)
+        self.assertIn("saveAssistantResponseToProject", js)
+        self.assertIn('source_type: "saved_response"', js)
+        self.assertIn("artifacts_manifest", js)
+        self.assertIn("openDownloadMenu", js)
+        self.assertIn(".download-artifacts-button", js)
+        self.assertIn("event.stopPropagation()", js)
+        self.assertIn("openDownloadMenu(event.currentTarget, message)", js)
+        self.assertIn("downloadChartFromMessage", js)
+        self.assertIn("downloadSvgAsPng", js)
+        self.assertIn("downloadTableCsvFromResult", js)
+        self.assertIn("compactResultSummary", js)
+        self.assertIn("chartSummary", js)
+        self.assertIn("artifact.download_name || artifact.file_name", js)
+        self.assertIn('artifact.artifact_type === "result_table"', js)
+
+    def test_p0_workbench_does_not_store_business_workspace_state_in_local_storage(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+        set_item_keys = set(re.findall(r"localStorage\.setItem\(([^,\n]+)", js))
+
+        self.assertLessEqual(
+            set_item_keys,
+            {
+                "WORKBENCH_SYNC_PULSE_KEY",
+                "PROJECT_PANEL_COLLAPSED_KEY",
+                "ACTIVE_MONITOR_RUN_KEY",
+                "MONITOR_RUN_INDEX_KEY",
+            },
+        )
+        self.assertNotIn('localStorage.setItem("project_id"', js)
+        self.assertNotIn('localStorage.setItem("conversation_id"', js)
+        self.assertNotIn('localStorage.setItem("dataset_id"', js)
 
     def test_workbench_exposes_standalone_agent_monitor_page(self) -> None:
         html = Path("frontend/index.html").read_text(encoding="utf-8")

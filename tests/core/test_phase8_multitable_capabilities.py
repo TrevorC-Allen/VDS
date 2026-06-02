@@ -223,6 +223,50 @@ class Phase8MultiTableCapabilityTest(unittest.TestCase):
         self.assertTrue(result.success, result.errors)
         self.assertTrue(verification.passed, verification.semantic_verification_notes)
 
+    def test_channel_synonym_binds_sales_channel_before_city(self) -> None:
+        tables = {
+            "sales": pd.DataFrame(
+                {
+                    "city": ["上海", "北京", "广州"],
+                    "sales_channel": ["线上", "线下", "线上"],
+                    "sales": [100, 250, 180],
+                }
+            )
+        }
+        executed = _execute("哪个来源渠道销售额最高？", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="哪个来源渠道销售额最高？"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("sales_channel", executed["logic"].parameters["dimension"])
+        self.assertEqual([{"sales_channel": "线上", "sales": 280}], executed["result"].value)
+        self.assertTrue(verification.passed, verification.issues)
+
+    def test_category_synonym_binds_product_category_before_city(self) -> None:
+        tables = {
+            "sales": pd.DataFrame(
+                {
+                    "city": ["上海", "北京", "广州"],
+                    "product_category": ["饮料", "零食", "饮料"],
+                    "sales": [100, 250, 180],
+                }
+            )
+        }
+        executed = _execute("哪个商品品类销售额最高？", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="哪个商品品类销售额最高？"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("product_category", executed["logic"].parameters["dimension"])
+        self.assertEqual([{"product_category": "饮料", "sales": 280}], executed["result"].value)
+        self.assertTrue(verification.passed, verification.issues)
+
     def test_profit_margin_ranking_uses_derived_ratio_metric(self) -> None:
         tables = {"sales": pd.DataFrame({"city": ["上海", "北京"], "sales": [100, 280], "profit": [40, 56]})}
         executed = _execute("哪个城市利润率最高？", tables)
@@ -387,6 +431,80 @@ class Phase8MultiTableCapabilityTest(unittest.TestCase):
         self.assertEqual("line", chart.chart_type)
         self.assertEqual("month", chart.x)
 
+    def test_monthly_trend_binds_numeric_stat_month(self) -> None:
+        tables = {"sales": pd.DataFrame({"stat_month": [202601, 202601, 202602], "city": ["上海", "北京", "广州"], "sales": [100, 250, 180]})}
+        executed = _execute("按月度展示销售额趋势，生成折线图。", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="按月度展示销售额趋势，生成折线图。"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("aggregation", executed["logic"].operation)
+        self.assertEqual("stat_month", executed["logic"].parameters["dimension"])
+        self.assertEqual({202601: 350, 202602: 180}, {row["stat_month"]: row["sales"] for row in executed["result"].value})
+        self.assertTrue(verification.passed, verification.issues)
+
+    def test_retail_sales_trend_uses_fact_table_without_untrusted_join(self) -> None:
+        tables = _retail_sales_tables()
+        executed = _execute("天然水销售金额随时间的趋势是怎样的，生成曲线图", tables)
+        verification = verify_execution(
+            executed["result"],
+            plan=executed["plan"],
+            user_question=UserQuestion(dataset_id="ds_phase8", question="天然水销售金额随时间的趋势是怎样的，生成曲线图"),
+        )
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("aggregation", executed["logic"].operation)
+        self.assertEqual("v_trd_dist_ord_dtl", executed["logic"].parameters["table"])
+        self.assertEqual("sign_amt", executed["logic"].parameters["metric"])
+        self.assertEqual("sign_time", executed["logic"].parameters["dimension"])
+        self.assertEqual({"ctg_name": "天然水"}, executed["logic"].filters)
+        self.assertEqual({}, executed["logic"].join_plan)
+        self.assertEqual(
+            [
+                {"sign_time": "2026-05-01", "sign_amt": 100.0},
+                {"sign_time": "2026-06-01", "sign_amt": 80.0},
+            ],
+            executed["result"].value,
+        )
+        self.assertTrue(verification.passed, verification.issues)
+
+    def test_retail_sales_may_amount_keeps_month_filter_executable(self) -> None:
+        executed = _execute("天然水五月的销售金额", _retail_sales_tables())
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("aggregation", executed["logic"].operation)
+        self.assertEqual("v_trd_dist_ord_dtl", executed["logic"].parameters["table"])
+        self.assertEqual("sign_amt", executed["logic"].parameters["metric"])
+        self.assertEqual({"ctg_name": "天然水", "sign_time": {"month": 5}}, executed["logic"].filters)
+        self.assertEqual({}, executed["logic"].join_plan)
+        self.assertEqual(100.0, executed["result"].value)
+
+    def test_retail_sales_composition_uses_amount_metric_and_category_filter(self) -> None:
+        executed = _execute("看一下天然水的销售组成", _retail_sales_tables())
+
+        self.assertTrue(executed["result"].success, executed["result"].errors)
+        self.assertEqual("aggregation", executed["logic"].operation)
+        self.assertEqual("v_trd_dist_ord_dtl", executed["logic"].parameters["table"])
+        self.assertEqual("sign_amt", executed["logic"].parameters["metric"])
+        self.assertEqual("capacity", executed["logic"].parameters["dimension"])
+        self.assertEqual({"ctg_name": "天然水"}, executed["logic"].filters)
+        self.assertEqual([{"capacity": "550mL", "sign_amt": 180.0}], executed["result"].value)
+
+    def test_natural_dimension_aliases_bind_to_semantic_fields(self) -> None:
+        source_case = _execute("哪个来源销售额最高？", {"sales": pd.DataFrame({"city": ["北京", "上海"], "source": ["线上", "线下"], "sales": [80, 120]})})
+        category_case = _execute("哪个品类销售额最高？", {"sales": pd.DataFrame({"city": ["北京", "上海"], "product_line": ["饮料", "食品"], "sales": [80, 120]})})
+        month_case = _execute("按月度展示销售额趋势。", {"sales": pd.DataFrame({"city": ["北京", "上海"], "period": ["2026-01", "2026-02"], "sales": [80, 120]})})
+
+        self.assertEqual("source", source_case["logic"].parameters["dimension"])
+        self.assertEqual([{"source": "线下", "sales": 120}], source_case["result"].value)
+        self.assertEqual("product_line", category_case["logic"].parameters["dimension"])
+        self.assertEqual([{"product_line": "食品", "sales": 120}], category_case["result"].value)
+        self.assertEqual("period", month_case["logic"].parameters["dimension"])
+        self.assertEqual({"2026-01": 80, "2026-02": 120}, {row["period"]: row["sales"] for row in month_case["result"].value})
+
     def test_missing_channel_dimension_is_blocked_instead_of_city_fallback(self) -> None:
         tables = {"sales": pd.DataFrame({"city": ["北京", "上海"], "sales": [280, 100]})}
         executed = _execute("哪个渠道销售额最高？", tables)
@@ -471,6 +589,29 @@ def _orders_products_customers() -> dict[str, pd.DataFrame]:
         ),
         "products": pd.DataFrame({"product_id": ["P1", "P2", "P3"], "category": ["水果", "水果", "零食"]}),
         "customers": pd.DataFrame({"customer_id": ["C1", "C2"], "city": ["北京", "上海"]}),
+    }
+
+
+def _retail_sales_tables() -> dict[str, pd.DataFrame]:
+    return {
+        "终端客户月度维表": pd.DataFrame(
+            {
+                "统计日期": ["2026-05-01"],
+                "所属销售客户SAP编码": [123456],
+                "终端客户": ["便利店A"],
+            }
+        ),
+        "v_trd_dist_ord_dtl": pd.DataFrame(
+            {
+                "ctg_name": ["天然水", "茶π", "天然水"],
+                "sign_amt": [100.0, 50.0, 80.0],
+                "sign_sales_amt_550_6d1_share": [0.2, 0.1, 0.3],
+                "sign_time": ["2026-05-01", "2026-05-02", "2026-06-01"],
+                "create_time": ["2026-04-30", "2026-05-01", "2026-05-31"],
+                "capacity": ["550mL", "500mL", "550mL"],
+                "cmdt_name": ["农夫山泉-天然水", "茶π", "农夫山泉-天然水"],
+            }
+        ),
     }
 
 

@@ -10,7 +10,7 @@
 
 ## 当前阶段目标
 
-当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环。Phase 11 已启动会话隔离和历史续聊持久化首个落点，当前具备本地 JSON conversation store、`conversation_id`、历史载入和重命名持久化；真实登录、权限和多租户隔离仍未实现。Phase 12 已作为 Phase 11 之后的正式 Workbench 体验收敛阶段落地首轮实现，把 general 表单概览、结构化 Insight、代码展示和 GPT-like 活动流做成后端稳定契约。Phase 13 已完成首个 GPT-like Project 工作区落点，把 chats、共享文件、项目说明和项目内 memory 纳入同一 project-only 上下文边界；Project 入口必须高度对齐 ChatGPT Project：进入 Project 后左侧全局导航、项目列表和最近历史仍可见，右侧主区域呈现项目主页和项目内上下文。
+当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环。Phase 11 已启动会话隔离和历史续聊持久化首个落点，当前具备本地 JSON conversation store、`conversation_id`、历史载入和重命名持久化；真实登录、权限和多租户隔离仍未实现。Phase 12 已作为 Phase 11 之后的正式 Workbench 体验收敛阶段落地首轮实现，把 general 表单概览、结构化 Insight、代码展示和 GPT-like 活动流做成后端稳定契约。Phase 13 已完成首个 GPT-like Project 工作区落点，把 chats、共享文件、项目说明和项目内 memory 纳入同一 project-only 上下文边界；Project 入口必须高度对齐 ChatGPT Project：进入 Project 后左侧全局导航、项目列表和最近历史仍可见，右侧主区域呈现项目主页和项目内上下文。Phase 14 已启动 P0 core hardening 首轮实现，优先补真实文件理解、显式公式口径绑定、图表语义绑定和多轮口径纠错重跑；前端只展示后端结构化结果，不承载解析、公式、join、排序或聚合。
 
 1. 已搭建 data_agent_core 核心算法目录
 2. 已搭建 data_agent_core/contracts 数据契约目录
@@ -44,6 +44,7 @@
 30. Phase 12 已作为 Phase 11 之后的正式体验收敛阶段：GPT-like General Answer, Insight and Activity Stream。首轮已实现 `overview_report`、增强 Insight、安全 `execution_artifacts`、dataset overview 活动流、语义图表规划防线和规则文件自动绑定；真实 `127.0.0.1:8001/workbench` smoke 已确认 general、Insight、过程流和代码卡片可见，前端仍只负责渲染。
 31. Phase 12 后续 correctness + GPT-like hardening 已作为当前硬化目标：语义正确性优先于模板效果，`success=true` 不能掩盖语义错算；点名文件、点名维度、利润率派生指标、可信 join、untrusted join 澄清、overview 表角色和简单 Top1 减噪都必须有 non-regression 测试守护，已修能力不得下降。
 32. Phase 13 已完成首个落点：Project Workspace / Shared Files / Project Memory。已新增 Project Store、Project Sources、Project Memory、project-scoped conversations 和 GPT-like Workbench Project UI，把共享文件、项目说明、项目内记忆和项目 Chat 放进同一后端上下文边界；Project 不是左侧历史过滤器，左侧最近历史必须保持全局可见，项目内聊天 / 来源列表由主区域项目主页单独展示。
+33. Phase 14 P0 core hardening 已启动首轮实现：文件解析 profile 新增 source_kind、range_ref、header_rows、table_role、role_confidence 和 parse_diagnostics；Excel 上传开始识别可分析表、字段字典、规则/说明和空 sheet，CSV 记录编码、分隔符和坏行诊断，PDF/图片表格当前明确要求转换或 OCR，不伪造 DataFrame。显式公式口径可进入 derived metric lineage，多轮“不是这个口径，用公式重算”会读取上一轮 conversation、强制重跑并返回 correction_context；不完整修正必须先澄清。
 
 ## 统一 Phase 状态表
 
@@ -71,6 +72,7 @@
 22. Phase 12：GPT-like General Answer / Insight / Activity Stream，状态为 First implementation landed。该阶段不修改 Phase 10 / Phase 11 的已完成语义，专门收敛 overview report、enhanced insight、execution artifacts、activity process view、semantic chart planning 和规则文件自动绑定。
 23. Phase 12 后续 correctness + GPT-like hardening，状态为 in progress。该阶段不重开前端大改，优先修语义正确性：文件点名与维度绑定、利润率派生 ratio、可信 join / untrusted join 澄清、overview 表角色和简单回答减噪；任何修复必须证明旧的多文件、join、chart、overview 和 GPT-like 回答能力 non-regression。
 24. Phase 13：Project Workspace / Shared Files / Project Memory，状态为 First implementation landed。该阶段新增 project-only memory 和共享文件上下文层；共享文件复用既有 upload / rule / dataset store，前端只渲染后端 Project 契约，不实现检索、join、聚合、评分或数据清洗。Workbench Project UX 必须保持 GPT-like：左侧全局最近历史不因进入 Project 消失，右侧主区域展示 Project 标题、项目内新聊天入口、聊天 / 来源 tabs 和 project-scoped 列表。
+25. Phase 14：P0 Real File Understanding / Semantic Correctness / Multi-turn Correction，状态为 First implementation in progress。该阶段先补 `data_agent_core` 文件候选表识别、显式公式和 chart 语义绑定、verifier 阻断，再接 backend conversation correction；frontend 只展示后端给出的表角色、range 和 correction_context。
 
 ## 当前实现状态
 
@@ -1166,28 +1168,29 @@ Phase 9 禁止：
 6. 不允许绕过 Verifier 直接输出最终结论
 7. 不允许一次任务混合多个无关目标
 8. 每次修改前必须读取 MAIN_GOAL.md、CHANGELOG_AI.md、BRANCH_RULES.md
-9. 每次修改后必须更新 CHANGELOG_AI.md
-10. 不允许核心算法依赖 Microsoft Agent Framework
-11. 不允许在适配层中实现核心业务逻辑
-12. 不允许每个模块随意返回不同结构的 dict
-13. 不允许没有 run_id 的 analyze 链路
-14. 不允许没有错误类型的失败结果
-15. 不允许没有 trace 的分析链路设计
-16. 不允许工程文档要求输出完整 Chain of Thought
-17. CHANGELOG_AI.md 新增记录必须写日期时间，格式为 YYYY-MM-DD HH:MM TZ，精确到分钟
-18. 不允许为了补齐格式而给历史 CHANGELOG 记录编造分钟级时间
-19. 不允许把中文支持当作可选增强；中文问题理解、字段映射、业务术语、日期/金额/百分比格式和最终回答必须作为主路径能力设计。
-20. 不允许只用英文样例、英文字段或英文 Benchmark 声称能力完成；英文必须持续支持，但中文必须优先验收。
-21. 不允许为中文能力写只适配当前脱敏数据、当前字段值或当前问法的伪泛化补丁；中文能力同样必须抽象为可复用能力族并有合成/非 Benchmark 验证。
-22. Phase 12 必须保持阶段边界：Phase 10 是首版结果体验，Phase 11 是会话 / 历史持久化，Phase 12 才负责 general 回答、Insight、代码 artifact、活动流、图表语义和规则文件自动绑定的体验收敛。
-23. Phase 12 不允许展示完整 Chain of Thought、raw prompt、raw reasoning tokens、API key、后端完整 trace JSON、benchmark hidden answer、standard answer、proxy answer 或 scorer 信息。
-24. Phase 12 不允许让前端实现公式、join、排序、聚合、图表选择、评分、数据清洗或任何核心数据分析逻辑。
-25. Phase 12 不允许按当前截图、payments 字段、固定文件名、固定问法或当前样本值写伪泛化补丁；overview / insight / chart 能力必须用非 payments 合成表证明同类泛化。
-26. Phase 12 不允许绕过 ToolDispatcher、Result Normalizer、Verifier 或 Correction Planner 直接生成最终结论；代码展示只能作为后端安全 artifact，不代表开放任意代码执行。
-27. Phase 12 不允许只以“功能可用”或“测试通过”作为体验验收；凡是与 GPT / ChatGPT Data Analysis 参考结果差距很大的文件解析、回答结构、排版样式、表格/图表呈现和活动流，都必须打回重写。
-28. Phase 13 不允许把项目 memory 做成全局 memory，也不允许跨 project 读取 conversation、memory 或 file。
-29. Phase 13 不允许把前端 localStorage、单页内存或未落盘状态冒充共享 Project 存储。
-30. Phase 13 不允许让前端实现检索、join、聚合、排序、评分、图表选择或数据清洗；这些能力必须继续由后端和 data_agent_core 受控链路负责。
-31. Phase 13 不允许把 Project 当成左侧历史过滤器；进入 Project 后必须保持左侧全局导航、Project 列表和最近历史可见，项目内聊天 / 来源列表只能在主区域 Project home 中呈现。
-32. Phase 13 不允许用与 ChatGPT Project 明显不相似的排版、入口命名或回答结构冒充 GPT-like；Project UX 和项目内回答必须对照 ChatGPT 截图、冻结参考或标准 GPT answer，差距大时打回重写。
-33. 每次测试必须写文档；任何被用于验收结论的测试都必须留下 `docs/test-runs/*.md` 证据，不能只存在于终端输出、对话说明、截图或 CHANGELOG_AI.md。
+9. 每次运行、修改或测试前，如果根据项目规则读取 MAIN_GOAL.md、CHANGELOG_AI.md、BRANCH_RULES.md、AGENTS.md、README 或其他治理 / 红线文件内容，必须先用单独醒目的中文提示告知用户，至少列出读取文件、读取目的，并说明读取本身是否会修改文件
+10. 每次修改后必须更新 CHANGELOG_AI.md
+11. 不允许核心算法依赖 Microsoft Agent Framework
+12. 不允许在适配层中实现核心业务逻辑
+13. 不允许每个模块随意返回不同结构的 dict
+14. 不允许没有 run_id 的 analyze 链路
+15. 不允许没有错误类型的失败结果
+16. 不允许没有 trace 的分析链路设计
+17. 不允许工程文档要求输出完整 Chain of Thought
+18. CHANGELOG_AI.md 新增记录必须写日期时间，格式为 YYYY-MM-DD HH:MM TZ，精确到分钟
+19. 不允许为了补齐格式而给历史 CHANGELOG 记录编造分钟级时间
+20. 不允许把中文支持当作可选增强；中文问题理解、字段映射、业务术语、日期/金额/百分比格式和最终回答必须作为主路径能力设计。
+21. 不允许只用英文样例、英文字段或英文 Benchmark 声称能力完成；英文必须持续支持，但中文必须优先验收。
+22. 不允许为中文能力写只适配当前脱敏数据、当前字段值或当前问法的伪泛化补丁；中文能力同样必须抽象为可复用能力族并有合成/非 Benchmark 验证。
+23. Phase 12 必须保持阶段边界：Phase 10 是首版结果体验，Phase 11 是会话 / 历史持久化，Phase 12 才负责 general 回答、Insight、代码 artifact、活动流、图表语义和规则文件自动绑定的体验收敛。
+24. Phase 12 不允许展示完整 Chain of Thought、raw prompt、raw reasoning tokens、API key、后端完整 trace JSON、benchmark hidden answer、standard answer、proxy answer 或 scorer 信息。
+25. Phase 12 不允许让前端实现公式、join、排序、聚合、图表选择、评分、数据清洗或任何核心数据分析逻辑。
+26. Phase 12 不允许按当前截图、payments 字段、固定文件名、固定问法或当前样本值写伪泛化补丁；overview / insight / chart 能力必须用非 payments 合成表证明同类泛化。
+27. Phase 12 不允许绕过 ToolDispatcher、Result Normalizer、Verifier 或 Correction Planner 直接生成最终结论；代码展示只能作为后端安全 artifact，不代表开放任意代码执行。
+28. Phase 12 不允许只以“功能可用”或“测试通过”作为体验验收；凡是与 GPT / ChatGPT Data Analysis 参考结果差距很大的文件解析、回答结构、排版样式、表格/图表呈现和活动流，都必须打回重写。
+29. Phase 13 不允许把项目 memory 做成全局 memory，也不允许跨 project 读取 conversation、memory 或 file。
+30. Phase 13 不允许把前端 localStorage、单页内存或未落盘状态冒充共享 Project 存储。
+31. Phase 13 不允许让前端实现检索、join、聚合、排序、评分、图表选择或数据清洗；这些能力必须继续由后端和 data_agent_core 受控链路负责。
+32. Phase 13 不允许把 Project 当成左侧历史过滤器；进入 Project 后必须保持左侧全局导航、Project 列表和最近历史可见，项目内聊天 / 来源列表只能在主区域 Project home 中呈现。
+33. Phase 13 不允许用与 ChatGPT Project 明显不相似的排版、入口命名或回答结构冒充 GPT-like；Project UX 和项目内回答必须对照 ChatGPT 截图、冻结参考或标准 GPT answer，差距大时打回重写。
+34. 每次测试必须写文档；任何被用于验收结论的测试都必须留下 `docs/test-runs/*.md` 证据，不能只存在于终端输出、对话说明、截图或 CHANGELOG_AI.md。

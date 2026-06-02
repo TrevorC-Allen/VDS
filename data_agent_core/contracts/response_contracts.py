@@ -18,6 +18,7 @@ class InsightResult:
     business_suggestions: list[str] = field(default_factory=list)
     caveats: list[str] = field(default_factory=list)
     next_questions: list[str] = field(default_factory=list)
+    next_actions: list[dict[str, Any]] = field(default_factory=list)
     evidence_rows: list[dict[str, Any]] = field(default_factory=list)
     confidence: float = 0.0
 
@@ -107,6 +108,7 @@ class FinalResponse:
     overview_report: dict[str, Any] = field(default_factory=dict)
     activity_trace_v2: list[dict[str, Any]] = field(default_factory=list)
     execution_artifacts: list[dict[str, Any]] = field(default_factory=list)
+    artifacts_manifest: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[Any] = field(default_factory=list)
     debug: dict[str, Any] = field(default_factory=dict)
