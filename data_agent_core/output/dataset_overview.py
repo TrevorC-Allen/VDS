@@ -234,6 +234,7 @@ def _wants_multi_table_overview(question: str, tables: dict[str, pd.DataFrame]) 
         "这个数据讲什么",
         "这个数据集",
         "这份数据",
+        "这些数据",
         "看一下这个数据",
         "看下这个数据",
         "看看这个数据",
@@ -248,7 +249,8 @@ def _wants_multi_table_overview(question: str, tables: dict[str, pd.DataFrame]) 
         "类型变化",
     )
     single_signals = ("这个表", "这张表", "当前表", "这个文件")
-    return any(signal in compact for signal in multi_signals) and not any(signal in compact for signal in single_signals)
+    implicit_multi_file = "文件" in compact and any(token in compact for token in ("这些", "这批", "多个", "多张", "所有", "全部"))
+    return (implicit_multi_file or any(signal in compact for signal in multi_signals)) and not any(signal in compact for signal in single_signals)
 
 
 def _tables_with_profile_only_sources(tables: dict[str, pd.DataFrame], profile_payload: dict[str, Any]) -> dict[str, pd.DataFrame]:
@@ -760,7 +762,7 @@ def _contract_multi_table_overview_answer(report: dict[str, Any]) -> str:
             lines.append(
                 " | ".join(
                     [
-                        str(field.get("field") or ""),
+                        f"{table.get('table')}.{field.get('field')}",
                         str(field.get("type") or "unknown"),
                         str(field.get("role") or "待确认"),
                         str(field.get("analysis_use") or field.get("meaning") or "需结合业务说明确认"),
@@ -836,16 +838,25 @@ def _candidate_join_keys(tables: list[dict[str, Any]]) -> list[dict[str, str]]:
             right_fields = {str(field.get("field")) for field in right.get("field_meanings") or [] if isinstance(field, dict)}
             for field in sorted(left_fields & right_fields):
                 if _looks_like_id_field(field) or _looks_like_time_field(field):
+                    left_table = str(left.get("table") or "")
+                    right_table = str(right.get("table") or "")
+                    if _prefer_as_fact_table(right_table) and not _prefer_as_fact_table(left_table):
+                        left_table, right_table = right_table, left_table
                     candidates.append(
                         {
-                            "left_table": str(left.get("table") or ""),
+                            "left_table": left_table,
                             "left_key": field,
-                            "right_table": str(right.get("table") or ""),
+                            "right_table": right_table,
                             "right_key": field,
-                            "text": f"{left.get('table')}.{field} -> {right.get('table')}.{field}",
+                            "text": f"{left_table}.{field} -> {right_table}.{field}",
                         }
                     )
     return candidates
+
+
+def _prefer_as_fact_table(table_name: str) -> bool:
+    lowered = str(table_name or "").lower()
+    return any(token in lowered for token in ("order", "orders", "detail", "fact", "transaction", "订单", "明细", "交易"))
 
 
 def _quality_summary_text(issues: list[dict[str, Any]], issue_count: Any) -> str:
@@ -1671,7 +1682,7 @@ def _field_analysis_use(column: str, role: str) -> str:
     if role == "关联键/标识":
         return f"用 {column} 追踪明细、去重或候选 join"
     if role == "指标":
-        return f"汇总、平均、排名、趋势和异常检查 {column}"
+        return f"汇总、平均、排序对比、趋势和异常检查 {column}"
     if role == "维度":
         return f"按 {column} 分组、筛选、对比指标"
     return f"结合业务口径判断 {column} 是否适合作为指标或维度"
@@ -1688,9 +1699,9 @@ def _field_meaning(column: str, series: pd.Series) -> str:
     if "scheme" in lowered or "卡组织" in column:
         return "卡组织或支付网络，可用于支付渠道分布分析。"
     if any(token in lowered for token in ("amount", "sales", "revenue", "gmv", "arr", "price", "unitprice")) or any(token in column for token in ("金额", "销售额", "收入", "毛利", "利润", "价格", "单价")):
-        return "金额或收入类数值指标，适合汇总、平均、排名和趋势分析。"
+        return "金额或收入类数值指标，适合汇总、平均、排序对比和趋势分析。"
     if any(token in lowered for token in ("quantity", "qty")) or any(token in column for token in ("数量", "件数", "次数")):
-        return "数量类数值指标，适合汇总、排名、异常检查和趋势分析。"
+        return "数量类数值指标，适合汇总、排序对比、异常检查和趋势分析。"
     if any(token in lowered for token in ("country", "国家", "城市", "区域", "region", "city")):
         return "地理或区域维度，可用于分布和对比。"
     if series.dropna().isin([True, False, "true", "false", "True", "False", 0, 1]).mean() >= 0.8:

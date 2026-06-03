@@ -109,10 +109,32 @@ def build_task_artifacts(*, task_contract: Mapping[str, Any], rows: list[dict[st
         metric = str(task_contract.get("metric") or "")
         top_objects = _build_top_objects(rows=rows, dimension=dimension, metric=metric, start=1)
         distinct_count = len({row.get(dimension) for row in rows if dimension and row.get(dimension) not in {None, ""}})
-        return {
+        source_tables = [str(item) for item in task_contract.get("source_tables") or [] if str(item)]
+        join_plan = dict(task_contract.get("join_plan") or {})
+        join_keys = [dict(item) for item in task_contract.get("join_keys") or [] if isinstance(item, Mapping)]
+        artifact = {
             "top_objects": top_objects,
             "distinct_count": distinct_count if dimension else len(rows),
+            "metric": metric,
+            "metric_column": metric,
+            "dimension": dimension,
+            "dimension_column": dimension,
+            "result_rows": rows,
         }
+        if source_tables:
+            artifact["source_tables"] = source_tables
+        if join_plan:
+            artifact["join_plan"] = join_plan
+        if join_keys:
+            artifact["join_keys"] = join_keys
+        required_n = _positive_int(task_contract.get("required_n"))
+        if required_n and artifact["distinct_count"] < required_n:
+            artifact["insufficient_data"] = {
+                "required_n": required_n,
+                "distinct_count": artifact["distinct_count"],
+                "reason": "topn_distinct_count_below_requested_n",
+            }
+        return artifact
     if family == "gap":
         return _gap_task_artifacts(task_contract, rows, answer)
     if family == "trend":

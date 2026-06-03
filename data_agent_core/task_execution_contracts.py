@@ -81,6 +81,10 @@ class TaskExecutionContract:
     preferred_top_n: int | None = None
     auto_expand_topn_if_needed: bool = False
     expansion_source: str = ""
+    source_tables: list[str] = field(default_factory=list)
+    join_scope: dict[str, Any] = field(default_factory=dict)
+    join_plan: dict[str, Any] = field(default_factory=dict)
+    join_keys: list[dict[str, str]] = field(default_factory=list)
     verification_rules: dict[str, Any] = field(default_factory=dict)
     insufficiency_policy: str = "fail_closed"
 
@@ -92,7 +96,7 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
     task_type = _get(logic_form, "task_type", "")
     params = _dict(_get(logic_form, "parameters", {}))
     output_format = _dict(_get(logic_form, "output_format", {}))
-    source_tables = list(_get(logic_form, "source_tables", []) or [])
+    source_tables = list(_get(logic_form, "source_tables", []) or params.get("source_tables") or [])
     family = _task_family(operation=operation, task_type=task_type, question=question, source_tables=source_tables)
     if family == "unknown":
         return None
@@ -123,6 +127,14 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
     auto_expand_topn_if_needed = bool(params.get("auto_expand_topn_if_needed"))
     minimum_required_objects = _positive_int(params.get("minimum_required_objects"))
     preferred_top_n = _positive_int(params.get("preferred_top_n"))
+    join_plan = _dict(_get(logic_form, "join_plan", {})) or _dict(params.get("join_plan"))
+    join_keys = _join_keys_from_plan(join_plan) if join_plan else []
+    join_scope = {
+        "source_tables": source_tables,
+        "join_required": bool(join_plan or len(source_tables) > 1),
+        "join_plan_present": bool(join_plan),
+        "join_keys_present": bool(join_keys),
+    }
     if family == "gap" and auto_expand_topn_if_needed:
         minimum_required_objects = minimum_required_objects or 2
         preferred_top_n = preferred_top_n or 3
@@ -165,6 +177,10 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
         preferred_top_n=preferred_top_n,
         auto_expand_topn_if_needed=auto_expand_topn_if_needed,
         expansion_source=str(params.get("expansion_source") or ""),
+        source_tables=source_tables,
+        join_scope=join_scope if join_scope["join_required"] else {},
+        join_plan=join_plan,
+        join_keys=join_keys,
         verification_rules={
             "requires_execution_success": True,
             "requires_non_empty_value": family not in {"overview", "multi_file_overview", "data_quality"},
@@ -177,6 +193,10 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
             "preferred_top_n": preferred_top_n,
             "auto_expand_topn_if_needed": auto_expand_topn_if_needed,
             "expansion_source": str(params.get("expansion_source") or ""),
+            "source_tables": source_tables,
+            "join_scope": join_scope if join_scope["join_required"] else {},
+            "join_plan": join_plan,
+            "join_keys": join_keys,
             **(
                 {
                     "requires_referent_values": True,
@@ -1140,6 +1160,38 @@ def _first_text(*values: Any) -> str | None:
 
 def _dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _join_keys_from_plan(join_plan: dict[str, Any]) -> list[dict[str, str]]:
+    if not join_plan:
+        return []
+    left_table = _first_text(join_plan.get("left_table"), join_plan.get("from_table"))
+    right_table = _first_text(join_plan.get("right_table"), join_plan.get("to_table"))
+    left_column = _first_text(join_plan.get("left_column"), join_plan.get("left_key"), join_plan.get("from_key"))
+    right_column = _first_text(join_plan.get("right_column"), join_plan.get("right_key"), join_plan.get("to_key"))
+    if left_table and right_table and left_column and right_column:
+        return [
+            {
+                "left_table": left_table,
+                "left_column": left_column,
+                "right_table": right_table,
+                "right_column": right_column,
+            }
+        ]
+    left = _first_text(join_plan.get("left"))
+    right = _first_text(join_plan.get("right"))
+    if left and right and "." in left and "." in right:
+        left_table, left_column = left.split(".", 1)
+        right_table, right_column = right.split(".", 1)
+        return [
+            {
+                "left_table": left_table,
+                "left_column": left_column,
+                "right_table": right_table,
+                "right_column": right_column,
+            }
+        ]
+    return []
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:

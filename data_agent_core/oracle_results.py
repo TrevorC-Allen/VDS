@@ -1108,11 +1108,16 @@ def oracle_multi_table_join_ranking(expected: Any, actual: Any) -> OracleResult:
     expected_tables = set(_as_string_list(expected_payload.get("source_tables")))
     if expected_tables and not expected_tables.issubset(actual_tables):
         issue_codes.append("multi_table_join_ranking_source_tables_missing")
+        issue_codes.append("join_scope_missing")
 
     if _join_key_present(expected_payload.get("join_key")) and not _join_key_present(actual_payload.get("join_key")):
         issue_codes.append("join_key_missing")
+        issue_codes.append("join_plan_missing")
+        issue_codes.append("join_keys_missing")
     elif not _join_key_present(expected_payload.get("join_key")):
         issue_codes.append("join_key_missing")
+        issue_codes.append("join_plan_missing")
+        issue_codes.append("join_keys_missing")
     elif not _join_key_compatible(expected_payload.get("join_key"), actual_payload.get("join_key")):
         issue_codes.append("join_key_mismatch")
 
@@ -1120,6 +1125,7 @@ def oracle_multi_table_join_ranking(expected: Any, actual: Any) -> OracleResult:
     actual_dimension = str(actual_payload.get("dimension") or "")
     if expected_dimension and actual_dimension and not _dimension_matches(expected_dimension, actual_dimension):
         issue_codes.append("join_ranking_dimension_mismatch")
+        issue_codes.append("join_ranking_wrong_dimension")
 
     expected_metric = str(expected_payload.get("metric") or "")
     actual_metric = str(actual_payload.get("metric") or "")
@@ -1186,6 +1192,19 @@ def oracle_multi_table_join_ranking(expected: Any, actual: Any) -> OracleResult:
 
     if not actual_rows:
         issue_codes.append("join_ranking_actual_rows_missing")
+
+    required_n = _positive_int(expected_payload.get("required_n"))
+    actual_distinct_count = _positive_int(actual_payload.get("distinct_count"))
+    expected_distinct_count = _positive_int(expected_payload.get("distinct_count")) or len(expected_rows)
+    if required_n and expected_distinct_count and expected_distinct_count < required_n:
+        answer_text = str(actual_payload.get("answer") or "")
+        if actual_distinct_count is None or not _answer_mentions_distinct_shortfall(
+            answer_text,
+            distinct_count=actual_distinct_count,
+            required_n=required_n,
+        ):
+            issue_codes.append("topn_insufficient_without_distinct_count")
+            issue_codes.append("topn_insufficient_distinct_explanation_missing")
 
     if issue_codes:
         return OracleResult(
@@ -1625,10 +1644,37 @@ def _coerce_multi_table_join_ranking_payload(value: Any) -> dict[str, Any] | Non
         "join_key": _coerce_join_key_payload(value.get("join_key")),
         "dimension": dimension,
         "metric": metric,
+        "required_n": _positive_int(value.get("required_n") or value.get("top_n") or value.get("limit")),
+        "distinct_count": _positive_int(value.get("distinct_count")),
+        "answer": str(value.get("answer") or ""),
         "ranking_rows": ranking_rows,
         "top_object": top_object if isinstance(top_object, dict) else {},
         "top_value": _round_oracle_value(top_value),
     }
+
+
+def _answer_mentions_distinct_shortfall(answer: str, *, distinct_count: int, required_n: int) -> bool:
+    compact = str(answer or "").replace(" ", "")
+    if not compact:
+        return False
+    count_texts = {str(distinct_count), _small_number_zh(distinct_count)}
+    top_texts = {f"Top{required_n}", f"top{required_n}", f"前{required_n}"}
+    has_count = any(f"只有{text}个" in compact or f"共{text}个" in compact or f"{text}个城市" in compact for text in count_texts)
+    has_top = any(text in compact for text in top_texts) or "不足" in compact or "无法返回" in compact
+    return has_count and has_top
+
+
+def _small_number_zh(value: int) -> str:
+    mapping = {1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八", 9: "九", 10: "十"}
+    return mapping.get(value, str(value))
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _coerce_join_key_payload(value: Any) -> dict[str, str] | None:

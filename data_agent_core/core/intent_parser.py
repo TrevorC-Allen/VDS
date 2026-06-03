@@ -2998,6 +2998,10 @@ def _requested_dimension_concepts(question: str) -> list[str]:
 def _direct_target_dimension_concepts(question: str) -> list[str]:
     compact = re.sub(r"\s+", "", str(question or ""))
     lowered = str(question or "").lower()
+    if any(token in compact for token in ("客户城市", "客户所在城市", "客户所属城市", "客户的城市")) or any(
+        token in lowered for token in ("customer city", "customer cities")
+    ):
+        return ["city"]
     direct_patterns = (
         ("segment", ("哪个客户细分", "哪些客户细分", "哪个客户群体", "哪些客户群体", "哪个客户分段", "哪些客户分段", "哪个客户段", "哪些客户段", "哪个客群", "哪些客群", "客户分段排名", "客户段排名", "segment ranking", "which segment")),
         ("product", ("哪个产品", "哪种产品", "哪些产品", "产品是哪个", "产品是哪", "产品是什么", "产品有哪些", "产品是哪些", "产品排名", "which product", "product ranking")),
@@ -3036,6 +3040,10 @@ def _direct_target_dimension_concepts(question: str) -> list[str]:
 def _target_dimension_concepts(question: str) -> list[str]:
     compact = re.sub(r"\s+", "", str(question or ""))
     lowered = str(question or "").lower()
+    if any(token in compact for token in ("客户城市", "客户所在城市", "客户所属城市", "客户的城市")) or any(
+        token in lowered for token in ("customer city", "customer cities")
+    ):
+        return ["city"]
     ordered_patterns = (
         ("segment", ("客户细分", "客户群体", "客户分区", "客户分段", "客户段", "细分市场", "哪个客群", "哪些客群", "客群是什么", "客群是哪", "按客群", "客群排名", "segment")),
         ("product", ("哪个产品", "哪种产品", "哪些产品", "产品是哪个", "产品是哪", "产品是什么", "产品有哪些", "产品是哪些", "按产品", "产品排名", "which product", "by product")),

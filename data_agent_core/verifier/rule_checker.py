@@ -114,6 +114,10 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
             preferred_top_n=contract.get("preferred_top_n"),
             auto_expand_topn_if_needed=bool(contract.get("auto_expand_topn_if_needed")),
             expansion_source=str(contract.get("expansion_source") or ""),
+            source_tables=list(contract.get("source_tables") or []),
+            join_scope=dict(contract.get("join_scope") or {}),
+            join_plan=dict(contract.get("join_plan") or {}),
+            join_keys=[dict(item) for item in contract.get("join_keys") or [] if isinstance(item, dict)],
             verification_rules=dict(contract.get("verification_rules") or {}),
             insufficiency_policy=str(contract.get("insufficiency_policy") or "fail_closed"),
         )
@@ -169,6 +173,10 @@ def _clear_overview_referent_requirements(contract: TaskExecutionContract | None
         preferred_top_n=contract.preferred_top_n,
         auto_expand_topn_if_needed=bool(contract.auto_expand_topn_if_needed),
         expansion_source=str(contract.expansion_source),
+        source_tables=list(contract.source_tables),
+        join_scope=dict(contract.join_scope),
+        join_plan=dict(contract.join_plan),
+        join_keys=[dict(item) for item in contract.join_keys],
         verification_rules=dict(contract.verification_rules),
         insufficiency_policy="fail_closed",
     )
@@ -185,6 +193,8 @@ def _question_contract_is_more_specific(
     if current.task_family == "topn" and current.required_n is None and question_contract.required_n is not None:
         return True
     if not current.required_output_columns and question_contract.required_output_columns:
+        return True
+    if current.task_family == "topn" and question_contract.join_scope and not current.join_scope:
         return True
     return False
 
@@ -754,6 +764,10 @@ def _target_dimension_concepts(question: str) -> list[str]:
 
     compact = re.sub(r"\s+", "", str(question or ""))
     lowered = str(question or "").lower()
+    if any(token in compact for token in ("客户城市", "客户所在城市", "客户所属城市", "客户的城市")) or any(
+        token in lowered for token in ("customer city", "customer cities")
+    ):
+        return ["city"]
     result_dimension = _result_dimension_after_extreme_time_scope(question)
     if result_dimension:
         return [result_dimension]

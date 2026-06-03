@@ -55,6 +55,10 @@ def apply_text_answer_framework(response: dict[str, Any], *, question: str) -> d
         return response
 
     answer = _sanitize_text(response.get("answer"))
+    if "无法返回 Top" in answer and "当前只有" in answer:
+        response["answer"] = answer
+        _mark_debug(response, applied=False, reason="preserve_topn_insufficient_direct_answer")
+        return response
     if _looks_frameworked(answer):
         response["answer"] = answer
         _mark_debug(response, applied=False, reason="already_frameworked")
@@ -746,6 +750,8 @@ def _should_preserve_existing_answer(context: _FrameContext) -> bool:
     shaping = _as_dict(debug.get("user_experience_shaping"))
     if shaping.get("reason") == "vds_current_metric_top_answer_summary":
         return True
+    if context.kind == "ranking" and "无法返回 Top" in context.original_answer and "当前只有" in context.original_answer:
+        return True
     if context.kind == "ranking" and re.search(r"(^|[；;\n])\s*\d+[.、]", context.original_answer):
         return True
     return False
@@ -948,7 +954,7 @@ def _render_multi_table_contract_overview(report: dict[str, Any]) -> str:
             lines.append(
                 " | ".join(
                     [
-                        str(item.get("field") or ""),
+                        f"{table.get('table')}.{item.get('field')}",
                         str(item.get("type") or "unknown"),
                         str(item.get("role") or "待确认"),
                         str(item.get("analysis_use") or item.get("meaning") or "需结合业务说明确认"),

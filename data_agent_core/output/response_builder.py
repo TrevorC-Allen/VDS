@@ -216,7 +216,18 @@ def _topn_insufficient_answer(task_contract: dict[str, Any] | None, execution_re
         distinct_count = len({row.get(dimension) for row in rows if row.get(dimension) not in {None, ""}}) if dimension else len(rows)
     if distinct_count >= required_n:
         return ""
-    return f"数据集中只有 {distinct_count} 个不同{dimension}，因此无法返回 Top {required_n}，只能展示 Top {distinct_count}。"
+    metric = str(task_contract.get("metric") or _first_numeric_column(rows, exclude={dimension}) or "指标")
+    dimension_label = _display_dimension_label(dimension)
+    metric_label = _display_metric_label(metric)
+    items = []
+    for row in rows[:distinct_count]:
+        label = row.get(dimension)
+        value = row.get(metric)
+        if label in {None, ""} or value in {None, ""}:
+            continue
+        items.append(f"{label} {_format_display_number(value)}")
+    suffix = "：" + "、".join(items) if items else ""
+    return f"按{dimension_label}统计{metric_label}，当前只有 {distinct_count} 个{dimension_label}，无法返回 Top {required_n}，因此返回 Top {distinct_count}{suffix}。"
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -224,6 +235,35 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _first_numeric_column(rows: list[dict[str, Any]], *, exclude: set[str] | None = None) -> str | None:
+    excluded = {item for item in (exclude or set()) if item}
+    for row in rows:
+        for key, value in row.items():
+            if key in excluded:
+                continue
+            if _to_float(value) is not None:
+                return str(key)
+    return None
+
+
+def _display_dimension_label(value: str) -> str:
+    lowered = str(value or "").lower()
+    if "city" in lowered or "城市" in lowered:
+        return "城市"
+    if "customer" in lowered or "客户" in lowered:
+        return "客户"
+    return str(value or "对象")
+
+
+def _display_metric_label(value: str) -> str:
+    lowered = str(value or "").lower()
+    if "order_amount" in lowered:
+        return "订单金额"
+    if "amount" in lowered or "金额" in lowered:
+        return "金额"
+    return str(value or "指标")
 
 
 def _semantic_failure_answer(user_question: UserQuestion, plan: AnalysisPlan, verification: VerificationResult) -> str | None:

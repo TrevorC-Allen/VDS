@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -75,12 +75,33 @@ class TurnPlan:
     required_operation: str = ""
 
 
+@dataclass(frozen=True)
+class ScenarioFamily:
+    name: str
+    description: str
+    dataset_requirements: list[str] = field(default_factory=list)
+    turn_templates: list[str] = field(default_factory=list)
+    expected_contract_family: str = ""
+    semantic_expectations: list[str] = field(default_factory=list)
+    oracle_availability: str = "not_available"
+    required_context_behavior: str = ""
+    tags: list[str] = field(default_factory=list)
+
+
 @dataclass
 class ConversationScenario:
     scenario_id: str
     dataset_name: str
     capability_family: str
     turn_templates: list[TurnPlan]
+    scenario_family: str = "typical"
+    family_description: str = ""
+    dataset_requirements: list[str] = field(default_factory=list)
+    expected_contract_family: str = ""
+    semantic_expectations: list[str] = field(default_factory=list)
+    oracle_availability: str = "not_available"
+    required_context_behavior: str = ""
+    tags: list[str] = field(default_factory=list)
     required_operations: list[str] = field(default_factory=list)
     required_capability_families: list[str] = field(default_factory=list)
     min_turn_count: int = 2
@@ -98,11 +119,11 @@ class TurnEvidence:
     expected_kind: str
     capability_family: str
     required_operation: str
-    success: bool
-    answer_type: str
-    operation: str
-    conversation_id: str
-    state_name: str
+    scenario_family: str = "typical"
+    answer_type: str = ""
+    operation: str = ""
+    conversation_id: str = ""
+    state_name: str = ""
     expected_metric: str = ""
     expected_dimension: str = ""
     actual_metric: str = ""
@@ -130,11 +151,13 @@ class TurnEvidence:
     answer_preview: str = ""
     llm_judge_failed: bool | None = None
     next_action_questions: list[str] = field(default_factory=list)
+    success: bool = False
 
 
 @dataclass
 class ScenarioResult:
     scenario_id: str
+    scenario_family: str
     capability_family: str
     run_index: int
     passed: bool
@@ -147,6 +170,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run randomized continuous-follow-up checks for VDS Agent behavior.")
     parser.add_argument("--seed", type=int, default=20260601)
     parser.add_argument("--scenario-count", type=int, default=0, help="Number of scenarios to sample. Use 0 to run all scenarios.")
+    parser.add_argument(
+        "--scenario-family",
+        action="append",
+        default=[],
+        help="Scenario family to run. Repeat for multiple families; use 'all' for all configured families. Default keeps legacy typical scenarios.",
+    )
+    parser.add_argument(
+        "--required-family",
+        action="append",
+        default=[],
+        help="Required scenario family coverage for the eval gate.",
+    )
     parser.add_argument("--runs-per-scenario", type=int, default=1)
     parser.add_argument("--max-followups", type=int, default=5)
     parser.add_argument("--min-pass-rate", type=float, default=1.0)
@@ -171,27 +206,32 @@ def main() -> None:
         output_dir = REPO_ROOT / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    report = run_agent_random_conversation_eval(
-        seed=args.seed,
-        scenario_count=args.scenario_count,
-        runs_per_scenario=args.runs_per_scenario,
-        max_followups=args.max_followups,
-        output_dir=output_dir,
-        simulator_client=_load_simulator_client(args.simulator_provider),
-        simulator_source=args.simulator_provider,
-        agent_client=_load_agent_client(args.agent_provider),
-        input_files=[_resolve_path(path) for path in args.files or []],
-        dataset_name=args.dataset_name,
-        min_pass_rate=args.min_pass_rate,
-        min_conversations=args.min_conversations,
-        min_capability_families=args.min_capability_families,
-        min_followup_turns=args.min_followup_turns,
-        min_structured_action_turns=args.min_structured_action_turns,
-        min_structured_answer_turns=args.min_structured_answer_turns,
-        max_semantic_failed_turns=args.max_semantic_failed_turns,
-        max_oracle_failed_turns=args.max_oracle_failed_turns,
-        max_legacy_unverified_rate=args.max_legacy_unverified_rate,
-    )
+    try:
+        report = run_agent_random_conversation_eval(
+            seed=args.seed,
+            scenario_count=args.scenario_count,
+            runs_per_scenario=args.runs_per_scenario,
+            max_followups=args.max_followups,
+            output_dir=output_dir,
+            simulator_client=_load_simulator_client(args.simulator_provider),
+            simulator_source=args.simulator_provider,
+            agent_client=_load_agent_client(args.agent_provider),
+            input_files=[_resolve_path(path) for path in args.files or []],
+            dataset_name=args.dataset_name,
+            scenario_families=args.scenario_family,
+            required_families=args.required_family,
+            min_pass_rate=args.min_pass_rate,
+            min_conversations=args.min_conversations,
+            min_capability_families=args.min_capability_families,
+            min_followup_turns=args.min_followup_turns,
+            min_structured_action_turns=args.min_structured_action_turns,
+            min_structured_answer_turns=args.min_structured_answer_turns,
+            max_semantic_failed_turns=args.max_semantic_failed_turns,
+            max_oracle_failed_turns=args.max_oracle_failed_turns,
+            max_legacy_unverified_rate=args.max_legacy_unverified_rate,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     artifacts = write_eval_artifacts(report, output_dir)
     if args.print_summary:
         print(_summary_text(report))
@@ -235,12 +275,18 @@ def run_agent_random_conversation_eval(
     max_semantic_failed_turns: int = 0,
     max_oracle_failed_turns: int = 0,
     max_legacy_unverified_rate: float = 0.2,
+    scenario_families: Sequence[str] | None = None,
+    required_families: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Run randomized conversation scenarios and return a JSON-ready report."""
 
     started = time.perf_counter()
     rng = random.Random(seed)
-    all_scenarios = build_dynamic_scenarios(input_files, dataset_name=dataset_name) if input_files else builtin_scenarios()
+    all_scenarios = (
+        build_dynamic_scenarios(input_files, dataset_name=dataset_name)
+        if input_files
+        else _scenarios_for_requested_families(scenario_families)
+    )
     selected = _sample_scenarios(all_scenarios, scenario_count, rng)
     repeat_count = max(1, int(runs_per_scenario or 1))
     results = []
@@ -269,6 +315,7 @@ def run_agent_random_conversation_eval(
             for family in scenario.required_capability_families
         }
     )
+    required_scenario_families = _normalize_required_scenario_families(required_families, selected)
     missing_global_families = [
         family for family in required_global_families if family not in coverage["capability_families"]
     ]
@@ -309,14 +356,13 @@ def run_agent_random_conversation_eval(
     gate_result = build_eval_gate_result(
         metrics_from_coverage(
             coverage,
-            required_families=required_global_families,
             transport_success_turns=transport_success_turns,
         ),
         EvalGateConfig(
             max_semantic_failed_turns=thresholds["max_semantic_failed_turns"],
             max_oracle_failed_turns=thresholds["max_oracle_failed_turns"],
             max_legacy_unverified_rate=thresholds["max_legacy_unverified_rate"],
-            required_families=tuple(required_global_families),
+            required_families=tuple(required_scenario_families),
         ),
     )
     for reason in gate_result["gate_failed_reasons"]:
@@ -327,6 +373,8 @@ def run_agent_random_conversation_eval(
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "seed": seed,
         "scenario_count": len(selected),
+        "scenario_family": _selected_scenario_family_label(selected),
+        "scenario_families": sorted({scenario.scenario_family for scenario in selected if scenario.scenario_family}),
         "runs_per_scenario": repeat_count,
         "conversation_count": len(results),
         "passed": passed,
@@ -342,6 +390,13 @@ def run_agent_random_conversation_eval(
         "dataset_name": dataset_name,
         "input_files": [str(path) for path in input_files or []],
         "coverage": coverage,
+        "family_summary": coverage.get("family_summary", {}),
+        "family_coverage": gate_result.get("family_coverage", {}),
+        "family_level_pass_rate": coverage.get("family_level_pass_rate", {}),
+        "family_level_semantic_pass_rate": coverage.get("family_level_semantic_pass_rate", {}),
+        "family_level_oracle_pass_rate": coverage.get("family_level_oracle_pass_rate", {}),
+        "family_level_expected_contract_pass_rate": coverage.get("family_level_expected_contract_pass_rate", {}),
+        "top_violation_codes_by_family": coverage.get("top_violation_codes_by_family", {}),
         "policy": (
             "This eval checks reusable Agent behavior: multi-turn state, structured actions, grounded success, "
             "contract-aware direct or structured answers, and no raw internal artifact leakage. Built-in scenarios use schema-randomized "
@@ -377,6 +432,7 @@ def run_scenario(
     except ValueError as exc:
         return ScenarioResult(
             scenario_id=scenario.scenario_id,
+            scenario_family=scenario.scenario_family,
             capability_family=scenario.capability_family,
             run_index=run_index,
             passed=False,
@@ -394,6 +450,7 @@ def run_scenario(
         if not upload.get("success"):
             return ScenarioResult(
                 scenario_id=scenario.scenario_id,
+                scenario_family=scenario.scenario_family,
                 capability_family=scenario.capability_family,
                 run_index=run_index,
                 passed=False,
@@ -413,6 +470,7 @@ def run_scenario(
             if index == 1:
                 conversation_id = str(response.get("conversation_id") or "")
             evidence = _turn_evidence(index, turn, response, tables=uploaded_tables)
+            evidence.scenario_family = scenario.scenario_family
             turns.append(evidence)
             issues.extend(_turn_issues(index, turn, response, previous_conversation_id=conversation_id, evidence=evidence))
             if conversation_id and str(response.get("conversation_id") or "") != conversation_id:
@@ -424,6 +482,7 @@ def run_scenario(
             issues.extend(_llm_generated_conversation_issues(turns))
     return ScenarioResult(
         scenario_id=scenario.scenario_id,
+        scenario_family=scenario.scenario_family,
         capability_family=scenario.capability_family,
         run_index=run_index,
         passed=scenario_passed and not issues,
@@ -1736,7 +1795,7 @@ def _deterministic_fixture_oracle_result_multi_table_join_ranking(
     *,
     turn: TurnPlan | None = None,
 ) -> dict[str, Any]:
-    expected_result = _build_multi_table_join_ranking_expected_result(logic=logic, response=response, tables=tables)
+    expected_result = _build_multi_table_join_ranking_expected_result(logic=logic, response=response, tables=tables, turn=turn)
     if not expected_result:
         return {}
     actual_result = _extract_multi_table_join_ranking_actual_result(logic=logic, response=response, expected=expected_result)
@@ -1758,6 +1817,7 @@ def _build_multi_table_join_ranking_expected_result(
     logic: dict[str, Any],
     response: dict[str, Any],
     tables: dict[str, Any],
+    turn: TurnPlan | None = None,
 ) -> dict[str, Any] | None:
     params = logic.get("parameters") if isinstance(logic.get("parameters"), Mapping) else {}
     logic_source_tables = _coerce_text_list(
@@ -1779,9 +1839,14 @@ def _build_multi_table_join_ranking_expected_result(
     table_candidates = [name for name in source_tables if name in tables and tables.get(name) is not None]
     available_tables = {name: tables[name] for name in table_candidates}
     if len(available_tables) < 2:
+        available_tables = {str(name): table for name, table in tables.items() if table is not None}
+        source_tables = list(available_tables.keys())
+    if len(available_tables) < 2:
         return None
     metric = _actual_metric_from_logic(logic)
     dimension = _actual_dimension_from_logic(logic)
+    if turn is not None and _question_asks_city_dimension(turn.question) and _tables_have_column(available_tables, "city"):
+        dimension = "city"
     if not metric or not dimension:
         return None
     if "," in metric:
@@ -1806,6 +1871,8 @@ def _build_multi_table_join_ranking_expected_result(
         "join_key": join_key,
         "dimension": dimension,
         "metric": metric,
+        "required_n": _positive_int(params.get("limit") or params.get("top_n") or params.get("k")),
+        "distinct_count": len(ranking_rows),
         "ranking_rows": ranking_rows,
         "top_object": top_object,
         "top_value": top_object.get(metric),
@@ -1910,10 +1977,39 @@ def _extract_multi_table_join_ranking_actual_result(
         "join_key": _extract_multi_table_join_key(logic=logic, response=response),
         "dimension": dimension,
         "metric": metric,
+        "required_n": expected.get("required_n"),
+        "distinct_count": _extract_response_distinct_count(response) or len(ranking_rows),
+        "answer": str(response.get("answer") or ""),
         "ranking_rows": ranking_rows,
         "top_object": top_object,
         "top_value": top_object.get(metric),
     }
+
+
+def _question_asks_city_dimension(question: str) -> bool:
+    compact = str(question or "").lower().replace(" ", "")
+    return "城市" in compact or "city" in compact
+
+
+def _tables_have_column(tables: dict[str, Any], column_name: str) -> bool:
+    normalized = str(column_name or "").lower()
+    for table in tables.values():
+        if normalized in {str(column).lower() for column in _table_columns(table)}:
+            return True
+    return False
+
+
+def _extract_response_distinct_count(response: dict[str, Any]) -> int | None:
+    debug = response.get("debug") if isinstance(response.get("debug"), Mapping) else {}
+    artifact = debug.get("result_artifacts") if isinstance(debug.get("result_artifacts"), Mapping) else {}
+    count = _positive_int(artifact.get("distinct_count"))
+    if count is not None:
+        return count
+    result = response.get("result") if isinstance(response.get("result"), Mapping) else {}
+    value = result.get("value") if isinstance(result, Mapping) else {}
+    if isinstance(value, Mapping):
+        return _positive_int(value.get("distinct_count"))
+    return None
 
 
 def _extract_multi_table_join_ranking_rows(
