@@ -72,6 +72,7 @@ class TaskExecutionContract:
     referent_dimension: str | None = None
     referent_values: list[Any] = field(default_factory=list)
     referent_policy: str = "must_filter_to_previous_result_objects"
+    referent_source: str = ""
     verification_rules: dict[str, Any] = field(default_factory=dict)
     insufficiency_policy: str = "fail_closed"
 
@@ -143,11 +144,13 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
         referent_dimension=referent_dimension,
         referent_values=referent_values,
         referent_policy=str(params.get("referent_policy") or "must_filter_to_previous_result_objects"),
+        referent_source=str(params.get("referent_source") or ""),
         verification_rules={
             "requires_execution_success": True,
             "requires_non_empty_value": family not in {"overview", "multi_file_overview", "data_quality"},
             "required_output_columns": required_columns,
             "referent_filter_applied": referent_filter_applied,
+            "candidate_set": _dict(_get(logic_form, "candidate_set", {})),
             "explicit_required_n": question_required_n is not None,
             **_family_verification_rules(family),
         },
@@ -443,6 +446,17 @@ def _verify_trend_contract(contract: TaskExecutionContract, result: ExecutionRes
     rows = _result_rows(result)
     answer_text = _direct_answer_text(result)
     if not rows:
+        if contract.referent_values:
+            return [
+                _violation(
+                    "REFERENT_FILTER_EMPTY_RESULT",
+                    "Trend referent filter produced no rows for the previous result objects.",
+                    {
+                        "referent_dimension": contract.referent_dimension,
+                        "referent_values": contract.referent_values,
+                    },
+                )
+            ]
         return [_violation("TREND_EMPTY_RESULT", "Trend contract requires at least one row for time-series analysis.", {})]
 
     time_dimension = _first_text(contract.time_dimension, contract.dimension)
@@ -963,9 +977,19 @@ def _looks_like_followup(question: str) -> bool:
         "这些top",
         "这些top对象",
         "这些top城市",
+        "top对象",
+        "top城市",
         "上述top",
+        "上述top对象",
+        "上述top城市",
         "上面top",
         "刚才top",
+        "这些对象",
+        "上述对象",
+        "这些城市",
+        "上述城市",
+        "这几个对象",
+        "这几个城市",
         "前几个",
         "第一名",
         "第二名",
@@ -975,10 +999,10 @@ def _looks_like_followup(question: str) -> bool:
         "previous",
         "same",
     )
-    if any(token in compact for token in previous_result_tokens):
-        return True
     if any(token in compact for token in file_scope_tokens):
         return False
+    if any(token in compact for token in previous_result_tokens):
+        return True
     return bool(
         re.search(r"第[一二两三四五六七八九十\d]+名", compact)
         or re.search(r"\btop\s*\d+", compact)
