@@ -37,6 +37,7 @@ class RealUserManifestV1Test(unittest.TestCase):
         topn = cases["brazilian_ecommerce__top_state_orders"]["expected_contract"]
         self.assertEqual("topn", topn["contract_family"])
         self.assertEqual(10, topn["required_row_count"])
+        self.assertEqual("orders", topn["required_sort"]["metric"])
         self.assertTrue(topn["requires_direct_answer_first"])
 
         quality = cases["uk_retail__cancelled_orders"]["expected_contract"]
@@ -48,12 +49,13 @@ class RealUserManifestV1Test(unittest.TestCase):
         overview = cases["brazilian_ecommerce__multi_file_keys"]["expected_contract"]
         self.assertEqual("multi_file_overview", overview["contract_family"])
         self.assertTrue(overview["required_all_files_covered"])
+        self.assertIn("orders", overview["required_tables_covered"])
         self.assertIn("order_id", overview["required_join_keys"])
 
         turns = {turn["turn_id"]: turn for turn in conversations["brazilian_ecommerce_top_state_followup_contract"]["turns"]}
         referent = turns["turn_02"]["expected_contract"]
         self.assertEqual("followup_referent", referent["contract_family"])
-        self.assertEqual("previous_top_set", referent["required_context_reference"])
+        self.assertEqual("previous_top_objects", referent["required_context_reference"])
 
         gap = turns["turn_03"]["expected_contract"]
         self.assertEqual("gap", gap["contract_family"])

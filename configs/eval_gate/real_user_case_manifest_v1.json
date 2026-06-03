@@ -412,9 +412,7 @@
           "orders"
         ],
         "required_sort": {
-          "by": [
-            "orders"
-          ],
+          "metric": "orders",
           "order": "desc"
         },
         "requires_direct_answer_first": true,
@@ -644,6 +642,13 @@
         "contract_family": "multi_file_overview",
         "answer_type": "file_relationship_overview",
         "required_all_files_covered": true,
+        "required_tables_covered": [
+          "customers",
+          "order_items",
+          "orders",
+          "products",
+          "payments"
+        ],
         "required_join_keys": [
           "customer_id",
           "order_id",
@@ -3057,9 +3062,7 @@
               "orders"
             ],
             "required_sort": {
-              "by": [
-                "orders"
-              ],
+              "metric": "orders",
               "order": "desc"
             },
             "requires_direct_answer_first": true,
@@ -3089,7 +3092,7 @@
             "required_row_count": 10,
             "min_row_count": 10,
             "allow_insufficient_data_explanation": true,
-            "required_context_reference": "previous_top_set",
+            "required_context_reference": "previous_top_objects",
             "required_dimensions": [
               "customer_state"
             ],
@@ -3097,9 +3100,7 @@
               "orders"
             ],
             "required_sort": {
-              "by": [
-                "orders"
-              ],
+              "metric": "orders",
               "order": "desc"
             },
             "requires_direct_answer_first": true,
@@ -3129,7 +3130,7 @@
             "min_row_count": 2,
             "allow_insufficient_data_explanation": true,
             "required_gap_type": "pairwise",
-            "required_context_reference": "previous_top_set",
+            "required_context_reference": "previous_top_objects",
             "required_dimensions": [
               "customer_state"
             ],
@@ -3138,9 +3139,7 @@
               "gap_to_leader"
             ],
             "required_sort": {
-              "by": [
-                "orders"
-              ],
+              "metric": "orders",
               "order": "desc"
             },
             "requires_direct_answer_first": true,
@@ -3164,6 +3163,7 @@
       "metadata": {
         "expected_context_reuse": true,
         "requires_same_conversation_id": true,
+        "expected_previous_top_objects_turn": "turn_01",
         "expected_previous_top_set_turn": "turn_01"
       }
     }

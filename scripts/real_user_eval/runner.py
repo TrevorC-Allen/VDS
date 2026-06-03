@@ -11,6 +11,7 @@ from scripts.real_user_eval.manifest import (
     ConversationCase,
     ManifestCase,
     dataset_file_paths,
+    expected_contract_runtime_hints,
     manifest_cases,
     manifest_conversations,
 )
@@ -283,6 +284,18 @@ def _row_and_raw(
     oracle_gate_status = _oracle_gate_status(result)
     runtime_gate_passed = bool(result.success and semantic_passed and result.oracle_passed is True)
     runtime_semantic_evidence = _runtime_semantic_evidence(result)
+    expected_contract_normalized = expected_contract if isinstance(expected_contract, Mapping) else None
+    expected_contract_hints = expected_contract_runtime_hints(expected_contract_normalized) if expected_contract_normalized else {}
+    expected_contract_check = _check_expected_contract(
+        expected_contract_normalized,
+        expected_contract_hints=expected_contract_hints,
+        result=result,
+    )
+    expected_contract_issue_codes = list(expected_contract_check.get("issue_codes") or [])
+    expected_contract_missing_evidence = list(expected_contract_check.get("missing_evidence") or [])
+    if expected_contract_check.get("checked") and not expected_contract_check.get("passed"):
+        failure_reasons.append("expected_contract_not_satisfied")
+        runtime_gate_passed = False
     row = {
         "case_id": case_id,
         "ae_group": ae_group,
@@ -293,6 +306,11 @@ def _row_and_raw(
         "question": question,
         "expected_route": expected_route,
         "expected_contract": expected_contract,
+        "expected_contract_normalized": expected_contract_normalized,
+        "expected_contract_runtime_hints": expected_contract_hints,
+        "expected_contract_check": expected_contract_check,
+        "expected_contract_issue_codes": expected_contract_issue_codes,
+        "expected_contract_missing_evidence": expected_contract_missing_evidence,
         "standard_answer": oracle.get("answer") or expected_contract,
         "source_answer": oracle.get("answer") or expected_contract,
         "standard_answer_source": "direct_computation",
@@ -358,9 +376,223 @@ def _row_and_raw(
         "request_metadata": dict(metadata),
         "agent_result": result.to_dict(),
         "runtime_semantic_evidence": runtime_semantic_evidence,
+        "expected_contract_normalized": expected_contract_normalized,
+        "expected_contract_runtime_hints": expected_contract_hints,
+        "expected_contract_check": expected_contract_check,
         "oracle_result": dict(oracle),
     }
     return row, raw
+
+
+def _check_expected_contract(
+    expected_contract: Mapping[str, Any] | None,
+    *,
+    expected_contract_hints: Mapping[str, Any],
+    result: AgentResult,
+) -> dict[str, Any]:
+    if not isinstance(expected_contract, Mapping):
+        return {
+            "checked": False,
+            "passed": True,
+            "issue_codes": [],
+            "missing_evidence": [],
+            "details": {"reason": "legacy_text_or_missing_expected_contract"},
+        }
+
+    family = str(expected_contract.get("contract_family") or expected_contract_hints.get("task_family") or "").strip()
+    evidence = _expected_contract_evidence(result)
+    issue_codes: list[str] = []
+    missing_evidence: list[str] = []
+    details: dict[str, Any] = {
+        "contract_family": family,
+        "runtime_contract_family": result.contract_family,
+        "runtime_violation_codes": evidence["violation_codes"],
+        "oracle_issue_codes": evidence["oracle_issue_codes"],
+    }
+
+    if result.contract_family and family and result.contract_family != family:
+        aliases = {"followup_referent": {"topn", "ranking"}, "topn": {"ranking"}}
+        if result.contract_family not in aliases.get(family, set()):
+            issue_codes.append("EXPECTED_CONTRACT_FAMILY_MISMATCH")
+
+    if family == "topn":
+        _check_topn_expected_contract(expected_contract, evidence, issue_codes, missing_evidence, details)
+    elif family == "followup_referent":
+        _check_context_expected_contract(expected_contract, evidence, issue_codes, missing_evidence, details)
+        _check_topn_expected_contract(expected_contract, evidence, issue_codes, missing_evidence, details)
+    elif family == "gap":
+        _check_gap_expected_contract(expected_contract, evidence, issue_codes, missing_evidence, details)
+    elif family == "multi_file_overview":
+        _check_multi_file_expected_contract(expected_contract, evidence, issue_codes, missing_evidence, details)
+    elif family == "data_quality":
+        _check_data_quality_expected_contract(expected_contract, evidence, issue_codes, missing_evidence, details)
+
+    if expected_contract.get("requires_direct_answer_first"):
+        if _has_any_code(evidence["violation_codes"], ("direct_answer", "direct-answer", "direct answer", "answer_first")):
+            issue_codes.append("EXPECTED_DIRECT_ANSWER_FIRST_VIOLATION")
+        elif not _has_direct_answer_evidence(evidence):
+            missing_evidence.append("direct_answer_first_evidence")
+
+    issue_codes = _dedupe(issue_codes)
+    missing_evidence = _dedupe(missing_evidence)
+    return {
+        "checked": True,
+        "passed": not issue_codes and not missing_evidence,
+        "issue_codes": issue_codes,
+        "missing_evidence": missing_evidence,
+        "details": details,
+    }
+
+
+def _check_topn_expected_contract(
+    expected_contract: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    issue_codes: list[str],
+    missing_evidence: list[str],
+    details: dict[str, Any],
+) -> None:
+    required = _required_row_count(expected_contract)
+    row_count = evidence.get("row_count")
+    details["row_count_evidence"] = row_count
+    if required is not None:
+        details["required_row_count"] = required
+        if row_count is None:
+            missing_evidence.append("row_count_evidence")
+        elif int(row_count) < required:
+            issue_codes.append("EXPECTED_ROW_COUNT_SHORT")
+
+    required_metrics = [str(item) for item in expected_contract.get("required_metrics") or [] if str(item)]
+    if required_metrics:
+        missing_metrics = [metric for metric in required_metrics if not _text_contains_metric(evidence["search_text"], metric)]
+        details["missing_metrics"] = missing_metrics
+        if missing_metrics:
+            missing_evidence.append("metric_evidence")
+
+    if expected_contract.get("required_sort") and _has_any_code(evidence["violation_codes"] + evidence["oracle_issue_codes"], ("sort", "排序", "order")):
+        issue_codes.append("EXPECTED_SORT_VIOLATION_PRESENT")
+
+
+def _check_context_expected_contract(
+    expected_contract: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    issue_codes: list[str],
+    missing_evidence: list[str],
+    details: dict[str, Any],
+) -> None:
+    references = expected_contract.get("required_context_reference")
+    reference_values = references if isinstance(references, list) else [references]
+    required = {str(item) for item in reference_values if str(item) in {"previous_top_objects", "previous_result_set"}}
+    if not required:
+        return
+    details["required_context_reference"] = sorted(required)
+    if not evidence.get("context_reference_available"):
+        issue_codes.append("EXPECTED_CONTEXT_REFERENCE_MISSING")
+        missing_evidence.append("context_reference_evidence")
+
+
+def _check_gap_expected_contract(
+    expected_contract: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    issue_codes: list[str],
+    missing_evidence: list[str],
+    details: dict[str, Any],
+) -> None:
+    gap_type = str(expected_contract.get("required_gap_type") or "")
+    details["required_gap_type"] = gap_type
+    if gap_type == "pairwise" and _has_any_code(evidence["violation_codes"], ("gap_pairwise_missing", "GAP_PAIRWISE_MISSING")):
+        issue_codes.append("EXPECTED_GAP_PAIRWISE_MISSING")
+    if gap_type == "adjacent" and _has_any_code(evidence["violation_codes"], ("gap_adjacent_missing", "GAP_ADJACENT_MISSING")):
+        issue_codes.append("EXPECTED_GAP_ADJACENT_MISSING")
+    if gap_type and not evidence.get("gap_evidence_available"):
+        issue_codes.append("EXPECTED_GAP_EVIDENCE_MISSING")
+        missing_evidence.append("gap_evidence")
+    _check_context_expected_contract(expected_contract, evidence, issue_codes, missing_evidence, details)
+
+
+def _check_multi_file_expected_contract(
+    expected_contract: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    issue_codes: list[str],
+    missing_evidence: list[str],
+    details: dict[str, Any],
+) -> None:
+    required_tables = [str(item) for item in expected_contract.get("required_tables_covered") or [] if str(item)]
+    if expected_contract.get("required_all_files_covered") or required_tables:
+        covered_tables = set(evidence.get("covered_tables") or [])
+        details["covered_tables"] = sorted(covered_tables)
+        if required_tables:
+            missing_tables = [table for table in required_tables if table not in covered_tables and not _text_contains_metric(evidence["search_text"], table)]
+            details["missing_tables"] = missing_tables
+            if missing_tables:
+                issue_codes.append("EXPECTED_TABLE_COVERAGE_MISSING")
+                missing_evidence.append("table_coverage_evidence")
+        elif not covered_tables:
+            issue_codes.append("EXPECTED_TABLE_COVERAGE_MISSING")
+            missing_evidence.append("table_coverage_evidence")
+
+    required_join_keys = [str(item) for item in expected_contract.get("required_join_keys") or [] if str(item)]
+    if required_join_keys:
+        join_keys = set(evidence.get("join_keys") or [])
+        missing_keys = [key for key in required_join_keys if key not in join_keys and not _text_contains_metric(evidence["search_text"], key)]
+        details["missing_join_keys"] = missing_keys
+        if missing_keys:
+            issue_codes.append("EXPECTED_JOIN_KEY_EVIDENCE_MISSING")
+            missing_evidence.append("join_key_evidence")
+
+
+def _check_data_quality_expected_contract(
+    expected_contract: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    issue_codes: list[str],
+    missing_evidence: list[str],
+    details: dict[str, Any],
+) -> None:
+    if expected_contract.get("required_field_level_quality") and not evidence.get("field_level_quality_available"):
+        issue_codes.append("EXPECTED_FIELD_LEVEL_QUALITY_EVIDENCE_MISSING")
+        missing_evidence.append("field_level_quality_evidence")
+    if expected_contract.get("required_duplicate_check") and not evidence.get("duplicate_check_available"):
+        issue_codes.append("EXPECTED_DUPLICATE_CHECK_EVIDENCE_MISSING")
+        missing_evidence.append("duplicate_check_evidence")
+    if expected_contract.get("required_outlier_check") and not evidence.get("outlier_check_available"):
+        issue_codes.append("EXPECTED_OUTLIER_CHECK_EVIDENCE_MISSING")
+        missing_evidence.append("outlier_check_evidence")
+    details["quality_evidence"] = {
+        "field_level_quality_available": evidence.get("field_level_quality_available"),
+        "duplicate_check_available": evidence.get("duplicate_check_available"),
+        "outlier_check_available": evidence.get("outlier_check_available"),
+    }
+
+
+def _expected_contract_evidence(result: AgentResult) -> dict[str, Any]:
+    raw_response = dict(result.raw_response or {})
+    contract_report = dict(result.contract_report or {})
+    oracle_result = dict(result.oracle_result or {})
+    payloads = [raw_response, contract_report, oracle_result]
+    search_text = " ".join(
+        [
+            result.answer_text,
+            _json_text(raw_response),
+            _json_text(contract_report),
+            _json_text(oracle_result),
+            _json_text(list(result.violations)),
+        ]
+    ).lower()
+    covered_tables = _collect_named_values(payloads, ("table", "table_name", "tables", "covered_tables", "scanned_tables", "source_tables"))
+    join_keys = _collect_named_values(payloads, ("join_key", "join_keys", "key", "keys"))
+    return {
+        "search_text": search_text,
+        "violation_codes": _violation_codes(result),
+        "oracle_issue_codes": list(result.oracle_issue_codes),
+        "row_count": _extract_row_count(payloads),
+        "context_reference_available": _has_context_reference_evidence(payloads, search_text),
+        "gap_evidence_available": _has_gap_evidence(payloads, search_text),
+        "covered_tables": sorted(covered_tables),
+        "join_keys": sorted(join_keys),
+        "field_level_quality_available": _has_field_level_quality_evidence(payloads, search_text),
+        "duplicate_check_available": _has_duplicate_evidence(payloads, search_text),
+        "outlier_check_available": _has_outlier_evidence(payloads, search_text),
+        "direct_answer_available": _has_direct_answer_evidence_from_payloads(payloads, search_text),
+    }
 
 
 def _runtime_semantic_evidence(result: AgentResult) -> dict[str, Any]:
@@ -381,6 +613,175 @@ def _runtime_semantic_evidence(result: AgentResult) -> dict[str, Any]:
         "semantic_evidence_available": result.semantic_evidence_available,
         "semantic_evidence_missing_reason": result.semantic_evidence_missing_reason,
     }
+
+
+def _required_row_count(expected_contract: Mapping[str, Any]) -> int | None:
+    values = [expected_contract.get("required_row_count"), expected_contract.get("min_row_count")]
+    numeric = [int(value) for value in values if isinstance(value, int) and not isinstance(value, bool)]
+    if not numeric:
+        return None
+    return max(numeric)
+
+
+def _extract_row_count(payloads: list[Mapping[str, Any]]) -> int | None:
+    for payload in payloads:
+        count = _find_first_int(payload, ("row_count", "row_count_evidence", "result_row_count", "actual_row_count"))
+        if count is not None:
+            return count
+        rows = _find_first_rows(payload)
+        if rows is not None:
+            return len(rows)
+    return None
+
+
+def _find_first_int(value: Any, keys: tuple[str, ...]) -> int | None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if str(key) in keys and isinstance(child, int) and not isinstance(child, bool):
+                return child
+            found = _find_first_int(child, keys)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_first_int(child, keys)
+            if found is not None:
+                return found
+    return None
+
+
+def _find_first_rows(value: Any) -> list[Any] | None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if str(key) in {"rows", "data", "records", "actual_result"} and isinstance(child, list):
+                return child
+            found = _find_first_rows(child)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_first_rows(child)
+            if found is not None:
+                return found
+    return None
+
+
+def _collect_named_values(payloads: list[Mapping[str, Any]], keys: tuple[str, ...]) -> set[str]:
+    values: set[str] = set()
+    for payload in payloads:
+        _collect_named_values_from_any(payload, keys, values)
+    return values
+
+
+def _collect_named_values_from_any(value: Any, keys: tuple[str, ...], out: set[str]) -> None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if str(key) in keys:
+                _add_named_value(child, out)
+            _collect_named_values_from_any(child, keys, out)
+    elif isinstance(value, list):
+        for child in value:
+            _collect_named_values_from_any(child, keys, out)
+
+
+def _add_named_value(value: Any, out: set[str]) -> None:
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            out.add(text)
+    elif isinstance(value, Mapping):
+        for key in ("name", "table", "table_name", "column", "column_name", "key"):
+            child = value.get(key)
+            if isinstance(child, str) and child.strip():
+                out.add(child.strip())
+    elif isinstance(value, list):
+        for child in value:
+            _add_named_value(child, out)
+
+
+def _has_context_reference_evidence(payloads: list[Mapping[str, Any]], search_text: str) -> bool:
+    if any(token in search_text for token in ("previous_top_objects", "previous_result_set", "inherited_top_objects", "context_used")):
+        return True
+    return any(_find_truthy(payload, ("context_used", "inherited_top_objects", "previous_top_objects", "previous_result_set")) for payload in payloads)
+
+
+def _has_gap_evidence(payloads: list[Mapping[str, Any]], search_text: str) -> bool:
+    if any(token in search_text for token in ("gap_to_leader", "adjacent_gap", "pairwise_gap", "gap_value", "差距", "差多少")):
+        return True
+    return any(_find_truthy(payload, ("gap_to_leader", "adjacent_gap", "pairwise_gap", "gap_evidence", "gap_value")) for payload in payloads)
+
+
+def _has_field_level_quality_evidence(payloads: list[Mapping[str, Any]], search_text: str) -> bool:
+    if any(token in search_text for token in ("field_level_table", "field_level_quality", "missing_count", "missing_rate", "字段级")):
+        return True
+    return any(_find_truthy(payload, ("field_level_table", "field_level_quality", "fields")) for payload in payloads)
+
+
+def _has_duplicate_evidence(payloads: list[Mapping[str, Any]], search_text: str) -> bool:
+    if any(token in search_text for token in ("duplicate_rules", "duplicate_checks", "duplicate_count", "重复")):
+        return True
+    return any(_find_truthy(payload, ("duplicate_rules", "duplicate_checks", "duplicate_count", "full_row_duplicate_count")) for payload in payloads)
+
+
+def _has_outlier_evidence(payloads: list[Mapping[str, Any]], search_text: str) -> bool:
+    if any(token in search_text for token in ("outlier_rules", "outlier_count", "anomaly_rules", "异常", "离群")):
+        return True
+    return any(_find_truthy(payload, ("outlier_rules", "outlier_count", "anomaly_rules")) for payload in payloads)
+
+
+def _has_direct_answer_evidence(evidence: Mapping[str, Any]) -> bool:
+    return bool(evidence.get("direct_answer_available"))
+
+
+def _has_direct_answer_evidence_from_payloads(payloads: list[Mapping[str, Any]], search_text: str) -> bool:
+    if any(token in search_text for token in ("direct_answer_first", "direct_answer", "answer_first")):
+        return True
+    return any(_find_truthy(payload, ("direct_answer", "direct_answer_first", "answer_first")) for payload in payloads)
+
+
+def _find_truthy(value: Any, keys: tuple[str, ...]) -> bool:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if str(key) in keys and bool(child):
+                return True
+            if _find_truthy(child, keys):
+                return True
+    elif isinstance(value, list):
+        return any(_find_truthy(child, keys) for child in value)
+    return False
+
+
+def _has_any_code(codes: list[str], needles: tuple[str, ...]) -> bool:
+    lowered_needles = tuple(needle.lower() for needle in needles)
+    for code in codes:
+        code_text = str(code).lower()
+        if any(needle in code_text for needle in lowered_needles):
+            return True
+    return False
+
+
+def _text_contains_metric(text: str, metric: str) -> bool:
+    return str(metric or "").strip().lower() in text
+
+
+def _json_text(value: Any) -> str:
+    try:
+        import json
+
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    result = []
+    seen = set()
+    for value in values:
+        text = str(value)
+        if text and text not in seen:
+            result.append(text)
+            seen.add(text)
+    return result
 
 
 def _merge_runtime_gate_fields_into_scored_rows(rows: list[dict[str, Any]], scored_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -410,6 +811,11 @@ def _merge_runtime_gate_fields_into_scored_rows(rows: list[dict[str, Any]], scor
                 "runtime_gate_passed": source.get("runtime_gate_passed"),
                 "semantic_evidence_available": source.get("semantic_evidence_available"),
                 "semantic_evidence_missing_reason": source.get("semantic_evidence_missing_reason"),
+                "expected_contract_normalized": source.get("expected_contract_normalized"),
+                "expected_contract_runtime_hints": dict(source.get("expected_contract_runtime_hints") or {}),
+                "expected_contract_check": dict(source.get("expected_contract_check") or {}),
+                "expected_contract_issue_codes": list(source.get("expected_contract_issue_codes") or []),
+                "expected_contract_missing_evidence": list(source.get("expected_contract_missing_evidence") or []),
                 "llm_judge_passed": candidate.get("acceptable") is True,
             }
         )
@@ -433,10 +839,17 @@ def _runtime_gate_summary(rows: list[dict[str, Any]], scored_rows: list[dict[str
     transport_success = sum(1 for row in rows if row.get("transport_success") is True)
     service_success = sum(1 for row in rows if row.get("service_success") is True)
     llm_judge_passed = sum(1 for row in scored_rows if row.get("llm_judge_passed") is True)
+    expected_contract_checked = sum(1 for row in rows if (row.get("expected_contract_check") or {}).get("checked") is True)
+    expected_contract_passed = sum(1 for row in rows if (row.get("expected_contract_check") or {}).get("checked") is True and (row.get("expected_contract_check") or {}).get("passed") is True)
+    expected_contract_failed = sum(1 for row in rows if (row.get("expected_contract_check") or {}).get("checked") is True and (row.get("expected_contract_check") or {}).get("passed") is False)
+    expected_contract_missing = sum(1 for row in rows if row.get("expected_contract_missing_evidence"))
     violation_counts: Counter[str] = Counter()
+    expected_contract_issue_counts: Counter[str] = Counter()
     for row in rows:
         violation_counts.update(str(code) for code in row.get("violation_codes") or [] if str(code))
         violation_counts.update(str(code) for code in row.get("oracle_issue_codes") or [] if str(code))
+        expected_contract_issue_counts.update(str(code) for code in row.get("expected_contract_issue_codes") or [] if str(code))
+        violation_counts.update(str(code) for code in row.get("expected_contract_issue_codes") or [] if str(code))
     return {
         "semantic_checked_turns": semantic_checked,
         "semantic_passed_turns": semantic_passed,
@@ -452,6 +865,11 @@ def _runtime_gate_summary(rows: list[dict[str, Any]], scored_rows: list[dict[str
         "transport_success_turns": transport_success,
         "service_success_turns": service_success,
         "llm_judge_passed_turns": llm_judge_passed,
+        "expected_contract_checked_turns": expected_contract_checked,
+        "expected_contract_passed_turns": expected_contract_passed,
+        "expected_contract_failed_turns": expected_contract_failed,
+        "expected_contract_missing_evidence_turns": expected_contract_missing,
+        "expected_contract_issue_codes": dict(expected_contract_issue_counts.most_common(12)),
         "runtime_gate": {
             "total_turns": total,
             "transport_success_turns": transport_success,
@@ -459,6 +877,7 @@ def _runtime_gate_summary(rows: list[dict[str, Any]], scored_rows: list[dict[str
             "semantic_passed_turns": semantic_passed,
             "oracle_passed_turns": oracle_passed,
             "llm_judge_passed_turns": llm_judge_passed,
+            "expected_contract_passed_turns": expected_contract_passed,
             "final_passed_turns": sum(1 for row in scored_rows if _final_runtime_gate_passed(row)),
         },
     }
@@ -482,6 +901,10 @@ def _runtime_gate_markdown(summary: Mapping[str, Any]) -> str:
         f"- Legacy/unverified turns: {summary.get('legacy_unverified_turns', 0)}",
         f"- Missing semantic evidence: {summary.get('semantic_evidence_missing_turns', 0)}",
         f"- LLM judge passed: {summary.get('llm_judge_passed_turns', 0)}",
+        f"- Expected contract checked: {summary.get('expected_contract_checked_turns', 0)}",
+        f"- Expected contract passed: {summary.get('expected_contract_passed_turns', 0)}",
+        f"- Expected contract failed: {summary.get('expected_contract_failed_turns', 0)}",
+        f"- Expected contract missing evidence: {summary.get('expected_contract_missing_evidence_turns', 0)}",
         "",
         "## Top Violation Codes",
         "",
@@ -500,6 +923,7 @@ def _final_runtime_gate_passed(row: Mapping[str, Any]) -> bool:
         row.get("transport_success") is True
         and row.get("semantic_passed") is True
         and row.get("oracle_passed") is True
+        and not ((row.get("expected_contract_check") or {}).get("checked") is True and (row.get("expected_contract_check") or {}).get("passed") is False)
         and row.get("llm_judge_passed") is True
     )
 

@@ -44,7 +44,20 @@ SUPPORTED_CONTRACT_FAMILIES = {
     "multi_file_overview",
     "data_quality",
 }
-SUPPORTED_GAP_TYPES = {"", "pairwise", "adjacent", "rank_pair", "adjacent_and_to_leader"}
+SUPPORTED_GAP_TYPES = {"", "pairwise", "adjacent"}
+GAP_TYPE_ALIASES = {
+    "rank_pair": "pairwise",
+    "adjacent_and_to_leader": "adjacent",
+}
+SUPPORTED_CONTEXT_REFERENCES = {
+    "",
+    "previous_top_objects",
+    "previous_result_set",
+    "previous_quality_findings",
+}
+CONTEXT_REFERENCE_ALIASES = {
+    "previous_top_set": "previous_top_objects",
+}
 
 EXPECTED_CONTRACT_DEFAULTS: dict[str, Any] = {
     "schema_version": 1,
@@ -59,6 +72,7 @@ EXPECTED_CONTRACT_DEFAULTS: dict[str, Any] = {
     "required_gap_type": "",
     "required_context_reference": "",
     "required_all_files_covered": False,
+    "required_tables_covered": [],
     "required_join_keys": [],
     "required_field_level_quality": False,
     "required_duplicate_check": False,
@@ -196,13 +210,17 @@ def normalize_expected_contract(value: Any, *, field_name: str = "expected_contr
     normalized["required_metrics"] = _text_list_or_empty(normalized.get("required_metrics"), f"{field_name}.required_metrics")
     normalized["required_sort"] = _normalize_required_sort(normalized.get("required_sort"), f"{field_name}.required_sort")
     normalized["required_gap_type"] = _optional_text(normalized.get("required_gap_type"), f"{field_name}.required_gap_type")
+    normalized["required_gap_type"] = GAP_TYPE_ALIASES.get(normalized["required_gap_type"], normalized["required_gap_type"])
     if normalized["required_gap_type"] not in SUPPORTED_GAP_TYPES:
         raise ValueError(f"{field_name}.required_gap_type is unsupported: {normalized['required_gap_type']!r}")
-    normalized["required_context_reference"] = _optional_text_or_text_list(
+    normalized["required_context_reference"] = _normalize_context_reference(
         normalized.get("required_context_reference"), f"{field_name}.required_context_reference"
     )
     normalized["required_all_files_covered"] = _bool(
         normalized.get("required_all_files_covered"), f"{field_name}.required_all_files_covered"
+    )
+    normalized["required_tables_covered"] = _text_list_or_empty(
+        normalized.get("required_tables_covered"), f"{field_name}.required_tables_covered"
     )
     normalized["required_join_keys"] = _text_list_or_empty(normalized.get("required_join_keys"), f"{field_name}.required_join_keys")
     normalized["required_field_level_quality"] = _bool(
@@ -222,6 +240,61 @@ def normalize_expected_contract(value: Any, *, field_name: str = "expected_contr
         normalized.get("violation_codes_expected_absent"), f"{field_name}.violation_codes_expected_absent"
     )
     return normalized
+
+
+def expected_contract_runtime_hints(value: Any) -> dict[str, Any]:
+    """Map structured expected_contract fields to current runtime contract terms.
+
+    This adapter intentionally does not participate in LLM judging. It gives
+    deterministic eval/report code a single place to translate manifest schema
+    fields into TaskExecutionContract-style names when that wiring is needed.
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+    contract = normalize_expected_contract(value)
+    if not isinstance(contract, Mapping):
+        return {}
+    required_sort = contract.get("required_sort") if isinstance(contract.get("required_sort"), Mapping) else {}
+    context_reference = contract.get("required_context_reference")
+    context_values = context_reference if isinstance(context_reference, list) else [context_reference]
+    metric = str(required_sort.get("metric") or _first_item(contract.get("required_metrics")) or "")
+    dimension = str(_first_item(contract.get("required_dimensions")) or "")
+    gap_mode = ""
+    if contract.get("required_gap_type") == "pairwise":
+        gap_mode = "rank_pair"
+    elif contract.get("required_gap_type") == "adjacent":
+        gap_mode = "adjacent_and_to_leader"
+    output_columns = [
+        *[str(item) for item in contract.get("required_dimensions") or []],
+        *[str(item) for item in contract.get("required_metrics") or []],
+    ]
+    return {
+        "task_family": contract.get("contract_family") or "unknown",
+        "required_n": contract.get("required_row_count"),
+        "minimum_required_objects": contract.get("min_row_count"),
+        "metric": metric,
+        "dimension": dimension,
+        "sort_order": required_sort.get("order") or "",
+        "gap_mode": gap_mode,
+        "requires_previous_artifact": any(
+            item in {"previous_top_objects", "previous_result_set", "previous_quality_findings"} for item in context_values
+        ),
+        "required_output_columns": list(dict.fromkeys(column for column in output_columns if column)),
+        "verification_rules": {
+            "expected_contract_schema_version": contract.get("schema_version"),
+            "allow_insufficient_data_explanation": contract.get("allow_insufficient_data_explanation"),
+            "required_all_files_covered": contract.get("required_all_files_covered"),
+            "required_tables_covered": list(contract.get("required_tables_covered") or []),
+            "required_join_keys": list(contract.get("required_join_keys") or []),
+            "required_field_level_quality": contract.get("required_field_level_quality"),
+            "required_duplicate_check": contract.get("required_duplicate_check"),
+            "required_outlier_check": contract.get("required_outlier_check"),
+            "requires_direct_answer_first": contract.get("requires_direct_answer_first"),
+            "requires_artifact_summary": contract.get("requires_artifact_summary"),
+            "violation_codes_expected_absent": list(contract.get("violation_codes_expected_absent") or []),
+        },
+    }
 
 
 def validate_manifest(manifest: Mapping[str, Any]) -> None:
@@ -452,6 +525,22 @@ def _optional_text_or_text_list(value: Any, field_name: str) -> str | list[str]:
     raise ValueError(f"{field_name} must be a string or array")
 
 
+def _normalize_context_reference(value: Any, field_name: str) -> str | list[str]:
+    references = _optional_text_or_text_list(value, field_name)
+    if isinstance(references, list):
+        normalized = [_normalize_one_context_reference(item, field_name) for item in references]
+        return normalized
+    return _normalize_one_context_reference(references, field_name)
+
+
+def _normalize_one_context_reference(value: str, field_name: str) -> str:
+    reference = CONTEXT_REFERENCE_ALIASES.get(value, value)
+    if reference not in SUPPORTED_CONTEXT_REFERENCES:
+        supported = ", ".join(sorted(item for item in SUPPORTED_CONTEXT_REFERENCES if item))
+        raise ValueError(f"{field_name} is unsupported: {reference!r}; supported: {supported}")
+    return reference
+
+
 def _bool(value: Any, field_name: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{field_name} must be a boolean")
@@ -480,12 +569,19 @@ def _normalize_required_sort(value: Any, field_name: str) -> Mapping[str, Any] |
     if not isinstance(value, Mapping):
         raise ValueError(f"{field_name} must be an object")
     result = dict(value)
+    metric = _optional_text(result.get("metric"), f"{field_name}.metric")
+    if metric:
+        result["metric"] = metric
     if "by" in result:
         by = result.get("by")
         if isinstance(by, str):
             result["by"] = [by.strip()] if by.strip() else []
         else:
             result["by"] = _text_list_or_empty(by, f"{field_name}.by")
+    elif metric:
+        result["by"] = [metric]
+    if not metric and result.get("by"):
+        result["metric"] = result["by"][0]
     order = result.get("order")
     if order is not None:
         order_text = str(order).strip().lower()
@@ -493,6 +589,12 @@ def _normalize_required_sort(value: Any, field_name: str) -> Mapping[str, Any] |
             raise ValueError(f"{field_name}.order must be 'asc' or 'desc'")
         result["order"] = order_text
     return result
+
+
+def _first_item(value: Any) -> Any:
+    if isinstance(value, list) and value:
+        return value[0]
+    return None
 
 
 def _reject_leaked_prompt_tokens(case_id: str, text: str) -> None:

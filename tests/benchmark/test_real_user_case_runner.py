@@ -6,7 +6,13 @@ import tempfile
 from typing import Any
 import unittest
 
-from scripts.real_user_eval.manifest import load_manifest, manifest_cases, normalize_expected_contract, validate_manifest
+from scripts.real_user_eval.manifest import (
+    expected_contract_runtime_hints,
+    load_manifest,
+    manifest_cases,
+    normalize_expected_contract,
+    validate_manifest,
+)
 from scripts.real_user_eval.oracle import evaluate_oracle
 from scripts.real_user_eval.runner import run_manifest
 from scripts.real_user_eval.targets import AgentResult, TargetRequest, agent_result_from_response
@@ -81,6 +87,7 @@ class RealUserCaseRunnerTest(unittest.TestCase):
         self.assertEqual(3, contract["required_row_count"])
         self.assertIsNone(contract["min_row_count"])
         self.assertFalse(contract["allow_insufficient_data_explanation"])
+        self.assertEqual("sales", contract["required_sort"]["metric"])
         self.assertEqual(["sales"], contract["required_sort"]["by"])
         self.assertEqual("desc", contract["required_sort"]["order"])
         self.assertEqual([], contract["violation_codes_expected_absent"])
@@ -97,12 +104,57 @@ class RealUserCaseRunnerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "contract_family is unsupported"):
             validate_manifest(manifest)
 
-    def test_normalize_expected_contract_fills_p0_contract_fields(self) -> None:
+    def test_topn_expected_contract_normalizes_to_runtime_hints(self) -> None:
+        contract = normalize_expected_contract(
+            {
+                "contract_family": "topn",
+                "answer_type": "ranked_table",
+                "required_row_count": 5,
+                "allow_insufficient_data_explanation": True,
+                "required_dimensions": ["city"],
+                "required_metrics": ["sales"],
+                "required_sort": {"metric": "sales", "order": "DESC"},
+                "requires_direct_answer_first": True,
+            }
+        )
+
+        self.assertIsInstance(contract, dict)
+        self.assertEqual("topn", contract["contract_family"])
+        self.assertEqual(5, contract["required_row_count"])
+        self.assertEqual("sales", contract["required_sort"]["metric"])
+        self.assertEqual(["sales"], contract["required_sort"]["by"])
+        self.assertEqual("desc", contract["required_sort"]["order"])
+        hints = expected_contract_runtime_hints(contract)
+        self.assertEqual("topn", hints["task_family"])
+        self.assertEqual(5, hints["required_n"])
+        self.assertEqual("sales", hints["metric"])
+        self.assertEqual("city", hints["dimension"])
+        self.assertEqual("desc", hints["sort_order"])
+        self.assertTrue(hints["verification_rules"]["requires_direct_answer_first"])
+
+    def test_referent_followup_expected_contract_normalizes_context_alias(self) -> None:
+        contract = normalize_expected_contract(
+            {
+                "contract_family": "followup_referent",
+                "required_context_reference": "previous_top_set",
+                "required_row_count": 3,
+                "required_dimensions": ["city"],
+                "required_metrics": ["sales"],
+            }
+        )
+
+        self.assertIsInstance(contract, dict)
+        self.assertEqual("previous_top_objects", contract["required_context_reference"])
+        hints = expected_contract_runtime_hints(contract)
+        self.assertTrue(hints["requires_previous_artifact"])
+        self.assertEqual("followup_referent", hints["task_family"])
+
+    def test_gap_expected_contract_normalizes_pairwise_and_adjacent_alias(self) -> None:
         contract = normalize_expected_contract(
             {
                 "contract_family": "gap",
-                "required_gap_type": "adjacent",
-                "required_context_reference": "previous_top_set",
+                "required_gap_type": "rank_pair",
+                "required_context_reference": "previous_top_objects",
                 "required_metrics": ["orders", "adjacent_gap"],
                 "requires_direct_answer_first": True,
             }
@@ -110,12 +162,65 @@ class RealUserCaseRunnerTest(unittest.TestCase):
 
         self.assertIsInstance(contract, dict)
         self.assertEqual("gap", contract["contract_family"])
-        self.assertEqual("adjacent", contract["required_gap_type"])
-        self.assertEqual("previous_top_set", contract["required_context_reference"])
+        self.assertEqual("pairwise", contract["required_gap_type"])
+        self.assertEqual("previous_top_objects", contract["required_context_reference"])
         self.assertEqual([], contract["required_dimensions"])
         self.assertFalse(contract["required_all_files_covered"])
         self.assertFalse(contract["required_duplicate_check"])
         self.assertTrue(contract["requires_direct_answer_first"])
+        hints = expected_contract_runtime_hints(contract)
+        self.assertEqual("rank_pair", hints["gap_mode"])
+
+    def test_multi_file_overview_expected_contract_normalizes_tables_and_join_keys(self) -> None:
+        contract = normalize_expected_contract(
+            {
+                "contract_family": "multi_file_overview",
+                "required_all_files_covered": True,
+                "required_tables_covered": ["customers", "orders"],
+                "required_dimensions": ["customer_id", "order_id"],
+                "required_join_keys": ["customer_id"],
+                "requires_artifact_summary": True,
+            }
+        )
+
+        self.assertIsInstance(contract, dict)
+        self.assertEqual("multi_file_overview", contract["contract_family"])
+        self.assertTrue(contract["required_all_files_covered"])
+        self.assertEqual(["customers", "orders"], contract["required_tables_covered"])
+        self.assertEqual(["customer_id"], contract["required_join_keys"])
+        hints = expected_contract_runtime_hints(contract)
+        self.assertEqual(["customers", "orders"], hints["verification_rules"]["required_tables_covered"])
+        self.assertEqual(["customer_id"], hints["verification_rules"]["required_join_keys"])
+
+    def test_data_quality_expected_contract_normalizes_field_duplicate_outlier_requirements(self) -> None:
+        contract = normalize_expected_contract(
+            {
+                "contract_family": "data_quality",
+                "answer_type": "field_level_quality_summary",
+                "required_metrics": ["missing_count", "duplicate_count", "outlier_count"],
+                "required_field_level_quality": True,
+                "required_duplicate_check": True,
+                "required_outlier_check": True,
+                "requires_direct_answer_first": True,
+                "violation_codes_expected_absent": [
+                    "quality_field_level_missing",
+                    "quality_duplicate_rule_missing",
+                    "quality_outlier_rules_missing",
+                ],
+            }
+        )
+
+        self.assertIsInstance(contract, dict)
+        self.assertEqual("data_quality", contract["contract_family"])
+        self.assertTrue(contract["required_field_level_quality"])
+        self.assertTrue(contract["required_duplicate_check"])
+        self.assertTrue(contract["required_outlier_check"])
+        hints = expected_contract_runtime_hints(contract)
+        rules = hints["verification_rules"]
+        self.assertTrue(rules["required_field_level_quality"])
+        self.assertTrue(rules["required_duplicate_check"])
+        self.assertTrue(rules["required_outlier_check"])
+        self.assertIn("quality_outlier_rules_missing", rules["violation_codes_expected_absent"])
 
     def test_duckdb_oracle_computes_source_fact(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -193,11 +298,148 @@ class RealUserCaseRunnerTest(unittest.TestCase):
         self.assertTrue(raw["agent_result"]["semantic_evidence_available"])
         self.assertEqual({"oracle_available": True, "passed": True, "issue_codes": []}, raw["agent_result"]["oracle_result"])
 
+    def test_structured_topn_expected_contract_passes_deterministic_check(self) -> None:
+        response = {
+            "success": True,
+            "answer": "直接答案：上海、北京都是前 2，sales 分别是 100 和 80。",
+            "semantic_status": "passed",
+            "contract_satisfied": True,
+            "contract_family": "topn",
+            "direct_answer_first": True,
+            "contract_report": {"task_family": "topn", "passed": True, "violations": [], "row_count": 2},
+            "oracle_result": {
+                "oracle_available": True,
+                "passed": True,
+                "issue_codes": [],
+                "actual_result": [{"city": "上海", "sales": 100}, {"city": "北京", "sales": 80}],
+            },
+        }
+
+        summary, comparison, scored, raw = _run_single_case_with_response(response, expected_contract=_topn_expected_contract())
+
+        self.assertEqual(1, summary["expected_contract_checked_turns"])
+        self.assertEqual(1, summary["expected_contract_passed_turns"])
+        self.assertEqual(0, summary["expected_contract_failed_turns"])
+        self.assertTrue(comparison["expected_contract_check"]["passed"])
+        self.assertEqual("topn", comparison["expected_contract_runtime_hints"]["task_family"])
+        self.assertTrue(scored["expected_contract_check"]["passed"])
+        self.assertTrue(raw["expected_contract_check"]["passed"])
+
+    def test_structured_topn_missing_row_and_metric_evidence_fails_check(self) -> None:
+        response = {
+            "success": True,
+            "answer": "上海排第一。",
+            "semantic_status": "passed",
+            "contract_satisfied": True,
+            "contract_family": "topn",
+            "contract_report": {"task_family": "topn", "passed": True, "violations": []},
+            "oracle_result": {"oracle_available": True, "passed": True, "issue_codes": []},
+        }
+
+        summary, comparison, scored, _raw = _run_single_case_with_response(response, expected_contract=_topn_expected_contract(requires_direct=False))
+
+        self.assertEqual(1, summary["expected_contract_checked_turns"])
+        self.assertEqual(0, summary["expected_contract_passed_turns"])
+        self.assertEqual(1, summary["expected_contract_failed_turns"])
+        self.assertIn("expected_contract_failed_turns_above_threshold:1>0", summary["gate_failed_reasons"])
+        self.assertFalse(comparison["expected_contract_check"]["passed"])
+        self.assertIn("row_count_evidence", comparison["expected_contract_check"]["missing_evidence"])
+        self.assertIn("metric_evidence", comparison["expected_contract_check"]["missing_evidence"])
+        self.assertFalse(scored["runtime_gate_passed"])
+
+    def test_referent_followup_missing_previous_top_objects_evidence_fails_check(self) -> None:
+        response = {
+            "success": True,
+            "answer": "分别是上海 100，北京 80。",
+            "semantic_status": "passed",
+            "contract_satisfied": True,
+            "contract_family": "followup_referent",
+            "contract_report": {"task_family": "followup_referent", "passed": True, "violations": []},
+            "oracle_result": {"oracle_available": True, "passed": True, "issue_codes": []},
+        }
+
+        _summary, comparison, _scored, _raw = _run_single_case_with_response(
+            response,
+            expected_contract={
+                "contract_family": "followup_referent",
+                "required_context_reference": "previous_top_objects",
+            },
+        )
+
+        self.assertIn("EXPECTED_CONTEXT_REFERENCE_MISSING", comparison["expected_contract_issue_codes"])
+
+    def test_gap_pairwise_missing_evidence_fails_check(self) -> None:
+        response = {
+            "success": True,
+            "answer": "第一名领先。",
+            "semantic_status": "passed",
+            "contract_satisfied": True,
+            "contract_family": "gap",
+            "contract_report": {"task_family": "gap", "passed": True, "violations": []},
+            "oracle_result": {"oracle_available": True, "passed": True, "issue_codes": []},
+        }
+
+        _summary, comparison, _scored, _raw = _run_single_case_with_response(
+            response,
+            expected_contract={"contract_family": "gap", "required_gap_type": "pairwise"},
+        )
+
+        self.assertIn("EXPECTED_GAP_EVIDENCE_MISSING", comparison["expected_contract_issue_codes"])
+
+    def test_multi_file_missing_table_and_join_key_evidence_fails_check(self) -> None:
+        response = {
+            "success": True,
+            "answer": "只看到了 orders 表。",
+            "semantic_status": "passed",
+            "contract_satisfied": True,
+            "contract_family": "multi_file_overview",
+            "overview_report": {"tables_summary": [{"table_name": "orders", "columns": ["order_id"]}]},
+            "oracle_result": {"oracle_available": True, "passed": True, "issue_codes": []},
+        }
+
+        _summary, comparison, _scored, _raw = _run_single_case_with_response(
+            response,
+            expected_contract={
+                "contract_family": "multi_file_overview",
+                "required_tables_covered": ["orders", "customers"],
+                "required_join_keys": ["customer_id"],
+            },
+        )
+
+        self.assertIn("EXPECTED_TABLE_COVERAGE_MISSING", comparison["expected_contract_issue_codes"])
+        self.assertIn("EXPECTED_JOIN_KEY_EVIDENCE_MISSING", comparison["expected_contract_issue_codes"])
+
+    def test_data_quality_missing_field_duplicate_outlier_evidence_fails_check(self) -> None:
+        response = {
+            "success": True,
+            "answer": "数据质量正常。",
+            "semantic_status": "passed",
+            "contract_satisfied": True,
+            "contract_family": "data_quality",
+            "oracle_result": {"oracle_available": True, "passed": True, "issue_codes": []},
+        }
+
+        _summary, comparison, _scored, _raw = _run_single_case_with_response(
+            response,
+            expected_contract={
+                "contract_family": "data_quality",
+                "required_field_level_quality": True,
+                "required_duplicate_check": True,
+                "required_outlier_check": True,
+            },
+        )
+
+        self.assertIn("EXPECTED_FIELD_LEVEL_QUALITY_EVIDENCE_MISSING", comparison["expected_contract_issue_codes"])
+        self.assertIn("EXPECTED_DUPLICATE_CHECK_EVIDENCE_MISSING", comparison["expected_contract_issue_codes"])
+        self.assertIn("EXPECTED_OUTLIER_CHECK_EVIDENCE_MISSING", comparison["expected_contract_issue_codes"])
+
     def test_runner_handles_missing_runtime_semantic_fields_without_crashing(self) -> None:
         response = {"success": True, "answer": "上海 sales 是 100。"}
 
         summary, comparison, scored, raw = _run_single_case_with_response(response)
 
+        self.assertFalse(comparison["expected_contract_check"]["checked"])
+        self.assertEqual(0, summary["expected_contract_checked_turns"])
         self.assertEqual("not_available", comparison["semantic_status"])
         self.assertFalse(comparison["semantic_passed"])
         self.assertEqual("not_available", comparison["semantic_gate_status"])
@@ -324,13 +566,29 @@ def _manifest_json(csv_path: Path) -> str:
 }}"""
 
 
-def _run_single_case_with_response(response: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+def _topn_expected_contract(*, requires_direct: bool = True) -> dict[str, Any]:
+    return {
+        "contract_family": "topn",
+        "required_row_count": 2,
+        "required_metrics": ["sales"],
+        "required_sort": {"metric": "sales", "order": "desc"},
+        "requires_direct_answer_first": requires_direct,
+    }
+
+
+def _run_single_case_with_response(
+    response: dict[str, Any],
+    *,
+    expected_contract: Any | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         csv_path = temp_path / "sales.csv"
         csv_path.write_text("city,sales\n上海,100\n北京,80\n", encoding="utf-8")
         manifest = _manifest()
         manifest["datasets"]["sales"]["files"] = [str(csv_path)]
+        if expected_contract is not None:
+            manifest["cases"][0]["expected_contract"] = expected_contract
         target = ResponseTarget(response)
         output_dir = temp_path / "out"
 
