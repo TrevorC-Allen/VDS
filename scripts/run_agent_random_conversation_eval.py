@@ -54,6 +54,16 @@ OPERATION_EQUIVALENTS = {
     "cleaning_policy": {"cleaning_policy", "quality_summary", "data_quality_report", "anomaly_rules", "outlier_count", "numeric_quality", "temporal_quality"},
 }
 TREND_FOLLOWUP_FORBIDDEN_DESCRIPTIONS = ("整体上升", "单调上升", "持续上升")
+ANALYSIS_TURN_KINDS = {"analysis", "followup_analysis", "overview", "quality"}
+ORACLE_MISSING_ISSUE_CODES = {"oracle_expected_result_missing", "oracle_actual_result_missing"}
+ORACLE_MISMATCH_ISSUE_CODES = {
+    "oracle_result_mismatch",
+    "gap_mismatch",
+    "trend_shape_mismatch",
+    "overview_required_field_missing",
+    "quality_field_level_missing",
+}
+ORACLE_FAILURE_ISSUE_CODES = ORACLE_MISSING_ISSUE_CODES | ORACLE_MISMATCH_ISSUE_CODES
 
 
 @dataclass
@@ -109,6 +119,7 @@ class TurnEvidence:
     contract_family: str = ""
     contract_checked: bool = False
     contract_violation_codes: list[str] = field(default_factory=list)
+    contract_violation_error_codes: list[str] = field(default_factory=list)
     oracle_available: bool = False
     oracle_passed: bool | None = None
     oracle_issue_codes: list[str] = field(default_factory=list)
@@ -116,6 +127,7 @@ class TurnEvidence:
     expected_result: Any | None = None
     actual_result: Any | None = None
     answer_preview: str = ""
+    llm_judge_failed: bool | None = None
     next_action_questions: list[str] = field(default_factory=list)
 
 
@@ -237,7 +249,7 @@ def run_agent_random_conversation_eval(
             )
     coverage = _coverage_summary(results)
     passed_count = sum(1 for result in results if result.passed)
-    pass_rate = 0.0 if not results else passed_count / len(results)
+    pass_rate = _scenario_pass_rate(results)
     required_global_families = [] if simulator_source not in {"deterministic", "mock"} else sorted(
         {
             family
@@ -371,6 +383,7 @@ def run_scenario(
             issues.extend(_turn_issues(index, turn, response, previous_conversation_id=conversation_id, evidence=evidence))
             if conversation_id and str(response.get("conversation_id") or "") != conversation_id:
                 issues.append(f"turn_{index}:conversation_id_changed")
+        scenario_passed = all(_is_turn_semantically_successful(turn) for turn in turns)
         if simulator_source in {"deterministic", "mock"}:
             issues.extend(_scenario_issues(scenario, turns))
         else:
@@ -379,7 +392,7 @@ def run_scenario(
         scenario_id=scenario.scenario_id,
         capability_family=scenario.capability_family,
         run_index=run_index,
-        passed=not issues,
+        passed=scenario_passed and not issues,
         simulator_source=simulator_source,
         turns=turns,
         issues=issues,
@@ -1194,6 +1207,7 @@ def _turn_evidence(index: int, turn: TurnPlan, response: dict[str, Any], *, tabl
         contract_family=str(response.get("contract_family") or (contract_report or {}).get("task_family") or ""),
         contract_checked=isinstance(contract_report, dict) and bool(contract_report),
         contract_violation_codes=_contract_violation_codes(contract_report),
+        contract_violation_error_codes=_contract_violation_error_codes(contract_report),
         oracle_available=bool(oracle_result.get("oracle_available")),
         oracle_passed=oracle_result.get("passed") if isinstance(oracle_result.get("passed"), bool) else None,
         oracle_issue_codes=[str(item) for item in oracle_result.get("issue_codes") or []],
@@ -1201,6 +1215,7 @@ def _turn_evidence(index: int, turn: TurnPlan, response: dict[str, Any], *, tabl
         expected_result=oracle_result.get("expected_result"),
         actual_result=oracle_result.get("actual_result"),
         answer_preview=_preview_text(response.get("answer"), limit=520),
+        llm_judge_failed=_extract_llm_judge_failed(response),
         next_action_questions=_action_questions(actions),
     )
 def _turn_role(index: int, expected_kind: str) -> str:
@@ -1232,15 +1247,13 @@ def _turn_issues(
 ) -> list[str]:
     issues: list[str] = []
     expected_kind = turn.expected_kind
-    if expected_kind in {"analysis", "followup_analysis", "overview", "quality"} and response.get("success") is not True:
-        issues.append(f"turn_{index}:analysis_failed")
     answer = str(response.get("answer") or "")
     lowered = answer.lower()
     if "not applicable" in lowered:
         issues.append(f"turn_{index}:unexpected_not_applicable")
     if any(token in lowered for token in ("raw prompt", "chain_of_thought", "standard answer", "scorer")):
         issues.append(f"turn_{index}:internal_artifact_leak")
-    if expected_kind in {"analysis", "followup_analysis", "overview", "quality"} and response.get("success") is True:
+    if expected_kind in ANALYSIS_TURN_KINDS:
         if not str(response.get("answer") or "").strip():
             issues.append(f"turn_{index}:missing_answer")
     actions = _structured_actions(response)
@@ -1266,9 +1279,9 @@ def _turn_issues(
         if previous_conversation_id and str(response.get("conversation_id") or "") != previous_conversation_id:
             issues.append(f"turn_{index}:conversation_not_preserved")
     context = response.get("current_analysis_context") if isinstance(response.get("current_analysis_context"), dict) else {}
-    if response.get("success") is True and expected_kind in {"analysis", "followup_analysis"} and context.get("state_name") not in {"analysis_ready", "analysis_failed"}:
+    if expected_kind in {"analysis", "followup_analysis"} and context.get("state_name") not in {"analysis_ready", "analysis_failed"}:
         issues.append(f"turn_{index}:missing_analysis_state")
-    if response.get("success") is True and expected_kind in {"analysis", "followup_analysis"}:
+    if expected_kind in {"analysis", "followup_analysis"}:
         logic = _representative_logic_from_response(response, required_operation=turn.required_operation)
         operation = str(logic.get("operation") or response.get("debug", {}).get("operation") or "")
         if _operation_present("ranking", {operation}) or operation in {"aggregation", "top_k_share", "growth_ranking"}:
@@ -1282,17 +1295,19 @@ def _turn_issues(
             if expected_metric and actual_metric and not _metric_matches(expected_metric, actual_metric):
                 issues.append(f"turn_{index}:metric_mismatch:expected={expected_metric}:actual={actual_metric}")
     semantic_status = str(response.get("semantic_status") or _semantic_status_from_response(response))
-    if semantic_status == "failed" and response.get("success") is True:
+    if semantic_status == "failed":
         issues.append(f"turn_{index}:semantic_contract_failed")
-    if semantic_status == "needs_clarification" and response.get("success") is True:
+    if semantic_status == "needs_clarification":
         issues.append(f"turn_{index}:semantic_contract_needs_clarification")
     oracle_result = response.get("oracle_result") if isinstance(response.get("oracle_result"), dict) else {}
-    oracle_available = evidence.oracle_available if evidence is not None else bool(oracle_result.get("oracle_available"))
     oracle_passed = evidence.oracle_passed if evidence is not None else oracle_result.get("passed")
     oracle_issue_codes = evidence.oracle_issue_codes if evidence is not None else [str(item) for item in oracle_result.get("issue_codes") or []]
-    if oracle_available and oracle_passed is False:
+    if oracle_passed is False or (isinstance(oracle_issue_codes, list) and _has_oracle_failure_issue_codes(oracle_issue_codes)):
         code_suffix = "|".join(oracle_issue_codes) if oracle_issue_codes else "oracle_mismatch"
         issues.append(f"turn_{index}:oracle_result_failed:{code_suffix}")
+    llm_judge_failed = evidence.llm_judge_failed if evidence is not None else _extract_llm_judge_failed(response)
+    if bool(llm_judge_failed):
+        issues.append(f"turn_{index}:llm_judge_failed")
     return issues
 
 
@@ -1392,6 +1407,105 @@ def _contract_violation_codes(contract_report: dict[str, Any]) -> list[str]:
     return codes
 
 
+def _contract_violation_error_codes(contract_report: dict[str, Any]) -> list[str]:
+    codes: list[str] = []
+    for item in contract_report.get("violations") or []:
+        if not isinstance(item, dict):
+            continue
+        code = item.get("code")
+        if not code:
+            continue
+        severity = str(item.get("severity") or "").strip().lower()
+        if severity in {"warning", "warn", "needs_clarification", "info", "low"}:
+            continue
+        codes.append(str(code))
+    return codes
+
+
+def _has_oracle_failure_issue_codes(oracle_issue_codes: list[str]) -> bool:
+    normalized = {str(item) for item in oracle_issue_codes}
+    return bool(normalized & ORACLE_FAILURE_ISSUE_CODES)
+
+
+def _extract_llm_judge_failed(response: dict[str, Any]) -> bool | None:
+    judge_payload = response.get("llm_judge_failed")
+    if isinstance(judge_payload, bool):
+        return bool(judge_payload)
+    judge_payload = response.get("llm_judge")
+    if isinstance(judge_payload, bool):
+        return bool(judge_payload)
+    judge_payload = response.get("llm_judgement")
+    if isinstance(judge_payload, dict):
+        overall = str(judge_payload.get("overall") or "").strip().lower()
+        if overall in {"failed", "fail", "no", "false"}:
+            return True
+        if overall in {"passed", "pass", "yes", "true"}:
+            return False
+        severity = str(judge_payload.get("severity") or "").strip().lower()
+        if severity in {"high", "critical", "error"}:
+            return True
+        if severity in {"none", "low", "info", "warning"}:
+            return False
+        return None
+    judge_payload = response.get("judge")
+    if isinstance(judge_payload, dict):
+        overall = str(judge_payload.get("overall") or "").strip().lower()
+        if overall in {"failed", "fail", "no", "false"}:
+            return True
+        if overall in {"passed", "pass", "yes", "true"}:
+            return False
+    return None
+
+
+def _is_turn_semantically_successful(turn_record: TurnEvidence | dict[str, Any]) -> bool:
+    semantic_status = getattr(turn_record, "semantic_status", None)
+    if semantic_status is None and isinstance(turn_record, dict):
+        semantic_status = turn_record.get("semantic_status")
+    semantic_status = str(semantic_status).strip().lower() if semantic_status is not None else ""
+    if semantic_status in {"failed", "needs_clarification"}:
+        return False
+    if semantic_status and semantic_status not in {"passed", "corrected_passed", "legacy_unverified"}:
+        return False
+
+    contract_satisfied = getattr(turn_record, "contract_satisfied", None)
+    if contract_satisfied is None and isinstance(turn_record, dict):
+        contract_satisfied = turn_record.get("contract_satisfied")  # type: ignore[assignment]
+    if contract_satisfied is False:
+        return False
+
+    contract_violation_error_codes = getattr(turn_record, "contract_violation_error_codes", None)
+    if contract_violation_error_codes is None:
+        if isinstance(turn_record, dict):
+            contract_violation_error_codes = turn_record.get("contract_violation_error_codes") or turn_record.get("contract_violation_codes", [])
+        else:
+            contract_violation_error_codes = getattr(turn_record, "contract_violation_codes", [])
+    if contract_violation_error_codes:
+        return False
+
+    oracle_passed = getattr(turn_record, "oracle_passed", None)
+    if oracle_passed is None and isinstance(turn_record, dict):
+        oracle_passed = turn_record.get("oracle_passed")  # type: ignore[assignment]
+    if oracle_passed is False:
+        return False
+
+    oracle_issue_codes = list(getattr(turn_record, "oracle_issue_codes", None) or [])
+    if oracle_issue_codes is None:
+        if isinstance(turn_record, dict):
+            oracle_issue_codes = list(turn_record.get("oracle_issue_codes") or [])
+        else:
+            oracle_issue_codes = []
+    if _has_oracle_failure_issue_codes(oracle_issue_codes):
+        return False
+
+    llm_judge_failed = getattr(turn_record, "llm_judge_failed", None)
+    if llm_judge_failed is None and isinstance(turn_record, dict):
+        llm_judge_failed = turn_record.get("llm_judge_failed")  # type: ignore[assignment]
+    if bool(llm_judge_failed):
+        return False
+
+    return True
+
+
 def _deterministic_fixture_oracle_result(
     logic: dict[str, Any],
     response: dict[str, Any],
@@ -1450,7 +1564,46 @@ def _deterministic_fixture_oracle_result(
     params = logic.get("parameters") if isinstance(logic.get("parameters"), dict) else {}
     metric = _actual_metric_from_logic(logic)
     dimension = _actual_dimension_from_logic(logic)
+    limit = _positive_int(params.get("limit") or params.get("top_n") or params.get("k"))
     question = str(turn.question if turn is not None else response.get("question") or "")
+    is_ranking_followup_gap = turn is not None and turn.expected_kind == "followup_analysis" and _is_ranking_followup_gap_question(question)
+    if is_ranking_followup_gap:
+        response_rows = _extract_gap_followup_rows(response)
+        inferred_dimension, inferred_metric = _infer_ranking_gap_columns(
+            response_rows,
+            preferred_dimension=dimension or _expected_dimension_from_question(question),
+            preferred_metric=metric or _expected_metric_from_question(question),
+        )
+        if inferred_dimension:
+            dimension = inferred_dimension
+        if inferred_metric:
+            metric = inferred_metric
+        if response_rows and metric and dimension:
+            if not limit:
+                response_rows_count = len(response_rows)
+                limit = response_rows_count
+            if limit:
+                response_rows = response_rows[:limit]
+            expected_payload = _build_gap_fixture_payload(
+                rows=response_rows,
+                dimension=dimension,
+                metric=metric,
+            )
+            actual_payload = _extract_gap_payload_from_response(response, dimension=dimension, metric=metric)
+            oracle_result = oracle_topn_followup_gap(
+                expected_payload,
+                actual_payload,
+                answer=str(response.get("answer") or ""),
+            )
+            return {
+                "oracle_available": oracle_result.oracle_available,
+                "expected_result": oracle_result.expected_result,
+                "actual_result": oracle_result.actual_result,
+                "passed": oracle_result.passed,
+                "diff_summary": oracle_result.diff_summary,
+                "issue_codes": oracle_result.issue_codes,
+                "source": "deterministic_eval_fixture",
+            }
     if not metric or not dimension:
         return {}
     if not tables:
@@ -2514,6 +2667,70 @@ def _deterministic_fixture_oracle_supported(logic: dict[str, Any], response: dic
     return True
 
 
+def _infer_ranking_gap_columns(
+    rows: list[dict[str, Any]],
+    *,
+    preferred_dimension: str,
+    preferred_metric: str,
+) -> tuple[str, str]:
+    excluded_metric_like_keys = {
+        "rank",
+        "index",
+        "idx",
+        "row_number",
+        "rownum",
+        "ranking",
+        "序号",
+    }
+    dimension = str(preferred_dimension).strip()
+    metric = str(preferred_metric).strip()
+    candidate_dimension: str = ""
+    candidate_metric: str = ""
+    if not rows:
+        return dimension, metric
+    if not dimension:
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            for key, value in row.items():
+                if str(key).strip() in {"", "_oracle_expected_result_missing"}:
+                    continue
+                if _oracle_float(value) is None and str(value) not in {"", "-"}:
+                    candidate_dimension = str(key)
+                    break
+            if candidate_dimension:
+                break
+        if candidate_dimension:
+            dimension = candidate_dimension
+    if not metric:
+        preferred_metric_key = preferred_metric.strip()
+        if preferred_metric_key and any(
+            _oracle_float(dict(row).get(preferred_metric_key) if isinstance(row, Mapping) else None) is not None
+            for row in rows
+        ):
+            metric = preferred_metric_key
+    if not metric:
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            for key, value in row.items():
+                key_text = str(key)
+                if key_text.lower() in excluded_metric_like_keys or key_text in excluded_metric_like_keys:
+                    continue
+                if dimension and key_text == dimension:
+                    continue
+                if _oracle_float(value) is not None:
+                    candidate_metric = key_text
+                    break
+            if candidate_metric:
+                break
+        if not metric and candidate_metric:
+            metric = candidate_metric
+    if not metric and preferred_metric:
+        metric = str(preferred_metric).strip()
+    return dimension, metric
+
+
 def _is_ranking_followup_gap_question(question: str) -> bool:
     compact = "".join(str(question or "").split())
     lowered = compact.lower()
@@ -3204,6 +3421,7 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
     semantic_failed_turns = 0
     corrected_passed_turns = 0
     needs_clarification_turns = 0
+    llm_judge_failed_turns = 0
     violation_counts: dict[str, int] = {}
     total_turns = 0
     for result in results:
@@ -3263,6 +3481,8 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
                 needs_clarification_turns += 1
             for code in turn.contract_violation_codes:
                 violation_counts[code] = violation_counts.get(code, 0) + 1
+            if turn.llm_judge_failed:
+                llm_judge_failed_turns += 1
     return {
         "conversation_count": len(results),
         "turn_count": total_turns,
@@ -3293,6 +3513,7 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
         "semantic_failed_turns": semantic_failed_turns,
         "corrected_passed_turns": corrected_passed_turns,
         "needs_clarification_turns": needs_clarification_turns,
+        "llm_judge_failed_turns": llm_judge_failed_turns,
         "top_contract_violation_codes": [
             {"code": code, "count": count}
             for code, count in sorted(violation_counts.items(), key=lambda item: (-item[1], item[0]))[:10]
@@ -3302,6 +3523,10 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
         "operations": sorted(operation_counts),
         "operation_counts": dict(sorted(operation_counts.items())),
     }
+
+
+def _scenario_pass_rate(results: list[ScenarioResult]) -> float:
+    return 0.0 if not results else sum(1 for result in results if result.passed) / len(results)
 
 
 def _sample_scenarios(scenarios: list[ConversationScenario], count: int, rng: random.Random) -> list[ConversationScenario]:
@@ -4054,7 +4279,10 @@ def _failure_rows(report: dict[str, Any]) -> list[dict[str, str]]:
                 turn_issues.append(
                     f"operation_mismatch:expected={turn.get('required_operation') or '-'}:actual={turn.get('operation') or '-'}"
                 )
-            if turn.get("success") is False and not any(issue.endswith(":analysis_failed") for issue in turn_issues):
+            expected_kind = str(turn.get("expected_kind") or "")
+            if expected_kind in ANALYSIS_TURN_KINDS and not _is_turn_semantically_successful(turn) and not any(
+                issue.endswith(":analysis_failed") for issue in turn_issues
+            ):
                 turn_issues.append("analysis_failed")
             if not turn_issues:
                 continue

@@ -115,6 +115,35 @@ class OracleMultiTableJoinRankingFixtureTest(unittest.TestCase):
             result["actual_result"].get("top_object"),
         )
 
+    def test_case4_followup_gap_fallbacks_to_response_rows_when_oracle_table_missing_dimension_metric(self) -> None:
+        logic = {
+            "operation": "ranking",
+            "source_tables": ["orders", "customers"],
+        }
+        response = {
+            "logic_form": logic,
+            "success": True,
+            "result": {"rows": [{"rank": 1, "city": "上海", "amount": 325}, {"rank": 2, "city": "北京", "amount": 310}]},
+            "answer": "上海和北京的差距是 15。",
+        }
+        turn = TurnPlan(
+            "前 2 名城市之间差距有多大？",
+            expected_kind="followup_analysis",
+            capability_family="ranking_followup",
+            required_operation="ranking",
+        )
+
+        result = _deterministic_fixture_oracle_result(logic, response, _orders_and_customers_tables(), turn=turn)
+
+        self.assertTrue(result["oracle_available"])
+        self.assertTrue(result["passed"], result.get("issue_codes"))
+        self.assertEqual([], result["issue_codes"])
+        expected = result["expected_result"] if isinstance(result["expected_result"], dict) else {}
+        self.assertEqual([{"rank": 1, "value": "上海", "metric_value": 325}, {"rank": 2, "value": "北京", "metric_value": 310}], expected.get("top_objects", []))
+        actual = result["actual_result"] if isinstance(result["actual_result"], dict) else {}
+        self.assertEqual([15], actual.get("adjacent_gaps"))
+        self.assertEqual([0, 15], actual.get("gap_to_leader"))
+
 
 if __name__ == "__main__":
     unittest.main()
