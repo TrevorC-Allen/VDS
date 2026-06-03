@@ -47,6 +47,9 @@ SUMMARY_FIELDS = [
     "llm_judge_failed_turns",
     "top_violation_codes",
     "family_coverage",
+    "scenario_families",
+    "family_summary",
+    "top_violation_codes_by_family",
 ]
 
 
@@ -167,6 +170,9 @@ def _collect_seed_summary(
             "llm_judge_failed_turns": 0,
             "top_violation_codes": [],
             "family_coverage": {"required": [], "covered": [], "missing": [], "passed": True},
+            "scenario_families": [],
+            "family_summary": {"status": "not_available", "families": []},
+            "top_violation_codes_by_family": {},
         }
 
     summary = json.loads(path.read_text(encoding="utf-8"))
@@ -216,6 +222,9 @@ def _collect_seed_summary(
             coverage.get("top_violation_codes", coverage.get("top_contract_violation_codes", summary.get("top_contract_violation_codes", [])))
         ),
         "family_coverage": gate_result.get("family_coverage") or {},
+        "scenario_families": list(summary.get("scenario_families") or coverage.get("scenario_families") or []),
+        "family_summary": summary.get("family_summary") or coverage.get("family_summary") or {"status": "not_available", "families": []},
+        "top_violation_codes_by_family": summary.get("top_violation_codes_by_family") or coverage.get("top_violation_codes_by_family") or {},
     }
 
 
@@ -254,6 +263,9 @@ def _write_csv(rows: list[dict[str, Any]], path: Path) -> None:
         normalized["top_violation_codes"] = json.dumps(row.get("top_violation_codes", []), ensure_ascii=False)
         normalized["gate_failed_reasons"] = json.dumps(row.get("gate_failed_reasons", []), ensure_ascii=False)
         normalized["family_coverage"] = json.dumps(row.get("family_coverage", {}), ensure_ascii=False)
+        normalized["scenario_families"] = json.dumps(row.get("scenario_families", []), ensure_ascii=False)
+        normalized["family_summary"] = json.dumps(row.get("family_summary", {}), ensure_ascii=False)
+        normalized["top_violation_codes_by_family"] = json.dumps(row.get("top_violation_codes_by_family", {}), ensure_ascii=False)
         normalized_rows.append(normalized)
 
     with path.open("w", encoding="utf-8", newline="") as handler:
@@ -263,6 +275,7 @@ def _write_csv(rows: list[dict[str, Any]], path: Path) -> None:
 
 
 def _write_json(rows: list[dict[str, Any]], path: Path, output_root: Path, *, gate_result: dict[str, Any]) -> None:
+    family_metrics = aggregate_multi_seed_family_metrics(rows, gate_result=gate_result)
     payload = {
         "output_root": str(output_root),
         "rows": rows,
@@ -270,12 +283,19 @@ def _write_json(rows: list[dict[str, Any]], path: Path, output_root: Path, *, ga
         "gate_result": gate_result,
         "gate_passed": gate_result.get("gate_passed", False),
         "gate_failed_reasons": gate_result.get("gate_failed_reasons", []),
+        **family_metrics,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def run_multi_seed_eval(seeds: list[int], *, output_root: Path, gate_config: EvalGateConfig | None = None) -> list[dict[str, Any]]:
+def run_multi_seed_eval(
+    seeds: list[int],
+    *,
+    output_root: Path,
+    gate_config: EvalGateConfig | None = None,
+    scenario_families: list[str] | None = None,
+) -> list[dict[str, Any]]:
     output_root.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
     for seed in seeds:
@@ -292,6 +312,10 @@ def run_multi_seed_eval(seeds: list[int], *, output_root: Path, gate_config: Eva
             "--max-legacy-unverified-rate",
             str(config.max_legacy_unverified_rate),
         ]
+        for family in scenario_families or []:
+            command.extend(["--scenario-family", str(family)])
+        for family in config.required_families:
+            command.extend(["--required-family", str(family)])
         run = subprocess.run(
             command,
             cwd=str(REPO_ROOT),
@@ -321,6 +345,89 @@ def run_multi_seed_eval(seeds: list[int], *, output_root: Path, gate_config: Eva
     return rows
 
 
+def aggregate_multi_seed_family_metrics(rows: list[dict[str, Any]], *, gate_result: dict[str, Any] | None = None) -> dict[str, Any]:
+    families_run: set[str] = set()
+    family_values: dict[str, dict[str, int]] = {}
+    family_violation_counts: dict[str, Counter[str]] = {}
+    for row in rows:
+        families_run.update(str(item) for item in row.get("scenario_families") or [] if str(item))
+        family_summary = row.get("family_summary") if isinstance(row.get("family_summary"), dict) else {}
+        for item in family_summary.get("families") or []:
+            if not isinstance(item, dict):
+                continue
+            family = str(item.get("family") or "").strip()
+            if not family:
+                continue
+            families_run.add(family)
+            values = family_values.setdefault(
+                family,
+                {
+                    "conversation_count": 0,
+                    "passed_conversation_count": 0,
+                    "semantic_contract_turns": 0,
+                    "semantic_passed_turns": 0,
+                    "oracle_available_turns": 0,
+                    "oracle_passed_turns": 0,
+                    "expected_contract_checked_turns": 0,
+                    "expected_contract_passed_turns": 0,
+                },
+            )
+            values["conversation_count"] += _to_int(item.get("conversation_count"))
+            values["passed_conversation_count"] += _to_int(item.get("passed_conversation_count"))
+            values["semantic_contract_turns"] += _to_int(item.get("semantic_contract_turns"))
+            values["semantic_passed_turns"] += _to_int(item.get("semantic_passed_turns"))
+            values["oracle_available_turns"] += _to_int(item.get("oracle_available_turns"))
+            values["oracle_passed_turns"] += _to_int(item.get("oracle_passed_turns"))
+            values["expected_contract_checked_turns"] += _to_int(item.get("expected_contract_checked_turns"))
+            values["expected_contract_passed_turns"] += _to_int(item.get("expected_contract_passed_turns"))
+            counts = family_violation_counts.setdefault(family, Counter())
+            for violation in item.get("top_violation_codes") or []:
+                if isinstance(violation, dict) and violation.get("code"):
+                    counts[str(violation["code"])] += _to_int(violation.get("count")) or 1
+        top_by_family = row.get("top_violation_codes_by_family") if isinstance(row.get("top_violation_codes_by_family"), dict) else {}
+        for family, violations in top_by_family.items():
+            families_run.add(str(family))
+            counts = family_violation_counts.setdefault(str(family), Counter())
+            for violation in violations or []:
+                if isinstance(violation, dict) and violation.get("code"):
+                    counts[str(violation["code"])] += _to_int(violation.get("count")) or 1
+    per_family_pass_rate = {
+        family: _rate(values.get("passed_conversation_count"), values.get("conversation_count"))
+        for family, values in sorted(family_values.items())
+    }
+    per_family_semantic_pass_rate = {
+        family: _rate(values.get("semantic_passed_turns"), values.get("semantic_contract_turns"))
+        for family, values in sorted(family_values.items())
+    }
+    per_family_oracle_pass_rate = {
+        family: _rate(values.get("oracle_passed_turns"), values.get("oracle_available_turns"))
+        for family, values in sorted(family_values.items())
+    }
+    per_family_expected_contract_pass_rate = {
+        family: _rate(values.get("expected_contract_passed_turns"), values.get("expected_contract_checked_turns"))
+        for family, values in sorted(family_values.items())
+    }
+    return {
+        "families_run": sorted(families_run),
+        "family_coverage": (gate_result or {}).get("family_coverage", {}),
+        "per_family_pass_rate": per_family_pass_rate,
+        "per_family_semantic_pass_rate": per_family_semantic_pass_rate,
+        "per_family_oracle_pass_rate": per_family_oracle_pass_rate,
+        "per_family_expected_contract_pass_rate": per_family_expected_contract_pass_rate,
+        "top_violation_codes_by_family": {
+            family: [{"code": code, "count": count} for code, count in counts.most_common(10)]
+            for family, counts in sorted(family_violation_counts.items())
+        },
+    }
+
+
+def _rate(numerator: Any, denominator: Any) -> float | str:
+    denominator_int = _to_int(denominator)
+    if denominator_int <= 0:
+        return "not_available"
+    return _to_int(numerator) / denominator_int
+
+
 def aggregate_multi_seed_gate(rows: list[dict[str, Any]], *, gate_config: EvalGateConfig | None = None) -> dict[str, Any]:
     violation_counts: Counter[str] = Counter()
     covered_families: set[str] = set()
@@ -330,6 +437,7 @@ def aggregate_multi_seed_gate(rows: list[dict[str, Any]], *, gate_config: EvalGa
                 violation_counts[str(item["code"])] += _to_int(item.get("count")) or 1
         family_coverage = row.get("family_coverage") if isinstance(row.get("family_coverage"), dict) else {}
         covered_families.update(str(item) for item in family_coverage.get("covered", []) if str(item))
+        covered_families.update(str(item) for item in row.get("scenario_families", []) if str(item))
     gate_result = build_eval_gate_result(
         EvalGateMetrics(
             total_turns=sum(_to_int(row.get("total_turns")) for row in rows),
@@ -357,14 +465,43 @@ def aggregate_multi_seed_gate(rows: list[dict[str, Any]], *, gate_config: EvalGa
 
 
 def _write_markdown_report(rows: list[dict[str, Any]], path: Path, *, gate_result: dict[str, Any]) -> None:
+    family_metrics = aggregate_multi_seed_family_metrics(rows, gate_result=gate_result)
     lines = [
         "# Multi-seed Agent Random Eval",
         "",
         eval_gate_markdown(gate_result, title="Multi-seed Multi-metric Eval Gate"),
         "",
+        "## Scenario Families",
+        "",
+        f"- families_run: {', '.join(family_metrics.get('families_run') or []) or '-'}",
+        f"- family_coverage: {json.dumps(family_metrics.get('family_coverage') or {}, ensure_ascii=False)}",
+        "",
+        "| family | pass_rate | semantic_pass_rate | oracle_pass_rate | expected_contract_pass_rate | top_violation_codes |",
+        "| --- | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for family in family_metrics.get("families_run") or []:
+        top_codes = family_metrics.get("top_violation_codes_by_family", {}).get(family, [])
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(family),
+                    _parse_markdown_cell(family_metrics.get("per_family_pass_rate", {}).get(family, "not_available")),
+                    _parse_markdown_cell(family_metrics.get("per_family_semantic_pass_rate", {}).get(family, "not_available")),
+                    _parse_markdown_cell(family_metrics.get("per_family_oracle_pass_rate", {}).get(family, "not_available")),
+                    _parse_markdown_cell(family_metrics.get("per_family_expected_contract_pass_rate", {}).get(family, "not_available")),
+                    _parse_markdown_cell(top_codes),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
         "## Seeds",
         "",
-    ]
+        ]
+    )
     for row in rows:
         lines.append(
             f"- seed={row.get('seed')} pass_rate={_parse_markdown_cell(row.get('pass_rate'))} "
@@ -391,6 +528,8 @@ def main() -> None:
     parser.add_argument("--max-semantic-failed-turns", type=int, default=0)
     parser.add_argument("--max-oracle-failed-turns", type=int, default=0)
     parser.add_argument("--max-legacy-unverified-rate", type=float, default=0.2)
+    parser.add_argument("--scenario-family", action="append", default=[], help="Scenario family to pass to each seed run. Repeat or use all.")
+    parser.add_argument("--required-family", action="append", default=[], help="Required scenario family coverage for aggregate gate.")
     args = parser.parse_args()
     try:
         seeds = build_seeds(args)
@@ -404,8 +543,9 @@ def main() -> None:
         max_semantic_failed_turns=max(0, int(args.max_semantic_failed_turns or 0)),
         max_oracle_failed_turns=max(0, int(args.max_oracle_failed_turns or 0)),
         max_legacy_unverified_rate=max(0.0, min(1.0, float(args.max_legacy_unverified_rate))),
+        required_families=tuple(args.required_family or ()),
     )
-    rows = run_multi_seed_eval(seeds, output_root=output_root, gate_config=gate_config)
+    rows = run_multi_seed_eval(seeds, output_root=output_root, gate_config=gate_config, scenario_families=list(args.scenario_family or []))
     gate_result = aggregate_multi_seed_gate(rows, gate_config=gate_config)
 
     csv_path = output_root / "multi_seed_summary.csv"

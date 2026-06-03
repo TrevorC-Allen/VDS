@@ -20,10 +20,13 @@ from scripts.run_agent_random_conversation_eval import (
     builtin_scenarios,
     run_agent_random_conversation_eval,
     run_scenario,
+    scenario_family_catalog,
+    scenario_family_scenarios,
     simulate_user_turns,
     write_eval_artifacts,
     _report_html,
     _report_markdown,
+    _scenarios_for_requested_families,
     _scenario_issues,
     _scenario_file_paths,
     _expected_dimension_from_question,
@@ -548,14 +551,83 @@ class AgentRandomConversationEvalTest(unittest.TestCase):
 
         self.assertTrue(report["passed"], report["results"])
         self.assertEqual(1.0, report["pass_rate"])
+        self.assertEqual("typical", report["scenario_family"])
+        self.assertEqual(["typical"], report["scenario_families"])
         self.assertEqual(
             {"regional_performance_agent", "service_region_agent", "multi_file_customer_revenue_agent"},
             {item["scenario_id"] for item in report["results"]},
         )
+        self.assertEqual({"typical"}, {item["scenario_family"] for item in report["results"]})
         for result in report["results"]:
             self.assertFalse(result["issues"])
             self.assertGreaterEqual(len(result["turns"]), 2)
+            self.assertTrue(all(turn["scenario_family"] == "typical" for turn in result["turns"]))
         self.assertIn("structured_answer_turns", report["coverage"])
+        self.assertIn("family_summary", report)
+        self.assertIn("typical", report["family_level_pass_rate"])
+
+    def test_scenario_family_catalog_contains_requested_families(self) -> None:
+        catalog = scenario_family_catalog()
+
+        self.assertGreaterEqual(len(catalog), 7)
+        self.assertTrue(
+            {
+                "single_file_overview_topn_gap",
+                "multi_file_overview_join_analysis",
+                "data_quality_diagnosis",
+                "time_trend_anomaly",
+                "group_comparison_share",
+                "ambiguous_user_language",
+                "metric_switching",
+            }.issubset(catalog)
+        )
+        self.assertGreaterEqual(len(scenario_family_scenarios()), 7)
+
+    def test_can_select_single_scenario_family(self) -> None:
+        selected = _scenarios_for_requested_families(["single_file_overview_topn_gap"])
+
+        self.assertEqual(["single_file_overview_topn_gap"], sorted({item.scenario_family for item in selected}))
+        self.assertEqual(["family_single_file_overview_topn_gap"], [item.scenario_id for item in selected])
+
+    def test_can_select_multiple_scenario_families(self) -> None:
+        selected = _scenarios_for_requested_families(["single_file_overview_topn_gap", "data_quality_diagnosis"])
+
+        self.assertEqual(
+            ["data_quality_diagnosis", "single_file_overview_topn_gap"],
+            sorted({item.scenario_family for item in selected}),
+        )
+
+    def test_unknown_scenario_family_has_clear_error(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unknown scenario family: missing_family"):
+            _scenarios_for_requested_families(["missing_family"])
+
+    def test_single_run_summary_includes_family_level_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report = run_agent_random_conversation_eval(
+                seed=19,
+                scenario_count=1,
+                max_followups=4,
+                output_dir=Path(temp_dir),
+                simulator_client=None,
+                simulator_source="deterministic",
+                agent_client=MockLLMClient(),
+                scenario_families=["data_quality_diagnosis"],
+                min_pass_rate=0.0,
+                min_followup_turns=0,
+                min_structured_action_turns=0,
+                max_legacy_unverified_rate=1.0,
+            )
+
+        self.assertEqual("data_quality_diagnosis", report["scenario_family"])
+        self.assertEqual(["data_quality_diagnosis"], report["scenario_families"])
+        self.assertIn("family_summary", report)
+        self.assertIn("family_coverage", report)
+        self.assertIn("family_level_pass_rate", report)
+        self.assertIn("family_level_semantic_pass_rate", report)
+        self.assertIn("family_level_oracle_pass_rate", report)
+        self.assertIn("family_level_expected_contract_pass_rate", report)
+        self.assertIn("top_violation_codes_by_family", report)
+        self.assertEqual(["data_quality_diagnosis"], report["coverage"]["scenario_families"])
 
     def test_multi_file_builtin_scenario_covers_join_and_followup(self) -> None:
         scenario = next(item for item in builtin_scenarios() if item.scenario_id == "multi_file_customer_revenue_agent")

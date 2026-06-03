@@ -178,7 +178,7 @@ def _build_multi_seed_report(payload: MappingLike, *, output_dir: Path, source_a
         "eval_type": "multi_seed_random_agent",
         "gate_result": gate,
         "eval_summary": eval_summary,
-        "family_summary": _family_summary_not_available(),
+        "family_summary": _multi_seed_family_summary(payload),
         "top_violation_codes": top_violations,
         "failed_cases": _dedupe_rows(failed_cases),
         "evidence_coverage": evidence,
@@ -775,6 +775,33 @@ def _compute_evidence_coverage_for_turn_rows(rows: list[dict[str, Any]]) -> dict
     }
 
 
+def _multi_seed_family_summary(payload: MappingLike) -> dict[str, Any]:
+    families = _to_str_list(payload.get("families_run"))
+    if not families:
+        return _family_summary_not_available()
+    pass_rates = _as_dict(payload.get("per_family_pass_rate"))
+    semantic_rates = _as_dict(payload.get("per_family_semantic_pass_rate"))
+    oracle_rates = _as_dict(payload.get("per_family_oracle_pass_rate"))
+    expected_rates = _as_dict(payload.get("per_family_expected_contract_pass_rate"))
+    violations_by_family = _as_dict(payload.get("top_violation_codes_by_family"))
+    rows = []
+    for family in sorted(set(families)):
+        rows.append(
+            {
+                "family": family,
+                "total_turns": 0,
+                "semantic_pass_rate": semantic_rates.get(family, NOT_AVAILABLE),
+                "oracle_pass_rate": oracle_rates.get(family, NOT_AVAILABLE),
+                "contract_satisfied_rate": NOT_AVAILABLE,
+                "expected_contract_pass_rate": expected_rates.get(family, NOT_AVAILABLE),
+                "expected_contract_failed_turns": 0,
+                "pass_rate": pass_rates.get(family, NOT_AVAILABLE),
+                "top_violation_codes": _collect_top_violation_codes(violations_by_family.get(family, [])),
+            }
+        )
+    return {"status": "available", "families": rows}
+
+
 def _family_summary_not_available() -> dict[str, Any]:
     return {"status": "not_available", "families": []}
 
@@ -823,6 +850,8 @@ def _render_pr_eval_markdown(payload: MappingLike) -> str:
         f"- expected_contract_pass_rate: {_format_rate(gate.get('expected_contract_pass_rate'))}",
         f"- expected_contract_failed_turns: {gate.get('expected_contract_failed_turns', 0)}",
         f"- expected_contract_missing_evidence_turns: {gate.get('expected_contract_missing_evidence_turns', 0)}",
+        f"- family_coverage: {_join_with_default(_as_dict(gate.get('family_coverage')).get('covered'), '-')}",
+        f"- missing_family_coverage: {_join_with_default(_as_dict(gate.get('family_coverage')).get('missing'), 'none')}",
         "",
         "# Eval Summary",
         "",

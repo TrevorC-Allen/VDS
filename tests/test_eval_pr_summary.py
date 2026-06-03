@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.eval_gate import EvalGateConfig
 from scripts.eval_report import (
     build_pr_eval_summary,
     write_pr_eval_summary,
@@ -51,6 +52,7 @@ class EvalPrSummaryTest(unittest.TestCase):
                                     "case_id": "case_a",
                                     "index": 1,
                                     "question": "问法1",
+                                    "scenario_family": "single_file_overview_topn_gap",
                                     "capability_family": "topn",
                                     "semantic_status": "passed",
                                     "contract_violation_codes": ["TOPN_RESULT_ROWS_SHORT"],
@@ -60,6 +62,7 @@ class EvalPrSummaryTest(unittest.TestCase):
                                     "case_id": "case_a",
                                     "index": 2,
                                     "question": "问法2",
+                                    "scenario_family": "single_file_overview_topn_gap",
                                     "capability_family": "topn",
                                     "semantic_status": "passed",
                                     "contract_violation_codes": [],
@@ -81,11 +84,56 @@ class EvalPrSummaryTest(unittest.TestCase):
             self.assertFalse(report["evidence_coverage"]["semantic_evidence_missing_turns"])
             self.assertEqual("available", report["family_summary"]["status"])
             self.assertTrue(json_payload["family_summary"]["families"])
+            self.assertEqual("single_file_overview_topn_gap", json_payload["family_summary"]["families"][0]["family"])
             self.assertIn("Gate Result", markdown)
             self.assertIn("Eval Summary", markdown)
             self.assertIn("# Scenario Family Summary", markdown)
             self.assertTrue(Path(paths["pr_eval_summary_json"]).exists())
             self.assertTrue(Path(paths["pr_eval_summary_md"]).exists())
+
+    def test_random_input_required_scenario_family_missing_is_gate_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            _write_json(
+                output_dir / "summary.json",
+                {
+                    "pass_rate": 1.0,
+                    "coverage": {
+                        "turn_count": 1,
+                        "transport_success_turns": 1,
+                        "semantic_contract_turns": 1,
+                        "semantic_passed_turns": 1,
+                        "semantic_failed_turns": 0,
+                        "legacy_unverified_turns": 0,
+                        "oracle_available_turns": 1,
+                        "oracle_passed_turns": 1,
+                        "scenario_families": ["single_file_overview_topn_gap"],
+                    },
+                    "results": [
+                        {
+                            "scenario_id": "scenario",
+                            "scenario_family": "single_file_overview_topn_gap",
+                            "turns": [
+                                {
+                                    "case_id": "case_a",
+                                    "index": 1,
+                                    "scenario_family": "single_file_overview_topn_gap",
+                                    "semantic_status": "passed",
+                                    "oracle_passed": True,
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+
+            report = build_pr_eval_summary(
+                output_dir,
+                gate_config=EvalGateConfig(required_families=("multi_file_overview_join_analysis",)),
+            )
+
+        self.assertFalse(report["gate_result"]["gate_passed"])
+        self.assertIn("missing_required_family:multi_file_overview_join_analysis", report["gate_result"]["gate_failed_reasons"])
 
     def test_random_input_semantic_failed_is_gate_fail_even_when_pass_rate_1(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -335,6 +383,14 @@ class EvalPrSummaryTest(unittest.TestCase):
                 output_dir / "multi_seed_summary.json",
                 {
                     "count": 1,
+                    "families_run": ["single_file_overview_topn_gap"],
+                    "per_family_pass_rate": {"single_file_overview_topn_gap": 1.0},
+                    "per_family_semantic_pass_rate": {"single_file_overview_topn_gap": 1.0},
+                    "per_family_oracle_pass_rate": {"single_file_overview_topn_gap": 1.0},
+                    "per_family_expected_contract_pass_rate": {"single_file_overview_topn_gap": "not_available"},
+                    "top_violation_codes_by_family": {
+                        "single_file_overview_topn_gap": [{"code": "TOPN_RESULT_ROWS_SHORT", "count": 2}]
+                    },
                     "rows": [
                         {
                             "seed": 20260603,
@@ -350,6 +406,7 @@ class EvalPrSummaryTest(unittest.TestCase):
                             "oracle_passed": 2,
                             "oracle_failed": 0,
                             "top_violation_codes": [{"code": "TOPN_RESULT_ROWS_SHORT", "count": 2}],
+                            "scenario_families": ["single_file_overview_topn_gap"],
                         }
                     ],
                 },
@@ -359,7 +416,8 @@ class EvalPrSummaryTest(unittest.TestCase):
             self.assertEqual("multi_seed_random_agent", report["eval_type"])
             self.assertTrue(report["gate_result"]["gate_passed"])
             self.assertEqual([], report["failed_cases"])
-            self.assertEqual("not_available", report["family_summary"]["status"])
+            self.assertEqual("available", report["family_summary"]["status"])
+            self.assertEqual("single_file_overview_topn_gap", report["family_summary"]["families"][0]["family"])
 
 
 if __name__ == "__main__":

@@ -102,6 +102,49 @@ class EvalGateTest(unittest.TestCase):
         self.assertEqual(1.0, result["semantic_pass_rate"])
         self.assertTrue(result["family_coverage"]["passed"])
 
+    def test_metrics_from_coverage_prefers_scenario_family_coverage(self) -> None:
+        result = build_eval_gate_result(
+            metrics_from_coverage(
+                {
+                    "turn_count": 2,
+                    "transport_success_turns": 2,
+                    "semantic_contract_turns": 2,
+                    "semantic_passed_turns": 2,
+                    "semantic_failed_turns": 0,
+                    "oracle_available_turns": 2,
+                    "oracle_passed_turns": 2,
+                    "legacy_unverified_turns": 0,
+                    "scenario_families": ["single_file_overview_topn_gap"],
+                    "capability_families": ["topn", "gap"],
+                }
+            ),
+            EvalGateConfig(required_families=("single_file_overview_topn_gap",)),
+        )
+
+        self.assertTrue(result["gate_passed"])
+        self.assertEqual(["single_file_overview_topn_gap"], result["family_coverage"]["covered"])
+
+    def test_required_scenario_family_missing_fails_gate(self) -> None:
+        result = build_eval_gate_result(
+            metrics_from_coverage(
+                {
+                    "turn_count": 2,
+                    "transport_success_turns": 2,
+                    "semantic_contract_turns": 2,
+                    "semantic_passed_turns": 2,
+                    "semantic_failed_turns": 0,
+                    "oracle_available_turns": 2,
+                    "oracle_passed_turns": 2,
+                    "legacy_unverified_turns": 0,
+                    "scenario_families": ["single_file_overview_topn_gap"],
+                }
+            ),
+            EvalGateConfig(required_families=("multi_file_overview_join_analysis",)),
+        )
+
+        self.assertFalse(result["gate_passed"])
+        self.assertIn("missing_required_family:multi_file_overview_join_analysis", result["gate_failed_reasons"])
+
     def test_missing_fields_are_not_available_and_do_not_crash(self) -> None:
         result = build_eval_gate_result(EvalGateMetrics())
 

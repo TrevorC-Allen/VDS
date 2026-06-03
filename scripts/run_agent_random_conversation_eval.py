@@ -157,13 +157,13 @@ class TurnEvidence:
 @dataclass
 class ScenarioResult:
     scenario_id: str
-    scenario_family: str
     capability_family: str
     run_index: int
     passed: bool
     simulator_source: str
     turns: list[TurnEvidence]
     issues: list[str]
+    scenario_family: str = "typical"
 
 
 def main() -> None:
@@ -245,6 +245,8 @@ def main() -> None:
                     "gate_passed": report.get("gate_passed"),
                     "gate_failed_reasons": report.get("gate_failed_reasons"),
                     "pass_rate": report["pass_rate"],
+                    "scenario_family": report.get("scenario_family"),
+                    "scenario_families": report.get("scenario_families"),
                     "artifacts": artifacts,
                 },
                 ensure_ascii=False,
@@ -651,6 +653,401 @@ def builtin_scenarios() -> list[ConversationScenario]:
     ]
 
 
+def scenario_family_catalog() -> dict[str, ScenarioFamily]:
+    """Return the configured random-eval scenario family metadata."""
+
+    return {
+        "single_file_overview_topn_gap": ScenarioFamily(
+            name="single_file_overview_topn_gap",
+            description="Single-file overview followed by TopN, share, gap, and calculation-process follow-ups.",
+            dataset_requirements=["one tabular file", "categorical dimension", "numeric metric"],
+            turn_templates=["overview", "topn", "share", "gap", "calculation_process"],
+            expected_contract_family="topn_gap",
+            semantic_expectations=["topn_rows", "metric_values_present", "gap_pairwise_or_adjacent", "direct_answer_first"],
+            oracle_availability="deterministic for topn/share/gap fixture turns when result artifacts are available",
+            required_context_behavior="Follow-ups must inherit the TopN candidate set and metric.",
+            tags=["single_file", "topn", "gap", "share", "followup"],
+        ),
+        "multi_file_overview_join_analysis": ScenarioFamily(
+            name="multi_file_overview_join_analysis",
+            description="Multi-file overview, join-key discovery, cross-table ranking, object drilldown, and metric-definition challenge.",
+            dataset_requirements=["two related files", "join key", "numeric fact metric", "dimension table"],
+            turn_templates=["multi_file_overview", "join_key", "cross_table_analysis", "object_drilldown", "metric_definition_challenge"],
+            expected_contract_family="multi_file_join",
+            semantic_expectations=["all_files_covered", "join_key_evidence", "cross_table_result", "metric_definition_explained"],
+            oracle_availability="deterministic for fixture join ranking and overview coverage",
+            required_context_behavior="Follow-ups must keep the joined table scope and referenced object.",
+            tags=["multi_file", "join", "overview", "drilldown"],
+        ),
+        "data_quality_diagnosis": ScenarioFamily(
+            name="data_quality_diagnosis",
+            description="Data quality diagnosis across field-level issues, duplicates, missingness, anomalies, impact, and remediation.",
+            dataset_requirements=["tabular file", "fields suitable for missing/duplicate/outlier checks"],
+            turn_templates=["quality_overview", "worst_fields", "duplicates_missing_outliers", "analysis_impact", "repair_plan"],
+            expected_contract_family="data_quality",
+            semantic_expectations=["field_level_quality_evidence", "duplicate_check", "outlier_or_rule_risk", "impact_analysis"],
+            oracle_availability="deterministic for field-level quality fixture turns",
+            required_context_behavior="Follow-ups must keep the diagnosed dataset and field-level evidence.",
+            tags=["quality", "duplicates", "missing", "outliers"],
+        ),
+        "time_trend_anomaly": ScenarioFamily(
+            name="time_trend_anomaly",
+            description="Time-series trend, growth, anomaly month, cause drilldown, and time-filter follow-ups.",
+            dataset_requirements=["time column", "numeric metric", "dimension for drilldown"],
+            turn_templates=["trend", "growth", "anomaly", "cause_drilldown", "time_filter"],
+            expected_contract_family="trend_anomaly",
+            semantic_expectations=["time_field_detected", "trend_series", "anomaly_evidence", "time_filter_definition"],
+            oracle_availability="deterministic for fixture trend series when time values match schema",
+            required_context_behavior="Follow-ups must preserve metric and time grain unless explicitly changed.",
+            tags=["trend", "anomaly", "time_filter"],
+        ),
+        "group_comparison_share": ScenarioFamily(
+            name="group_comparison_share",
+            description="Grouped comparison across region/channel/customer type with TopN, share, tail objects, and gap follow-ups.",
+            dataset_requirements=["categorical group field", "numeric metric"],
+            turn_templates=["groupby", "topn", "share", "bottom", "gap"],
+            expected_contract_family="group_share_gap",
+            semantic_expectations=["groupby_correct", "share_ratio_correct", "top_bottom_switch", "gap_output"],
+            oracle_availability="deterministic for fixture grouped ranking/share turns",
+            required_context_behavior="Follow-ups must keep the active group dimension and switch top/bottom only when requested.",
+            tags=["groupby", "share", "topn", "bottom", "gap"],
+        ),
+        "ambiguous_user_language": ScenarioFamily(
+            name="ambiguous_user_language",
+            description="Colloquial, partial-field, typo, and omitted-subject questions that require inheritance or clarification.",
+            dataset_requirements=["fields with likely aliases", "prior context for omitted-subject follow-ups"],
+            turn_templates=["colloquial_question", "partial_field_name", "typo", "omitted_subject", "clarify_or_inherit"],
+            expected_contract_family="ambiguous_language",
+            semantic_expectations=["alias_or_fuzzy_match", "context_inheritance", "clarify_when_required", "no_ungrounded_calculation"],
+            oracle_availability="partial; deterministic gate focuses on context and operation evidence",
+            required_context_behavior="Ambiguous follow-ups must inherit prior context or ask for clarification.",
+            tags=["ambiguity", "alias", "fuzzy", "clarification"],
+        ),
+        "metric_switching": ScenarioFamily(
+            name="metric_switching",
+            description="Switch metric from sales to profit to order count, then explain why rankings changed.",
+            dataset_requirements=["at least two numeric metrics", "countable rows or order count"],
+            turn_templates=["sales_ranking", "profit_ranking", "order_count_ranking", "explain_change"],
+            expected_contract_family="metric_switching",
+            semantic_expectations=["metric_recomputed_after_switch", "old_metric_not_reused", "metric_definition_change_explained"],
+            oracle_availability="partial; deterministic gate focuses on metric and operation evidence",
+            required_context_behavior="Metric switches must replace the active metric instead of silently reusing the previous one.",
+            tags=["metric_switch", "ranking", "explanation"],
+        ),
+    }
+
+
+def scenario_family_scenarios() -> list[ConversationScenario]:
+    """Return all configured scenario-family conversations."""
+
+    return [
+        _scenario_from_family(
+            ConversationScenario(
+                scenario_id="family_single_file_overview_topn_gap",
+                dataset_name="regional_performance",
+                capability_family="single_file_topn_gap_followup",
+                scenario_family="single_file_overview_topn_gap",
+                files={
+                    "regional_performance.csv": (
+                        "month,city,product,sales,profit\n"
+                        "2026-01,上海,云服务,318,92\n"
+                        "2026-01,北京,安全审计,276,83\n"
+                        "2026-02,上海,数据治理,245,74\n"
+                        "2026-02,深圳,云服务,361,118\n"
+                        "2026-03,广州,安全审计,206,59\n"
+                        "2026-03,深圳,数据治理,388,126\n"
+                    )
+                },
+                turn_templates=[
+                    TurnPlan("请先概览这份区域经营数据。", expected_kind="overview", capability_family="overview", required_operation="dataset_overview"),
+                    TurnPlan("按城市看销售额排名前 3。", capability_family="ranking", required_operation="ranking"),
+                    TurnPlan("Top 3 城市销售额占比是多少？", expected_kind="followup_analysis", capability_family="share_followup", required_operation="top_k_share"),
+                    TurnPlan("比较 Top 3 城市之间的销售额差距。", expected_kind="followup_analysis", capability_family="ranking_followup", required_operation="ranking"),
+                    TurnPlan("这个差距的计算过程是什么？", expected_kind="followup_analysis", capability_family="ranking_followup"),
+                ],
+                required_operations=["dataset_overview", "ranking", "top_k_share"],
+                required_capability_families=["overview", "ranking", "share_followup", "ranking_followup"],
+                min_turn_count=5,
+                min_distinct_capability_families=4,
+                shuffle_followups=False,
+                schema_summary=_regional_schema_summary(),
+            )
+        ),
+        _scenario_from_family(
+            ConversationScenario(
+                scenario_id="family_multi_file_overview_join_analysis",
+                dataset_name="multi_file_customer_revenue",
+                capability_family="multi_file_join_followup",
+                scenario_family="multi_file_overview_join_analysis",
+                files={
+                    "orders.csv": (
+                        "month,customer_id,amount,profit\n"
+                        "2026-01,C1,120,38\n"
+                        "2026-01,C2,310,86\n"
+                        "2026-02,C1,205,64\n"
+                        "2026-02,C3,172,51\n"
+                        "2026-03,C4,288,79\n"
+                    ),
+                    "customers.csv": (
+                        "customer_id,city,segment\n"
+                        "C1,上海,企业\n"
+                        "C2,北京,企业\n"
+                        "C3,广州,个人\n"
+                        "C4,深圳,企业\n"
+                    ),
+                },
+                turn_templates=[
+                    TurnPlan("请概览订单和客户两个文件的结构。", expected_kind="overview", capability_family="multi_file_overview", required_operation="dataset_overview"),
+                    TurnPlan("这两个文件可以通过哪个字段关联？", expected_kind="followup_analysis", capability_family="multi_file_overview", required_operation="dataset_overview"),
+                    TurnPlan("关联后按城市看订单金额排名前 3。", expected_kind="followup_analysis", capability_family="multi_table_join_ranking", required_operation="ranking"),
+                    TurnPlan("排名最高的城市里，哪个客户贡献订单金额最多？", expected_kind="followup_analysis", capability_family="ranking_followup", required_operation="ranking"),
+                    TurnPlan("这里的订单金额口径是什么？", expected_kind="followup_analysis", capability_family="aggregation_followup"),
+                ],
+                required_operations=["dataset_overview", "ranking"],
+                required_capability_families=["multi_file_overview", "multi_table_join_ranking", "ranking_followup"],
+                min_turn_count=5,
+                min_distinct_capability_families=3,
+                shuffle_followups=False,
+                schema_summary=_multi_file_customer_schema_summary(),
+            )
+        ),
+        _scenario_from_family(
+            ConversationScenario(
+                scenario_id="family_data_quality_diagnosis",
+                dataset_name="service_region_performance",
+                capability_family="data_quality_diagnosis",
+                scenario_family="data_quality_diagnosis",
+                files=_service_region_files(),
+                turn_templates=[
+                    TurnPlan("这批服务区域数据质量怎么样？", expected_kind="quality", capability_family="quality", required_operation="cleaning_policy"),
+                    TurnPlan("哪些字段的问题最大？", expected_kind="followup_analysis", capability_family="quality", required_operation="cleaning_policy"),
+                    TurnPlan("有没有重复、缺失或异常值？", expected_kind="followup_analysis", capability_family="quality", required_operation="cleaning_policy"),
+                    TurnPlan("这些问题会影响哪些分析？", expected_kind="followup_analysis", capability_family="quality", required_operation="cleaning_policy"),
+                    TurnPlan("应该怎么修复这些数据问题？", expected_kind="followup_analysis", capability_family="quality", required_operation="cleaning_policy"),
+                ],
+                required_operations=["cleaning_policy"],
+                required_capability_families=["quality"],
+                min_turn_count=5,
+                min_distinct_capability_families=1,
+                shuffle_followups=False,
+                schema_summary=_service_region_schema_summary(),
+            )
+        ),
+        _scenario_from_family(
+            ConversationScenario(
+                scenario_id="family_time_trend_anomaly",
+                dataset_name="regional_performance",
+                capability_family="time_trend_anomaly",
+                scenario_family="time_trend_anomaly",
+                files=builtin_scenarios()[0].files,
+                turn_templates=[
+                    TurnPlan("按月份看销售额趋势。", capability_family="trend", required_operation="aggregation"),
+                    TurnPlan("环比变化最大的是哪个月份？", expected_kind="followup_analysis", capability_family="trend_followup", required_operation="aggregation"),
+                    TurnPlan("哪个月份看起来异常？", expected_kind="followup_analysis", capability_family="trend_followup", required_operation="aggregation"),
+                    TurnPlan("异常月份主要由哪个产品造成？", expected_kind="followup_analysis", capability_family="generic_dimension_switch", required_operation="ranking"),
+                    TurnPlan("只看 2026-02 到 2026-03 这段时间。", expected_kind="followup_analysis", capability_family="trend_followup", required_operation="aggregation"),
+                ],
+                required_operations=["aggregation", "ranking"],
+                required_capability_families=["trend", "trend_followup", "generic_dimension_switch"],
+                min_turn_count=5,
+                min_distinct_capability_families=3,
+                shuffle_followups=False,
+                schema_summary=_regional_schema_summary(),
+            )
+        ),
+        _scenario_from_family(
+            ConversationScenario(
+                scenario_id="family_group_comparison_share",
+                dataset_name="service_region_performance",
+                capability_family="group_comparison_share",
+                scenario_family="group_comparison_share",
+                files=_service_region_files(),
+                turn_templates=[
+                    TurnPlan("按服务线分组看销售额表现。", capability_family="aggregation", required_operation="aggregation"),
+                    TurnPlan("服务线销售额 Top 3 是哪些？", expected_kind="followup_analysis", capability_family="ranking_followup", required_operation="ranking"),
+                    TurnPlan("这些 Top 服务线的销售额占比是多少？", expected_kind="followup_analysis", capability_family="share_followup", required_operation="top_k_share"),
+                    TurnPlan("尾部服务线是哪几个？", expected_kind="followup_analysis", capability_family="ranking_followup", required_operation="ranking"),
+                    TurnPlan("头部和尾部差距有多大？", expected_kind="followup_analysis", capability_family="ranking_followup", required_operation="ranking"),
+                ],
+                required_operations=["aggregation", "ranking", "top_k_share"],
+                required_capability_families=["aggregation", "ranking_followup", "share_followup"],
+                min_turn_count=5,
+                min_distinct_capability_families=3,
+                shuffle_followups=False,
+                schema_summary=_service_region_schema_summary(),
+            )
+        ),
+        _scenario_from_family(
+            ConversationScenario(
+                scenario_id="family_ambiguous_user_language",
+                dataset_name="regional_performance",
+                capability_family="ambiguous_user_language",
+                scenario_family="ambiguous_user_language",
+                files=builtin_scenarios()[0].files,
+                turn_templates=[
+                    TurnPlan("哪个城市卖得最好？", capability_family="ranking", required_operation="ranking"),
+                    TurnPlan("那利润呢？", expected_kind="followup_analysis", capability_family="derived_metric_followup", required_operation="ranking"),
+                    TurnPlan("按产品拆一下刚才那个。", expected_kind="followup_analysis", capability_family="generic_dimension_switch", required_operation="ranking"),
+                    TurnPlan("这个差距怎么算？", expected_kind="followup_analysis", capability_family="ranking_followup"),
+                    TurnPlan("如果字段口径不清楚，先说明需要澄清什么。", expected_kind="followup_analysis", capability_family="llm_followup"),
+                ],
+                required_operations=["ranking"],
+                required_capability_families=["ranking", "derived_metric_followup", "generic_dimension_switch"],
+                min_turn_count=5,
+                min_distinct_capability_families=3,
+                shuffle_followups=False,
+                schema_summary=_regional_schema_summary(),
+            )
+        ),
+        _scenario_from_family(
+            ConversationScenario(
+                scenario_id="family_metric_switching",
+                dataset_name="service_region_performance",
+                capability_family="metric_switching",
+                scenario_family="metric_switching",
+                files=_service_region_files(),
+                turn_templates=[
+                    TurnPlan("先按城市看销售额排名前 3。", capability_family="ranking", required_operation="ranking"),
+                    TurnPlan("再改成按利润排名。", expected_kind="followup_analysis", capability_family="generic_dimension_switch", required_operation="ranking"),
+                    TurnPlan("再改成按工单数排名。", expected_kind="followup_analysis", capability_family="generic_dimension_switch", required_operation="ranking"),
+                    TurnPlan("为什么排名会变化？", expected_kind="followup_analysis", capability_family="aggregation_followup"),
+                ],
+                required_operations=["ranking"],
+                required_capability_families=["ranking", "generic_dimension_switch"],
+                min_turn_count=4,
+                min_distinct_capability_families=2,
+                shuffle_followups=False,
+                schema_summary=_service_region_schema_summary(),
+            )
+        ),
+    ]
+
+
+def _scenario_from_family(scenario: ConversationScenario) -> ConversationScenario:
+    family = scenario_family_catalog()[scenario.scenario_family]
+    scenario.family_description = family.description
+    scenario.dataset_requirements = list(family.dataset_requirements)
+    scenario.expected_contract_family = family.expected_contract_family
+    scenario.semantic_expectations = list(family.semantic_expectations)
+    scenario.oracle_availability = family.oracle_availability
+    scenario.required_context_behavior = family.required_context_behavior
+    scenario.tags = list(family.tags)
+    return scenario
+
+
+def _regional_schema_summary() -> dict[str, Any]:
+    return {
+        "domain_label": "区域经营表现",
+        "primary_table": {
+            "table_name": "regional_performance",
+            "metric": "sales",
+            "dimension": "city",
+            "time_column": "month",
+            "columns": ["month", "city", "product", "sales", "profit"],
+        },
+        "alternate_dimensions": ["product", "city"],
+        "time_values": ["2026-01", "2026-02", "2026-03"],
+        "derived_metric_label": "利润率",
+    }
+
+
+def _service_region_files() -> dict[str, str]:
+    return {
+        "service_metrics.csv": (
+            "month,city,service_line,sales,profit,tickets\n"
+            "2026-01,上海,实施交付,180,42,35\n"
+            "2026-01,北京,客户成功,216,68,28\n"
+            "2026-02,上海,客户成功,248,83,31\n"
+            "2026-02,深圳,实施交付,302,96,44\n"
+            "2026-03,深圳,客户成功,284,91,39\n"
+            "2026-03,北京,实施交付,198,52,33\n"
+        )
+    }
+
+
+def _service_region_schema_summary() -> dict[str, Any]:
+    return {
+        "domain_label": "服务区域经营",
+        "primary_table": {
+            "table_name": "service_metrics",
+            "metric": "sales",
+            "dimension": "city",
+            "time_column": "month",
+            "columns": ["month", "city", "service_line", "sales", "profit", "tickets"],
+        },
+        "alternate_dimensions": ["service_line", "city"],
+        "time_values": ["2026-01", "2026-02", "2026-03"],
+        "derived_metric_label": "利润率",
+    }
+
+
+def _multi_file_customer_schema_summary() -> dict[str, Any]:
+    return {
+        "domain_label": "客户订单收入",
+        "primary_table": {
+            "table_name": "orders",
+            "metric": "amount",
+            "dimension": "city",
+            "time_column": "month",
+            "columns": ["month", "customer_id", "amount", "profit", "city", "segment"],
+        },
+        "alternate_dimensions": ["segment", "city"],
+        "derived_metric_label": "利润率",
+        "join_hint": "orders.customer_id = customers.customer_id",
+        "time_values": ["2026-01", "2026-02", "2026-03"],
+    }
+
+
+def _scenarios_for_requested_families(requested: Sequence[str] | None) -> list[ConversationScenario]:
+    names = _normalize_requested_family_names(requested)
+    if not names:
+        return builtin_scenarios()
+    if "all" in names:
+        return scenario_family_scenarios()
+    scenarios_by_family: dict[str, list[ConversationScenario]] = {"typical": builtin_scenarios()}
+    for scenario in scenario_family_scenarios():
+        scenarios_by_family.setdefault(scenario.scenario_family, []).append(scenario)
+    known = sorted(scenarios_by_family)
+    unknown = [name for name in names if name not in scenarios_by_family]
+    if unknown:
+        raise ValueError(f"Unknown scenario family: {', '.join(unknown)}. Known families: {', '.join(['all', *known])}")
+    selected: list[ConversationScenario] = []
+    seen: set[str] = set()
+    for name in names:
+        for scenario in scenarios_by_family.get(name, []):
+            if scenario.scenario_id in seen:
+                continue
+            selected.append(scenario)
+            seen.add(scenario.scenario_id)
+    return selected
+
+
+def _normalize_requested_family_names(requested: Sequence[str] | None) -> list[str]:
+    names: list[str] = []
+    for value in requested or []:
+        for item in str(value or "").split(","):
+            name = item.strip()
+            if name:
+                names.append(name)
+    return names
+
+
+def _normalize_required_scenario_families(required: Sequence[str], selected: Sequence[ConversationScenario]) -> list[str]:
+    names = _normalize_requested_family_names(required)
+    if any(name == "all" for name in names):
+        return sorted({scenario.scenario_family for scenario in selected if scenario.scenario_family})
+    return sorted(set(names))
+
+
+def _selected_scenario_family_label(selected: Sequence[ConversationScenario]) -> str:
+    families = sorted({scenario.scenario_family for scenario in selected if scenario.scenario_family})
+    if not families:
+        return "not_available"
+    if len(families) == 1:
+        return families[0]
+    return "multiple"
+
+
 def build_dynamic_scenarios(input_files: list[Path] | None, *, dataset_name: str) -> list[ConversationScenario]:
     """Build a schema-driven scenario from real uploaded files."""
 
@@ -729,6 +1126,14 @@ def build_dynamic_scenarios(input_files: list[Path] | None, *, dataset_name: str
             scenario_id=scenario_id,
             dataset_name=dataset_name,
             capability_family="dynamic_uploaded_schema_agent",
+            scenario_family="dynamic_uploaded_schema",
+            family_description="Schema-driven uploaded-file scenario built from the provided files.",
+            dataset_requirements=["user-provided uploaded files"],
+            expected_contract_family="dynamic_uploaded_schema",
+            semantic_expectations=["overview_or_quality", "schema_grounded_ranking_or_trend_when_available"],
+            oracle_availability="depends on uploaded schema and generated operations",
+            required_context_behavior="Follow-ups must inherit the uploaded dataset and active metric/dimension.",
+            tags=["dynamic", "uploaded_files"],
             turn_templates=turns,
             required_operations=required_operations,
             required_capability_families=list(dict.fromkeys(required_capability_families)),
@@ -879,6 +1284,14 @@ def _llm_simulated_turns(
                 {
                     "task": "simulate_random_user_conversation",
                     "scenario_id": scenario.scenario_id,
+                    "scenario_family": scenario.scenario_family,
+                    "scenario_family_description": scenario.family_description,
+                    "dataset_requirements": scenario.dataset_requirements,
+                    "expected_contract_family": scenario.expected_contract_family,
+                    "semantic_expectations": scenario.semantic_expectations,
+                    "oracle_availability": scenario.oracle_availability,
+                    "required_context_behavior": scenario.required_context_behavior,
+                    "tags": scenario.tags,
                     "dataset_files": _scenario_file_names(scenario),
                     "schema_summary": scenario.schema_summary,
                     "capability_family": scenario.capability_family,
@@ -2298,9 +2711,11 @@ def _build_overview_expected_result_from_logic(
             continue
         fields: list[dict[str, Any]] = []
         for column in table_columns:
-            series = getattr(table_payload, column, None) if hasattr(table_payload, column) else None
+            series = table_payload[column] if table_name is not None and isinstance(table_payload, Mapping) else None
+            if hasattr(table_payload, "__getitem__"):
+                series = table_payload[column] if column in table_payload.columns else None
             role = _infer_overview_field_role(column, series, table_columns)
-            dtype = getattr(getattr(table_payload, column, None), "dtype", "")
+            dtype = getattr(series, "dtype", "")
             fields.append({"name": column, "role": role, "type": str(dtype) if dtype is not None else ""})
             if role == "time":
                 time_columns.append(column)
@@ -3527,6 +3942,10 @@ def _structured_answer_headings() -> tuple[str, ...]:
 
 def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
     capability_counts: dict[str, int] = {}
+    scenario_family_counts: dict[str, int] = {}
+    scenario_family_conversations: dict[str, dict[str, int]] = {}
+    scenario_family_turn_metrics: dict[str, dict[str, int]] = {}
+    scenario_family_violation_counts: dict[str, dict[str, int]] = {}
     operation_counts: dict[str, int] = {}
     requested_followup_turns = 0
     followup_turns = 0
@@ -3558,8 +3977,34 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
     all_violation_counts: dict[str, int] = {}
     total_turns = 0
     for result in results:
+        scenario_family = result.scenario_family or "not_available"
+        scenario_family_conversation = scenario_family_conversations.setdefault(
+            scenario_family,
+            {"conversation_count": 0, "passed_conversation_count": 0},
+        )
+        scenario_family_conversation["conversation_count"] += 1
+        if result.passed:
+            scenario_family_conversation["passed_conversation_count"] += 1
         for turn in result.turns:
             total_turns += 1
+            turn_scenario_family = turn.scenario_family or scenario_family
+            scenario_family_counts[turn_scenario_family] = scenario_family_counts.get(turn_scenario_family, 0) + 1
+            family_metrics = scenario_family_turn_metrics.setdefault(
+                turn_scenario_family,
+                {
+                    "turn_count": 0,
+                    "semantic_contract_turns": 0,
+                    "semantic_passed_turns": 0,
+                    "semantic_failed_turns": 0,
+                    "oracle_available_turns": 0,
+                    "oracle_passed_turns": 0,
+                    "oracle_failed_turns": 0,
+                    "expected_contract_checked_turns": 0,
+                    "expected_contract_passed_turns": 0,
+                    "expected_contract_failed_turns": 0,
+                },
+            )
+            family_metrics["turn_count"] += 1
             if turn.success:
                 transport_success_turns += 1
             if turn.capability_family:
@@ -3584,14 +4029,18 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
                 structured_answer_turns += 1
             if turn.contract_family:
                 semantic_contract_turns += 1
+                family_metrics["semantic_contract_turns"] += 1
             if turn.oracle_issue_codes or turn.oracle_available or turn.oracle_passed is not None:
                 oracle_result_turns += 1
             if turn.oracle_available:
                 oracle_available_turns += 1
+                family_metrics["oracle_available_turns"] += 1
             if turn.oracle_passed is True:
                 oracle_passed_turns += 1
+                family_metrics["oracle_passed_turns"] += 1
             if turn.oracle_passed is False:
                 oracle_failed_turns += 1
+                family_metrics["oracle_failed_turns"] += 1
             has_oracle_payload = bool(turn.oracle_issue_codes or turn.oracle_available or turn.oracle_passed is not None)
             if has_oracle_payload:
                 if turn.expected_result is not None:
@@ -3608,8 +4057,10 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
                 contract_satisfied_turns += 1
             if turn.semantic_status in {"passed", "corrected_passed"}:
                 semantic_passed_turns += 1
+                family_metrics["semantic_passed_turns"] += 1
             if turn.semantic_status == "failed":
                 semantic_failed_turns += 1
+                family_metrics["semantic_failed_turns"] += 1
             if turn.semantic_status == "corrected_passed":
                 corrected_passed_turns += 1
             if turn.semantic_status == "needs_clarification":
@@ -3619,10 +4070,21 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
             for code in turn.contract_violation_codes:
                 violation_counts[code] = violation_counts.get(code, 0) + 1
                 all_violation_counts[code] = all_violation_counts.get(code, 0) + 1
+                family_codes = scenario_family_violation_counts.setdefault(turn_scenario_family, {})
+                family_codes[code] = family_codes.get(code, 0) + 1
             for code in turn.oracle_issue_codes:
                 all_violation_counts[code] = all_violation_counts.get(code, 0) + 1
+                family_codes = scenario_family_violation_counts.setdefault(turn_scenario_family, {})
+                family_codes[code] = family_codes.get(code, 0) + 1
             if turn.llm_judge_failed:
                 llm_judge_failed_turns += 1
+                family_codes = scenario_family_violation_counts.setdefault(turn_scenario_family, {})
+                family_codes["llm_judge_failed"] = family_codes.get("llm_judge_failed", 0) + 1
+    family_summary = _family_summary_from_counts(
+        scenario_family_conversations,
+        scenario_family_turn_metrics,
+        scenario_family_violation_counts,
+    )
     return {
         "conversation_count": len(results),
         "turn_count": total_turns,
@@ -3664,6 +4126,22 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
             {"code": code, "count": count}
             for code, count in sorted(violation_counts.items(), key=lambda item: (-item[1], item[0]))[:10]
         ],
+        "scenario_families": sorted(scenario_family_counts),
+        "scenario_family_counts": dict(sorted(scenario_family_counts.items())),
+        "family_summary": family_summary,
+        "family_level_pass_rate": {item["family"]: item["pass_rate"] for item in family_summary.get("families", [])},
+        "family_level_semantic_pass_rate": {item["family"]: item["semantic_pass_rate"] for item in family_summary.get("families", [])},
+        "family_level_oracle_pass_rate": {item["family"]: item["oracle_pass_rate"] for item in family_summary.get("families", [])},
+        "family_level_expected_contract_pass_rate": {
+            item["family"]: item["expected_contract_pass_rate"] for item in family_summary.get("families", [])
+        },
+        "top_violation_codes_by_family": {
+            family: [
+                {"code": code, "count": count}
+                for code, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:10]
+            ]
+            for family, counts in sorted(scenario_family_violation_counts.items())
+        },
         "capability_families": sorted(capability_counts),
         "capability_family_counts": dict(sorted(capability_counts.items())),
         "operations": sorted(operation_counts),
@@ -3673,6 +4151,62 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
 
 def _scenario_pass_rate(results: list[ScenarioResult]) -> float:
     return 0.0 if not results else sum(1 for result in results if result.passed) / len(results)
+
+
+def _family_summary_from_counts(
+    conversations: dict[str, dict[str, int]],
+    turn_metrics: dict[str, dict[str, int]],
+    violation_counts: dict[str, dict[str, int]],
+) -> dict[str, Any]:
+    families = sorted(set(conversations) | set(turn_metrics))
+    rows: list[dict[str, Any]] = []
+    for family in families:
+        conversation_counts = conversations.get(family, {})
+        metrics = turn_metrics.get(family, {})
+        top_codes = [
+            {"code": code, "count": count}
+            for code, count in sorted((violation_counts.get(family) or {}).items(), key=lambda item: (-item[1], item[0]))[:10]
+        ]
+        rows.append(
+            {
+                "family": family,
+                "conversation_count": int(conversation_counts.get("conversation_count", 0)),
+                "passed_conversation_count": int(conversation_counts.get("passed_conversation_count", 0)),
+                "pass_rate": _coverage_rate(conversation_counts.get("passed_conversation_count", 0), conversation_counts.get("conversation_count", 0)),
+                "total_turns": int(metrics.get("turn_count", 0)),
+                "semantic_contract_turns": int(metrics.get("semantic_contract_turns", 0)),
+                "semantic_passed_turns": int(metrics.get("semantic_passed_turns", 0)),
+                "semantic_failed_turns": int(metrics.get("semantic_failed_turns", 0)),
+                "semantic_pass_rate": _coverage_rate(metrics.get("semantic_passed_turns", 0), metrics.get("semantic_contract_turns", 0)),
+                "oracle_available_turns": int(metrics.get("oracle_available_turns", 0)),
+                "oracle_passed_turns": int(metrics.get("oracle_passed_turns", 0)),
+                "oracle_failed_turns": int(metrics.get("oracle_failed_turns", 0)),
+                "oracle_pass_rate": _coverage_rate(metrics.get("oracle_passed_turns", 0), metrics.get("oracle_available_turns", 0)),
+                "expected_contract_checked_turns": int(metrics.get("expected_contract_checked_turns", 0)),
+                "expected_contract_passed_turns": int(metrics.get("expected_contract_passed_turns", 0)),
+                "expected_contract_failed_turns": int(metrics.get("expected_contract_failed_turns", 0)),
+                "expected_contract_pass_rate": _coverage_rate(
+                    metrics.get("expected_contract_passed_turns", 0),
+                    metrics.get("expected_contract_checked_turns", 0),
+                ),
+                "top_violation_codes": top_codes,
+            }
+        )
+    return {"status": "available" if rows else "not_available", "families": rows}
+
+
+def _coverage_rate(numerator: Any, denominator: Any) -> float | str:
+    try:
+        denominator_int = int(denominator or 0)
+    except (TypeError, ValueError):
+        denominator_int = 0
+    if denominator_int <= 0:
+        return "not_available"
+    try:
+        numerator_int = int(numerator or 0)
+    except (TypeError, ValueError):
+        numerator_int = 0
+    return numerator_int / denominator_int
 
 
 def _sample_scenarios(scenarios: list[ConversationScenario], count: int, rng: random.Random) -> list[ConversationScenario]:
@@ -3890,6 +4424,8 @@ def _report_markdown(report: dict[str, Any]) -> str:
         f"- Gate passed: {report.get('gate_passed', (report.get('gate_result') or {}).get('gate_passed', False))}",
         f"- Gate failed reasons: {_join_or_none(report.get('gate_failed_reasons') or (report.get('gate_result') or {}).get('gate_failed_reasons') or [])}",
         f"- 对话数: {report.get('conversation_count')}；场景数: {report.get('scenario_count')}；每场景运行: {report.get('runs_per_scenario')}",
+        f"- Scenario family: {report.get('scenario_family') or '-'}",
+        f"- Scenario families: {_join_or_none(report.get('scenario_families') or [])}",
         f"- 随机种子: {report.get('seed')}；用户模拟器: {report.get('simulator_source')}",
         f"- 全局问题: {_join_or_none(report.get('global_issues') or [])}",
         "",
@@ -3916,7 +4452,35 @@ def _report_markdown(report: dict[str, Any]) -> str:
     lines.append(f"- Structured action turns: {coverage.get('structured_action_turns', 0)}")
     lines.append(f"- Structured answer turns: {coverage.get('structured_answer_turns', 0)}")
     lines.append(f"- Capability families: {_join_or_none(coverage.get('capability_families') or [])}")
+    lines.append(f"- Scenario families: {_join_or_none(coverage.get('scenario_families') or [])}")
     lines.append(f"- Operations: {_join_or_none(coverage.get('operations') or [])}")
+    lines.extend(["", "## Scenario Family Summary"])
+    family_rows = (coverage.get("family_summary") or {}).get("families") if isinstance(coverage.get("family_summary"), dict) else []
+    if family_rows:
+        lines.extend(
+            [
+                "| family | conversations | pass_rate | semantic_pass_rate | oracle_pass_rate | expected_contract_pass_rate | top_violation_codes |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for item in family_rows:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        _escape_markdown_table_cell(item.get("family")),
+                        str(item.get("conversation_count", 0)),
+                        _display_summary_rate(item.get("pass_rate")),
+                        _display_summary_rate(item.get("semantic_pass_rate")),
+                        _display_summary_rate(item.get("oracle_pass_rate")),
+                        _display_summary_rate(item.get("expected_contract_pass_rate")),
+                        _escape_markdown_table_cell(", ".join(f"{code.get('code')}={code.get('count')}" for code in item.get("top_violation_codes", []) if isinstance(code, dict)) or "none"),
+                    ]
+                )
+                + " |"
+            )
+    else:
+        lines.append("not_available")
     lines.extend(["", "## Semantic Contract Summary"])
     lines.append(f"- Semantic contract turns: {coverage.get('semantic_contract_turns', 0)}")
     lines.append(f"- Oracle result turns: {coverage.get('oracle_result_turns', 0)}")
@@ -3968,6 +4532,7 @@ def _report_markdown(report: dict[str, Any]) -> str:
                 f"### 对话 {conversation_index}: {title}",
                 f"- 结果: {'PASS' if result.get('passed') else 'FAIL'}",
                 f"- 能力族: {result.get('capability_family')}",
+                f"- Scenario family: {result.get('scenario_family') or '-'}",
                 f"- 轮次: {len(turns)}；会话内连续提问: {requested_followups}；已识别上下文: {recognized_followups}",
                 f"- Issues: {_join_or_none(result.get('issues') or [])}",
                 "",
@@ -3989,7 +4554,7 @@ def _turn_markdown_lines(turn: dict[str, Any]) -> list[str]:
             f"- 执行结果: {'成功' if turn.get('success') else '失败'}；"
             f"required_operation={turn.get('required_operation') or '-'}；"
             f"actual_operation={turn.get('operation') or '-'}；answer_type={turn.get('answer_type') or '-'}；"
-            f"capability={turn.get('capability_family') or '-'}"
+            f"capability={turn.get('capability_family') or '-'}；scenario_family={turn.get('scenario_family') or '-'}"
         ),
         (
             f"- 语义契约: status={turn.get('semantic_status') or 'legacy_unverified'}；"
@@ -4017,6 +4582,7 @@ def _report_html(report: dict[str, Any]) -> str:
     metric_cards = [
         ("通过率", _format_percent(report.get("pass_rate"))),
         ("对话数", str(report.get("conversation_count", 0))),
+        ("Scenario families", str(len(coverage.get("scenario_families") or []))),
         ("总轮次", str(coverage.get("turn_count", 0))),
         ("会话内后续提问轮次", str(coverage.get("post_initial_turns", coverage.get("requested_followup_turns", 0)))),
         ("已识别上下文轮次", str(coverage.get("contextualized_post_initial_turns", coverage.get("followup_turns", 0)))),
@@ -4162,10 +4728,17 @@ def _report_html(report: dict[str, Any]) -> str:
 
     <h2>能力覆盖</h2>
     <div class="panel">
-      <h3>Capability Families</h3>
+      <h3>Scenario Families</h3>
+      <div class="chips">{_count_chips_html(coverage.get('scenario_family_counts') or {})}</div>
+      <h3 style="margin-top: 16px;">Capability Families</h3>
       <div class="chips">{_count_chips_html(coverage.get('capability_family_counts') or {})}</div>
       <h3 style="margin-top: 16px;">Operations</h3>
       <div class="chips">{_count_chips_html(coverage.get('operation_counts') or {})}</div>
+    </div>
+
+    <h2>Scenario Family Summary</h2>
+    <div class="panel">
+      {_scenario_family_summary_html(coverage)}
     </div>
 
     <h2>Semantic Contract Summary</h2>
@@ -4241,6 +4814,37 @@ def _threshold_table_html(rows: list[dict[str, Any]]) -> str:
     return "\n".join(rendered)
 
 
+def _scenario_family_summary_html(coverage: dict[str, Any]) -> str:
+    summary = coverage.get("family_summary") if isinstance(coverage.get("family_summary"), dict) else {}
+    rows = summary.get("families") if isinstance(summary.get("families"), list) else []
+    if not rows:
+        return '<span class="muted">not_available</span>'
+    rendered = [
+        "<table>",
+        "<thead><tr><th>Family</th><th>Conversations</th><th>Pass</th><th>Semantic</th><th>Oracle</th><th>Expected contract</th><th>Top violations</th></tr></thead>",
+        "<tbody>",
+    ]
+    for row in rows:
+        top_codes = ", ".join(
+            f"{item.get('code')}={item.get('count')}"
+            for item in row.get("top_violation_codes", [])
+            if isinstance(item, dict)
+        ) or "none"
+        rendered.append(
+            "<tr>"
+            f"<td>{_html(row.get('family'))}</td>"
+            f"<td>{_html(row.get('conversation_count', 0))}</td>"
+            f"<td>{_html(_display_summary_rate(row.get('pass_rate')))}</td>"
+            f"<td>{_html(_display_summary_rate(row.get('semantic_pass_rate')))}</td>"
+            f"<td>{_html(_display_summary_rate(row.get('oracle_pass_rate')))}</td>"
+            f"<td>{_html(_display_summary_rate(row.get('expected_contract_pass_rate')))}</td>"
+            f"<td>{_html(top_codes)}</td>"
+            "</tr>"
+        )
+    rendered.extend(["</tbody>", "</table>"])
+    return "\n".join(rendered)
+
+
 def _semantic_contract_summary_html(coverage: dict[str, Any]) -> str:
     metrics = [
         ("semantic_contract_turns", "Semantic contract turns"),
@@ -4298,7 +4902,7 @@ def _conversation_html(result: dict[str, Any]) -> str:
   <summary>
     <div>
       <h3>{_html(title)}</h3>
-      <div class="muted">{len(turns)} 轮 · 会话内后续提问 {requested_followups} 轮 · 已识别上下文 {recognized_followups} 轮 · capability={_html(result.get('capability_family'))}</div>
+      <div class="muted">{len(turns)} 轮 · 会话内后续提问 {requested_followups} 轮 · 已识别上下文 {recognized_followups} 轮 · scenario_family={_html(result.get('scenario_family'))} · capability={_html(result.get('capability_family'))}</div>
     </div>
     <span class="badge {status_class}">{'PASS' if passed else 'FAIL'}</span>
   </summary>
@@ -4523,6 +5127,12 @@ def _format_percent(value: Any) -> str:
     return f"{float(value or 0.0):.0%}"
 
 
+def _display_summary_rate(value: Any) -> str:
+    if isinstance(value, (float, int)):
+        return f"{float(value):.2%}"
+    return str(value or "not_available")
+
+
 def _format_threshold_value(key: str, value: Any) -> str:
     if key == "min_pass_rate":
         return _format_percent(value)
@@ -4536,6 +5146,7 @@ def _html(value: Any) -> str:
 def _write_turn_records_csv(report: dict[str, Any], path: Path) -> None:
     fieldnames = [
         "scenario_id",
+        "scenario_family",
         "run_index",
         "turn_index",
         "turn_role",
@@ -4585,6 +5196,7 @@ def _write_turn_records_csv(report: dict[str, Any], path: Path) -> None:
                 writer.writerow(
                     {
                         "scenario_id": result.get("scenario_id"),
+                        "scenario_family": result.get("scenario_family") or turn.get("scenario_family") or "",
                         "run_index": result.get("run_index"),
                         "turn_index": turn_index,
                         "turn_role": turn.get("turn_role") or "",
@@ -4679,6 +5291,7 @@ def _summary_text(report: dict[str, Any]) -> str:
     if coverage:
         lines.append(
             "coverage: "
+            f"scenario_families={','.join(coverage.get('scenario_families') or []) or '-'} "
             f"families={','.join(coverage.get('capability_families') or []) or '-'} "
             f"operations={','.join(coverage.get('operations') or []) or '-'} "
             f"continuation_turns={coverage.get('post_initial_turns', coverage.get('requested_followup_turns', 0))} "

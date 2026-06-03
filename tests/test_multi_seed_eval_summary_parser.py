@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from scripts.run_agent_random_conversation_eval_multi_seed import (
+    aggregate_multi_seed_family_metrics,
     aggregate_multi_seed_gate,
     _collect_seed_summary,
     _normalize_top_violation_codes,
@@ -47,6 +48,27 @@ class MultiSeedEvalSummaryParserTest(unittest.TestCase):
                                 {"code": "TOPN_RESULT_ROWS_SHORT", "count": 3},
                                 {"code": "TABLE_DIMENSION_MISSING", "count": 1},
                             ],
+                            "scenario_families": ["single_file_overview_topn_gap"],
+                            "family_summary": {
+                                "status": "available",
+                                "families": [
+                                    {
+                                        "family": "single_file_overview_topn_gap",
+                                        "conversation_count": 1,
+                                        "passed_conversation_count": 1,
+                                        "semantic_contract_turns": 6,
+                                        "semantic_passed_turns": 5,
+                                        "oracle_available_turns": 5,
+                                        "oracle_passed_turns": 2,
+                                        "expected_contract_checked_turns": 0,
+                                        "expected_contract_passed_turns": 0,
+                                        "top_violation_codes": [{"code": "TOPN_RESULT_ROWS_SHORT", "count": 3}],
+                                    }
+                                ],
+                            },
+                            "top_violation_codes_by_family": {
+                                "single_file_overview_topn_gap": [{"code": "TOPN_RESULT_ROWS_SHORT", "count": 3}]
+                            },
                         },
                         "llm_judge_failed_turns": 0,
                     },
@@ -78,10 +100,17 @@ class MultiSeedEvalSummaryParserTest(unittest.TestCase):
             row["top_violation_codes"],
         )
         self.assertIn("seed_20260603", row["output_dir"])
+        self.assertEqual(["single_file_overview_topn_gap"], row["scenario_families"])
+        self.assertEqual("available", row["family_summary"]["status"])
+        self.assertIn("single_file_overview_topn_gap", row["top_violation_codes_by_family"])
 
         aggregate_gate = aggregate_multi_seed_gate([row])
         self.assertFalse(aggregate_gate["gate_passed"])
         self.assertIn("semantic_failed_turns_above_threshold:1>0", aggregate_gate["gate_failed_reasons"])
+        family_metrics = aggregate_multi_seed_family_metrics([row], gate_result=aggregate_gate)
+        self.assertEqual(["single_file_overview_topn_gap"], family_metrics["families_run"])
+        self.assertEqual(1.0, family_metrics["per_family_pass_rate"]["single_file_overview_topn_gap"])
+        self.assertEqual("TOPN_RESULT_ROWS_SHORT", family_metrics["top_violation_codes_by_family"]["single_file_overview_topn_gap"][0]["code"])
 
     def test_collect_seed_summary_fallbacks_when_top_codes_and_aliases_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
