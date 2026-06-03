@@ -61,6 +61,17 @@ class AgentResult:
     raw_response: Mapping[str, Any] = field(default_factory=dict)
     issues: tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    semantic_status: str = "not_available"
+    contract_satisfied: bool | None = None
+    contract_family: str = ""
+    violations: tuple[Mapping[str, Any], ...] = ()
+    contract_report: Mapping[str, Any] = field(default_factory=dict)
+    oracle_result: Mapping[str, Any] = field(default_factory=dict)
+    oracle_available: bool | None = None
+    oracle_passed: bool | None = None
+    oracle_issue_codes: tuple[str, ...] = ()
+    semantic_evidence_available: bool = False
+    semantic_evidence_missing_reason: str = "semantic_oracle_fields_not_available"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -192,6 +203,7 @@ def agent_result_from_response(
     normalized_status = status or ("completed" if success else "failed")
     if not success and normalized_status == "completed":
         normalized_status = "failed"
+    semantic_evidence = extract_runtime_semantic_evidence(response)
     return AgentResult(
         target=target,
         success=success,
@@ -204,7 +216,127 @@ def agent_result_from_response(
         raw_response=dict(response),
         issues=tuple(issues),
         metadata=dict(metadata or {}),
+        semantic_status=semantic_evidence["semantic_status"],
+        contract_satisfied=semantic_evidence["contract_satisfied"],
+        contract_family=semantic_evidence["contract_family"],
+        violations=tuple(semantic_evidence["violations"]),
+        contract_report=semantic_evidence["contract_report"],
+        oracle_result=semantic_evidence["oracle_result"],
+        oracle_available=semantic_evidence["oracle_available"],
+        oracle_passed=semantic_evidence["oracle_passed"],
+        oracle_issue_codes=tuple(semantic_evidence["oracle_issue_codes"]),
+        semantic_evidence_available=semantic_evidence["semantic_evidence_available"],
+        semantic_evidence_missing_reason=semantic_evidence["semantic_evidence_missing_reason"],
     )
+
+
+def extract_runtime_semantic_evidence(response: Mapping[str, Any]) -> dict[str, Any]:
+    """Extract semantic contract/oracle evidence from current and legacy response shapes."""
+
+    verification = response.get("verification") if isinstance(response.get("verification"), Mapping) else {}
+    debug = response.get("debug") if isinstance(response.get("debug"), Mapping) else {}
+    payloads = (response, verification, debug)
+    contract_report = _first_mapping(payloads, "contract_report")
+    oracle_result = _first_mapping(payloads, "oracle_result")
+    semantic_status = _first_text(payloads, "semantic_status") or "not_available"
+    contract_satisfied = _first_bool(payloads, "contract_satisfied")
+    contract_family = _first_text(payloads, "contract_family") or str(contract_report.get("task_family") or "")
+    violations = _violations_from_payloads(payloads, contract_report)
+    oracle_available = _first_bool(payloads, "oracle_available")
+    oracle_passed = _first_bool(payloads, "oracle_passed")
+    if oracle_available is None and "oracle_available" in oracle_result:
+        oracle_available = bool(oracle_result.get("oracle_available"))
+    if oracle_passed is None and isinstance(oracle_result.get("passed"), bool):
+        oracle_passed = bool(oracle_result.get("passed"))
+    oracle_issue_codes = _oracle_issue_codes(payloads, oracle_result)
+    evidence_available = any(
+        (
+            semantic_status != "not_available",
+            contract_satisfied is not None,
+            bool(contract_family),
+            bool(violations),
+            bool(contract_report),
+            bool(oracle_result),
+            oracle_available is not None,
+            oracle_passed is not None,
+            bool(oracle_issue_codes),
+        )
+    )
+    missing_parts = []
+    if semantic_status == "not_available":
+        missing_parts.append("semantic_status")
+    if contract_satisfied is None:
+        missing_parts.append("contract_satisfied")
+    if not contract_report:
+        missing_parts.append("contract_report")
+    if not oracle_result and oracle_available is None and oracle_passed is None and not oracle_issue_codes:
+        missing_parts.append("oracle_result")
+    return {
+        "semantic_status": semantic_status,
+        "contract_satisfied": contract_satisfied,
+        "contract_family": contract_family,
+        "violations": violations,
+        "contract_report": contract_report,
+        "oracle_result": oracle_result,
+        "oracle_available": oracle_available,
+        "oracle_passed": oracle_passed,
+        "oracle_issue_codes": oracle_issue_codes,
+        "semantic_evidence_available": evidence_available,
+        "semantic_evidence_missing_reason": "not_available:" + ",".join(missing_parts) if missing_parts else "",
+    }
+
+
+def _first_mapping(payloads: Sequence[Mapping[str, Any]], key: str) -> dict[str, Any]:
+    for payload in payloads:
+        value = payload.get(key)
+        if isinstance(value, Mapping) and value:
+            return dict(value)
+    return {}
+
+
+def _first_text(payloads: Sequence[Mapping[str, Any]], key: str) -> str:
+    for payload in payloads:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _first_bool(payloads: Sequence[Mapping[str, Any]], key: str) -> bool | None:
+    for payload in payloads:
+        value = payload.get(key)
+        if isinstance(value, bool):
+            return value
+    return None
+
+
+def _violations_from_payloads(payloads: Sequence[Mapping[str, Any]], contract_report: Mapping[str, Any]) -> list[dict[str, Any]]:
+    for payload in payloads:
+        value = payload.get("violations")
+        if isinstance(value, list):
+            return [_dict_violation(item) for item in value]
+    value = contract_report.get("violations")
+    if isinstance(value, list):
+        return [_dict_violation(item) for item in value]
+    return []
+
+
+def _dict_violation(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {"code": str(value)}
+
+
+def _oracle_issue_codes(payloads: Sequence[Mapping[str, Any]], oracle_result: Mapping[str, Any]) -> list[str]:
+    for key in ("oracle_issue_codes", "issue_codes"):
+        for payload in payloads:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [str(item) for item in value if str(item)]
+    value = oracle_result.get("issue_codes")
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    return []
 
 
 def _normalize_payload_key(key: object) -> str:

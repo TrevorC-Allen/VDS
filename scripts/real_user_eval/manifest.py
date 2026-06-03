@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -31,6 +32,41 @@ FORBIDDEN_VARIANT_TOKENS = (
 )
 
 SUPPORTED_ORACLE_TYPES = {"duckdb_sql", "literal", "none"}
+SUPPORTED_CONTRACT_FAMILIES = {
+    "topn",
+    "gap",
+    "trend",
+    "contribution",
+    "share",
+    "contribution_followup",
+    "followup_referent",
+    "overview",
+    "multi_file_overview",
+    "data_quality",
+}
+SUPPORTED_GAP_TYPES = {"", "pairwise", "adjacent", "rank_pair", "adjacent_and_to_leader"}
+
+EXPECTED_CONTRACT_DEFAULTS: dict[str, Any] = {
+    "schema_version": 1,
+    "contract_family": "",
+    "answer_type": "",
+    "required_row_count": None,
+    "min_row_count": None,
+    "allow_insufficient_data_explanation": False,
+    "required_dimensions": [],
+    "required_metrics": [],
+    "required_sort": None,
+    "required_gap_type": "",
+    "required_context_reference": "",
+    "required_all_files_covered": False,
+    "required_join_keys": [],
+    "required_field_level_quality": False,
+    "required_duplicate_check": False,
+    "required_outlier_check": False,
+    "requires_direct_answer_first": False,
+    "requires_artifact_summary": False,
+    "violation_codes_expected_absent": [],
+}
 
 
 @dataclass(frozen=True)
@@ -40,7 +76,7 @@ class ManifestCase:
     capability_family: str
     canonical_question: str
     question_variants: tuple[str, ...]
-    expected_contract: str
+    expected_contract: Any
     oracle_type: str
     oracle_query_or_formula: Any
     answer_requirements: Mapping[str, Any]
@@ -53,7 +89,7 @@ class ManifestCase:
 class ConversationTurn:
     turn_id: str
     question: str
-    expected_contract: str
+    expected_contract: Any
     oracle_type: str
     oracle_query_or_formula: Any
     answer_requirements: Mapping[str, Any]
@@ -75,8 +111,117 @@ def load_manifest(path: str | Path) -> dict[str, Any]:
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("real-user manifest must be a JSON object")
-    validate_manifest(data)
-    return data
+    normalized = normalize_manifest(data)
+    validate_manifest(normalized)
+    return normalized
+
+
+def normalize_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a manifest copy with structured expected_contract defaults filled."""
+
+    normalized = deepcopy(dict(manifest))
+    cases = normalized.get("cases")
+    if isinstance(cases, list):
+        normalized_cases = []
+        for raw_case in cases:
+            if isinstance(raw_case, Mapping):
+                case = dict(raw_case)
+                case_id = str(case.get("case_id") or "<unknown case>")
+                case["expected_contract"] = normalize_expected_contract(
+                    case.get("expected_contract"), field_name=f"{case_id}.expected_contract"
+                )
+                normalized_cases.append(case)
+            else:
+                normalized_cases.append(raw_case)
+        normalized["cases"] = normalized_cases
+    conversations = normalized.get("conversations")
+    if isinstance(conversations, list):
+        normalized_conversations = []
+        for raw_conversation in conversations:
+            if not isinstance(raw_conversation, Mapping):
+                normalized_conversations.append(raw_conversation)
+                continue
+            conversation = dict(raw_conversation)
+            conversation_id = str(conversation.get("conversation_id") or "<unknown conversation>")
+            turns = conversation.get("turns")
+            if isinstance(turns, list):
+                normalized_turns = []
+                for index, raw_turn in enumerate(turns, start=1):
+                    if isinstance(raw_turn, Mapping):
+                        turn = dict(raw_turn)
+                        turn_id = str(turn.get("turn_id") or f"turn_{index:02d}")
+                        turn["expected_contract"] = normalize_expected_contract(
+                            turn.get("expected_contract"),
+                            field_name=f"{conversation_id}.{turn_id}.expected_contract",
+                        )
+                        normalized_turns.append(turn)
+                    else:
+                        normalized_turns.append(raw_turn)
+                conversation["turns"] = normalized_turns
+            normalized_conversations.append(conversation)
+        normalized["conversations"] = normalized_conversations
+    return normalized
+
+
+def normalize_expected_contract(value: Any, *, field_name: str = "expected_contract") -> str | dict[str, Any]:
+    """Normalize structured semantic contracts while preserving legacy text contracts."""
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ValueError(f"{field_name} must be a non-empty string or object")
+        return text
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a non-empty string or object")
+
+    normalized = deepcopy(EXPECTED_CONTRACT_DEFAULTS)
+    normalized.update(dict(value))
+    family = _required_contract_text(normalized.get("contract_family"), f"{field_name}.contract_family")
+    if family not in SUPPORTED_CONTRACT_FAMILIES:
+        supported = ", ".join(sorted(SUPPORTED_CONTRACT_FAMILIES))
+        raise ValueError(f"{field_name}.contract_family is unsupported: {family!r}; supported: {supported}")
+    normalized["schema_version"] = _optional_positive_int(normalized.get("schema_version"), f"{field_name}.schema_version") or 1
+    normalized["contract_family"] = family
+    normalized["answer_type"] = _optional_text(normalized.get("answer_type"), f"{field_name}.answer_type")
+    normalized["required_row_count"] = _optional_non_negative_int(
+        normalized.get("required_row_count"), f"{field_name}.required_row_count"
+    )
+    normalized["min_row_count"] = _optional_non_negative_int(normalized.get("min_row_count"), f"{field_name}.min_row_count")
+    normalized["allow_insufficient_data_explanation"] = _bool(
+        normalized.get("allow_insufficient_data_explanation"), f"{field_name}.allow_insufficient_data_explanation"
+    )
+    normalized["required_dimensions"] = _text_list_or_empty(
+        normalized.get("required_dimensions"), f"{field_name}.required_dimensions"
+    )
+    normalized["required_metrics"] = _text_list_or_empty(normalized.get("required_metrics"), f"{field_name}.required_metrics")
+    normalized["required_sort"] = _normalize_required_sort(normalized.get("required_sort"), f"{field_name}.required_sort")
+    normalized["required_gap_type"] = _optional_text(normalized.get("required_gap_type"), f"{field_name}.required_gap_type")
+    if normalized["required_gap_type"] not in SUPPORTED_GAP_TYPES:
+        raise ValueError(f"{field_name}.required_gap_type is unsupported: {normalized['required_gap_type']!r}")
+    normalized["required_context_reference"] = _optional_text_or_text_list(
+        normalized.get("required_context_reference"), f"{field_name}.required_context_reference"
+    )
+    normalized["required_all_files_covered"] = _bool(
+        normalized.get("required_all_files_covered"), f"{field_name}.required_all_files_covered"
+    )
+    normalized["required_join_keys"] = _text_list_or_empty(normalized.get("required_join_keys"), f"{field_name}.required_join_keys")
+    normalized["required_field_level_quality"] = _bool(
+        normalized.get("required_field_level_quality"), f"{field_name}.required_field_level_quality"
+    )
+    normalized["required_duplicate_check"] = _bool(
+        normalized.get("required_duplicate_check"), f"{field_name}.required_duplicate_check"
+    )
+    normalized["required_outlier_check"] = _bool(normalized.get("required_outlier_check"), f"{field_name}.required_outlier_check")
+    normalized["requires_direct_answer_first"] = _bool(
+        normalized.get("requires_direct_answer_first"), f"{field_name}.requires_direct_answer_first"
+    )
+    normalized["requires_artifact_summary"] = _bool(
+        normalized.get("requires_artifact_summary"), f"{field_name}.requires_artifact_summary"
+    )
+    normalized["violation_codes_expected_absent"] = _text_list_or_empty(
+        normalized.get("violation_codes_expected_absent"), f"{field_name}.violation_codes_expected_absent"
+    )
+    return normalized
 
 
 def validate_manifest(manifest: Mapping[str, Any]) -> None:
@@ -207,7 +352,7 @@ def _coerce_case(value: Any) -> ManifestCase:
         capability_family=_required_text(value, "capability_family"),
         canonical_question=canonical,
         question_variants=tuple(variants),
-        expected_contract=_required_text(value, "expected_contract"),
+        expected_contract=normalize_expected_contract(value.get("expected_contract"), field_name=f"{case_id}.expected_contract"),
         oracle_type=oracle_type,
         oracle_query_or_formula=value.get("oracle_query_or_formula"),
         answer_requirements=dict(requirements),
@@ -251,7 +396,9 @@ def _coerce_turn(conversation_id: str, index: int, value: Any) -> ConversationTu
     return ConversationTurn(
         turn_id=turn_id,
         question=question,
-        expected_contract=_required_text(value, "expected_contract"),
+        expected_contract=normalize_expected_contract(
+            value.get("expected_contract"), field_name=f"{conversation_id}.{turn_id}.expected_contract"
+        ),
         oracle_type=oracle_type,
         oracle_query_or_formula=value.get("oracle_query_or_formula"),
         answer_requirements=dict(requirements),
@@ -271,6 +418,80 @@ def _text_list(value: Any, field_name: str) -> list[str]:
     result = [str(item).strip() for item in value if str(item).strip()]
     if len(result) != len(value):
         raise ValueError(f"{field_name} contains an empty item")
+    return result
+
+
+def _text_list_or_empty(value: Any, field_name: str) -> list[str]:
+    if value in (None, ""):
+        return []
+    return _text_list(value, field_name)
+
+
+def _required_contract_text(value: Any, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return text
+
+
+def _optional_text(value: Any, field_name: str) -> str:
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    return value.strip()
+
+
+def _optional_text_or_text_list(value: Any, field_name: str) -> str | list[str]:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, list):
+        return _text_list(value, field_name)
+    if isinstance(value, str):
+        return value.strip()
+    raise ValueError(f"{field_name} must be a string or array")
+
+
+def _bool(value: Any, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean")
+    return value
+
+
+def _optional_positive_int(value: Any, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return value
+
+
+def _optional_non_negative_int(value: Any, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
+
+
+def _normalize_required_sort(value: Any, field_name: str) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be an object")
+    result = dict(value)
+    if "by" in result:
+        by = result.get("by")
+        if isinstance(by, str):
+            result["by"] = [by.strip()] if by.strip() else []
+        else:
+            result["by"] = _text_list_or_empty(by, f"{field_name}.by")
+    order = result.get("order")
+    if order is not None:
+        order_text = str(order).strip().lower()
+        if order_text not in {"asc", "desc"}:
+            raise ValueError(f"{field_name}.order must be 'asc' or 'desc'")
+        result["order"] = order_text
     return result
 
 

@@ -227,7 +227,24 @@
         "cancelled lines count",
         "看一下取消单规模"
       ],
-      "expected_contract": "质量检查",
+      "expected_contract": {
+        "contract_family": "data_quality",
+        "answer_type": "field_level_quality_summary",
+        "required_metrics": [
+          "cancelled_line_count"
+        ],
+        "required_field_level_quality": true,
+        "required_duplicate_check": true,
+        "required_outlier_check": true,
+        "requires_direct_answer_first": true,
+        "requires_artifact_summary": true,
+        "violation_codes_expected_absent": [
+          "quality_field_level_missing",
+          "quality_duplicate_rule_missing",
+          "quality_outlier_rules_missing",
+          "direct_answer_not_first"
+        ]
+      },
       "oracle_type": "duckdb_sql",
       "oracle_query_or_formula": "SELECT count(*) AS cancelled_line_count FROM {table_0} WHERE CAST(InvoiceNo AS VARCHAR) LIKE 'C%'",
       "answer_requirements": {
@@ -382,7 +399,33 @@
         "state order ranking",
         "订单最多的地区"
       ],
-      "expected_contract": "TopN",
+      "expected_contract": {
+        "contract_family": "topn",
+        "answer_type": "ranked_table",
+        "required_row_count": 10,
+        "min_row_count": 10,
+        "allow_insufficient_data_explanation": true,
+        "required_dimensions": [
+          "customer_state"
+        ],
+        "required_metrics": [
+          "orders"
+        ],
+        "required_sort": {
+          "by": [
+            "orders"
+          ],
+          "order": "desc"
+        },
+        "requires_direct_answer_first": true,
+        "requires_artifact_summary": true,
+        "violation_codes_expected_absent": [
+          "topn_result_rows_short",
+          "topn_missing_sort_basis",
+          "topn_missing_metric_value",
+          "direct_answer_not_first"
+        ]
+      },
       "oracle_type": "duckdb_sql",
       "oracle_query_or_formula": "SELECT c.customer_state, count(*) AS orders FROM {table_2} o JOIN {table_0} c ON o.customer_id = c.customer_id GROUP BY c.customer_state ORDER BY orders DESC LIMIT 10",
       "answer_requirements": {
@@ -444,7 +487,36 @@
         "product category top10",
         "按品类看销售额"
       ],
-      "expected_contract": "多文件 join",
+      "expected_contract": {
+        "contract_family": "topn",
+        "answer_type": "join_ranked_table",
+        "required_row_count": 10,
+        "min_row_count": 10,
+        "allow_insufficient_data_explanation": true,
+        "required_dimensions": [
+          "product_category_name"
+        ],
+        "required_metrics": [
+          "revenue"
+        ],
+        "required_sort": {
+          "by": [
+            "revenue"
+          ],
+          "order": "desc"
+        },
+        "required_join_keys": [
+          "product_id"
+        ],
+        "requires_direct_answer_first": true,
+        "requires_artifact_summary": true,
+        "violation_codes_expected_absent": [
+          "topn_result_rows_short",
+          "topn_missing_sort_basis",
+          "topn_missing_metric_value",
+          "direct_answer_not_first"
+        ]
+      },
       "oracle_type": "duckdb_sql",
       "oracle_query_or_formula": "SELECT p.product_category_name, round(sum(i.price), 2) AS revenue FROM {table_1} i JOIN {table_3} p ON i.product_id = p.product_id GROUP BY p.product_category_name ORDER BY revenue DESC LIMIT 10",
       "answer_requirements": {
@@ -568,7 +640,37 @@
         "join key readiness",
         "多表关系怎么看"
       ],
-      "expected_contract": "多文件 join",
+      "expected_contract": {
+        "contract_family": "multi_file_overview",
+        "answer_type": "file_relationship_overview",
+        "required_all_files_covered": true,
+        "required_join_keys": [
+          "customer_id",
+          "order_id",
+          "product_id",
+          "payment_id"
+        ],
+        "required_dimensions": [
+          "customers",
+          "order_items",
+          "orders",
+          "products",
+          "payments"
+        ],
+        "required_metrics": [
+          "order_ids_in_items",
+          "products_in_items"
+        ],
+        "requires_direct_answer_first": true,
+        "requires_artifact_summary": true,
+        "violation_codes_expected_absent": [
+          "multi_file_missing_file_coverage",
+          "multi_file_missing_core_fields",
+          "multi_file_missing_join_keys",
+          "multi_file_missing_analysis_directions",
+          "direct_answer_not_first"
+        ]
+      },
       "oracle_type": "duckdb_sql",
       "oracle_query_or_formula": "SELECT count(DISTINCT order_id) AS order_ids_in_items, count(DISTINCT product_id) AS products_in_items FROM {table_1}",
       "answer_requirements": {
@@ -2924,6 +3026,145 @@
       "metadata": {
         "expected_context_reuse": true,
         "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "brazilian_ecommerce_top_state_followup_contract",
+      "dataset": "brazilian_ecommerce",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "topn",
+        "gap",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "按州看订单 Top10。",
+          "expected_contract": {
+            "contract_family": "topn",
+            "answer_type": "ranked_table",
+            "required_row_count": 10,
+            "min_row_count": 10,
+            "allow_insufficient_data_explanation": true,
+            "required_dimensions": [
+              "customer_state"
+            ],
+            "required_metrics": [
+              "orders"
+            ],
+            "required_sort": {
+              "by": [
+                "orders"
+              ],
+              "order": "desc"
+            },
+            "requires_direct_answer_first": true,
+            "requires_artifact_summary": true,
+            "violation_codes_expected_absent": [
+              "topn_result_rows_short",
+              "topn_missing_sort_basis",
+              "topn_missing_metric_value",
+              "direct_answer_not_first"
+            ]
+          },
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT c.customer_state, count(*) AS orders FROM {table_2} o JOIN {table_0} c ON o.customer_id = c.customer_id GROUP BY c.customer_state ORDER BY orders DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "上面这些州分别是多少订单？",
+          "expected_contract": {
+            "contract_family": "followup_referent",
+            "answer_type": "referent_ranked_table",
+            "required_row_count": 10,
+            "min_row_count": 10,
+            "allow_insufficient_data_explanation": true,
+            "required_context_reference": "previous_top_set",
+            "required_dimensions": [
+              "customer_state"
+            ],
+            "required_metrics": [
+              "orders"
+            ],
+            "required_sort": {
+              "by": [
+                "orders"
+              ],
+              "order": "desc"
+            },
+            "requires_direct_answer_first": true,
+            "requires_artifact_summary": true,
+            "violation_codes_expected_absent": [
+              "followup_missing_previous_top_set",
+              "followup_referent_not_inherited",
+              "topn_result_rows_short",
+              "direct_answer_not_first"
+            ]
+          },
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT c.customer_state, count(*) AS orders FROM {table_2} o JOIN {table_0} c ON o.customer_id = c.customer_id GROUP BY c.customer_state ORDER BY orders DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "第一名和后面的差多少？",
+          "expected_contract": {
+            "contract_family": "gap",
+            "answer_type": "pairwise_gap_table",
+            "min_row_count": 2,
+            "allow_insufficient_data_explanation": true,
+            "required_gap_type": "pairwise",
+            "required_context_reference": "previous_top_set",
+            "required_dimensions": [
+              "customer_state"
+            ],
+            "required_metrics": [
+              "orders",
+              "gap_to_leader"
+            ],
+            "required_sort": {
+              "by": [
+                "orders"
+              ],
+              "order": "desc"
+            },
+            "requires_direct_answer_first": true,
+            "requires_artifact_summary": true,
+            "violation_codes_expected_absent": [
+              "gap_pairwise_missing",
+              "gap_missing_previous_top_set",
+              "direct_answer_not_first"
+            ]
+          },
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "WITH ranked AS (SELECT c.customer_state, count(*) AS orders FROM {table_2} o JOIN {table_0} c ON o.customer_id = c.customer_id GROUP BY c.customer_state ORDER BY orders DESC LIMIT 10), leader AS (SELECT max(orders) AS leader_orders FROM ranked) SELECT ranked.customer_state, ranked.orders, leader.leader_orders - ranked.orders AS gap_to_leader FROM ranked CROSS JOIN leader ORDER BY ranked.orders DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true,
+        "expected_previous_top_set_turn": "turn_01"
       }
     }
   ]

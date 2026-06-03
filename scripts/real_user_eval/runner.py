@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -54,7 +55,9 @@ def run_manifest(
                 raw_results.append(raw)
 
     actual_judge, scored_rows = score_rows(rows, judge=score_judge, min_acceptable=min_acceptable)
+    scored_rows = _merge_runtime_gate_fields_into_scored_rows(rows, scored_rows)
     scored_summary = summarize(scored_rows)
+    runtime_gate_summary = _runtime_gate_summary(rows, scored_rows)
     summary = {
         "name": "real_user_case_eval",
         "dataset_name": manifest.get("name") or "real_user_case_manifest",
@@ -64,6 +67,8 @@ def run_manifest(
         "failed": max(0, len(rows) - int(scored_summary.get("candidate_acceptable_count") or 0)),
         "target": getattr(target, "target_name", target.__class__.__name__),
         "acceptance_source": f"comparison_scored:{actual_judge}",
+        "runtime_acceptance_source": f"semantic_oracle_runtime+comparison_scored:{actual_judge}",
+        **runtime_gate_summary,
         "scored_summary": scored_summary,
         "comparison": rows,
         "candidate_score": _candidate_score_from_scored_summary(scored_summary),
@@ -81,6 +86,7 @@ def run_manifest(
         },
     }
     write_json(output_dir / "summary.json", summary)
+    (output_dir / "summary.md").write_text(_runtime_gate_markdown(summary), encoding="utf-8")
     write_json(output_dir / "comparison.json", {"comparison": rows})
     write_jsonl(output_dir / "comparison.jsonl", rows)
     write_jsonl(output_dir / "agent_results.jsonl", raw_results)
@@ -91,10 +97,15 @@ def run_manifest(
         "weights": WEIGHTS,
         "min_acceptable": min_acceptable,
         "summary": scored_summary,
+        "runtime_acceptance_source": summary["runtime_acceptance_source"],
+        "runtime_gate_summary": runtime_gate_summary,
         "rows": scored_rows,
     }
     write_jsonl(output_dir / "failure_index.jsonl", _failure_rows_from_scored_rows(rows, scored_rows))
-    (output_dir / "comparison.md").write_text(comparison_markdown(summary), encoding="utf-8")
+    (output_dir / "comparison.md").write_text(
+        comparison_markdown(summary) + "\n\n" + _runtime_gate_markdown(summary),
+        encoding="utf-8",
+    )
     write_json(output_dir / "comparison_scored.json", scored)
     write_jsonl(output_dir / "comparison_scored.jsonl", scored_rows)
     (output_dir / "comparison_scored.md").write_text(score_markdown(scored), encoding="utf-8")
@@ -214,7 +225,7 @@ def _row_and_raw(
     category: str,
     ae_group: str,
     question: str,
-    expected_contract: str,
+    expected_contract: Any,
     expected_route: str,
     capability_family: str,
     severity: str,
@@ -235,8 +246,21 @@ def _row_and_raw(
         failure_reasons.append("missing_required_terms")
     if not all(item["passed"] for item in number_checks):
         failure_reasons.append("missing_expected_numbers")
+    semantic_passed = _semantic_passed(result.semantic_status)
+    if result.semantic_status == "not_available":
+        failure_reasons.append("semantic_evidence_missing")
+    elif not semantic_passed:
+        failure_reasons.append(f"semantic_not_passed:{result.semantic_status}")
+    if result.contract_satisfied is False:
+        failure_reasons.append("contract_not_satisfied")
+    if result.oracle_passed is False:
+        failure_reasons.append("runtime_oracle_failed")
     execution_failed = (not result.success) or not result.answer_text.strip()
     status = "execution_failed" if execution_failed else "response_collected"
+    semantic_gate_status = _semantic_gate_status(result)
+    oracle_gate_status = _oracle_gate_status(result)
+    runtime_gate_passed = bool(result.success and semantic_passed and result.oracle_passed is True)
+    runtime_semantic_evidence = _runtime_semantic_evidence(result)
     row = {
         "case_id": case_id,
         "ae_group": ae_group,
@@ -256,6 +280,24 @@ def _row_and_raw(
         "standard_answer_policy": "Direct-computation oracle; offline only and not sent to Agent.",
         "candidate_answer": result.answer_text,
         "comparison_status": status,
+        "transport_success": result.success,
+        "service_success": result.success,
+        "semantic_status": result.semantic_status,
+        "semantic_passed": semantic_passed,
+        "semantic_gate_status": semantic_gate_status,
+        "contract_satisfied": result.contract_satisfied,
+        "contract_family": result.contract_family,
+        "violations": list(result.violations),
+        "violation_codes": _violation_codes(result),
+        "contract_report": dict(result.contract_report),
+        "runtime_oracle_result": dict(result.oracle_result),
+        "oracle_available": result.oracle_available,
+        "oracle_passed": result.oracle_passed,
+        "oracle_gate_status": oracle_gate_status,
+        "oracle_issue_codes": list(result.oracle_issue_codes),
+        "runtime_gate_passed": runtime_gate_passed,
+        "semantic_evidence_available": result.semantic_evidence_available,
+        "semantic_evidence_missing_reason": result.semantic_evidence_missing_reason,
         "unexpected_not_applicable": _contains_unexpected_not_applicable(result.answer_text),
         "failure_reasons": failure_reasons,
         "missing_terms": missing_terms,
@@ -271,6 +313,21 @@ def _row_and_raw(
             "dataset_id": result.dataset_id,
             "status": result.status,
             "issues": list(result.issues),
+            "transport_success": result.success,
+            "service_success": result.success,
+            "semantic_status": result.semantic_status,
+            "semantic_passed": semantic_passed,
+            "contract_satisfied": result.contract_satisfied,
+            "contract_family": result.contract_family,
+            "violations": list(result.violations),
+            "violation_codes": _violation_codes(result),
+            "contract_report": dict(result.contract_report),
+            "oracle_result": dict(result.oracle_result),
+            "oracle_available": result.oracle_available,
+            "oracle_passed": result.oracle_passed,
+            "oracle_issue_codes": list(result.oracle_issue_codes),
+            "semantic_evidence_available": result.semantic_evidence_available,
+            "semantic_evidence_missing_reason": result.semantic_evidence_missing_reason,
         },
         "metadata": dict(metadata),
     }
@@ -278,9 +335,184 @@ def _row_and_raw(
         "case_id": case_id,
         "request_metadata": dict(metadata),
         "agent_result": result.to_dict(),
+        "runtime_semantic_evidence": runtime_semantic_evidence,
         "oracle_result": dict(oracle),
     }
     return row, raw
+
+
+def _runtime_semantic_evidence(result: AgentResult) -> dict[str, Any]:
+    return {
+        "transport_success": result.success,
+        "service_success": result.success,
+        "semantic_status": result.semantic_status,
+        "semantic_passed": _semantic_passed(result.semantic_status),
+        "contract_satisfied": result.contract_satisfied,
+        "contract_family": result.contract_family,
+        "violations": list(result.violations),
+        "violation_codes": _violation_codes(result),
+        "contract_report": dict(result.contract_report),
+        "oracle_result": dict(result.oracle_result),
+        "oracle_available": result.oracle_available,
+        "oracle_passed": result.oracle_passed,
+        "oracle_issue_codes": list(result.oracle_issue_codes),
+        "semantic_evidence_available": result.semantic_evidence_available,
+        "semantic_evidence_missing_reason": result.semantic_evidence_missing_reason,
+    }
+
+
+def _merge_runtime_gate_fields_into_scored_rows(rows: list[dict[str, Any]], scored_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows_by_case = {str(row.get("case_id")): row for row in rows}
+    enriched: list[dict[str, Any]] = []
+    for scored in scored_rows:
+        source = rows_by_case.get(str(scored.get("case_id"))) or {}
+        candidate = (scored.get("answers") or {}).get("candidate") or {}
+        item = dict(scored)
+        item.update(
+            {
+                "transport_success": source.get("transport_success"),
+                "service_success": source.get("service_success"),
+                "semantic_status": source.get("semantic_status"),
+                "semantic_passed": source.get("semantic_passed"),
+                "semantic_gate_status": source.get("semantic_gate_status"),
+                "contract_satisfied": source.get("contract_satisfied"),
+                "contract_family": source.get("contract_family"),
+                "violations": list(source.get("violations") or []),
+                "violation_codes": list(source.get("violation_codes") or []),
+                "contract_report": dict(source.get("contract_report") or {}),
+                "runtime_oracle_result": dict(source.get("runtime_oracle_result") or {}),
+                "oracle_available": source.get("oracle_available"),
+                "oracle_passed": source.get("oracle_passed"),
+                "oracle_gate_status": source.get("oracle_gate_status"),
+                "oracle_issue_codes": list(source.get("oracle_issue_codes") or []),
+                "runtime_gate_passed": source.get("runtime_gate_passed"),
+                "semantic_evidence_available": source.get("semantic_evidence_available"),
+                "semantic_evidence_missing_reason": source.get("semantic_evidence_missing_reason"),
+                "llm_judge_passed": candidate.get("acceptable") is True,
+            }
+        )
+        enriched.append(item)
+    return enriched
+
+
+def _runtime_gate_summary(rows: list[dict[str, Any]], scored_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    total = len(rows)
+    checked_statuses = {"passed", "corrected_passed", "partial", "failed", "needs_clarification"}
+    semantic_checked = sum(1 for row in rows if str(row.get("semantic_status") or "") in checked_statuses)
+    semantic_passed = sum(1 for row in rows if row.get("semantic_passed") is True)
+    semantic_failed = sum(1 for row in rows if str(row.get("semantic_status") or "") in {"partial", "failed", "needs_clarification"})
+    legacy_unverified = sum(1 for row in rows if str(row.get("semantic_status") or "") in {"legacy_unverified", "not_available", ""})
+    contract_satisfied = sum(1 for row in rows if row.get("contract_satisfied") is True)
+    contract_failed = sum(1 for row in rows if row.get("contract_satisfied") is False)
+    oracle_available = sum(1 for row in rows if row.get("oracle_available") is True)
+    oracle_passed = sum(1 for row in rows if row.get("oracle_passed") is True)
+    oracle_failed = sum(1 for row in rows if row.get("oracle_passed") is False)
+    missing_evidence = sum(1 for row in rows if not row.get("semantic_evidence_available"))
+    transport_success = sum(1 for row in rows if row.get("transport_success") is True)
+    service_success = sum(1 for row in rows if row.get("service_success") is True)
+    llm_judge_passed = sum(1 for row in scored_rows if row.get("llm_judge_passed") is True)
+    violation_counts: Counter[str] = Counter()
+    for row in rows:
+        violation_counts.update(str(code) for code in row.get("violation_codes") or [] if str(code))
+        violation_counts.update(str(code) for code in row.get("oracle_issue_codes") or [] if str(code))
+    return {
+        "semantic_checked_turns": semantic_checked,
+        "semantic_passed_turns": semantic_passed,
+        "semantic_failed_turns": semantic_failed,
+        "contract_satisfied_turns": contract_satisfied,
+        "contract_failed_turns": contract_failed,
+        "oracle_available_turns": oracle_available,
+        "oracle_passed_turns": oracle_passed,
+        "oracle_failed_turns": oracle_failed,
+        "top_violation_codes": dict(violation_counts.most_common(12)),
+        "legacy_unverified_turns": legacy_unverified,
+        "semantic_evidence_missing_turns": missing_evidence,
+        "transport_success_turns": transport_success,
+        "service_success_turns": service_success,
+        "llm_judge_passed_turns": llm_judge_passed,
+        "runtime_gate": {
+            "total_turns": total,
+            "transport_success_turns": transport_success,
+            "service_success_turns": service_success,
+            "semantic_passed_turns": semantic_passed,
+            "oracle_passed_turns": oracle_passed,
+            "llm_judge_passed_turns": llm_judge_passed,
+            "final_passed_turns": sum(1 for row in scored_rows if _final_runtime_gate_passed(row)),
+        },
+    }
+
+
+def _runtime_gate_markdown(summary: Mapping[str, Any]) -> str:
+    lines = [
+        "# Real-user Runtime Semantic Gate",
+        "",
+        f"- Cases: {summary.get('case_count', 0)}",
+        f"- Transport success: {summary.get('transport_success_turns', 0)}",
+        f"- Service success: {summary.get('service_success_turns', 0)}",
+        f"- Semantic checked: {summary.get('semantic_checked_turns', 0)}",
+        f"- Semantic passed: {summary.get('semantic_passed_turns', 0)}",
+        f"- Semantic failed: {summary.get('semantic_failed_turns', 0)}",
+        f"- Contract satisfied: {summary.get('contract_satisfied_turns', 0)}",
+        f"- Contract failed: {summary.get('contract_failed_turns', 0)}",
+        f"- Runtime oracle available: {summary.get('oracle_available_turns', 0)}",
+        f"- Runtime oracle passed: {summary.get('oracle_passed_turns', 0)}",
+        f"- Runtime oracle failed: {summary.get('oracle_failed_turns', 0)}",
+        f"- Legacy/unverified turns: {summary.get('legacy_unverified_turns', 0)}",
+        f"- Missing semantic evidence: {summary.get('semantic_evidence_missing_turns', 0)}",
+        f"- LLM judge passed: {summary.get('llm_judge_passed_turns', 0)}",
+        "",
+        "## Top Violation Codes",
+        "",
+    ]
+    top_codes = summary.get("top_violation_codes") or {}
+    if top_codes:
+        for code, count in top_codes.items():
+            lines.append(f"- {code}: {count}")
+    else:
+        lines.append("- none")
+    return "\n".join(lines)
+
+
+def _final_runtime_gate_passed(row: Mapping[str, Any]) -> bool:
+    return bool(
+        row.get("transport_success") is True
+        and row.get("semantic_passed") is True
+        and row.get("oracle_passed") is True
+        and row.get("llm_judge_passed") is True
+    )
+
+
+def _semantic_passed(status: Any) -> bool:
+    return str(status or "").strip().lower() in {"passed", "corrected_passed"}
+
+
+def _semantic_gate_status(result: AgentResult) -> str:
+    status = str(result.semantic_status or "").strip().lower()
+    if status in {"passed", "corrected_passed"}:
+        return "passed"
+    if status in {"partial", "failed", "needs_clarification"}:
+        return "failed"
+    if status == "legacy_unverified":
+        return "legacy_unverified"
+    return "not_available"
+
+
+def _oracle_gate_status(result: AgentResult) -> str:
+    if result.oracle_passed is True:
+        return "passed"
+    if result.oracle_passed is False:
+        return "failed"
+    if result.oracle_available is False:
+        return "not_available"
+    return "not_available"
+
+
+def _violation_codes(result: AgentResult) -> list[str]:
+    codes = []
+    for item in result.violations:
+        if isinstance(item, Mapping) and item.get("code"):
+            codes.append(str(item["code"]))
+    return codes
 
 
 def _candidate_score_from_scored_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
