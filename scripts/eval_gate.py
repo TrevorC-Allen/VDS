@@ -11,6 +11,7 @@ class EvalGateConfig:
     min_transport_pass_rate: float = 0.0
     max_semantic_failed_turns: int = 0
     max_oracle_failed_turns: int = 0
+    max_expected_contract_failed_turns: int = 0
     max_legacy_unverified_rate: float = 0.2
     required_families: tuple[str, ...] = ()
 
@@ -30,8 +31,13 @@ class EvalGateMetrics:
     oracle_failed_turns: int = 0
     contract_satisfied_turns: int = 0
     legacy_unverified_turns: int = 0
+    expected_contract_checked_turns: int = 0
+    expected_contract_passed_turns: int = 0
+    expected_contract_failed_turns: int = 0
+    expected_contract_missing_evidence_turns: int = 0
     covered_families: tuple[str, ...] = ()
     top_violation_codes: tuple[dict[str, Any], ...] = ()
+    expected_contract_issue_codes: tuple[dict[str, Any], ...] = ()
 
 
 def build_eval_gate_result(metrics: EvalGateMetrics, config: EvalGateConfig | None = None) -> dict[str, Any]:
@@ -48,6 +54,7 @@ def build_eval_gate_result(metrics: EvalGateMetrics, config: EvalGateConfig | No
     oracle_pass_rate = _rate(metrics.oracle_passed_turns, oracle_denominator)
     contract_satisfied_rate = _rate(metrics.contract_satisfied_turns, semantic_denominator)
     legacy_unverified_rate = _rate(metrics.legacy_unverified_turns, total_turns)
+    expected_contract_pass_rate = _rate(metrics.expected_contract_passed_turns, metrics.expected_contract_checked_turns)
 
     failed_reasons: list[str] = []
     if total_turns <= 0:
@@ -62,6 +69,10 @@ def build_eval_gate_result(metrics: EvalGateMetrics, config: EvalGateConfig | No
         )
     if int(metrics.oracle_failed_turns or 0) > gate_config.max_oracle_failed_turns:
         failed_reasons.append(f"oracle_failed_turns_above_threshold:{int(metrics.oracle_failed_turns)}>{gate_config.max_oracle_failed_turns}")
+    if int(metrics.expected_contract_failed_turns or 0) > gate_config.max_expected_contract_failed_turns:
+        failed_reasons.append(
+            f"expected_contract_failed_turns_above_threshold:{int(metrics.expected_contract_failed_turns)}>{gate_config.max_expected_contract_failed_turns}"
+        )
     if isinstance(legacy_unverified_rate, float) and legacy_unverified_rate > gate_config.max_legacy_unverified_rate:
         failed_reasons.append(
             f"legacy_unverified_rate_above_threshold:{legacy_unverified_rate:.4f}>{gate_config.max_legacy_unverified_rate:.4f}"
@@ -77,6 +88,12 @@ def build_eval_gate_result(metrics: EvalGateMetrics, config: EvalGateConfig | No
         "oracle_pass_rate": oracle_pass_rate,
         "contract_satisfied_rate": contract_satisfied_rate,
         "legacy_unverified_rate": legacy_unverified_rate,
+        "expected_contract_pass_rate": expected_contract_pass_rate,
+        "expected_contract_checked_turns": int(metrics.expected_contract_checked_turns or 0),
+        "expected_contract_passed_turns": int(metrics.expected_contract_passed_turns or 0),
+        "expected_contract_failed_turns": int(metrics.expected_contract_failed_turns or 0),
+        "expected_contract_missing_evidence_turns": int(metrics.expected_contract_missing_evidence_turns or 0),
+        "expected_contract_issue_codes": list(metrics.expected_contract_issue_codes),
         "family_coverage": family_coverage,
         "top_violation_codes": list(metrics.top_violation_codes),
         "thresholds": gate_config.to_dict(),
@@ -105,8 +122,20 @@ def metrics_from_coverage(
         oracle_failed_turns=_to_int(coverage.get("oracle_failed_turns", coverage.get("oracle_failed"))),
         contract_satisfied_turns=_to_int(coverage.get("contract_satisfied_turns")),
         legacy_unverified_turns=_legacy_unverified_turns(coverage, total_turns),
-        covered_families=tuple(str(item) for item in coverage.get("capability_families", coverage.get("covered_families", [])) or []),
+        expected_contract_checked_turns=_to_int(coverage.get("expected_contract_checked_turns")),
+        expected_contract_passed_turns=_to_int(coverage.get("expected_contract_passed_turns")),
+        expected_contract_failed_turns=_to_int(coverage.get("expected_contract_failed_turns")),
+        expected_contract_missing_evidence_turns=_to_int(coverage.get("expected_contract_missing_evidence_turns")),
+        covered_families=tuple(
+            str(item)
+            for item in coverage.get(
+                "scenario_families",
+                coverage.get("covered_families", coverage.get("capability_families", [])),
+            )
+            or []
+        ),
         top_violation_codes=tuple(_normalize_top_violation_codes(top_codes)),
+        expected_contract_issue_codes=tuple(_normalize_top_violation_codes(coverage.get("expected_contract_issue_codes", []))),
     )
 
 
@@ -123,8 +152,13 @@ def metrics_from_real_user_summary(summary: Mapping[str, Any], *, required_famil
         oracle_failed_turns=_to_int(summary.get("oracle_failed_turns")),
         contract_satisfied_turns=_to_int(summary.get("contract_satisfied_turns")),
         legacy_unverified_turns=_legacy_unverified_turns(summary, total_turns),
+        expected_contract_checked_turns=_to_int(summary.get("expected_contract_checked_turns")),
+        expected_contract_passed_turns=_to_int(summary.get("expected_contract_passed_turns")),
+        expected_contract_failed_turns=_to_int(summary.get("expected_contract_failed_turns")),
+        expected_contract_missing_evidence_turns=_to_int(summary.get("expected_contract_missing_evidence_turns")),
         covered_families=tuple(str(item) for item in _real_user_families(summary)),
         top_violation_codes=tuple(_normalize_top_violation_codes(summary.get("top_violation_codes", []))),
+        expected_contract_issue_codes=tuple(_normalize_top_violation_codes(summary.get("expected_contract_issue_codes", []))),
     )
 
 
@@ -139,6 +173,10 @@ def eval_gate_markdown(gate_result: Mapping[str, Any], *, title: str = "Eval Gat
         f"- Oracle pass rate: {_display_rate(gate_result.get('oracle_pass_rate'))}",
         f"- Contract satisfied rate: {_display_rate(gate_result.get('contract_satisfied_rate'))}",
         f"- Legacy unverified rate: {_display_rate(gate_result.get('legacy_unverified_rate'))}",
+        f"- Expected contract pass rate: {_display_rate(gate_result.get('expected_contract_pass_rate'))}",
+        f"- Expected contract checked: {gate_result.get('expected_contract_checked_turns', 0)}",
+        f"- Expected contract failed: {gate_result.get('expected_contract_failed_turns', 0)}",
+        f"- Expected contract missing evidence: {gate_result.get('expected_contract_missing_evidence_turns', 0)}",
     ]
     family_coverage = gate_result.get("family_coverage") if isinstance(gate_result.get("family_coverage"), Mapping) else {}
     lines.append(f"- Family coverage: {', '.join(family_coverage.get('covered') or []) or '-'}")
@@ -149,6 +187,14 @@ def eval_gate_markdown(gate_result: Mapping[str, Any], *, title: str = "Eval Gat
         lines.append("- Top violation codes: " + ", ".join(f"{item.get('code')}={item.get('count')}" for item in top_codes if isinstance(item, Mapping)))
     else:
         lines.append("- Top violation codes: none")
+    expected_codes = gate_result.get("expected_contract_issue_codes") or []
+    if expected_codes:
+        lines.append(
+            "- Expected contract issue codes: "
+            + ", ".join(f"{item.get('code')}={item.get('count')}" for item in expected_codes if isinstance(item, Mapping))
+        )
+    else:
+        lines.append("- Expected contract issue codes: none")
     return "\n".join(lines)
 
 

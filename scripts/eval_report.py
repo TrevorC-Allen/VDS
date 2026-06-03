@@ -29,6 +29,7 @@ def main() -> None:
     parser.add_argument("--min-transport-pass-rate", type=float, default=0.0)
     parser.add_argument("--max-semantic-failed-turns", type=int, default=0)
     parser.add_argument("--max-oracle-failed-turns", type=int, default=0)
+    parser.add_argument("--max-expected-contract-failed-turns", type=int, default=0)
     parser.add_argument("--max-legacy-unverified-rate", type=float, default=0.2)
     parser.add_argument("--required-family", action="append", default=[], help="Required capability family for family coverage checks.")
     args = parser.parse_args()
@@ -41,6 +42,7 @@ def main() -> None:
         min_transport_pass_rate=args.min_transport_pass_rate,
         max_semantic_failed_turns=max(0, int(args.max_semantic_failed_turns or 0)),
         max_oracle_failed_turns=max(0, int(args.max_oracle_failed_turns or 0)),
+        max_expected_contract_failed_turns=max(0, int(args.max_expected_contract_failed_turns or 0)),
         max_legacy_unverified_rate=max(0.0, min(1.0, float(args.max_legacy_unverified_rate))),
         required_families=tuple(args.required_family or ()),
     )
@@ -192,7 +194,7 @@ def _build_random_report(payload: MappingLike, *, output_dir: Path, source_artif
         turn_rows = list(_iter_coverages_to_fake_turn_rows(coverage))
 
     gate_result = payload.get("gate_result")
-    if isinstance(gate_result, dict):
+    if isinstance(gate_result, dict) and not (gate_config and gate_config.required_families):
         gate = gate_result
     else:
         gate = build_eval_gate_result(
@@ -218,6 +220,11 @@ def _build_random_report(payload: MappingLike, *, output_dir: Path, source_artif
         "oracle_failed_turns": _to_int(coverage.get("oracle_failed_turns") or coverage.get("oracle_failed")),
         "llm_judge_passed_turns": _to_int(coverage.get("turn_count", 0)) - _to_int(coverage.get("llm_judge_failed_turns")),
         "llm_judge_failed_turns": _to_int(coverage.get("llm_judge_failed_turns")),
+        "expected_contract_checked_turns": _to_int(coverage.get("expected_contract_checked_turns")),
+        "expected_contract_passed_turns": _to_int(coverage.get("expected_contract_passed_turns")),
+        "expected_contract_failed_turns": _to_int(coverage.get("expected_contract_failed_turns")),
+        "expected_contract_missing_evidence_turns": _to_int(coverage.get("expected_contract_missing_evidence_turns")),
+        "expected_contract_issue_codes": _collect_top_violation_codes(coverage.get("expected_contract_issue_codes")),
     }
     evidence_coverage = _compute_evidence_coverage_for_turn_rows(turn_rows)
 
@@ -319,6 +326,11 @@ def _build_generic_report(payload: MappingLike, *, output_dir: Path, source_arti
         "oracle_failed_turns": _to_int(payload.get("oracle_failed_turns")),
         "llm_judge_passed_turns": _to_int(payload.get("llm_judge_passed_turns")),
         "llm_judge_failed_turns": _to_int(payload.get("llm_judge_failed_turns")),
+        "expected_contract_checked_turns": _to_int(payload.get("expected_contract_checked_turns")),
+        "expected_contract_passed_turns": _to_int(payload.get("expected_contract_passed_turns")),
+        "expected_contract_failed_turns": _to_int(payload.get("expected_contract_failed_turns")),
+        "expected_contract_missing_evidence_turns": _to_int(payload.get("expected_contract_missing_evidence_turns")),
+        "expected_contract_issue_codes": _collect_top_violation_codes(payload.get("expected_contract_issue_codes")),
     }
 
     return {
@@ -393,10 +405,13 @@ def _iter_random_turn_rows(results: Any) -> list[dict[str, Any]]:
     turns: list[dict[str, Any]] = []
     for result in _as_list(results, default=[]):
         scenario_id = str(result.get("scenario_id") or result.get("scenario") or "")
+        scenario_family = str(result.get("scenario_family") or "")
         for turn in _as_list(result.get("turns"), default=[]):
             if not isinstance(turn, dict):
                 continue
             row = dict(turn)
+            if scenario_family and "scenario_family" not in row:
+                row["scenario_family"] = scenario_family
             if "case_id" not in row:
                 row["case_id"] = scenario_id
             if "turn_id" not in row:
@@ -438,6 +453,23 @@ def _build_real_user_eval_summary(payload: MappingLike, comparison_rows: list[di
     oracle_available = sum(1 for row in comparison_rows if row.get("oracle_available") is not None)
     oracle_passed = sum(1 for row in comparison_rows if row.get("oracle_passed") is True)
     oracle_failed = sum(1 for row in comparison_rows if row.get("oracle_passed") is False)
+    expected_checked = sum(1 for row in comparison_rows if _as_dict(row.get("expected_contract_check")).get("checked") is True)
+    expected_passed = sum(
+        1
+        for row in comparison_rows
+        if _as_dict(row.get("expected_contract_check")).get("checked") is True
+        and _as_dict(row.get("expected_contract_check")).get("passed") is True
+    )
+    expected_failed = sum(
+        1
+        for row in comparison_rows
+        if _as_dict(row.get("expected_contract_check")).get("checked") is True
+        and _as_dict(row.get("expected_contract_check")).get("passed") is False
+    )
+    expected_missing = sum(1 for row in comparison_rows if _to_list(row.get("expected_contract_missing_evidence")))
+    expected_issue_counter: Counter[str] = Counter()
+    for row in comparison_rows:
+        expected_issue_counter.update(_to_str_list(row.get("expected_contract_issue_codes")))
     total = len(comparison_rows)
     passed_cases = _to_int(payload.get("passed"))
     if passed_cases <= 0 and total:
@@ -465,6 +497,11 @@ def _build_real_user_eval_summary(payload: MappingLike, comparison_rows: list[di
         "oracle_failed_turns": oracle_failed,
         "transport_success_turns": transport_success,
         "service_success_turns": service_success,
+        "expected_contract_checked_turns": _to_int(payload.get("expected_contract_checked_turns") or expected_checked),
+        "expected_contract_passed_turns": _to_int(payload.get("expected_contract_passed_turns") or expected_passed),
+        "expected_contract_failed_turns": _to_int(payload.get("expected_contract_failed_turns") or expected_failed),
+        "expected_contract_missing_evidence_turns": _to_int(payload.get("expected_contract_missing_evidence_turns") or expected_missing),
+        "expected_contract_issue_codes": _collect_top_violation_codes(payload.get("expected_contract_issue_codes") or dict(expected_issue_counter)),
     }
 
 
@@ -504,12 +541,12 @@ def _normalize_failed_case(row: MappingLike, case_id: Any, artifact_path: str) -
 
     return {
         "case_id": str(case_id or row.get("case_id") or ""),
-        "scenario_family": _safe_text(row.get("capability_family") or row.get("category") or "") or "not_available",
+        "scenario_family": _safe_text(row.get("scenario_family") or row.get("capability_family") or row.get("category") or "") or "not_available",
         "turn_id": _safe_id(row.get("turn_id") or row.get("index") or row.get("metadata", {}).get("turn_index") or ""),
         "user_message": _safe_text(row.get("question") or row.get("question_text") or "not_available"),
         "semantic_status": semantic_status,
         "oracle_status": oracle_status,
-        "violation_codes": _to_list(row.get("violation_codes") or row.get("violations") or []),
+        "violation_codes": _to_list(row.get("violation_codes") or row.get("violations") or []) + _to_list(row.get("expected_contract_issue_codes")),
         "expected_result": _short_repr(row.get("expected_result") or row.get("standard_answer") or row.get("expected")),
         "actual_result": _short_repr(row.get("actual_result") or row.get("candidate_answer") or row.get("answer") or row.get("answer_text") or ""),
         "artifact_path": artifact_path,
@@ -557,7 +594,7 @@ def _aggregate_family_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     families: dict[str, dict[str, int]] = {}
     family_violations: dict[str, Counter[str]] = defaultdict(Counter)
     for row in rows:
-        family = _safe_text(row.get("capability_family"))
+        family = _safe_text(row.get("scenario_family") or row.get("capability_family"))
         if not family:
             continue
         entry = families.setdefault(
@@ -570,6 +607,9 @@ def _aggregate_family_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "oracle_passed_turns": 0,
                 "contract_checked_turns": 0,
                 "contract_satisfied_turns": 0,
+                "expected_contract_checked_turns": 0,
+                "expected_contract_passed_turns": 0,
+                "expected_contract_failed_turns": 0,
             },
         )
         entry["total_turns"] += 1
@@ -586,7 +626,17 @@ def _aggregate_family_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             entry["oracle_available_turns"] += 1
             if row.get("oracle_passed") is True:
                 entry["oracle_passed_turns"] += 1
+        expected_check = _as_dict(row.get("expected_contract_check"))
+        if expected_check.get("checked") is True:
+            entry["expected_contract_checked_turns"] += 1
+            if expected_check.get("passed") is True:
+                entry["expected_contract_passed_turns"] += 1
+            else:
+                entry["expected_contract_failed_turns"] += 1
         for violation in _to_list(row.get("violation_codes") or row.get("contract_violation_codes") or row.get("oracle_issue_codes") or []):
+            if isinstance(violation, str):
+                family_violations[family][violation] += 1
+        for violation in _to_list(row.get("expected_contract_issue_codes")):
             if isinstance(violation, str):
                 family_violations[family][violation] += 1
 
@@ -598,6 +648,7 @@ def _aggregate_family_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         semantic_rate = _rate(values["semantic_passed_turns"], values["semantic_checked_turns"])
         oracle_rate = _rate(values["oracle_passed_turns"], values["oracle_available_turns"])
         contract_rate = _rate(values["contract_satisfied_turns"], values["contract_checked_turns"])
+        expected_contract_rate = _rate(values["expected_contract_passed_turns"], values["expected_contract_checked_turns"])
         top_codes = _sorted_violation_records(dict(family_violations[family]))
         family_list.append(
             {
@@ -606,6 +657,8 @@ def _aggregate_family_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "semantic_pass_rate": semantic_rate,
                 "oracle_pass_rate": oracle_rate,
                 "contract_satisfied_rate": contract_rate,
+                "expected_contract_pass_rate": expected_contract_rate,
+                "expected_contract_failed_turns": values["expected_contract_failed_turns"],
                 "top_violation_codes": top_codes,
             }
         )
@@ -661,7 +714,9 @@ def _collect_top_violation_codes_from_rows(rows: list[Any]) -> list[dict[str, An
             continue
         case_id = _safe_text(row.get("case_id") or "")
         turn_id = _safe_text(row.get("turn_id") or row.get("index") or row.get("conversation_turn"))
-        for code in _to_list(row.get("violation_codes") or row.get("contract_violation_codes") or row.get("oracle_issue_codes")):
+        for code in _to_list(row.get("violation_codes") or row.get("contract_violation_codes") or row.get("oracle_issue_codes")) + _to_list(
+            row.get("expected_contract_issue_codes")
+        ):
             code_text = _safe_text(code)
             if not code_text:
                 continue
@@ -681,6 +736,8 @@ def _compute_evidence_coverage_for_turn_rows(rows: list[dict[str, Any]]) -> dict
     semantic_available = 0
     oracle_available = 0
     legacy = 0
+    expected_contract_checked = 0
+    expected_contract_missing = 0
     missing_reasons: Counter[str] = Counter()
 
     for row in rows:
@@ -698,6 +755,13 @@ def _compute_evidence_coverage_for_turn_rows(rows: list[dict[str, Any]]) -> dict
             oracle_missing += 1
         else:
             oracle_available += 1
+        expected_check = _as_dict(row.get("expected_contract_check"))
+        if expected_check.get("checked") is True:
+            expected_contract_checked += 1
+        if _to_list(row.get("expected_contract_missing_evidence")):
+            expected_contract_missing += 1
+            for reason in _to_str_list(row.get("expected_contract_missing_evidence")):
+                missing_reasons[f"expected_contract:{reason}"] += 1
 
     return {
         "semantic_evidence_available_turns": semantic_available,
@@ -705,6 +769,8 @@ def _compute_evidence_coverage_for_turn_rows(rows: list[dict[str, Any]]) -> dict
         "oracle_evidence_available_turns": oracle_available,
         "oracle_evidence_missing_turns": oracle_missing,
         "legacy_unverified_turns": legacy,
+        "expected_contract_checked_turns": expected_contract_checked,
+        "expected_contract_missing_evidence_turns": expected_contract_missing,
         "missing_evidence_reason": sorted(missing_reasons.items()),
     }
 
@@ -754,6 +820,9 @@ def _render_pr_eval_markdown(payload: MappingLike) -> str:
         f"- oracle_pass_rate: {_format_rate(gate.get('oracle_pass_rate'))}",
         f"- contract_satisfied_rate: {_format_rate(gate.get('contract_satisfied_rate'))}",
         f"- legacy_unverified_rate: {_format_rate(gate.get('legacy_unverified_rate'))}",
+        f"- expected_contract_pass_rate: {_format_rate(gate.get('expected_contract_pass_rate'))}",
+        f"- expected_contract_failed_turns: {gate.get('expected_contract_failed_turns', 0)}",
+        f"- expected_contract_missing_evidence_turns: {gate.get('expected_contract_missing_evidence_turns', 0)}",
         "",
         "# Eval Summary",
         "",
@@ -771,6 +840,10 @@ def _render_pr_eval_markdown(payload: MappingLike) -> str:
         f"- oracle_failed_turns: {eval_summary.get('oracle_failed_turns', 0)}",
         f"- llm_judge_passed_turns: {eval_summary.get('llm_judge_passed_turns', 0)}",
         f"- llm_judge_failed_turns: {eval_summary.get('llm_judge_failed_turns', 0)}",
+        f"- expected_contract_checked_turns: {eval_summary.get('expected_contract_checked_turns', 0)}",
+        f"- expected_contract_passed_turns: {eval_summary.get('expected_contract_passed_turns', 0)}",
+        f"- expected_contract_failed_turns: {eval_summary.get('expected_contract_failed_turns', 0)}",
+        f"- expected_contract_missing_evidence_turns: {eval_summary.get('expected_contract_missing_evidence_turns', 0)}",
         "",
         "# Scenario Family Summary",
     ]
@@ -779,8 +852,8 @@ def _render_pr_eval_markdown(payload: MappingLike) -> str:
         lines.append("not_available")
     else:
         lines.append("")
-        lines.append("| family | total_turns | semantic_pass_rate | oracle_pass_rate | contract_satisfied_rate | top_violation_codes |")
-        lines.append("| --- | ---: | ---: | ---: | ---: | --- |")
+        lines.append("| family | total_turns | semantic_pass_rate | oracle_pass_rate | contract_satisfied_rate | expected_contract_pass_rate | expected_contract_failed_turns | top_violation_codes |")
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
         for item in family_summary.get("families", []):
             lines.append(
                 "| "
@@ -791,6 +864,8 @@ def _render_pr_eval_markdown(payload: MappingLike) -> str:
                         _format_rate(item.get("semantic_pass_rate")),
                         _format_rate(item.get("oracle_pass_rate")),
                         _format_rate(item.get("contract_satisfied_rate")),
+                        _format_rate(item.get("expected_contract_pass_rate")),
+                        str(item.get("expected_contract_failed_turns", 0)),
                         ", ".join([str(v.get("code")) for v in item.get("top_violation_codes", []) if isinstance(v, dict)]),
                     ]
                 )
@@ -863,6 +938,8 @@ def _render_pr_eval_markdown(payload: MappingLike) -> str:
             f"- oracle evidence available: {evidence.get('oracle_evidence_available_turns', 0)}",
             f"- oracle evidence missing: {evidence.get('oracle_evidence_missing_turns', 0)}",
             f"- legacy_unverified_turns: {evidence.get('legacy_unverified_turns', 0)}",
+            f"- expected contract checked: {evidence.get('expected_contract_checked_turns', 0)}",
+            f"- expected contract missing evidence: {evidence.get('expected_contract_missing_evidence_turns', 0)}",
             f"- missing evidence reason: {evidence.get('missing_evidence_reason', [])}",
         ]
     )
@@ -888,6 +965,9 @@ def _is_real_user_failed(row: MappingLike) -> bool:
     if row.get("contract_satisfied") is False:
         return True
     if row.get("oracle_passed") is False:
+        return True
+    expected_check = _as_dict(row.get("expected_contract_check"))
+    if expected_check.get("checked") is True and expected_check.get("passed") is False:
         return True
     comparison_status = _safe_text(row.get("comparison_status") or row.get("status"))
     if comparison_status and comparison_status not in {"response_collected", ""}:

@@ -58,6 +58,30 @@ class EvalGateTest(unittest.TestCase):
         self.assertFalse(result["gate_passed"])
         self.assertIn("oracle_failed_turns_above_threshold:1>0", result["gate_failed_reasons"])
 
+    def test_expected_contract_failed_turns_fail_gate(self) -> None:
+        result = build_eval_gate_result(
+            EvalGateMetrics(
+                total_turns=2,
+                transport_success_turns=2,
+                semantic_contract_turns=2,
+                semantic_passed_turns=2,
+                oracle_available_turns=2,
+                oracle_passed_turns=2,
+                contract_satisfied_turns=2,
+                expected_contract_checked_turns=2,
+                expected_contract_passed_turns=1,
+                expected_contract_failed_turns=1,
+                expected_contract_missing_evidence_turns=1,
+                expected_contract_issue_codes=({"code": "EXPECTED_GAP_EVIDENCE_MISSING", "count": 1},),
+            )
+        )
+
+        self.assertFalse(result["gate_passed"])
+        self.assertIn("expected_contract_failed_turns_above_threshold:1>0", result["gate_failed_reasons"])
+        self.assertEqual(0.5, result["expected_contract_pass_rate"])
+        self.assertEqual(1, result["expected_contract_missing_evidence_turns"])
+        self.assertEqual([{"code": "EXPECTED_GAP_EVIDENCE_MISSING", "count": 1}], result["expected_contract_issue_codes"])
+
     def test_all_metrics_pass_with_required_family_coverage(self) -> None:
         result = build_eval_gate_result(
             EvalGateMetrics(

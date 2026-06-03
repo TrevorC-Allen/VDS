@@ -262,6 +262,72 @@ class EvalPrSummaryTest(unittest.TestCase):
             self.assertEqual(1, report["evidence_coverage"]["oracle_evidence_missing_turns"])
             self.assertEqual([{"code": "SEMANTIC_MISMATCH", "count": 1, "example_case_ids": ["case_oracle_missing"], "example_turn_ids": ["1"]}], report["top_violation_codes"])
 
+    def test_real_user_expected_contract_evidence_is_reported_and_gates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            _write_jsonl(
+                output_dir / "comparison_scored.jsonl",
+                [
+                    {
+                        "case_id": "case_expected_contract_missing",
+                        "llm_judge_passed": True,
+                        "answers": {"candidate": {"answer": "ans"}},
+                    }
+                ],
+            )
+            _write_json(
+                output_dir / "summary.json",
+                {
+                    "case_count": 1,
+                    "transport_success_turns": 1,
+                    "service_success_turns": 1,
+                    "semantic_checked_turns": 1,
+                    "semantic_passed_turns": 1,
+                    "oracle_available_turns": 1,
+                    "oracle_passed_turns": 1,
+                    "contract_satisfied_turns": 1,
+                    "expected_contract_checked_turns": 1,
+                    "expected_contract_passed_turns": 0,
+                    "expected_contract_failed_turns": 1,
+                    "expected_contract_missing_evidence_turns": 1,
+                    "expected_contract_issue_codes": {"EXPECTED_GAP_EVIDENCE_MISSING": 1},
+                    "comparison": [
+                        {
+                            "case_id": "case_expected_contract_missing",
+                            "turn_id": "1",
+                            "question": "差距如何？",
+                            "capability_family": "gap",
+                            "semantic_status": "passed",
+                            "semantic_passed": True,
+                            "contract_satisfied": True,
+                            "oracle_available": True,
+                            "oracle_passed": True,
+                            "expected_contract_check": {
+                                "checked": True,
+                                "passed": False,
+                                "issue_codes": ["EXPECTED_GAP_EVIDENCE_MISSING"],
+                                "missing_evidence": ["gap_evidence"],
+                                "details": {},
+                            },
+                            "expected_contract_issue_codes": ["EXPECTED_GAP_EVIDENCE_MISSING"],
+                            "expected_contract_missing_evidence": ["gap_evidence"],
+                        }
+                    ],
+                },
+            )
+
+            report = build_pr_eval_summary(output_dir)
+            write_pr_eval_summary(output_dir, report)
+            markdown = (output_dir / "pr_eval_summary.md").read_text(encoding="utf-8")
+
+            self.assertFalse(report["gate_result"]["gate_passed"])
+            self.assertIn("expected_contract_failed_turns_above_threshold:1>0", report["gate_result"]["gate_failed_reasons"])
+            self.assertEqual(1, report["eval_summary"]["expected_contract_checked_turns"])
+            self.assertEqual(1, report["eval_summary"]["expected_contract_failed_turns"])
+            self.assertEqual(1, report["evidence_coverage"]["expected_contract_missing_evidence_turns"])
+            self.assertEqual("EXPECTED_GAP_EVIDENCE_MISSING", report["top_violation_codes"][0]["code"])
+            self.assertIn("expected_contract_failed_turns", markdown)
+
     def test_multi_seed_input_is_supported(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
