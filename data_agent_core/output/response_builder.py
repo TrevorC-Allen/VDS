@@ -303,6 +303,8 @@ def _referent_answer_prefix(verification: VerificationResult) -> str:
         return ""
     if task_contract.get("auto_expand_topn_if_needed"):
         return ""
+    if str(task_contract.get("task_family") or "") == "trend":
+        return ""
     values = [str(value) for value in task_contract.get("referent_values") or [] if str(value)]
     if not values:
         return ""

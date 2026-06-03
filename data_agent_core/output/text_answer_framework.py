@@ -530,6 +530,9 @@ def render_trend_answer(context: _FrameContext) -> str:
     period = _preferred_period_column(context.columns)
     if not metric or not period:
         return ""
+    multi_referent = _render_multi_referent_trend_answer(context, metric=metric, period=period)
+    if multi_referent:
+        return multi_referent
     value_columns = [column for column in context.columns if column != period and _numeric_ratio(context.rows, column) >= 0.5 and not _looks_identifier(column)]
     if len(value_columns) > 1:
         return ""
@@ -544,6 +547,82 @@ def render_trend_answer(context: _FrameContext) -> str:
     trend = describe_trend([(label, value) for label, value, _ in pairs])
     sequence = _trend_sequence_text(pairs, metric)
     return f"按{period}看，{metric}{trend}：{sequence}。"
+
+
+def _render_multi_referent_trend_answer(context: _FrameContext, *, metric: str, period: str) -> str:
+    referent = _preferred_referent_column(context, metric=metric, period=period)
+    if not referent:
+        return ""
+    grouped: dict[str, list[tuple[str, float | None, Any]]] = {}
+    for row in context.rows:
+        referent_value = row.get(referent)
+        period_value = row.get(period)
+        metric_value = _to_float(row.get(metric))
+        if referent_value in {None, ""} or period_value in {None, ""} or metric_value is None:
+            continue
+        key = str(referent_value).strip()
+        grouped.setdefault(key, []).append((str(period_value).strip(), metric_value, row.get(metric)))
+    grouped = {key: sorted(values, key=lambda item: item[0]) for key, values in grouped.items() if len(values) >= 2}
+    if len(grouped) < 2:
+        return ""
+    ordered_names = _ordered_referent_values(context, grouped)
+    dimension_label = _display_dimension_label(referent)
+    parts = []
+    for name in ordered_names:
+        sequence = "、".join(f"{label} 为 {_format_cell_value(raw_value, metric)}" for label, _, raw_value in grouped[name][:4])
+        if sequence:
+            parts.append(f"{name} {sequence}")
+    if not parts:
+        return ""
+    period_label = _display_period_label(period)
+    metric_label = _display_metric_label(metric)
+    return f"这些 Top {dimension_label}的{period_label}{metric_label}趋势为：" + "；".join(parts) + "。"
+
+
+def _preferred_referent_column(context: _FrameContext, *, metric: str, period: str) -> str | None:
+    params = _as_dict(context.logic_form.get("parameters"))
+    task_contract = _as_dict(context.logic_form.get("task_contract")) or _as_dict(_as_dict(context.response.get("debug")).get("task_contract"))
+    preferred = (
+        str(params.get("series_dimension") or ""),
+        str(params.get("referent_dimension") or ""),
+        str(task_contract.get("referent_dimension") or ""),
+        str(task_contract.get("dimension") or ""),
+    )
+    candidates = [column for column in context.columns if column not in {metric, period} and _numeric_ratio(context.rows, column) < 0.5]
+    for candidate in preferred:
+        if not candidate:
+            continue
+        for column in candidates:
+            if candidate == column or candidate.lower() == column.lower():
+                return column
+    for column in candidates:
+        if not _looks_identifier(column):
+            return column
+    return candidates[0] if candidates else None
+
+
+def _display_period_label(column: str) -> str:
+    lowered = str(column or "").lower()
+    if any(token in lowered for token in ("month", "月份", "年月")):
+        return "月度"
+    if any(token in lowered for token in ("date", "日期", "time", "时间", "period", "周期")):
+        return "时间"
+    return str(column or "时间")
+
+
+def _display_metric_label(column: str) -> str:
+    lowered = str(column or "").lower()
+    if any(token in lowered for token in ("order_amount", "amount", "金额", "销售额", "收入")):
+        return "订单金额" if "order" in lowered else "金额"
+    return str(column or "指标")
+
+
+def _ordered_referent_values(context: _FrameContext, grouped: dict[str, list[tuple[str, float | None, Any]]]) -> list[str]:
+    params = _as_dict(context.logic_form.get("parameters"))
+    task_contract = _as_dict(context.logic_form.get("task_contract")) or _as_dict(_as_dict(context.response.get("debug")).get("task_contract"))
+    ordered = [str(value) for value in params.get("referent_values") or task_contract.get("referent_values") or [] if str(value) in grouped]
+    ordered.extend(name for name in grouped if name not in ordered)
+    return ordered
 
 
 def render_overview_answer(context: _FrameContext) -> str:

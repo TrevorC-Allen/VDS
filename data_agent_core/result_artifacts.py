@@ -70,6 +70,7 @@ def build_result_artifacts(
             "filters": dict(logic.get("filters") or {}),
             "source_tables": _source_tables(logic, params),
             "join_plan": dict(logic.get("join_plan") or params.get("join_plan") or {}),
+            "join_keys": _join_keys(logic, params),
             "table": str(params.get("table") or ""),
             "table_selection_reason": str(logic.get("table_selection_reason") or params.get("table_selection_reason") or ""),
             "values": values[:limit],
@@ -239,6 +240,7 @@ def _ranking_context_from_artifact(artifact: Mapping[str, Any]) -> dict[str, Any
         "filters": dict(artifact.get("filters") or {}),
         "source_tables": [str(item) for item in artifact.get("source_tables") or [] if str(item)],
         "join_plan": dict(artifact.get("join_plan") or {}),
+        "join_keys": [dict(item) for item in artifact.get("join_keys") or [] if isinstance(item, Mapping)],
         "aggregation": artifact.get("aggregation") or "sum",
         "sort_order": artifact.get("sort_order") or "desc",
         "table": artifact.get("table"),
@@ -263,6 +265,54 @@ def _source_tables(logic: Mapping[str, Any], params: Mapping[str, Any]) -> list[
         if value and value not in deduped:
             deduped.append(value)
     return deduped
+
+
+def _join_keys(logic: Mapping[str, Any], params: Mapping[str, Any]) -> list[dict[str, str]]:
+    raw = logic.get("join_keys") or params.get("join_keys")
+    normalized = _normalize_join_keys(raw)
+    if normalized:
+        return normalized
+    join_plan = logic.get("join_plan") or params.get("join_plan") or {}
+    if not isinstance(join_plan, Mapping):
+        return []
+    left_table = _first_text(join_plan.get("left_table"), join_plan.get("from_table"))
+    right_table = _first_text(join_plan.get("right_table"), join_plan.get("to_table"))
+    left_column = _first_text(join_plan.get("left_column"), join_plan.get("left_key"), join_plan.get("from_key"))
+    right_column = _first_text(join_plan.get("right_column"), join_plan.get("right_key"), join_plan.get("to_key"))
+    if not left_column or not right_column:
+        return []
+    return [
+        {
+            "left_table": left_table,
+            "left_column": left_column,
+            "right_table": right_table,
+            "right_column": right_column,
+        }
+    ]
+
+
+def _normalize_join_keys(raw: Any) -> list[dict[str, str]]:
+    if isinstance(raw, Mapping):
+        items = [raw]
+    elif isinstance(raw, list):
+        items = [item for item in raw if isinstance(item, Mapping)]
+    else:
+        return []
+    normalized: list[dict[str, str]] = []
+    for item in items:
+        left_column = _first_text(item.get("left_column"), item.get("left_key"), item.get("from_key"))
+        right_column = _first_text(item.get("right_column"), item.get("right_key"), item.get("to_key"))
+        if not left_column or not right_column:
+            continue
+        normalized.append(
+            {
+                "left_table": _first_text(item.get("left_table"), item.get("from_table")),
+                "left_column": left_column,
+                "right_table": _first_text(item.get("right_table"), item.get("to_table")),
+                "right_column": right_column,
+            }
+        )
+    return normalized
 
 
 def _looks_like_referent_question(compact: str) -> bool:
