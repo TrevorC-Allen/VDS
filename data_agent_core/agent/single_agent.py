@@ -29,6 +29,7 @@ from data_agent_core.output.insight_generator import generate_insight
 from data_agent_core.output.process_narrative import build_process_view_v2
 from data_agent_core.output.reasoning_trace_view import build_reasoning_trace_view
 from data_agent_core.output.response_builder import build_response, classify_not_applicable
+from data_agent_core.task_contract_builder import apply_referent_contract_from_guidelines
 from data_agent_core.tracing.run_trace import RunTrace
 from data_agent_core.verifier.result_comparator import compare_results
 from data_agent_core.verifier.result_normalizer import normalize_value
@@ -93,6 +94,7 @@ class DataAnalysisAgent:
             guardrail_logic_form=guardrail_logic_form,
         )
         logic_form = self._validated_logic_form(llm_plan.logic_form, guardrail_logic_form)
+        logic_form = apply_referent_contract_from_guidelines(logic_form, guidelines)
         plan = build_analysis_plan(logic_form, question=question)
         pandas_result = pandas_executor.execute_plan(plan, self.context)
         not_applicable_attribution = classify_not_applicable(pandas_result.value, plan)
@@ -683,6 +685,7 @@ class UploadedDatasetAgent(DataAnalysisAgent):
             guardrail_logic_form=guardrail_logic_form,
         )
         logic_form = self._validated_logic_form(llm_plan.logic_form, guardrail_logic_form)
+        logic_form = apply_referent_contract_from_guidelines(logic_form, guidelines)
         plan = build_analysis_plan(logic_form, question=question)
         pandas_result = pandas_executor.execute_plan(plan, self.context)
         not_applicable_attribution = classify_not_applicable(pandas_result.value, plan)

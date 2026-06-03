@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Mapping
 
 
 REFERENT_CONTRACT_MARKER = "REFERENT_CONTRACT_JSON="
@@ -35,10 +35,28 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
         return logic_form
     params = dict(getattr(logic_form, "parameters", {}) or {})
     filters = dict(getattr(logic_form, "filters", {}) or {})
+    inherited = _mapping(contract.get("inherited_parameters"))
+    action_parameters = _mapping(contract.get("action_parameters"))
+    for key in ("table", "join_plan", "table_selection_reason", "available_columns", "source_tables"):
+        value = inherited.get(key)
+        if value not in (None, "", [], {}):
+            params[key] = value
     filters[dimension] = values
     setattr(logic_form, "filters", filters)
+    candidate_set = dict(getattr(logic_form, "candidate_set", {}) or {})
+    candidate_set.update(
+        {
+            "source": "previous_result_referent",
+            "dimension": dimension,
+            "values": values,
+            "filters": {dimension: values},
+            "referent_artifact_id": str(contract.get("referent_artifact_id") or ""),
+        }
+    )
+    setattr(logic_form, "candidate_set", candidate_set)
     params.update(
         {
+            **{key: value for key, value in action_parameters.items() if key in {"metric", "dimension", "metrics", "aggregation", "time_column", "time_dimension"} and value not in (None, "", [], {})},
             "requires_previous_artifact": True,
             "referent_artifact_id": str(contract.get("referent_artifact_id") or ""),
             "referent_dimension": dimension,
@@ -48,9 +66,16 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
         }
     )
     current_dimension = str(params.get("dimension") or getattr(logic_form, "group_by", None) or "")
-    if len(values) > 1 and current_dimension and current_dimension != dimension:
+    if current_dimension and current_dimension != dimension:
         params.setdefault("series_dimension", dimension)
     setattr(logic_form, "parameters", params)
+    source_tables = params.get("source_tables")
+    if isinstance(source_tables, list):
+        setattr(logic_form, "source_tables", [str(item) for item in source_tables if str(item)])
+    if isinstance(params.get("join_plan"), dict):
+        setattr(logic_form, "join_plan", dict(params.get("join_plan") or {}))
+    if params.get("table_selection_reason"):
+        setattr(logic_form, "table_selection_reason", str(params.get("table_selection_reason") or ""))
     task_contract = dict(getattr(logic_form, "task_contract", {}) or {})
     task_contract.update(
         {
@@ -59,10 +84,15 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
             "referent_dimension": dimension,
             "referent_values": values,
             "referent_policy": "must_filter_to_previous_result_objects",
+            "referent_source": str(contract.get("referent_source") or "result_artifact"),
         }
     )
     setattr(logic_form, "task_contract", task_contract)
     return logic_form
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def extract_referent_contract(guidelines: str) -> dict[str, Any]:

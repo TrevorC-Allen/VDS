@@ -16,6 +16,7 @@ class ReferentResolution:
     artifact_id: str = ""
     referent_dimension: str = ""
     referent_values: list[Any] = field(default_factory=list)
+    metric: str = ""
     referent_source: str = ""
     missing_reason: str = ""
 
@@ -42,6 +43,7 @@ def build_result_artifacts(
         return []
     metric = _first_text(logic.get("metric"), params.get("metric"))
     limit = _positive_int(params.get("limit") or params.get("top_n") or params.get("k")) or len(values)
+    top_objects = _build_top_objects(rows=rows[:limit], dimension=str(dimension), metric=str(metric or ""), start=1)
     artifact_id = _artifact_id(
         run_id=run_id,
         operation=operation,
@@ -64,6 +66,7 @@ def build_result_artifacts(
             "sort_order": str(params.get("sort_order") or "desc"),
             "filters": dict(logic.get("filters") or {}),
             "values": values[:limit],
+            "top_objects": top_objects,
             "rank_map": {str(value): index for index, value in enumerate(values[:limit], start=1)},
             "rows": rows[:limit],
         }
@@ -118,14 +121,15 @@ def resolve_followup_referent(user_question: str, context: Mapping[str, Any] | N
     dimension = str(artifact.get("dimension") or "")
     if _asks_specific_dimension(compact, "city") and not _dimension_matches_concept(dimension, "city"):
         return ReferentResolution(False, missing_reason="REFERENT_ARTIFACT_MISSING").to_dict()
-    values = list(artifact.get("values") or [])
+    values = _referent_values_from_artifact(artifact)
     rank_index = _rank_index(compact)
-    source = "result_artifact:ranking"
+    source = str(artifact.get("source") or "")
+    source = "result_artifact:ranking:top_objects" if artifact.get("top_objects") else f"{source}:ranking" if source else "result_artifact:ranking"
     if rank_index is not None:
         if rank_index < 1 or rank_index > len(values):
             return ReferentResolution(False, artifact_id=str(artifact.get("artifact_id") or ""), referent_dimension=dimension, missing_reason="REFERENT_VALUES_MISSING").to_dict()
         values = [values[rank_index - 1]]
-        source = f"result_artifact:ranking:rank_{rank_index}"
+        source = f"{source}:rank_{rank_index}"
     if not values:
         return ReferentResolution(False, artifact_id=str(artifact.get("artifact_id") or ""), referent_dimension=dimension, missing_reason="REFERENT_VALUES_MISSING").to_dict()
     return ReferentResolution(
@@ -133,6 +137,7 @@ def resolve_followup_referent(user_question: str, context: Mapping[str, Any] | N
         artifact_id=str(artifact.get("artifact_id") or ""),
         referent_dimension=dimension,
         referent_values=values,
+        metric=str(artifact.get("metric") or ""),
         referent_source=source,
     ).to_dict()
 
@@ -140,10 +145,13 @@ def resolve_followup_referent(user_question: str, context: Mapping[str, Any] | N
 def _active_artifacts(context: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
     if not isinstance(context, Mapping):
         return []
-    artifacts = context.get("active_result_artifacts")
-    if not isinstance(artifacts, list):
-        return []
-    return [item for item in artifacts if isinstance(item, Mapping)]
+    artifacts = [item for item in context.get("active_result_artifacts") or [] if isinstance(item, Mapping)]
+    focus_artifacts = [_artifact_from_focus_set(item) for item in context.get("focus_sets") or [] if isinstance(item, Mapping)]
+    combined = [*artifacts, *[item for item in focus_artifacts if item]]
+    last_ranking_artifact_id = str(context.get("last_ranking_artifact_id") or "")
+    if last_ranking_artifact_id:
+        combined.sort(key=lambda item: 0 if str(item.get("artifact_id") or "") == last_ranking_artifact_id else 1)
+    return combined
 
 
 def _select_artifact(compact: str, artifacts: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
@@ -157,6 +165,40 @@ def _select_artifact(compact: str, artifacts: list[Mapping[str, Any]]) -> Mappin
                 return artifact
         return None
     return ranking[0]
+
+
+def _referent_values_from_artifact(artifact: Mapping[str, Any]) -> list[Any]:
+    values = []
+    for item in artifact.get("top_objects") or []:
+        if not isinstance(item, Mapping):
+            continue
+        value = item.get("value")
+        if value not in (None, ""):
+            values.append(value)
+    if values:
+        return values
+    return [value for value in artifact.get("values") or [] if value not in (None, "")]
+
+
+def _artifact_from_focus_set(focus_set: Mapping[str, Any]) -> dict[str, Any] | None:
+    values = [value for value in focus_set.get("values") or [] if value not in (None, "")]
+    if not values:
+        return None
+    dimension = str(focus_set.get("dimension") or "")
+    if not dimension:
+        return None
+    return {
+        "artifact_id": str(focus_set.get("artifact_id") or f"focus_set_{_normalize(dimension)}"),
+        "artifact_type": "ranking",
+        "source": str(focus_set.get("source") or "focus_set"),
+        "dimension": dimension,
+        "metric": str(focus_set.get("metric") or ""),
+        "values": values,
+        "top_objects": [
+            {"rank": index, "value": value, "metric_value": None}
+            for index, value in enumerate(values, start=1)
+        ],
+    }
 
 
 def _looks_like_referent_question(compact: str) -> bool:

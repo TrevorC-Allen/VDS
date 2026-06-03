@@ -507,8 +507,11 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
             "referent_dimension": dimension,
             "referent_values": values,
             "referent_policy": "must_filter_to_previous_result_objects",
+            "referent_source": str(resolution.get("referent_source") or "result_artifact"),
         }
     )
+    if resolution.get("metric") and not parameters.get("metric"):
+        parameters["metric"] = str(resolution.get("metric") or "")
     label = _dimension_question_label(dimension)
     value_text = _filter_value_text(values)
     question = str(enriched.get("question") or "")
@@ -526,6 +529,9 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
         "referent_values": values,
         "referent_dimension": dimension,
         "referent_policy": "must_filter_to_previous_result_objects",
+        "referent_source": str(resolution.get("referent_source") or "result_artifact"),
+        "inherited_parameters": inherited,
+        "action_parameters": parameters,
     }
     enriched["referent_resolution_trace"] = dict(resolution)
     return enriched
@@ -2515,12 +2521,20 @@ def _inherit_retail_window(params: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _generic_inherited_parameters(logic: Mapping[str, Any], params: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    inherited = {
         "metric": _first_text(logic.get("metric"), params.get("metric")),
         "dimension": _first_text(logic.get("group_by"), params.get("dimension"), params.get("group_by")),
         "filters": logic.get("filters"),
         "time_window": logic.get("time_window"),
     }
+    source_tables = _source_tables(logic, params)
+    if source_tables:
+        inherited["source_tables"] = source_tables
+    for key in ("table", "join_plan", "table_selection_reason", "available_columns"):
+        value = logic.get(key) if key in logic else params.get(key)
+        if value not in (None, "", [], {}):
+            inherited[key] = value
+    return inherited
 
 
 def _generic_inherited_parameters_for_question(logic: Mapping[str, Any], params: Mapping[str, Any], compact: str) -> dict[str, Any]:
