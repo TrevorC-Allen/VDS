@@ -54,6 +54,36 @@ class OracleExpectedResultCoverageTest(unittest.TestCase):
             reason_prefix="missing_expected_result_for_ranking_top_rows",
         )
 
+    def test_topn_followup_gap_payload_returns_expected_result_and_no_missing(self) -> None:
+        contract = self._contract(
+            family="topn",
+            metric="amount",
+            dimension="city",
+            verification_rules={
+                "expected_result": None,
+                "operation": "filtered_metric_ranking",
+                "capability_family": "ranking_followup",
+            },
+        )
+        result = build_oracle_result(
+            contract,
+            ExecutionResult(
+                backend="unit-test",
+                success=True,
+                columns=["city", "amount"],
+                rows=[
+                    {"city": "上海", "amount": 325},
+                    {"city": "北京", "amount": 310},
+                ],
+            ),
+        )
+
+        self.assertNotIn("oracle_expected_result_missing", result.issue_codes)
+        self.assertIsNotNone(result.expected_result)
+        self.assertEqual("ranking_followup_gap", (result.expected_result or {}).get("task_family"))
+        self.assertTrue((result.expected_result or {}).get("comparison_possible"))
+
+
     def test_topn_without_top_rows_records_missing_expected_with_metadata(self) -> None:
         contract = self._contract(
             family="topn",

@@ -41,7 +41,10 @@ def build_oracle_result(
         )
     expected = contract.verification_rules.get("expected_result")
     if expected is None:
-        expected_result, issue_metadata = _build_missing_expected_result_oracle_payload(contract=contract, actual=actual)
+        answer = _answer_text_from_execution_result(execution_result)
+        expected_result, issue_metadata = _build_missing_expected_result_oracle_payload(
+            contract=contract, actual=actual, answer=answer
+        )
         if _is_trend_constraint_expected(expected_result):
             actual_summary = _build_trend_constraint_actual_summary(expected_result, actual)
             issue_codes = _trend_constraint_issue_codes(expected_result, actual_summary)
@@ -55,7 +58,8 @@ def build_oracle_result(
                 issue_metadata=issue_metadata,
             )
         if _is_gap_insufficient_expected(expected_result):
-            answer = _answer_text_from_execution_result(execution_result)
+            return oracle_topn_followup_gap(expected_result, actual, answer=answer)
+        if _is_ranking_followup_gap_expected(expected_result):
             return oracle_topn_followup_gap(expected_result, actual, answer=answer)
         return OracleResult(
             oracle_available=False,
@@ -200,7 +204,7 @@ def _looks_like_quality_oracle_expected(value: Any) -> bool:
 
 
 def _build_missing_expected_result_oracle_payload(
-    *, contract: TaskExecutionContract, actual: dict[str, Any] | list[Any] | None
+    *, contract: TaskExecutionContract, actual: dict[str, Any] | list[Any] | None, answer: str = ""
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     family = str(contract.task_family or "")
     metadata_reason_map = {
@@ -240,10 +244,11 @@ def _build_missing_expected_result_oracle_payload(
         metric = str(contract.metric or "").strip()
         rows = _coerce_top_rows(actual, dimension, metric)
         if rows:
-            return (
-                {"_oracle_expected_result_missing": "topn", "row_count": len(rows)},
-                issue_metadata,
-            )
+            if _is_topn_gap_followup_contract(contract=contract, answer=answer):
+                gap_payload = _build_topn_gap_expected_payload(actual=actual, dimension=dimension, metric=metric)
+                if gap_payload:
+                    return gap_payload, issue_metadata
+            return {"_oracle_expected_result_missing": "topn", "row_count": len(rows)}, issue_metadata
         return None, issue_metadata
     if family == "gap":
         gap_payload = _coerce_gap_payload(actual, dimension=contract.dimension or "", metric=contract.metric or "")
@@ -294,6 +299,97 @@ def _build_missing_expected_result_oracle_payload(
                 issue_metadata,
             )
     return None, issue_metadata
+
+
+def _is_topn_gap_followup_contract(contract: TaskExecutionContract, answer: str) -> bool:
+    """Whether a topn payload should be evaluated with ranking-gap followup logic."""
+
+    operation = str(contract.verification_rules.get("operation") or "").strip()
+    capability_family = str(contract.verification_rules.get("capability_family") or "").strip()
+    return (
+        operation in {"ranking", "filtered_metric_ranking"}
+        and (
+            capability_family in {"ranking_followup", "growth_ranking_followup", "derived_metric_followup"}
+            or contract.requires_previous_artifact
+            or operation == "filtered_metric_ranking"
+            or _answer_mentions_gap(answer)
+        )
+    )
+
+
+def _build_topn_gap_expected_payload(
+    *, actual: dict[str, Any] | list[Any] | None, dimension: str, metric: str
+) -> dict[str, Any] | None:
+    """Normalize bare top rows into ranking-gap expected payload."""
+
+    rows = _extract_tabular_rows(actual)
+    if not rows:
+        return None
+
+    normalized_dimension = _infer_referent_dimension(rows, preferred=dimension, excluded=set())
+    normalized_dimension = normalized_dimension or dimension or "value"
+    normalized_metric = _infer_metric_column(rows, preferred=metric, excluded={normalized_dimension} if normalized_dimension else set())
+    normalized_metric = normalized_metric or metric or "metric_value"
+
+    gap_payload = _coerce_gap_payload(actual, dimension=normalized_dimension, metric=normalized_metric)
+    top_objects = gap_payload.get("top_objects") if isinstance(gap_payload, Mapping) else None
+    if not top_objects:
+        return None
+
+    canonical_top_objects: list[Mapping[str, Any]] = [item for item in top_objects if isinstance(item, Mapping)]
+    if not canonical_top_objects:
+        return None
+
+    top_rows = [
+        {
+            "rank": _parse_rank(top.get("rank"), index + 1),
+            normalized_dimension: top.get("value"),
+            normalized_metric: top.get("metric_value"),
+        }
+        for index, top in enumerate(canonical_top_objects)
+    ]
+    object_count = len(canonical_top_objects)
+    if object_count <= 1:
+        return {
+            "task_family": "ranking_followup_gap",
+            "comparison_possible": False,
+            "reason": "only_one_top_object",
+            "minimum_required_objects": 2,
+            "actual_object_count": object_count,
+            "dimension": normalized_dimension,
+            "metric": normalized_metric,
+            "top_rows": top_rows,
+        }
+
+    metric_values = [_oracle_float(top.get("metric_value")) for top in canonical_top_objects]
+    adjacent_gaps: list[float | None] = []
+    for current, next_value in zip(metric_values, metric_values[1:]):
+        if current is None or next_value is None:
+            adjacent_gaps.append(None)
+        else:
+            adjacent_gaps.append(_round_oracle_value(current - next_value))
+    leader_value = metric_values[0]
+    gap_to_leader: list[float | None] = []
+    for value in metric_values:
+        if leader_value is None or value is None:
+            gap_to_leader.append(None)
+        else:
+            gap_to_leader.append(_round_oracle_value(leader_value - value))
+
+    return {
+        "task_family": "ranking_followup_gap",
+        "comparison_possible": True,
+        "actual_object_count": object_count,
+        "dimension": normalized_dimension,
+        "metric": normalized_metric,
+        "adjacent_gaps": adjacent_gaps,
+        "gap_to_leader": gap_to_leader,
+        "top_rows": top_rows,
+        "top_objects": [
+            {"rank": _parse_rank(top.get("rank"), index + 1), "value": top.get("value"), "metric_value": top.get("metric_value")}
+            for index, top in enumerate(canonical_top_objects)
+        ],
+    }
 
 
 def _coerce_oracle_trend_points(actual: dict[str, Any] | list[Any] | None) -> list[dict[str, Any]]:
@@ -1725,12 +1821,19 @@ def _actual_payload(execution_result: ExecutionResult) -> dict[str, Any] | list[
 def _is_ranking_followup_gap_expected(expected: Any) -> bool:
     return (
         isinstance(expected, Mapping)
-        and all(key in expected for key in ("top_objects", "adjacent_gaps", "gap_to_leader"))
+        and (
+            expected.get("task_family") == "ranking_followup_gap"
+            or all(key in expected for key in ("top_objects", "adjacent_gaps", "gap_to_leader"))
+        )
     ) or _is_gap_insufficient_expected(expected)
 
 
 def _is_gap_insufficient_expected(expected: Any) -> bool:
-    return isinstance(expected, Mapping) and expected.get("task_family") == "gap_or_ranking_followup" and expected.get("comparison_possible") is False
+    return (
+        isinstance(expected, Mapping)
+        and expected.get("comparison_possible") is False
+        and str(expected.get("task_family")) in {"gap_or_ranking_followup", "ranking_followup_gap"}
+    )
 
 
 def _is_multi_table_join_ranking_expected(expected: Any) -> bool:
@@ -1762,6 +1865,26 @@ def oracle_topn_followup_gap(expected: Any, actual: Any, *, answer: str = "") ->
             diff_summary="TopN follow-up gap expected/actual payload is malformed.",
             issue_codes=["gap_oracle_payload_invalid"],
         )
+
+    if isinstance(expected, Mapping):
+        expected_payload = dict(expected_payload)
+        for key in (
+            "task_family",
+            "comparison_possible",
+            "actual_object_count",
+            "dimension",
+            "metric",
+            "minimum_required_objects",
+            "reason",
+            "top_rows",
+            "top_objects",
+            "object_dimension",
+        ):
+            if key in expected:
+                if key == "top_objects":
+                    if expected_payload.get("top_objects"):
+                        continue
+                expected_payload[key] = expected[key]
 
     issue_codes: list[str] = []
     expected_top = expected_payload["top_objects"]
@@ -1845,16 +1968,52 @@ def _coerce_gap_payload(value: Any, *, dimension: str = "", metric: str = "") ->
     if not isinstance(value, Mapping):
         if rows:
             top_objects = _top_objects_from_rows(rows, dimension=dimension, metric=metric)
-            return {"top_objects": top_objects, "adjacent_gaps": [], "gap_to_leader": []} if top_objects else None
+            if not top_objects:
+                return None
+            metric_values = [_oracle_float(item.get("metric_value")) for item in top_objects]
+            adjacent_gaps: list[float | None] = []
+            for current, next_value in zip(metric_values, metric_values[1:]):
+                if current is None or next_value is None:
+                    adjacent_gaps.append(None)
+                else:
+                    adjacent_gaps.append(_round_oracle_value(current - next_value))
+            leader_value = metric_values[0] if metric_values else None
+            gap_to_leader: list[float | None] = []
+            for value in metric_values:
+                if leader_value is None or value is None:
+                    gap_to_leader.append(None)
+                else:
+                    gap_to_leader.append(_round_oracle_value(leader_value - value))
+            return {
+                "top_objects": top_objects,
+                "adjacent_gaps": adjacent_gaps,
+                "gap_to_leader": gap_to_leader,
+            }
         return None
     raw_top_objects = value.get("top_objects", [])
     if not raw_top_objects and rows:
         top_objects = _top_objects_from_rows(rows, dimension=dimension, metric=metric)
+        if not top_objects:
+            return None
+        metric_values = [_oracle_float(item.get("metric_value")) for item in top_objects]
+        adjacent_gaps = []
+        for current, next_value in zip(metric_values, metric_values[1:]):
+            if current is None or next_value is None:
+                adjacent_gaps.append(None)
+            else:
+                adjacent_gaps.append(_round_oracle_value(current - next_value))
+        leader_value = metric_values[0] if metric_values else None
+        gap_to_leader = []
+        for value in metric_values:
+            if leader_value is None or value is None:
+                gap_to_leader.append(None)
+            else:
+                gap_to_leader.append(_round_oracle_value(leader_value - value))
         return {
             "top_objects": top_objects,
-            "adjacent_gaps": list(value.get("adjacent_gaps") or []),
-            "gap_to_leader": list(value.get("gap_to_leader") or []),
-        } if top_objects else None
+            "adjacent_gaps": adjacent_gaps,
+            "gap_to_leader": gap_to_leader,
+        }
     top_objects = []
     for item in raw_top_objects:
         if not isinstance(item, Mapping):
