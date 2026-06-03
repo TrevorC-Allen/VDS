@@ -1546,7 +1546,10 @@ class DataAgentService:
             },
             "agent_actions": completed_actions,
         }
+        compound_answer = response["answer"]
         response = _apply_gpt_like_text_framework(response, question=original_question)
+        if response.get("answer_type") == "compound_analysis" and "结构化动作" not in str(response.get("answer") or ""):
+            response["answer"] = compound_answer
         return to_json_ready(response)
 
     def run_benchmark_from_rule(

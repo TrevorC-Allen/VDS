@@ -326,7 +326,11 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
     available = list(context.get("available_followup_actions") or [])
     actions: list[dict[str, Any]] = []
     referent_resolution = resolve_followup_referent(question, context)
-    if str(referent_resolution.get("missing_reason", "")).upper() == "REFERENT_ARTIFACT_MISSING" and not bool(referent_resolution.get("resolved")):
+    if (
+        str(referent_resolution.get("missing_reason", "")).upper() == "REFERENT_ARTIFACT_MISSING"
+        and not bool(referent_resolution.get("resolved"))
+        and not (_is_retail_context(operation) and (_asks_extreme_review(compact) or _asks_source_drilldown(compact)))
+    ):
         return []
 
     if operation in {"quality_summary", "data_quality_report", "cleaning_policy", "anomaly_rules"} and _asks_quality_followup(compact):

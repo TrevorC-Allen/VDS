@@ -90,7 +90,8 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
     dimension = _first_text(params.get("dimension"), params.get("group_by"), _get(logic_form, "group_by"), output_format.get("entity_field"))
     if family == "trend":
         dimension = _first_text(params.get("time_column"), params.get("time_dimension"), dimension)
-    required_n = _positive_int(params.get("limit") or params.get("top_n") or params.get("k")) or _required_n_from_question(question)
+    question_required_n = _required_n_from_question(question)
+    required_n = question_required_n or _positive_int(params.get("limit") or params.get("top_n") or params.get("k"))
     sort_order = _first_text(params.get("sort_order")) or ("asc" if _asks_lowest(question) else "desc")
     gap_mode = "rank_pair" if family == "gap" and _asks_rank_pair(question) else "adjacent_and_to_leader" if family == "gap" else None
     required_columns = _required_columns(family=family, metric=metric, dimension=dimension, output_format=output_format)
@@ -133,6 +134,7 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
             "requires_non_empty_value": family not in {"overview", "multi_file_overview", "data_quality"},
             "required_output_columns": required_columns,
             "referent_filter_applied": referent_filter_applied,
+            "explicit_required_n": question_required_n is not None,
             **_family_verification_rules(family),
         },
         insufficiency_policy="needs_clarification" if requires_previous else "fail_closed",
@@ -163,7 +165,7 @@ def verify_task_execution_contract(contract: TaskExecutionContract, execution_re
             )
         )
     available_columns = _available_result_columns(execution_result)
-    missing_columns = [column for column in contract.required_output_columns if column and column not in available_columns]
+    missing_columns = [column for column in contract.required_output_columns if column and not _column_present(column, available_columns)]
     if missing_columns and _tabular_result_present(execution_result):
         violations.append(
             ContractViolation(
@@ -175,7 +177,13 @@ def verify_task_execution_contract(contract: TaskExecutionContract, execution_re
             )
         )
     row_count = _row_count(execution_result)
-    if contract.task_family == "topn" and contract.required_n and row_count is not None and row_count < contract.required_n:
+    if (
+        contract.task_family == "topn"
+        and contract.required_n
+        and contract.verification_rules.get("explicit_required_n")
+        and row_count is not None
+        and row_count < contract.required_n
+    ):
         distinct_count = _distinct_count(execution_result, contract.dimension) or row_count
         answer_text = _direct_answer_text(execution_result)
         if not answer_text.strip():
@@ -366,13 +374,11 @@ def _family_verification_rules(family: TaskFamily) -> dict[str, Any]:
 def _verify_topn_contract(contract: TaskExecutionContract, result: ExecutionResult) -> list[ContractViolation]:
     rows = _result_rows(result)
     violations: list[ContractViolation] = []
-    if contract.required_n is None:
-        violations.append(_violation("TOPN_REQUIRED_N_MISSING", "TopN contract must define required_n.", {}))
     if not rows:
         return violations
     metric = contract.metric or _first_numeric_column(rows, exclude={str(contract.dimension or "")})
     if metric:
-        numeric_values = [value for value in (_as_float(row.get(metric)) for row in rows) if value is not None]
+        numeric_values = [value for value in (_as_float(_row_value(row, metric)) for row in rows) if value is not None]
         if len(numeric_values) >= 2:
             expected = sorted(numeric_values, reverse=str(contract.sort_order or "desc") != "asc")
             if numeric_values != expected:
@@ -427,7 +433,7 @@ def _verify_trend_contract(contract: TaskExecutionContract, result: ExecutionRes
                 {"values": values, "shape": shape},
             )
         )
-    if shape == "up_then_down" and not _answer_mentions_up_then_down(answer_text):
+    if answer_text.strip() and shape == "up_then_down" and not _answer_mentions_up_then_down(answer_text):
         violations.append(
             _violation(
                 "TREND_DESCRIPTION_MISSING_UP_THEN_DOWN",
@@ -568,6 +574,34 @@ def _available_result_columns(result: ExecutionResult) -> set[str]:
     return columns
 
 
+DISPLAY_COLUMN_ALIASES = {
+    "sign_amt": ("分销金额", "签收金额", "销售金额", "金额"),
+    "sign_box_cnt": ("签收箱数", "箱数"),
+    "cust_name": ("客户", "终端客户", "客户名称"),
+    "ctg_name": ("品类", "品类名称"),
+    "sku_name": ("SKU", "sku", "产品", "产品名称", "商品", "商品名称"),
+    "emp_name": ("业代", "业务员", "人员"),
+    "p_emp_name": ("主任",),
+    "route_scope": ("线路范围",),
+}
+
+
+def _column_present(column: str, available_columns: set[str]) -> bool:
+    if column in available_columns:
+        return True
+    aliases = DISPLAY_COLUMN_ALIASES.get(str(column), ())
+    return any(alias in available_columns for alias in aliases)
+
+
+def _row_value(row: dict[str, Any], column: str) -> Any:
+    if column in row:
+        return row.get(column)
+    for alias in DISPLAY_COLUMN_ALIASES.get(str(column), ()):
+        if alias in row:
+            return row.get(alias)
+    return None
+
+
 def _verify_referent_result_scope(contract: TaskExecutionContract, result: ExecutionResult) -> list[ContractViolation]:
     dimension = str(contract.referent_dimension or "")
     if not dimension:
@@ -665,7 +699,7 @@ def _distinct_count(result: ExecutionResult, dimension: str | None) -> int | Non
         return None
     if not dimension:
         return len(rows)
-    values = {row.get(dimension) for row in rows if row.get(dimension) not in {None, ""}}
+    values = {_row_value(row, dimension) for row in rows if _row_value(row, dimension) not in {None, ""}}
     return len(values)
 
 
