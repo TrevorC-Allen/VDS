@@ -660,10 +660,32 @@ def _ranking_dataframe(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[
             str(params.get("aggregation") or "sum"),
         )
         rows = _attach_metric_spec_columns(rows, data, str(dimension), _metric_specs(params.get("metric_specs")))
-    metric_column = next((key for key in rows[0] if key != str(dimension)), "value") if rows else "value"
+    metric_column = _ranking_metric_column(rows, params, str(dimension))
     reverse = str(params.get("sort_order") or "desc") == "desc"
     rows.sort(key=lambda row: row.get(metric_column), reverse=reverse)
     return _slice_ranked_rows(rows, params)
+
+
+def _ranking_metric_column(rows: list[dict[str, Any]], params: dict[str, Any], dimension: str) -> str:
+    """Pick the primary ranking metric, not supplemental display columns."""
+
+    if not rows:
+        return "value"
+    preferred = str(params.get("metric") or "").strip()
+    if preferred and preferred in rows[0]:
+        return preferred
+    derived_metric = params.get("derived_metric")
+    if isinstance(derived_metric, dict):
+        derived_name = str(derived_metric.get("name") or "").strip()
+        if derived_name and derived_name in rows[0]:
+            return derived_name
+    aggregation = str(params.get("aggregation") or "").strip()
+    if aggregation in {"count", "nunique", "distinct_count"} and "count" in rows[0]:
+        return "count"
+    for key in rows[0]:
+        if key != dimension:
+            return str(key)
+    return "value"
 
 
 def _growth_ranking(data: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -916,10 +938,12 @@ def _attach_group_share_if_requested(result: Any, params: dict[str, Any]) -> Any
         return result
     total = sum(float(pd.to_numeric(pd.Series([row.get(value_column)]), errors="coerce").fillna(0).iloc[0]) for row in result)
     share_column = str(params.get("share_column") or f"{value_column}_share")
+    total_column = str(params.get("total_metric_column") or f"total_{value_column}")
     rows: list[dict[str, Any]] = []
     for row in result:
         value = float(pd.to_numeric(pd.Series([row.get(value_column)]), errors="coerce").fillna(0).iloc[0])
         enriched = dict(row)
+        enriched[total_column] = total
         enriched[share_column] = 0.0 if total == 0.0 else value / total * 100
         rows.append(enriched)
     return rows
@@ -1222,7 +1246,7 @@ def _outlier_mask(data: pd.DataFrame, metric: str, params: dict[str, Any]) -> pd
     return (series < lower) | (series > upper)
 
 
-def _top_k_share(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> float:
+def _top_k_share(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> float | list[dict[str, Any]]:
     data = _apply_dataframe_filters(df, filters)
     if data.empty:
         return 0.0
@@ -1242,19 +1266,45 @@ def _top_k_share(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, An
         ranking_grouped = (
             pd.to_numeric(data[ranking_metric_name], errors="coerce").fillna(0).groupby(data[dimension]).sum().sort_values(ascending=False)
         )
-    selected_groups = set(ranking_grouped.head(limit).index)
+    selected_ranking = ranking_grouped.head(limit)
+    selected_groups = set(selected_ranking.index)
     selected_rows = data[data[dimension].isin(selected_groups)]
+    structured_referent_share = bool(params.get("requires_previous_artifact") or params.get("referent_values"))
     if share_metric in {None, "__row_count__", "row_count", "transaction_count"}:
         denominator = float(len(data))
         numerator = float(len(selected_rows))
+        per_group_numerators = selected_rows.groupby(dimension, dropna=True).size().to_dict()
     else:
         share_metric_name = str(share_metric)
         if share_metric_name not in data.columns:
             raise ValueError("top_k_share requires a known share metric column.")
         denominator = float(pd.to_numeric(data[share_metric_name], errors="coerce").fillna(0).sum())
         numerator = float(pd.to_numeric(selected_rows[share_metric_name], errors="coerce").fillna(0).sum())
+        per_group_numerators = (
+            pd.to_numeric(selected_rows[share_metric_name], errors="coerce")
+            .fillna(0)
+            .groupby(selected_rows[dimension])
+            .sum()
+            .to_dict()
+        )
     if denominator == 0.0:
-        return 0.0
+        return [] if structured_referent_share else 0.0
+    if structured_referent_share:
+        metric_column = str(params.get("metric") or params.get("share_metric") or "metric_value")
+        total_column = str(params.get("total_metric_column") or f"total_{metric_column}")
+        share_column = str(params.get("share_column") or f"{metric_column}_share")
+        rows: list[dict[str, Any]] = []
+        for value in selected_ranking.index:
+            group_numerator = float(per_group_numerators.get(value, 0.0) or 0.0)
+            rows.append(
+                {
+                    dimension: value,
+                    metric_column: group_numerator,
+                    total_column: denominator,
+                    share_column: group_numerator / denominator * 100,
+                }
+            )
+        return rows
     return numerator / denominator * 100
 
 
@@ -1429,7 +1479,7 @@ def _filtered_metric_ranking(df: pd.DataFrame, filters: dict[str, Any], params: 
         rows = _attach_metric_spec_columns(rows, data, dimension, _metric_specs(params.get("metric_specs")))
     if not rows:
         return rows
-    metric_column = next((key for key in rows[0] if key != dimension), "value")
+    metric_column = _ranking_metric_column(rows, params, dimension)
     reverse = str(params.get("sort_order") or "desc") == "desc"
     rows.sort(key=lambda row: row.get(metric_column), reverse=reverse)
     return _slice_ranked_rows(rows, params)

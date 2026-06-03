@@ -99,6 +99,9 @@ def build_response(
         contract_family = str(task_contract.get("task_family") or "")
     if not contract_family and isinstance(contract_report, dict):
         contract_family = str(contract_report.get("task_family") or "")
+    trend_empty_answer = _trend_empty_answer(task_contract, plan, execution_result)
+    if semantic_failure_answer is None and trend_empty_answer:
+        answer = trend_empty_answer
     insufficient_answer = _topn_insufficient_answer(task_contract, execution_result, semantic_status)
     if insufficient_answer:
         answer = insufficient_answer
@@ -209,8 +212,13 @@ def _topn_insufficient_answer(task_contract: dict[str, Any] | None, execution_re
     required_n = _int_or_none(task_contract.get("required_n"))
     dimension = str(task_contract.get("dimension") or "对象")
     rows = _artifact_rows(execution_result)
-    if not required_n or not rows:
+    if not required_n:
         return ""
+    if not rows:
+        metric = str(task_contract.get("metric") or "指标")
+        dimension_label = _display_dimension_label(dimension)
+        metric_label = _display_metric_label(metric)
+        return f"当前结果没有返回可用于 Top {required_n} 的{dimension_label}排名；按当前筛选条件没有匹配的{metric_label}记录，因此无法列出前 {required_n} 个{dimension_label}。"
     distinct_count = _int_or_none(execution_result.value.get("distinct_count")) if isinstance(execution_result.value, dict) else None
     if distinct_count is None:
         distinct_count = len({row.get(dimension) for row in rows if row.get(dimension) not in {None, ""}}) if dimension else len(rows)
@@ -228,6 +236,23 @@ def _topn_insufficient_answer(task_contract: dict[str, Any] | None, execution_re
         items.append(f"{label} {_format_display_number(value)}")
     suffix = "：" + "、".join(items) if items else ""
     return f"按{dimension_label}统计{metric_label}，当前只有 {distinct_count} 个{dimension_label}，无法返回 Top {required_n}，因此返回 Top {distinct_count}{suffix}。"
+
+
+def _trend_empty_answer(task_contract: dict[str, Any] | None, plan: AnalysisPlan, execution_result: ExecutionResult) -> str:
+    if not isinstance(task_contract, dict) or str(task_contract.get("task_family") or "") != "trend":
+        return ""
+    if _artifact_rows(execution_result):
+        return ""
+    metric = str(task_contract.get("metric") or plan.logic_form.parameters.get("metric") or plan.logic_form.metric or "指标")
+    time_dimension = str(task_contract.get("time_dimension") or task_contract.get("dimension") or plan.logic_form.parameters.get("dimension") or "时间")
+    filters = plan.logic_form.filters or {}
+    scope_parts = []
+    for key, value in filters.items():
+        if value in (None, "", [], {}):
+            continue
+        scope_parts.append(f"{key}={value}")
+    scope = "，筛选范围：" + "；".join(scope_parts) if scope_parts else ""
+    return f"当前没有匹配的{time_dimension}趋势结果，无法判断{metric}趋势变化{scope}。"
 
 
 def _int_or_none(value: Any) -> int | None:

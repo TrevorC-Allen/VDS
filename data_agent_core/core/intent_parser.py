@@ -3501,6 +3501,8 @@ def _grouped_child_ranking_spec(
     compact = re.sub(r"\s+", "", str(question or ""))
     if not compact:
         return None
+    if _entity_count_is_secondary_ranking_metric(question, lowered):
+        return None
     grouped_parent_language = any(token in compact for token in ("每个", "各个", "各", "逐个")) or any(
         token in lowered for token in ("each ", "per ")
     )
@@ -3638,13 +3640,6 @@ def _time_column_preference(column_name: str) -> int:
 def _infer_time_filters(question: str, time_column: str | None) -> dict[str, Any]:
     if not time_column:
         return {}
-    leading_month = _extract_leading_single_month_scope(question)
-    if leading_month is not None:
-        criteria: dict[str, Any] = {"month": leading_month}
-        explicit_year = _extract_explicit_year(question)
-        if explicit_year is not None:
-            criteria["year"] = explicit_year
-        return {time_column: criteria}
     year_month_range = _extract_year_month_range(question)
     if year_month_range:
         start_ym, end_ym = year_month_range
@@ -3655,6 +3650,13 @@ def _infer_time_filters(question: str, time_column: str | None) -> dict[str, Any
     quarter_month_range = _extract_quarter_month_range(question)
     if quarter_month_range:
         criteria = {"month_range": quarter_month_range}
+        explicit_year = _extract_explicit_year(question)
+        if explicit_year is not None:
+            criteria["year"] = explicit_year
+        return {time_column: criteria}
+    leading_month = _extract_leading_single_month_scope(question)
+    if leading_month is not None:
+        criteria = {"month": leading_month}
         explicit_year = _extract_explicit_year(question)
         if explicit_year is not None:
             criteria["year"] = explicit_year

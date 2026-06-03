@@ -261,17 +261,29 @@ def render_topn_answer(context: _FrameContext) -> str:
         return ""
     direction = _ranking_direction(context)
     requested_n = _requested_topn_count(context.question) or len(context.rows)
-    items = [
-        f"{str(row.get(label)).strip()}（{_format_cell_value(row.get(metric), metric)}）"
-        for row in context.rows[:requested_n]
-        if row.get(label) not in {None, ""} and row.get(metric) not in {None, ""}
-    ]
+    supplemental_columns = _supplemental_topn_columns(context.columns, label=label, metric=metric)
+    items = []
+    for row in context.rows[:requested_n]:
+        if row.get(label) in {None, ""} or row.get(metric) in {None, ""}:
+            continue
+        values = [f"{metric} {_format_cell_value(row.get(metric), metric)}"]
+        values.extend(
+            f"{column} {_format_cell_value(row.get(column), column)}"
+            for column in supplemental_columns
+            if row.get(column) not in {None, ""}
+        )
+        items.append(f"{str(row.get(label)).strip()}（{'，'.join(values)}）")
     if not items:
         return ""
     dimension_label = _display_dimension_label(label)
     answer = f"{metric}{direction}的 {len(items)} 个{dimension_label}是：" + "、".join(items) + "。"
     scope = _short_scope_suffix(context)
     return _sanitize_text(answer + scope)
+
+
+def _supplemental_topn_columns(columns: list[str], *, label: str, metric: str) -> list[str]:
+    blocked = {label, metric}
+    return [column for column in columns if column not in blocked and column not in {"rank", "排名"}]
 
 
 def render_contribution_answer(context: _FrameContext) -> str:

@@ -64,6 +64,7 @@ def build_result_artifacts(
             "operation": operation,
             "dimension": str(dimension),
             "metric": str(metric or ""),
+            "derived_metric": dict(params.get("derived_metric") or {}) if isinstance(params.get("derived_metric"), Mapping) else {},
             "aggregation": str(params.get("aggregation") or "sum"),
             "limit": limit,
             "sort_order": str(params.get("sort_order") or "desc"),
@@ -117,6 +118,11 @@ def build_task_artifacts(*, task_contract: Mapping[str, Any], rows: list[dict[st
             "distinct_count": distinct_count if dimension else len(rows),
             "metric": metric,
             "metric_column": metric,
+            "primary_metric_column": metric,
+            "sort_metric": metric,
+            "sort_order": str(task_contract.get("sort_order") or "desc"),
+            "row_count": len(rows),
+            "requested_n": _positive_int(task_contract.get("required_n")),
             "dimension": dimension,
             "dimension_column": dimension,
             "result_rows": rows,
@@ -163,6 +169,17 @@ def resolve_followup_referent(user_question: str, context: Mapping[str, Any] | N
     compact = re.sub(r"\s+", "", str(user_question or ""))
     if not _looks_like_referent_question(compact):
         return ReferentResolution(False, missing_reason="not_referent").to_dict()
+    scope_artifact = _scalar_filter_artifact_from_context(compact, context)
+    if scope_artifact:
+        return ReferentResolution(
+            True,
+            artifact_id=str(scope_artifact.get("artifact_id") or ""),
+            referent_dimension=str(scope_artifact.get("dimension") or ""),
+            referent_values=_referent_values_from_artifact(scope_artifact),
+            metric=str(scope_artifact.get("metric") or ""),
+            referent_source=str(scope_artifact.get("source") or "current_scope_filter"),
+            ranking_context=_ranking_context_from_artifact(scope_artifact),
+        ).to_dict()
     artifacts = _active_artifacts(context)
     artifact = _select_artifact(compact, artifacts)
     if not artifact:
@@ -172,6 +189,8 @@ def resolve_followup_referent(user_question: str, context: Mapping[str, Any] | N
         return ReferentResolution(False, missing_reason="REFERENT_ARTIFACT_MISSING").to_dict()
     values = _referent_values_from_artifact(artifact)
     rank_index = _rank_index(compact)
+    if rank_index is not None and not _rank_index_applies_to_artifact(compact, dimension):
+        rank_index = None
     source = str(artifact.get("source") or "")
     source = "result_artifact:ranking:top_objects" if artifact.get("top_objects") else f"{source}:ranking" if source else "result_artifact:ranking"
     if rank_index is not None:
@@ -202,6 +221,60 @@ def _active_artifacts(context: Mapping[str, Any] | None) -> list[Mapping[str, An
     if last_ranking_artifact_id:
         combined.sort(key=lambda item: 0 if str(item.get("artifact_id") or "") == last_ranking_artifact_id else 1)
     return combined
+
+
+def _scalar_filter_artifact_from_context(compact: str, context: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(context, Mapping) or not _singular_referent_question(compact):
+        return None
+    scope = context.get("scope") if isinstance(context.get("scope"), Mapping) else {}
+    filters = scope.get("filters") if isinstance(scope.get("filters"), Mapping) else {}
+    if not filters:
+        return None
+    target_concept = _referent_dimension_concept(compact)
+    for column, value in filters.items():
+        if value in (None, "", [], {}) or isinstance(value, (list, tuple, set, dict)):
+            continue
+        dimension = str(column)
+        concept = _dimension_concept_from_column(dimension)
+        if target_concept and concept and concept != target_concept:
+            continue
+        if target_concept and not concept:
+            continue
+        return {
+            "artifact_id": f"scope_filter_{_normalize(dimension)}",
+            "artifact_type": "referent_filter",
+            "source": "current_scope_filter",
+            "dimension": dimension,
+            "metric": str(scope.get("metric") or ""),
+            "aggregation": "sum",
+            "filters": dict(filters),
+            "values": [value],
+            "top_objects": [{"rank": 1, "value": value, "metric_value": None}],
+        }
+    return None
+
+
+def _singular_referent_question(compact: str) -> bool:
+    singular_tokens = (
+        "该城市",
+        "这个城市",
+        "那个城市",
+        "刚才那个城市",
+        "该客户",
+        "这个客户",
+        "那个客户",
+        "该产品",
+        "这个产品",
+        "那个产品",
+        "该服务线",
+        "这个服务线",
+        "那个服务线",
+    )
+    if any(token in compact for token in singular_tokens):
+        return True
+    if any(token in compact for token in ("这些", "这几个", "上述", "上面几个", "前几个", "前3", "前三", "top")):
+        return False
+    return False
 
 
 def _select_artifact(compact: str, artifacts: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
@@ -264,6 +337,8 @@ def _ranking_context_from_artifact(artifact: Mapping[str, Any]) -> dict[str, Any
         "join_plan": dict(artifact.get("join_plan") or {}),
         "join_keys": [dict(item) for item in artifact.get("join_keys") or [] if isinstance(item, Mapping)],
         "aggregation": artifact.get("aggregation") or "sum",
+        "limit": _positive_int(artifact.get("limit")),
+        "derived_metric": dict(artifact.get("derived_metric") or {}),
         "sort_order": artifact.get("sort_order") or "desc",
         "table": artifact.get("table"),
         "table_selection_reason": artifact.get("table_selection_reason"),
@@ -355,6 +430,38 @@ def _rank_index(compact: str) -> int | None:
     return None
 
 
+def _rank_index_applies_to_artifact(compact: str, dimension: str) -> bool:
+    concept = _dimension_concept_from_column(dimension)
+    if not concept:
+        return True
+    labels = {
+        "city": ("城市", "地区", "区域"),
+        "product": ("产品", "商品", "sku", "SKU"),
+        "customer": ("客户", "顾客"),
+    }.get(concept, ())
+    rank_patterns = (
+        "排名第一",
+        "排名第1",
+        "第一名",
+        "第1名",
+        "Top1",
+        "top1",
+        "首位",
+        "最高的",
+        "最多的",
+    )
+    if any(f"{pattern}的{label}" in compact or f"{pattern}{label}" in compact for pattern in rank_patterns for label in labels):
+        return True
+    if any(f"{label}排名第一" in compact or f"{label}排名第1" in compact for label in labels):
+        return True
+    child_question = re.search(r"(?:哪个|哪些|哪几个|哪类|哪种)(城市|地区|区域|产品|商品|客户|顾客)", compact)
+    if child_question:
+        asked_concept = _referent_dimension_concept(child_question.group(1))
+        if asked_concept and asked_concept != concept:
+            return False
+    return not re.search(r"(?:哪个|哪些|哪几个|哪类|哪种).{0,12}(?:排名第一|排名第1|第一名|第1名|Top1|top1|最高|最多)", compact)
+
+
 def _asks_specific_dimension(compact: str, concept: str) -> bool:
     return _referent_dimension_concept(compact) == concept
 
@@ -365,6 +472,17 @@ def _referent_dimension_concept(compact: str) -> str:
     if any(token in compact for token in ("产品", "商品", "sku", "SKU")):
         return "product"
     if any(token in compact for token in ("客户", "顾客")):
+        return "customer"
+    return ""
+
+
+def _dimension_concept_from_column(dimension: str) -> str:
+    normalized = _normalize(dimension)
+    if any(alias in normalized for alias in ("city", "城市", "region", "area", "地区", "区域")):
+        return "city"
+    if any(alias in normalized for alias in ("product", "sku", "item", "goods", "产品", "商品")):
+        return "product"
+    if any(alias in normalized for alias in ("customer", "cust", "client", "buyer", "客户", "顾客")):
         return "customer"
     return ""
 
@@ -462,7 +580,10 @@ def _build_top_objects(*, rows: list[dict[str, Any]], dimension: str, metric: st
         normalized = dict(row)
         normalized["rank"] = index
         normalized["value"] = value
-        normalized["metric_value"] = row.get(metric) if metric else _first_non_dimension_value(row=row, dimension=dimension)
+        metric_value = row.get(metric) if metric else None
+        if metric_value is None:
+            metric_value = _first_non_dimension_value(row=row, dimension=dimension)
+        normalized["metric_value"] = metric_value
         top_objects.append(normalized)
     return top_objects
 

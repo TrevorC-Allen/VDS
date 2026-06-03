@@ -190,6 +190,13 @@ def _question_contract_is_more_specific(
         return False
     if current.task_family != question_contract.task_family:
         return False
+    if (
+        current.requires_previous_artifact
+        and not current.referent_artifact_id
+        and not current.referent_values
+        and not question_contract.requires_previous_artifact
+    ):
+        return True
     if current.task_family == "topn" and current.required_n is None and question_contract.required_n is not None:
         return True
     if not current.required_output_columns and question_contract.required_output_columns:
@@ -1391,6 +1398,8 @@ def _asks_count_metric(question: str) -> bool:
 
 def _count_metric_request_satisfied(logic: Any, question: str) -> bool:
     params = getattr(logic, "parameters", {}) or {}
+    if _count_metric_is_supplemental(logic, question):
+        return True
     specs = params.get("metric_specs")
     if isinstance(specs, list) and any(
         isinstance(spec, dict) and str(spec.get("aggregation") or "") in {"count", "distinct_count", "nunique"}
@@ -1406,6 +1415,47 @@ def _count_metric_request_satisfied(logic: Any, question: str) -> bool:
     if _counts_entities_after_metric_comparison(logic.operation):
         return True
     return _business_quantity_metric_satisfies_count_question(logic, question)
+
+
+def _count_metric_is_supplemental(logic: Any, question: str) -> bool:
+    """Allow "rank by amount, also show customer count" without changing primary metric."""
+
+    compact = re.sub(r"\s+", "", str(question or ""))
+    lowered = str(question or "").lower()
+    supplemental_count = any(
+        token in compact
+        for token in (
+            "及各自的客户数量",
+            "及各自客户数量",
+            "及各自的客户数",
+            "及各自客户数",
+            "及各自的客户总数",
+            "及各自客户总数",
+            "它们各自的客户总数",
+            "它们的客户数量",
+            "它们客户数量",
+            "它们的客户数",
+            "它们客户数",
+            "它们的客户总数",
+            "它们客户总数",
+            "并带客户数",
+            "带客户数",
+        )
+    ) or any(token in lowered for token in ("and their customer count", "with customer count", "with number of customers"))
+    if not supplemental_count:
+        return False
+    params = getattr(logic, "parameters", {}) or {}
+    primary_metric = str(params.get("metric") or getattr(logic, "metric", "") or "").strip()
+    if not primary_metric:
+        return False
+    if any(token in _normalize_token(primary_metric) for token in ("amount", "sales", "revenue", "profit", "金额", "销售", "收入", "利润")):
+        return True
+    specs = params.get("metric_specs")
+    return isinstance(specs, list) and any(
+        isinstance(spec, dict)
+        and str(spec.get("aggregation") or "") in {"count", "distinct_count", "nunique"}
+        for spec in specs
+    )
 
 
 def _row_count_per_unique_entity(logic: Any) -> bool:

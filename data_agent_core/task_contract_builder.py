@@ -65,7 +65,19 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
         output_format.setdefault("answer_type", "table")
         setattr(logic_form, "output_format", output_format)
     else:
-        filters[dimension] = values
+        same_dimension_grouping = (
+            str(getattr(logic_form, "operation", "") or "") in {"aggregation", "ranking", "filtered_metric_ranking"}
+            and str(action_parameters.get("dimension") or params.get("dimension") or getattr(logic_form, "group_by", "") or "") == dimension
+            and isinstance(action_parameters.get("candidate_filter") or params.get("candidate_filter"), Mapping)
+        )
+        if same_dimension_grouping:
+            filters.pop(dimension, None)
+        else:
+            filters[dimension] = values[0] if len(values) == 1 else values
+        if str(getattr(logic_form, "operation", "") or "") == "top_k_share":
+            output_format = dict(getattr(logic_form, "output_format", {}) or {})
+            output_format["answer_type"] = "table"
+            setattr(logic_form, "output_format", output_format)
     setattr(logic_form, "filters", filters)
     candidate_set = dict(getattr(logic_form, "candidate_set", {}) or {})
     candidate_set.update(
@@ -80,7 +92,7 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
     setattr(logic_form, "candidate_set", candidate_set)
     params.update(
         {
-            **{key: value for key, value in action_parameters.items() if key in {"metric", "dimension", "metrics", "aggregation", "time_column", "time_dimension"} and value not in (None, "", [], {})},
+            **{key: value for key, value in action_parameters.items() if key in {"metric", "dimension", "metrics", "aggregation", "time_column", "time_dimension", "candidate_filter"} and value not in (None, "", [], {})},
             "requires_previous_artifact": True,
             "referent_artifact_id": str(contract.get("referent_artifact_id") or ""),
             "referent_dimension": dimension,

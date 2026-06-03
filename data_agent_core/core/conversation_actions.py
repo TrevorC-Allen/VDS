@@ -491,6 +491,8 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
 def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str, Any], compact: str) -> dict[str, Any]:
     if not resolution.get("resolved"):
         return action
+    if str(action.get("action_id") or "") == "rank_retention_new_time":
+        return action
     dimension = str(resolution.get("referent_dimension") or "")
     values = list(resolution.get("referent_values") or [])
     if not dimension or not values:
@@ -508,10 +510,39 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
             if value not in (None, "", [], {}):
                 parameters.setdefault(key, value)
     filters = dict(inherited.get("filters") or {})
+    same_dimension_grouping = str(parameters.get("dimension") or "") == dimension and str(enriched.get("operation") or "") in {
+        "aggregation",
+        "ranking",
+        "filtered_metric_ranking",
+    }
     if auto_expand:
         filters.pop(dimension, None)
+    elif same_dimension_grouping:
+        filters.pop(dimension, None)
+        requested_limit = _focus_set_requested_limit(compact) or _positive_int(ranking_context.get("limit"))
+        candidate_filter = {
+            "dimension": dimension,
+            "metric": ranking_context.get("metric") or parameters.get("metric"),
+            "aggregation": ranking_context.get("aggregation") or parameters.get("aggregation") or "sum",
+            "limit": requested_limit or len(values),
+            "sort_order": ranking_context.get("sort_order") or "desc",
+        }
+        if isinstance(ranking_context.get("derived_metric"), Mapping) and ranking_context.get("derived_metric"):
+            candidate_filter["derived_metric"] = dict(ranking_context.get("derived_metric") or {})
+        carry_ranking_filters = not (
+            requested_limit is not None
+            and requested_limit > 1
+            and len(values) == 1
+            and _looks_like_time_scope_reference(compact)
+        )
+        if carry_ranking_filters and isinstance(ranking_context.get("filters"), Mapping) and ranking_context.get("filters"):
+            candidate_filter["filters"] = dict(ranking_context.get("filters") or {})
+        if requested_limit is None:
+            parameters.setdefault("candidate_filter", candidate_filter)
+        else:
+            parameters["candidate_filter"] = candidate_filter
     else:
-        filters[dimension] = values
+        filters[dimension] = values[0] if len(values) == 1 else values
     inherited["filters"] = filters
     minimum_required_objects = 2 if auto_expand else None
     preferred_top_n = 3 if auto_expand else None
@@ -546,7 +577,7 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
     if auto_expand and _asks_gap_comparison(compact):
         metric_label = _metric_question_label(str(parameters.get("metric") or ranking_context.get("metric") or "核心指标"))
         question = f"按{label or dimension}看{metric_label}排名前3，并比较Top{label or dimension}之间的差距。"
-    elif label and value_text and f"筛选{value_text}{label}的数据" not in question:
+    elif not same_dimension_grouping and label and value_text and f"筛选{value_text}{label}的数据" not in question:
         prefix = f"筛选{value_text}{label}的数据，"
         if "Top对象" in compact or "top对象" in compact or "TOP对象" in compact or "这些" in compact:
             prefix = f"这些Top对象来自上一轮结果，仅包含{value_text}{label}；{prefix}"
@@ -1721,13 +1752,13 @@ def _asks_share_followup(compact: str) -> bool:
             "占全",
             "占多少",
             "贡献率",
-            "贡献",
+            "贡献占比",
+            "贡献比例",
             "比例",
             "份额",
             "share",
             "percentage",
             "proportion",
-            "contribution",
         )
     )
 
@@ -2156,6 +2187,14 @@ def _focus_set_requested_limit(compact: str) -> int | None:
         if value:
             return value
     return None
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _question_references_focus_entity(compact: str, column: str) -> bool:
@@ -2733,9 +2772,15 @@ def _profit_margin_denominator_column(columns: list[str]) -> str:
 
 
 def _explicit_time_question_prefix(compact: str) -> str:
+    year_month_without_first_unit = re.search(r"(20\d{2}年\d{1,2}(?:到|至|-|~|—)(?:20\d{2}年)?\d{1,2}月)", compact)
+    if year_month_without_first_unit:
+        return f"{year_month_without_first_unit.group(1)}，"
     year_month = re.search(r"(20\d{2}年\d{1,2}月(?:到|至|-|~|—)(?:20\d{2}年)?\d{1,2}月)", compact)
     if year_month:
         return f"{year_month.group(1)}，"
+    month_range_without_first_unit = re.search(r"(\d{1,2}(?:到|至|-|~|—)\d{1,2}月)", compact)
+    if month_range_without_first_unit:
+        return f"{month_range_without_first_unit.group(1)}，"
     month_range = re.search(r"(\d{1,2}月(?:到|至|-|~|—)\d{1,2}月)", compact)
     if month_range:
         return f"{month_range.group(1)}，"

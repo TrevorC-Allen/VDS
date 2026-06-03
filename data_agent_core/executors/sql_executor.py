@@ -361,10 +361,12 @@ def _attach_group_share_if_requested_sql(result: Any, params: dict[str, Any]) ->
         return result
     total = sum(_numeric_result_value(row.get(value_column)) for row in result)
     share_column = str(params.get("share_column") or f"{value_column}_share")
+    total_column = str(params.get("total_metric_column") or f"total_{value_column}")
     rows: list[dict[str, Any]] = []
     for row in result:
         enriched = dict(row)
         value = _numeric_result_value(row.get(value_column))
+        enriched[total_column] = total
         enriched[share_column] = 0.0 if total == 0.0 else value / total * 100
         rows.append(enriched)
     return rows
@@ -696,7 +698,7 @@ def _repeat_entity_count_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> in
     return int(row[0] or 0)
 
 
-def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float:
+def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float | list[dict[str, Any]]:
     params = plan.logic_form.parameters
     dimension = str(params["dimension"])
     ranking_metric = params.get("ranking_metric", params.get("metric"))
@@ -719,7 +721,7 @@ def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float:
         ).fetchall()
     selected_values = [row[0] for row in rows]
     if not selected_values:
-        return 0.0
+        return [] if params.get("requires_previous_artifact") or params.get("referent_values") else 0.0
     placeholders = ", ".join("?" for _ in selected_values)
     selected_clause = f"{q_dimension} IN ({placeholders})"
     selected_where = f"{where_sql} AND {selected_clause}" if where_sql else f" WHERE {selected_clause}"
@@ -732,7 +734,28 @@ def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float:
         denominator = float(conn.execute(f"SELECT SUM({q_share_metric}) FROM analysis_table{where_sql}", values).fetchone()[0] or 0)
         numerator = float(conn.execute(f"SELECT SUM({q_share_metric}) FROM analysis_table{selected_where}", values + selected_values).fetchone()[0] or 0)
     if denominator == 0.0:
-        return 0.0
+        return [] if params.get("requires_previous_artifact") or params.get("referent_values") else 0.0
+    if params.get("requires_previous_artifact") or params.get("referent_values"):
+        metric_column = str(params.get("metric") or params.get("share_metric") or "metric_value")
+        total_column = str(params.get("total_metric_column") or f"total_{metric_column}")
+        share_column = str(params.get("share_column") or f"{metric_column}_share")
+        result_rows: list[dict[str, Any]] = []
+        for selected_value in selected_values:
+            value_where = f"{where_sql} AND {q_dimension} = ?" if where_sql else f" WHERE {q_dimension} = ?"
+            value_params = values + [selected_value]
+            if share_metric in {None, "__row_count__", "row_count", "transaction_count"}:
+                group_numerator = float(conn.execute(f"SELECT COUNT(*) FROM analysis_table{value_where}", value_params).fetchone()[0] or 0)
+            else:
+                group_numerator = float(conn.execute(f"SELECT SUM({q_share_metric}) FROM analysis_table{value_where}", value_params).fetchone()[0] or 0)
+            result_rows.append(
+                {
+                    dimension: selected_value,
+                    metric_column: group_numerator,
+                    total_column: denominator,
+                    share_column: group_numerator / denominator * 100,
+                }
+            )
+        return result_rows
     return numerator / denominator * 100
 
 
@@ -1225,6 +1248,15 @@ def _where_from_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
             if expected.get("max") is not None:
                 where.append(f"CAST({q_column} AS REAL) <= ?")
                 values.append(float(expected["max"]))
+            continue
+        if isinstance(expected, (list, tuple, set)):
+            items = [item for item in expected if item not in (None, "")]
+            if not items:
+                where.append("1 = 0")
+                continue
+            placeholders = ", ".join("?" for _ in items)
+            where.append(f"{_quote_identifier(str(column))} IN ({placeholders})")
+            values.extend(items)
             continue
         where.append(f"{_quote_identifier(str(column))} = ?")
         values.append(expected)
