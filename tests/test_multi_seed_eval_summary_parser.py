@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from scripts.run_agent_random_conversation_eval_multi_seed import (
+    aggregate_multi_seed_gate,
     _collect_seed_summary,
     _normalize_top_violation_codes,
     _parse_seeds,
@@ -29,10 +30,14 @@ class MultiSeedEvalSummaryParserTest(unittest.TestCase):
                         "pass_rate": 0.6667,
                         "coverage": {
                             "turn_count": 12,
+                            "transport_success_turns": 12,
+                            "semantic_contract_turns": 6,
                             "contract_checked_turns": 4,
                             "contract_satisfied_turns": 3,
                             "semantic_passed_turns": 5,
                             "semantic_failed_turns": 1,
+                            "legacy_unverified_turns": 0,
+                            "oracle_available_turns": 5,
                             "oracle_result_turns": 8,
                             "oracle_passed_turns": 2,
                             "oracle_failed_turns": 3,
@@ -55,6 +60,9 @@ class MultiSeedEvalSummaryParserTest(unittest.TestCase):
         self.assertEqual(20260603, row["seed"])
         self.assertEqual(0.6667, row["pass_rate"])
         self.assertEqual(12, row["total_turns"])
+        self.assertFalse(row["gate_passed"])
+        self.assertIn("semantic_failed_turns_above_threshold:1>0", row["gate_failed_reasons"])
+        self.assertEqual(6, row["semantic_contract_turns"])
         self.assertEqual(4, row["contract_checked_turns"])
         self.assertEqual(3, row["contract_satisfied_turns"])
         self.assertEqual(5, row["semantic_passed_turns"])
@@ -70,6 +78,10 @@ class MultiSeedEvalSummaryParserTest(unittest.TestCase):
             row["top_violation_codes"],
         )
         self.assertIn("seed_20260603", row["output_dir"])
+
+        aggregate_gate = aggregate_multi_seed_gate([row])
+        self.assertFalse(aggregate_gate["gate_passed"])
+        self.assertIn("semantic_failed_turns_above_threshold:1>0", aggregate_gate["gate_failed_reasons"])
 
     def test_collect_seed_summary_fallbacks_when_top_codes_and_aliases_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

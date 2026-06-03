@@ -16,6 +16,7 @@ from scripts.real_user_eval.manifest import (
 )
 from scripts.real_user_eval.oracle import evaluate_oracle
 from scripts.real_user_eval.targets import AgentResult, EvalTarget, TargetRequest
+from scripts.eval_gate import EvalGateConfig, build_eval_gate_result, eval_gate_markdown, metrics_from_real_user_summary
 from scripts.run_generic_dataset_eval import comparison_markdown, write_json, write_jsonl
 from scripts.score_comparison_answers import WEIGHTS, score_markdown, score_rows, summarize
 
@@ -32,6 +33,10 @@ def run_manifest(
     include_conversations: bool = True,
     score_judge: str = DEFAULT_SCORE_JUDGE,
     min_acceptable: float = 75.0,
+    max_semantic_failed_turns: int = 0,
+    max_oracle_failed_turns: int = 0,
+    max_legacy_unverified_rate: float = 0.2,
+    required_families: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
@@ -85,8 +90,20 @@ def run_manifest(
             "policy": "Direct-computation oracle generated from source files; offline only, never sent to VDS.",
         },
     }
+    gate_result = build_eval_gate_result(
+        metrics_from_real_user_summary(summary, required_families=required_families),
+        EvalGateConfig(
+            max_semantic_failed_turns=max(0, int(max_semantic_failed_turns or 0)),
+            max_oracle_failed_turns=max(0, int(max_oracle_failed_turns or 0)),
+            max_legacy_unverified_rate=max(0.0, min(1.0, float(max_legacy_unverified_rate))),
+            required_families=tuple(required_families),
+        ),
+    )
+    summary["gate_result"] = gate_result
+    summary["gate_passed"] = gate_result["gate_passed"]
+    summary["gate_failed_reasons"] = gate_result["gate_failed_reasons"]
     write_json(output_dir / "summary.json", summary)
-    (output_dir / "summary.md").write_text(_runtime_gate_markdown(summary), encoding="utf-8")
+    (output_dir / "summary.md").write_text(_runtime_gate_markdown(summary) + "\n\n" + eval_gate_markdown(gate_result, title="Multi-metric Eval Gate"), encoding="utf-8")
     write_json(output_dir / "comparison.json", {"comparison": rows})
     write_jsonl(output_dir / "comparison.jsonl", rows)
     write_jsonl(output_dir / "agent_results.jsonl", raw_results)
@@ -99,11 +116,16 @@ def run_manifest(
         "summary": scored_summary,
         "runtime_acceptance_source": summary["runtime_acceptance_source"],
         "runtime_gate_summary": runtime_gate_summary,
+        "gate_result": gate_result,
         "rows": scored_rows,
     }
     write_jsonl(output_dir / "failure_index.jsonl", _failure_rows_from_scored_rows(rows, scored_rows))
     (output_dir / "comparison.md").write_text(
-        comparison_markdown(summary) + "\n\n" + _runtime_gate_markdown(summary),
+        comparison_markdown(summary)
+        + "\n\n"
+        + _runtime_gate_markdown(summary)
+        + "\n\n"
+        + eval_gate_markdown(gate_result, title="Multi-metric Eval Gate"),
         encoding="utf-8",
     )
     write_json(output_dir / "comparison_scored.json", scored)

@@ -34,6 +34,10 @@ def main() -> None:
     parser.add_argument("--enforce-v1-coverage", action="store_true")
     parser.add_argument("--score-judge", choices=("heuristic", "llm", "auto"), default=DEFAULT_SCORE_JUDGE)
     parser.add_argument("--min-acceptable", type=float, default=75.0)
+    parser.add_argument("--max-semantic-failed-turns", type=int, default=0)
+    parser.add_argument("--max-oracle-failed-turns", type=int, default=0)
+    parser.add_argument("--max-legacy-unverified-rate", type=float, default=0.2)
+    parser.add_argument("--required-family", action="append", default=[], help="Required capability family for the multi-metric gate. Can be repeated.")
     parser.add_argument("--print-summary", action="store_true")
     args = parser.parse_args()
 
@@ -52,6 +56,10 @@ def main() -> None:
         include_conversations=not args.skip_conversations,
         score_judge=args.score_judge,
         min_acceptable=args.min_acceptable,
+        max_semantic_failed_turns=args.max_semantic_failed_turns,
+        max_oracle_failed_turns=args.max_oracle_failed_turns,
+        max_legacy_unverified_rate=args.max_legacy_unverified_rate,
+        required_families=tuple(args.required_family or ()),
     )
     if args.print_summary:
         print(
@@ -62,6 +70,8 @@ def main() -> None:
                     "passed": summary["passed"],
                     "failed": summary["failed"],
                     "acceptance_source": summary.get("acceptance_source"),
+                    "gate_passed": summary.get("gate_passed"),
+                    "gate_failed_reasons": summary.get("gate_failed_reasons"),
                     "coverage": coverage,
                 },
                 ensure_ascii=False,

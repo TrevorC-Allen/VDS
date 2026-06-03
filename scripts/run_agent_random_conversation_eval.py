@@ -36,6 +36,7 @@ from data_agent_core.oracle_results import (
 )
 from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
 from data_agent_core.llm.client import LLMClient, MissingLLMConfigError, MockLLMClient, load_llm_client_from_env
+from scripts.eval_gate import EvalGateConfig, build_eval_gate_result, eval_gate_markdown, metrics_from_coverage
 
 
 OLD_DEMO_QUESTION_TOKENS = (
@@ -154,6 +155,9 @@ def main() -> None:
     parser.add_argument("--min-followup-turns", type=int, default=1)
     parser.add_argument("--min-structured-action-turns", type=int, default=1)
     parser.add_argument("--min-structured-answer-turns", type=int, default=0)
+    parser.add_argument("--max-semantic-failed-turns", type=int, default=0)
+    parser.add_argument("--max-oracle-failed-turns", type=int, default=0)
+    parser.add_argument("--max-legacy-unverified-rate", type=float, default=0.2)
     parser.add_argument("--files", nargs="*", help="Optional uploaded dataset files. When provided, the eval builds a dynamic scenario from their schema.")
     parser.add_argument("--dataset-name", default="uploaded_dataset")
     parser.add_argument("--output-dir", default="")
@@ -184,6 +188,9 @@ def main() -> None:
         min_followup_turns=args.min_followup_turns,
         min_structured_action_turns=args.min_structured_action_turns,
         min_structured_answer_turns=args.min_structured_answer_turns,
+        max_semantic_failed_turns=args.max_semantic_failed_turns,
+        max_oracle_failed_turns=args.max_oracle_failed_turns,
+        max_legacy_unverified_rate=args.max_legacy_unverified_rate,
     )
     artifacts = write_eval_artifacts(report, output_dir)
     if args.print_summary:
@@ -195,6 +202,8 @@ def main() -> None:
                 {
                     "output_dir": str(output_dir),
                     "passed": report["passed"],
+                    "gate_passed": report.get("gate_passed"),
+                    "gate_failed_reasons": report.get("gate_failed_reasons"),
                     "pass_rate": report["pass_rate"],
                     "artifacts": artifacts,
                 },
@@ -223,6 +232,9 @@ def run_agent_random_conversation_eval(
     min_followup_turns: int = 1,
     min_structured_action_turns: int = 1,
     min_structured_answer_turns: int = 0,
+    max_semantic_failed_turns: int = 0,
+    max_oracle_failed_turns: int = 0,
+    max_legacy_unverified_rate: float = 0.2,
 ) -> dict[str, Any]:
     """Run randomized conversation scenarios and return a JSON-ready report."""
 
@@ -270,6 +282,9 @@ def run_agent_random_conversation_eval(
         "min_followup_turns": max(0, int(min_followup_turns or 0)),
         "min_structured_action_turns": max(0, int(min_structured_action_turns or 0)),
         "min_structured_answer_turns": max(0, int(min_structured_answer_turns or 0)),
+        "max_semantic_failed_turns": max(0, int(max_semantic_failed_turns or 0)),
+        "max_oracle_failed_turns": max(0, int(max_oracle_failed_turns or 0)),
+        "max_legacy_unverified_rate": max(0.0, min(1.0, float(max_legacy_unverified_rate))),
     }
     if pass_rate < thresholds["min_pass_rate"]:
         global_issues.append(f"global_pass_rate_below_threshold:{pass_rate:.4f}<{thresholds['min_pass_rate']:.4f}")
@@ -290,7 +305,23 @@ def run_agent_random_conversation_eval(
         global_issues.append(
             f"global_structured_answer_turns_below_threshold:{coverage['structured_answer_turns']}<{thresholds['min_structured_answer_turns']}"
         )
-    passed = passed_count == len(results) and not global_issues
+    transport_success_turns = sum(1 for result in results for turn in result.turns if turn.success)
+    gate_result = build_eval_gate_result(
+        metrics_from_coverage(
+            coverage,
+            required_families=required_global_families,
+            transport_success_turns=transport_success_turns,
+        ),
+        EvalGateConfig(
+            max_semantic_failed_turns=thresholds["max_semantic_failed_turns"],
+            max_oracle_failed_turns=thresholds["max_oracle_failed_turns"],
+            max_legacy_unverified_rate=thresholds["max_legacy_unverified_rate"],
+            required_families=tuple(required_global_families),
+        ),
+    )
+    for reason in gate_result["gate_failed_reasons"]:
+        global_issues.append(f"eval_gate:{reason}")
+    passed = passed_count == len(results) and not global_issues and bool(gate_result["gate_passed"])
     return {
         "name": "agent_random_conversation_eval",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -301,6 +332,9 @@ def run_agent_random_conversation_eval(
         "passed": passed,
         "passed_count": passed_count,
         "global_issues": global_issues,
+        "gate_result": gate_result,
+        "gate_passed": gate_result["gate_passed"],
+        "gate_failed_reasons": gate_result["gate_failed_reasons"],
         "pass_rate": pass_rate,
         "thresholds": thresholds,
         "elapsed_seconds": round(time.perf_counter() - started, 3),
@@ -3422,11 +3456,16 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
     corrected_passed_turns = 0
     needs_clarification_turns = 0
     llm_judge_failed_turns = 0
+    legacy_unverified_turns = 0
+    transport_success_turns = 0
     violation_counts: dict[str, int] = {}
+    all_violation_counts: dict[str, int] = {}
     total_turns = 0
     for result in results:
         for turn in result.turns:
             total_turns += 1
+            if turn.success:
+                transport_success_turns += 1
             if turn.capability_family:
                 capability_counts[turn.capability_family] = capability_counts.get(turn.capability_family, 0) + 1
             if turn.operation:
@@ -3479,13 +3518,19 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
                 corrected_passed_turns += 1
             if turn.semantic_status == "needs_clarification":
                 needs_clarification_turns += 1
+            if turn.semantic_status in {"legacy_unverified", "not_available", ""}:
+                legacy_unverified_turns += 1
             for code in turn.contract_violation_codes:
                 violation_counts[code] = violation_counts.get(code, 0) + 1
+                all_violation_counts[code] = all_violation_counts.get(code, 0) + 1
+            for code in turn.oracle_issue_codes:
+                all_violation_counts[code] = all_violation_counts.get(code, 0) + 1
             if turn.llm_judge_failed:
                 llm_judge_failed_turns += 1
     return {
         "conversation_count": len(results),
         "turn_count": total_turns,
+        "transport_success_turns": transport_success_turns,
         "requested_followup_turns": requested_followup_turns,
         "followup_turns": followup_turns,
         "missing_followup_context_turns": missing_followup_context_turns,
@@ -3514,6 +3559,11 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
         "corrected_passed_turns": corrected_passed_turns,
         "needs_clarification_turns": needs_clarification_turns,
         "llm_judge_failed_turns": llm_judge_failed_turns,
+        "legacy_unverified_turns": legacy_unverified_turns,
+        "top_violation_codes": [
+            {"code": code, "count": count}
+            for code, count in sorted(all_violation_counts.items(), key=lambda item: (-item[1], item[0]))[:10]
+        ],
         "top_contract_violation_codes": [
             {"code": code, "count": count}
             for code, count in sorted(violation_counts.items(), key=lambda item: (-item[1], item[0]))[:10]
@@ -3741,6 +3791,8 @@ def _report_markdown(report: dict[str, Any]) -> str:
         "",
         f"- 结果: {'PASS' if report.get('passed') else 'FAIL'}",
         f"- 通过率: {float(report.get('pass_rate') or 0.0):.2%}",
+        f"- Gate passed: {report.get('gate_passed', (report.get('gate_result') or {}).get('gate_passed', False))}",
+        f"- Gate failed reasons: {_join_or_none(report.get('gate_failed_reasons') or (report.get('gate_result') or {}).get('gate_failed_reasons') or [])}",
         f"- 对话数: {report.get('conversation_count')}；场景数: {report.get('scenario_count')}；每场景运行: {report.get('runs_per_scenario')}",
         f"- 随机种子: {report.get('seed')}；用户模拟器: {report.get('simulator_source')}",
         f"- 全局问题: {_join_or_none(report.get('global_issues') or [])}",
@@ -3757,6 +3809,8 @@ def _report_markdown(report: dict[str, Any]) -> str:
     thresholds = report.get("thresholds") if isinstance(report.get("thresholds"), dict) else {}
     for key, value in thresholds.items():
         lines.append(f"- {key}: {value}")
+    if isinstance(report.get("gate_result"), dict):
+        lines.extend(["", eval_gate_markdown(report["gate_result"], title="Multi-metric Eval Gate")])
     lines.extend(["", "## Coverage"])
     coverage = report.get("coverage") if isinstance(report.get("coverage"), dict) else {}
     lines.append(f"- Turn count: {coverage.get('turn_count', 0)}")
@@ -4516,6 +4570,15 @@ def _summary_text(report: dict[str, Any]) -> str:
         f"agent_random_conversation_eval: {'PASS' if report['passed'] else 'FAIL'}",
         f"seed={report['seed']} scenarios={report['scenario_count']} conversations={report.get('conversation_count', report['scenario_count'])} pass_rate={report['pass_rate']:.2%}",
     ]
+    gate_result = report.get("gate_result") if isinstance(report.get("gate_result"), dict) else {}
+    if gate_result:
+        lines.append(
+            "gate: "
+            f"passed={gate_result.get('gate_passed')} "
+            f"semantic_pass_rate={gate_result.get('semantic_pass_rate')} "
+            f"oracle_pass_rate={gate_result.get('oracle_pass_rate')} "
+            f"legacy_unverified_rate={gate_result.get('legacy_unverified_rate')}"
+        )
     coverage = report.get("coverage") if isinstance(report.get("coverage"), dict) else {}
     if coverage:
         lines.append(

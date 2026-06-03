@@ -12,6 +12,7 @@ from scripts.run_agent_random_conversation_eval import (
     _report_markdown,
     write_eval_artifacts,
 )
+from scripts.eval_gate import EvalGateConfig, build_eval_gate_result, metrics_from_coverage
 
 
 class EvalSemanticContractSummaryTest(unittest.TestCase):
@@ -125,7 +126,7 @@ class EvalSemanticContractSummaryTest(unittest.TestCase):
 
     def test_report_output_includes_semantic_contract_summary_fields(self) -> None:
         report = {
-            "passed": True,
+            "passed": False,
             "pass_rate": 1.0,
             "conversation_count": 1,
             "scenario_count": 1,
@@ -137,6 +138,9 @@ class EvalSemanticContractSummaryTest(unittest.TestCase):
             "coverage": _coverage_summary([self._build_fake_result()]),
             "results": [],
         }
+        report["gate_result"] = build_eval_gate_result(metrics_from_coverage(report["coverage"]), EvalGateConfig())
+        report["gate_passed"] = report["gate_result"]["gate_passed"]
+        report["gate_failed_reasons"] = report["gate_result"]["gate_failed_reasons"]
 
         markdown = _report_markdown(report)
         self.assertIn("## Coverage", markdown)
@@ -149,6 +153,9 @@ class EvalSemanticContractSummaryTest(unittest.TestCase):
         self.assertIn("- Corrected passed turns: 1", markdown)
         self.assertIn("- Needs clarification turns: 1", markdown)
         self.assertIn("- Top contract violation codes: TOPN_RESULT_ROWS_SHORT=1", markdown)
+        self.assertIn("## Multi-metric Eval Gate", markdown)
+        self.assertIn("- Gate passed: False", markdown)
+        self.assertIn("semantic_failed_turns_above_threshold:1>0", markdown)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -162,5 +169,6 @@ class EvalSemanticContractSummaryTest(unittest.TestCase):
         self.assertEqual(2, summary["coverage"]["contract_satisfied_turns"])
         self.assertEqual(2, summary["coverage"]["semantic_passed_turns"])
         self.assertEqual(1, summary["coverage"]["semantic_failed_turns"])
+        self.assertFalse(summary["gate_passed"])
         self.assertEqual(1, summary["coverage"]["corrected_passed_turns"])
         self.assertEqual(1, summary["coverage"]["needs_clarification_turns"])

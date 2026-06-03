@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
 import json
 import subprocess
@@ -13,16 +14,31 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.eval_gate import EvalGateConfig, EvalGateMetrics, build_eval_gate_result, eval_gate_markdown, metrics_from_coverage
 
 SUMMARY_FIELDS = [
     "seed",
     "output_dir",
     "pass_rate",
+    "gate_passed",
+    "gate_failed_reasons",
+    "transport_pass_rate",
+    "semantic_pass_rate",
+    "oracle_pass_rate",
+    "contract_satisfied_rate",
+    "legacy_unverified_rate",
     "total_turns",
+    "transport_success_turns",
+    "semantic_contract_turns",
     "contract_checked_turns",
     "contract_satisfied_turns",
     "semantic_passed_turns",
     "semantic_failed_turns",
+    "legacy_unverified_turns",
+    "oracle_available_turns",
     "oracle_result_turns",
     "oracle_passed",
     "oracle_failed",
@@ -30,6 +46,7 @@ SUMMARY_FIELDS = [
     "oracle_actual_missing",
     "llm_judge_failed_turns",
     "top_violation_codes",
+    "family_coverage",
 ]
 
 
@@ -114,6 +131,7 @@ def _collect_seed_summary(
     seed: int,
     output_dir: Path | None = None,
     summary_path: Path | None = None,
+    gate_config: EvalGateConfig | None = None,
 ) -> dict[str, Any]:
     path = Path(summary_path) if summary_path else None
     output_dir_value = str(output_dir) if output_dir else ""
@@ -125,11 +143,22 @@ def _collect_seed_summary(
             "seed": seed,
             "output_dir": output_dir_value,
             "pass_rate": 0.0,
+            "gate_passed": False,
+            "gate_failed_reasons": ["summary_missing"],
+            "transport_pass_rate": "not_available",
+            "semantic_pass_rate": "not_available",
+            "oracle_pass_rate": "not_available",
+            "contract_satisfied_rate": "not_available",
+            "legacy_unverified_rate": "not_available",
             "total_turns": 0,
+            "transport_success_turns": 0,
+            "semantic_contract_turns": 0,
             "contract_checked_turns": 0,
             "contract_satisfied_turns": 0,
             "semantic_passed_turns": 0,
             "semantic_failed_turns": 0,
+            "legacy_unverified_turns": 0,
+            "oracle_available_turns": 0,
             "oracle_result_turns": 0,
             "oracle_passed": 0,
             "oracle_failed": 0,
@@ -137,20 +166,36 @@ def _collect_seed_summary(
             "oracle_actual_missing": 0,
             "llm_judge_failed_turns": 0,
             "top_violation_codes": [],
+            "family_coverage": {"required": [], "covered": [], "missing": [], "passed": True},
         }
 
     summary = json.loads(path.read_text(encoding="utf-8"))
     coverage = summary.get("coverage", {})
+    gate_result = summary.get("gate_result") if isinstance(summary.get("gate_result"), dict) else build_eval_gate_result(
+        metrics_from_coverage(coverage),
+        gate_config or EvalGateConfig(),
+    )
 
     return {
         "seed": seed,
         "output_dir": output_dir_value or str(path.parent),
         "pass_rate": _to_float(summary.get("pass_rate")),
+        "gate_passed": bool(gate_result.get("gate_passed")),
+        "gate_failed_reasons": list(gate_result.get("gate_failed_reasons") or []),
+        "transport_pass_rate": gate_result.get("transport_pass_rate", "not_available"),
+        "semantic_pass_rate": gate_result.get("semantic_pass_rate", "not_available"),
+        "oracle_pass_rate": gate_result.get("oracle_pass_rate", "not_available"),
+        "contract_satisfied_rate": gate_result.get("contract_satisfied_rate", "not_available"),
+        "legacy_unverified_rate": gate_result.get("legacy_unverified_rate", "not_available"),
         "total_turns": _to_int(coverage.get("turn_count")),
+        "transport_success_turns": _to_int(coverage.get("transport_success_turns", coverage.get("turn_count"))),
+        "semantic_contract_turns": _to_int(coverage.get("semantic_contract_turns")),
         "contract_checked_turns": _to_int(coverage.get("contract_checked_turns")),
         "contract_satisfied_turns": _to_int(coverage.get("contract_satisfied_turns")),
         "semantic_passed_turns": _to_int(coverage.get("semantic_passed_turns")),
         "semantic_failed_turns": _to_int(coverage.get("semantic_failed_turns")),
+        "legacy_unverified_turns": _to_int(coverage.get("legacy_unverified_turns")),
+        "oracle_available_turns": _to_int(coverage.get("oracle_available_turns")),
         "oracle_result_turns": _to_int(coverage.get("oracle_result_turns")),
         "oracle_passed": _to_int(
             coverage.get("oracle_passed", coverage.get("oracle_passed_turns"))
@@ -168,8 +213,9 @@ def _collect_seed_summary(
             summary.get("llm_judge_failed_turns", coverage.get("llm_judge_failed_turns"))
         ),
         "top_violation_codes": _normalize_top_violation_codes(
-            coverage.get("top_contract_violation_codes", summary.get("top_contract_violation_codes", []))
+            coverage.get("top_violation_codes", coverage.get("top_contract_violation_codes", summary.get("top_contract_violation_codes", [])))
         ),
+        "family_coverage": gate_result.get("family_coverage") or {},
     }
 
 
@@ -180,9 +226,13 @@ def _parse_seeds(seed_csv: str) -> list[int]:
 
 def _parse_markdown_cell(value: Any) -> str:
     if isinstance(value, list):
-        return ", ".join(f"{item.get('code')}={item.get('count')}" for item in value)
+        if all(isinstance(item, dict) and "code" in item for item in value):
+            return ", ".join(f"{item.get('code')}={item.get('count')}" for item in value)
+        return ", ".join(str(item) for item in value)
     if isinstance(value, float):
         return f"{value:.4f}"
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
     return str(value)
 
 
@@ -202,6 +252,8 @@ def _write_csv(rows: list[dict[str, Any]], path: Path) -> None:
     for row in rows:
         normalized = dict(row)
         normalized["top_violation_codes"] = json.dumps(row.get("top_violation_codes", []), ensure_ascii=False)
+        normalized["gate_failed_reasons"] = json.dumps(row.get("gate_failed_reasons", []), ensure_ascii=False)
+        normalized["family_coverage"] = json.dumps(row.get("family_coverage", {}), ensure_ascii=False)
         normalized_rows.append(normalized)
 
     with path.open("w", encoding="utf-8", newline="") as handler:
@@ -210,21 +262,36 @@ def _write_csv(rows: list[dict[str, Any]], path: Path) -> None:
         writer.writerows(normalized_rows)
 
 
-def _write_json(rows: list[dict[str, Any]], path: Path, output_root: Path) -> None:
+def _write_json(rows: list[dict[str, Any]], path: Path, output_root: Path, *, gate_result: dict[str, Any]) -> None:
     payload = {
         "output_root": str(output_root),
         "rows": rows,
         "count": len(rows),
+        "gate_result": gate_result,
+        "gate_passed": gate_result.get("gate_passed", False),
+        "gate_failed_reasons": gate_result.get("gate_failed_reasons", []),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def run_multi_seed_eval(seeds: list[int], *, output_root: Path) -> list[dict[str, Any]]:
+def run_multi_seed_eval(seeds: list[int], *, output_root: Path, gate_config: EvalGateConfig | None = None) -> list[dict[str, Any]]:
     output_root.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
     for seed in seeds:
-        command = ["python3", str(REPO_ROOT / "scripts/run_agent_random_conversation_eval.py"), "--seed", str(seed)]
+        config = gate_config or EvalGateConfig()
+        command = [
+            "python3",
+            str(REPO_ROOT / "scripts/run_agent_random_conversation_eval.py"),
+            "--seed",
+            str(seed),
+            "--max-semantic-failed-turns",
+            str(config.max_semantic_failed_turns),
+            "--max-oracle-failed-turns",
+            str(config.max_oracle_failed_turns),
+            "--max-legacy-unverified-rate",
+            str(config.max_legacy_unverified_rate),
+        ]
         run = subprocess.run(
             command,
             cwd=str(REPO_ROOT),
@@ -244,12 +311,67 @@ def run_multi_seed_eval(seeds: list[int], *, output_root: Path) -> list[dict[str
             if candidate.exists():
                 summary_path = candidate
 
-        row = _collect_seed_summary(seed=seed, output_dir=output_dir, summary_path=summary_path)
+        row = _collect_seed_summary(seed=seed, output_dir=output_dir, summary_path=summary_path, gate_config=gate_config)
         rows.append(row)
 
         if run.returncode != 0:
+            row["gate_passed"] = False
+            row["gate_failed_reasons"] = list(row.get("gate_failed_reasons") or []) + [f"seed_run_failed:{run.returncode}"]
             print(f"[warn] seed={seed} run failed with exit code {run.returncode}", file=sys.stderr)
     return rows
+
+
+def aggregate_multi_seed_gate(rows: list[dict[str, Any]], *, gate_config: EvalGateConfig | None = None) -> dict[str, Any]:
+    violation_counts: Counter[str] = Counter()
+    covered_families: set[str] = set()
+    for row in rows:
+        for item in row.get("top_violation_codes") or []:
+            if isinstance(item, dict) and item.get("code"):
+                violation_counts[str(item["code"])] += _to_int(item.get("count")) or 1
+        family_coverage = row.get("family_coverage") if isinstance(row.get("family_coverage"), dict) else {}
+        covered_families.update(str(item) for item in family_coverage.get("covered", []) if str(item))
+    gate_result = build_eval_gate_result(
+        EvalGateMetrics(
+            total_turns=sum(_to_int(row.get("total_turns")) for row in rows),
+            transport_success_turns=sum(_to_int(row.get("transport_success_turns")) for row in rows),
+            semantic_contract_turns=sum(_to_int(row.get("semantic_contract_turns")) for row in rows),
+            semantic_passed_turns=sum(_to_int(row.get("semantic_passed_turns")) for row in rows),
+            semantic_failed_turns=sum(_to_int(row.get("semantic_failed_turns")) for row in rows),
+            oracle_available_turns=sum(_to_int(row.get("oracle_available_turns")) for row in rows),
+            oracle_passed_turns=sum(_to_int(row.get("oracle_passed")) for row in rows),
+            oracle_failed_turns=sum(_to_int(row.get("oracle_failed")) for row in rows),
+            contract_satisfied_turns=sum(_to_int(row.get("contract_satisfied_turns")) for row in rows),
+            legacy_unverified_turns=sum(_to_int(row.get("legacy_unverified_turns")) for row in rows),
+            covered_families=tuple(sorted(covered_families)),
+            top_violation_codes=tuple({"code": code, "count": count} for code, count in violation_counts.most_common(12)),
+        ),
+        gate_config or EvalGateConfig(),
+    )
+    failed_reasons = list(gate_result["gate_failed_reasons"])
+    for row in rows:
+        if row.get("gate_passed") is False:
+            failed_reasons.append(f"seed_gate_failed:{row.get('seed')}")
+    gate_result["gate_failed_reasons"] = sorted(set(failed_reasons))
+    gate_result["gate_passed"] = not gate_result["gate_failed_reasons"]
+    return gate_result
+
+
+def _write_markdown_report(rows: list[dict[str, Any]], path: Path, *, gate_result: dict[str, Any]) -> None:
+    lines = [
+        "# Multi-seed Agent Random Eval",
+        "",
+        eval_gate_markdown(gate_result, title="Multi-seed Multi-metric Eval Gate"),
+        "",
+        "## Seeds",
+        "",
+    ]
+    for row in rows:
+        lines.append(
+            f"- seed={row.get('seed')} pass_rate={_parse_markdown_cell(row.get('pass_rate'))} "
+            f"gate_passed={row.get('gate_passed')} reasons={_parse_markdown_cell(row.get('gate_failed_reasons') or [])}"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def build_seeds(args: argparse.Namespace) -> list[int]:
@@ -266,6 +388,9 @@ def main() -> None:
     parser.add_argument("--num-seeds", type=int, default=1)
     parser.add_argument("--base-seed", type=int, default=20260603)
     parser.add_argument("--output-root", default="outputs/agent_random_eval_multi_seed")
+    parser.add_argument("--max-semantic-failed-turns", type=int, default=0)
+    parser.add_argument("--max-oracle-failed-turns", type=int, default=0)
+    parser.add_argument("--max-legacy-unverified-rate", type=float, default=0.2)
     args = parser.parse_args()
     try:
         seeds = build_seeds(args)
@@ -275,16 +400,30 @@ def main() -> None:
     output_root = Path(args.output_root)
     if not output_root.is_absolute():
         output_root = REPO_ROOT / output_root
-    rows = run_multi_seed_eval(seeds, output_root=output_root)
+    gate_config = EvalGateConfig(
+        max_semantic_failed_turns=max(0, int(args.max_semantic_failed_turns or 0)),
+        max_oracle_failed_turns=max(0, int(args.max_oracle_failed_turns or 0)),
+        max_legacy_unverified_rate=max(0.0, min(1.0, float(args.max_legacy_unverified_rate))),
+    )
+    rows = run_multi_seed_eval(seeds, output_root=output_root, gate_config=gate_config)
+    gate_result = aggregate_multi_seed_gate(rows, gate_config=gate_config)
 
     csv_path = output_root / "multi_seed_summary.csv"
     json_path = output_root / "multi_seed_summary.json"
+    report_path = output_root / "multi_seed_report.md"
     _write_csv(rows, csv_path)
-    _write_json(rows, json_path, output_root)
+    _write_json(rows, json_path, output_root, gate_result=gate_result)
+    _write_markdown_report(rows, report_path, gate_result=gate_result)
 
     print(f"multi_seed_summary.csv: {csv_path}")
     print(f"multi_seed_summary.json: {json_path}")
+    print(f"multi_seed_report.md: {report_path}")
+    print(f"gate_passed: {gate_result.get('gate_passed', False)}")
+    if gate_result.get("gate_failed_reasons"):
+        print("gate_failed_reasons: " + ", ".join(str(item) for item in gate_result.get("gate_failed_reasons") or []))
     _print_markdown_table(rows)
+    if not gate_result.get("gate_passed", False):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
