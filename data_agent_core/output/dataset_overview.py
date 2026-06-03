@@ -49,6 +49,7 @@ def build_dataset_overview_response(
 
     metric_summary = _metric_summary(df, metric_column, dimension_column, period_column) if metric_column else None
     field_meanings = _field_meanings(df)
+    field_roles = _field_role_columns([item["field"] for item in field_meanings], metric_column=metric_column, dimension_column=dimension_column, period_column=period_column)
     categorical_distributions = _categorical_distributions(df, metric_column)
     boolean_rates = _boolean_rates(df)
     answerable_questions = _answerable_questions(metric_column, dimension_column, period_column, categorical_distributions, boolean_rates)
@@ -70,6 +71,10 @@ def build_dataset_overview_response(
         "period_column": period_column,
         "period_range": _period_range(df, period_column) if period_column else {},
         "field_meanings": field_meanings,
+        "metric_candidates": field_roles["metrics"],
+        "dimension_candidates": field_roles["dimensions"],
+        "time_columns": field_roles["time"],
+        "id_candidates": field_roles["ids"],
         "metric_summary": metric_summary or {},
         "categorical_distributions": categorical_distributions,
         "boolean_rates": boolean_rates,
@@ -80,7 +85,13 @@ def build_dataset_overview_response(
     }
     result_rows = _overview_result_rows(overview_report)
     question_kind = _overview_question_kind(question)
-    answer = _overview_shape_answer(overview_report) if _wants_shape_summary(question) else _overview_answer(overview_report, question)
+    answer = (
+        _overview_shape_answer(overview_report)
+        if _wants_shape_summary(question)
+        else _contract_single_table_overview_answer(overview_report)
+        if _requires_contract_overview(question)
+        else _overview_answer(overview_report, question)
+    )
     insight = _overview_insight(overview_report)
     execution_artifacts = build_overview_execution_artifacts(
         table_name=table_name,
@@ -128,7 +139,11 @@ def build_dataset_overview_response(
             "passed": True,
             "confidence": 1.0,
             "notes": ["Dataset overview was computed from the uploaded table, not from a row-count shortcut."],
+            "semantic_status": "passed",
         },
+        "semantic_status": "passed",
+        "contract_family": "overview",
+        "contract_satisfied": True,
         "insight": insight.__dict__,
         "chart": None,
         "quality_report": quality_report,
@@ -208,6 +223,8 @@ def _wants_multi_table_overview(question: str, tables: dict[str, pd.DataFrame]) 
         "各个表",
         "几个文件",
         "这些文件",
+        "上传文件",
+        "这批",
         "每个文件",
         "各个文件",
         "每张表",
@@ -321,6 +338,7 @@ def _build_multi_table_overview_response(
         "total_row_count": total_rows,
         "total_column_count": total_columns,
         "tables_summary": table_summaries,
+        "candidate_join_keys": _candidate_join_keys(table_summaries),
         "missing_boundaries": [
             "多表关系需要结合业务主键、时间粒度和说明文件确认，不能仅凭字段同名自动 join。",
             "字段含义来自字段名、类型和样例的安全推断，正式口径仍应以业务说明为准。",
@@ -328,7 +346,13 @@ def _build_multi_table_overview_response(
     }
     result_rows = _multi_table_result_rows(overview_report)
     question_kind = _overview_question_kind(question)
-    answer = _multi_table_shape_answer(overview_report) if _wants_shape_summary(question) else _multi_table_answer(overview_report, question)
+    answer = (
+        _multi_table_shape_answer(overview_report)
+        if _wants_shape_summary(question)
+        else _contract_multi_table_overview_answer(overview_report)
+        if _requires_contract_overview(question)
+        else _multi_table_answer(overview_report, question)
+    )
     insight = _multi_table_insight(overview_report)
     execution_artifacts = _multi_table_execution_artifacts(overview_report)
 
@@ -366,7 +390,11 @@ def _build_multi_table_overview_response(
             "passed": True,
             "confidence": 1.0,
             "notes": ["Multi-table overview was computed from uploaded table profiles, not from raw detail rows."],
+            "semantic_status": "passed",
         },
+        "semantic_status": "passed",
+        "contract_family": "multi_file_overview",
+        "contract_satisfied": True,
         "insight": insight.__dict__,
         "chart": None,
         "quality_report": quality_report,
@@ -487,6 +515,12 @@ def _table_overview_summary(
     dimension_column = _preferred_dimension_column(columns, metric_column)
     period_column = _preferred_period_column(columns)
     field_meanings = _field_meanings(df)
+    roles = _field_role_columns(
+        [str(field.get("field")) for field in field_meanings if isinstance(field, dict)],
+        metric_column=metric_column,
+        dimension_column=dimension_column,
+        period_column=period_column,
+    )
     key_fields = _key_fields(columns, metric_column, dimension_column, period_column)
     return {
         "table": table_name,
@@ -508,7 +542,11 @@ def _table_overview_summary(
         "period_column": period_column,
         "period_range": _period_range(df, period_column) if period_column else {},
         "key_fields": key_fields,
-        "field_meanings": field_meanings[:12],
+        "field_meanings": field_meanings,
+        "metric_candidates": roles["metrics"],
+        "dimension_candidates": roles["dimensions"],
+        "time_columns": roles["time"],
+        "id_candidates": roles["ids"],
     }
 
 
@@ -578,6 +616,24 @@ def _overview_question_kind(question: str) -> str:
     return "overview"
 
 
+def _requires_contract_overview(question: str) -> bool:
+    compact = str(question or "").lower().replace(" ", "")
+    signals = (
+        "概览",
+        "overview",
+        "数据结构",
+        "表结构",
+        "字段",
+        "能支持哪些分析",
+        "支持哪些分析",
+        "能分析什么",
+        "可分析方向",
+        "分析方向",
+        "上传文件能分析什么",
+    )
+    return any(signal in compact for signal in signals)
+
+
 def _likely_table_meaning(table_name: str, columns: list[str], field_meanings: list[dict[str, str]]) -> str:
     haystack = " ".join([table_name, *columns]).lower()
     if any(token in haystack for token in ("taxi", "trip", "fare", "pickup", "dropoff", "行程", "车费")):
@@ -642,6 +698,170 @@ def _multi_table_answer(report: dict[str, Any], question: str) -> str:
     if kind == "metric_dimension":
         return _multi_table_metric_dimension_answer(report)
     return _multi_table_general_answer(report)
+
+
+def _contract_single_table_overview_answer(report: dict[str, Any]) -> str:
+    table = str(report.get("table") or "当前表")
+    fields = [item for item in report.get("field_meanings") or [] if isinstance(item, dict)]
+    metric_candidates = [str(item) for item in report.get("metric_candidates") or []]
+    dimension_candidates = [str(item) for item in report.get("dimension_candidates") or []]
+    time_columns = [str(item) for item in report.get("time_columns") or []]
+    lines = [
+        f"{table} 是一张包含 {int(report.get('row_count') or 0):,} 行、{int(report.get('column_count') or len(fields))} 个字段的数据表，可先用于字段理解、指标汇总、分组对比、时间趋势和质量检查。",
+        "",
+        "字段 | 类型 | 角色 | 可用于什么分析",
+        "--- | --- | --- | ---",
+    ]
+    for field in fields:
+        lines.append(
+            " | ".join(
+                [
+                    str(field.get("field") or ""),
+                    str(field.get("type") or "unknown"),
+                    str(field.get("role") or "待确认"),
+                    str(field.get("analysis_use") or field.get("meaning") or "需结合业务说明确认"),
+                ]
+            )
+        )
+    lines.extend(["", "可分析方向："])
+    lines.extend(f"- {item}" for item in _analysis_directions_for_fields(metric_candidates, dimension_candidates, time_columns))
+    lines.extend(
+        [
+            "",
+            "候选字段："
+            + f"指标={_format_role_list(metric_candidates)}；维度={_format_role_list(dimension_candidates)}；时间={_format_role_list(time_columns)}。",
+            "",
+            "数据质量摘要：",
+            _quality_summary_text(report.get("quality_issues") or [], report.get("quality_issue_count")),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _contract_multi_table_overview_answer(report: dict[str, Any]) -> str:
+    tables = [item for item in report.get("tables_summary") or [] if isinstance(item, dict)]
+    lines = [
+        f"这批上传文件包含 {int(report.get('table_count') or len(tables))} 张表，共 {int(report.get('total_row_count') or 0):,} 行、{int(report.get('total_column_count') or 0)} 个字段；需要先按表理解字段，再确认关联键后做跨表分析。",
+        "",
+        "每张表字段清单：",
+    ]
+    for table in tables:
+        lines.extend(
+            [
+                "",
+                f"{table.get('table')}（{int(table.get('row_count') or 0):,} 行、{int(table.get('column_count') or 0)} 列）",
+                "字段 | 类型 | 角色 | 可用于什么分析",
+                "--- | --- | --- | ---",
+            ]
+        )
+        for field in table.get("field_meanings") or []:
+            if not isinstance(field, dict):
+                continue
+            lines.append(
+                " | ".join(
+                    [
+                        str(field.get("field") or ""),
+                        str(field.get("type") or "unknown"),
+                        str(field.get("role") or "待确认"),
+                        str(field.get("analysis_use") or field.get("meaning") or "需结合业务说明确认"),
+                    ]
+                )
+            )
+    join_keys = report.get("candidate_join_keys") or []
+    join_text = "；".join(str(item.get("text") or "") for item in join_keys if isinstance(item, dict) and item.get("text")) or "未识别到稳定的同名 ID / 编码 / 日期类候选关联键"
+    lines.extend(["", "候选关联键：", f"- {join_text}"])
+    lines.extend(["", "可分析方向："])
+    lines.extend(f"- {item}" for item in _multi_table_analysis_directions(tables))
+    lines.extend(
+        [
+            "",
+            "join 风险和数据质量摘要：",
+            f"- join 风险：候选键必须再检查唯一性、缺失率、一对多关系和业务主键定义；不能仅凭同名字段直接 join。",
+            f"- 数据质量：{_multi_table_quality_summary_text(tables)}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _analysis_directions_for_fields(metrics: list[str], dimensions: list[str], time_columns: list[str]) -> list[str]:
+    primary_metrics = metrics[:3] or ["数值指标"]
+    metric_text = "/".join(primary_metrics)
+    directions: list[str] = []
+    for dimension in dimensions[:3]:
+        directions.append(f"按 {dimension} 分组汇总 {metric_text}")
+    for time_column in time_columns[:2]:
+        directions.append(f"按 {time_column} 看 {metric_text} 趋势")
+    if len(dimensions) >= 2 and metrics:
+        directions.append(f"按 {dimensions[0]} 和 {dimensions[1]} 交叉分析 {metric_text}")
+    if not directions:
+        directions.append("先确认一个指标字段和一个维度字段，再做分组汇总或趋势分析")
+    return directions
+
+
+def _multi_table_analysis_directions(tables: list[dict[str, Any]]) -> list[str]:
+    all_metrics: list[str] = []
+    all_dimensions: list[str] = []
+    all_times: list[str] = []
+    table_metric: dict[str, list[str]] = {}
+    for table in tables:
+        table_name = str(table.get("table") or "")
+        metrics = [str(item) for item in table.get("metric_candidates") or []]
+        dimensions = [str(item) for item in table.get("dimension_candidates") or []]
+        times = [str(item) for item in table.get("time_columns") or []]
+        table_metric[table_name] = metrics
+        for source, target in ((metrics, all_metrics), (dimensions, all_dimensions), (times, all_times)):
+            for item in source:
+                if item not in target:
+                    target.append(item)
+    metric_text = "/".join(all_metrics[:3]) or "核心指标"
+    directions: list[str] = []
+    if all_times:
+        directions.append(f"按 {all_times[0]} 看 {metric_text} 趋势")
+    if all_dimensions:
+        directions.append(f"按 {all_dimensions[0]} 分组汇总 {metric_text}")
+    if len(all_dimensions) >= 2:
+        directions.append(f"按 {all_dimensions[0]} 和 {all_dimensions[1]} 对比 {metric_text}")
+    if len(tables) >= 2:
+        first = str(tables[0].get("table") or "事实表")
+        second = str(tables[1].get("table") or "维表")
+        directions.append(f"关联 {first} 与 {second} 后，用 {metric_text} 结合 {', '.join(all_dimensions[:2]) or '维度字段'} 做跨表分析")
+    return directions or ["先选事实表、指标字段和关联键，再做跨表汇总分析"]
+
+
+def _candidate_join_keys(tables: list[dict[str, Any]]) -> list[dict[str, str]]:
+    candidates: list[dict[str, str]] = []
+    for left_index, left in enumerate(tables):
+        left_fields = {str(field.get("field")) for field in left.get("field_meanings") or [] if isinstance(field, dict)}
+        for right in tables[left_index + 1 :]:
+            right_fields = {str(field.get("field")) for field in right.get("field_meanings") or [] if isinstance(field, dict)}
+            for field in sorted(left_fields & right_fields):
+                if _looks_like_id_field(field) or _looks_like_time_field(field):
+                    candidates.append(
+                        {
+                            "left_table": str(left.get("table") or ""),
+                            "left_key": field,
+                            "right_table": str(right.get("table") or ""),
+                            "right_key": field,
+                            "text": f"{left.get('table')}.{field} -> {right.get('table')}.{field}",
+                        }
+                    )
+    return candidates
+
+
+def _quality_summary_text(issues: list[dict[str, Any]], issue_count: Any) -> str:
+    count = int(issue_count or 0)
+    if count == 0:
+        return "缺失 / 重复 / 异常当前统计未发现非 0 问题；正式分析前仍可运行字段级质量检查。"
+    messages = _quality_issue_messages(issues, limit=4)
+    return f"当前识别到 {count} 类质量信号：" + "；".join(messages)
+
+
+def _multi_table_quality_summary_text(tables: list[dict[str, Any]]) -> str:
+    total = sum(int(table.get("quality_issue_count") or 0) for table in tables)
+    if total == 0:
+        return "各表缺失 / 重复 / 异常当前统计未发现非 0 问题；仍需逐表查看字段级结果。"
+    parts = [f"{table.get('table')}={int(table.get('quality_issue_count') or 0)} 类" for table in tables]
+    return f"当前共识别 {total} 类质量信号，分布为 " + "、".join(parts)
 
 
 def _multi_table_general_answer(report: dict[str, Any]) -> str:
@@ -1306,9 +1526,9 @@ def _looks_like_id_field(field: str) -> bool:
 def _looks_like_metric_field(field: str) -> bool:
     lowered = field.lower()
     return (
-        any(token in lowered for token in ("amount", "price", "quantity", "qty", "sales", "revenue", "_count", "count_", "rate", "fee", "cost"))
+        any(token in lowered for token in ("amount", "price", "quantity", "qty", "sales", "revenue", "profit", "ticket", "_count", "count_", "rate", "fee", "cost"))
         or lowered == "count"
-        or any(token in field for token in ("金额", "价格", "单价", "数量", "销量", "销售", "收入", "占比", "费率", "成本"))
+        or any(token in field for token in ("金额", "价格", "单价", "数量", "销量", "销售", "收入", "利润", "工单", "占比", "费率", "成本"))
     )
 
 
@@ -1402,8 +1622,59 @@ def _overview_insight(report: dict[str, Any]) -> InsightResult:
 def _field_meanings(df: pd.DataFrame) -> list[dict[str, str]]:
     meanings = []
     for column in [str(item) for item in df.columns]:
-        meanings.append({"field": column, "meaning": _field_meaning(column, df[column])})
+        role = _field_role(column, df[column])
+        meanings.append(
+            {
+                "field": column,
+                "type": _field_type(column, df[column]),
+                "role": role,
+                "meaning": _field_meaning(column, df[column]),
+                "analysis_use": _field_analysis_use(column, role),
+            }
+        )
     return meanings
+
+
+def _field_type(column: str, series: pd.Series) -> str:
+    non_null = series.dropna()
+    if non_null.empty:
+        return "unknown"
+    if pd.api.types.is_bool_dtype(non_null):
+        return "boolean"
+    if pd.api.types.is_numeric_dtype(non_null) or _numeric_ratio(series) >= 0.95:
+        return "numeric"
+    if pd.api.types.is_datetime64_any_dtype(non_null):
+        return "datetime"
+    if _looks_like_time_field(column):
+        parsed = pd.to_datetime(non_null, errors="coerce")
+        if not parsed.empty and float(parsed.notna().mean()) >= 0.8:
+            return "datetime"
+    return "text"
+
+
+def _field_role(column: str, series: pd.Series) -> str:
+    if _looks_like_time_field(column):
+        return "时间字段"
+    if _looks_like_id_field(column):
+        return "关联键/标识"
+    lowered = column.lower()
+    if _numeric_ratio(series) >= 0.75 and any(token in lowered for token in ("amount", "sales", "revenue", "profit", "ticket", "count", "qty", "price")):
+        return "指标"
+    if _numeric_ratio(series) >= 0.75 and any(token in column for token in ("金额", "销售", "收入", "利润", "工单", "数量", "价格")):
+        return "指标"
+    return "维度" if _numeric_ratio(series) < 0.75 else "数值字段"
+
+
+def _field_analysis_use(column: str, role: str) -> str:
+    if role == "时间字段":
+        return f"按 {column} 做趋势、周期对比和时间筛选"
+    if role == "关联键/标识":
+        return f"用 {column} 追踪明细、去重或候选 join"
+    if role == "指标":
+        return f"汇总、平均、排名、趋势和异常检查 {column}"
+    if role == "维度":
+        return f"按 {column} 分组、筛选、对比指标"
+    return f"结合业务口径判断 {column} 是否适合作为指标或维度"
 
 
 def _field_meaning(column: str, series: pd.Series) -> str:

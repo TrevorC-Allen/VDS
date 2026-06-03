@@ -1,0 +1,310 @@
+"""Result artifacts used to bind follow-up pronouns to prior answers."""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from dataclasses import asdict, dataclass, field
+from typing import Any, Mapping
+
+
+@dataclass
+class ReferentResolution:
+    """Structured referent resolution for a follow-up question."""
+
+    resolved: bool
+    artifact_id: str = ""
+    referent_dimension: str = ""
+    referent_values: list[Any] = field(default_factory=list)
+    referent_source: str = ""
+    missing_reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def build_result_artifacts(
+    *,
+    logic: Mapping[str, Any],
+    params: Mapping[str, Any],
+    operation: str,
+    rows: list[dict[str, Any]],
+    run_id: str = "",
+    question: str = "",
+) -> list[dict[str, Any]]:
+    """Build durable result artifacts from tabular outputs."""
+
+    dimension = _first_text(logic.get("group_by"), params.get("dimension"), params.get("group_by"))
+    if not dimension or not _looks_like_ranking(operation, question):
+        return []
+    values = [row.get(dimension) for row in rows if isinstance(row, Mapping) and row.get(dimension) not in (None, "")]
+    if not values:
+        return []
+    metric = _first_text(logic.get("metric"), params.get("metric"))
+    limit = _positive_int(params.get("limit") or params.get("top_n") or params.get("k")) or len(values)
+    artifact_id = _artifact_id(
+        run_id=run_id,
+        operation=operation,
+        dimension=str(dimension),
+        metric=str(metric or ""),
+        values=values,
+    )
+    return [
+        {
+            "artifact_id": artifact_id,
+            "artifact_type": "ranking",
+            "source": "result_rows",
+            "run_id": run_id,
+            "question": question,
+            "operation": operation,
+            "dimension": str(dimension),
+            "metric": str(metric or ""),
+            "aggregation": str(params.get("aggregation") or "sum"),
+            "limit": limit,
+            "sort_order": str(params.get("sort_order") or "desc"),
+            "filters": dict(logic.get("filters") or {}),
+            "values": values[:limit],
+            "rank_map": {str(value): index for index, value in enumerate(values[:limit], start=1)},
+            "rows": rows[:limit],
+        }
+    ]
+
+
+def build_task_artifacts(*, task_contract: Mapping[str, Any], rows: list[dict[str, Any]], answer: str = "") -> dict[str, Any]:
+    """Build task artifacts for TopN, Gap, and Trend contracts."""
+
+    family = str(task_contract.get("task_family") or "")
+    if family in {"topn", "ranking"}:
+        dimension = str(task_contract.get("dimension") or "")
+        metric = str(task_contract.get("metric") or "")
+        top_objects: list[dict[str, Any]] = []
+        for index, row in enumerate(rows, start=1):
+            normalized = dict(row)
+            normalized["rank"] = index
+            normalized["value"] = row.get(dimension)
+            if metric:
+                normalized["metric_value"] = row.get(metric)
+            else:
+                normalized["metric_value"] = _first_non_dimension_value(row=row, dimension=dimension)
+            top_objects.append(normalized)
+        distinct_count = len({row.get(dimension) for row in rows if dimension and row.get(dimension) not in {None, ""}})
+        return {
+            "top_objects": top_objects,
+            "distinct_count": distinct_count if dimension else len(rows),
+        }
+    if family == "gap":
+        return _gap_task_artifacts(task_contract, rows, answer)
+    if family == "trend":
+        return _trend_task_artifacts(task_contract, rows, answer)
+    return {}
+
+
+def merge_result_artifacts(previous: Any, current: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge newest artifacts first while preserving prior context."""
+
+    merged: list[dict[str, Any]] = []
+    for item in [*current, *(previous if isinstance(previous, list) else [])]:
+        if not isinstance(item, Mapping):
+            continue
+        normalized = dict(item)
+        artifact_id = str(normalized.get("artifact_id") or "")
+        if not artifact_id or any(existing.get("artifact_id") == artifact_id for existing in merged):
+            continue
+        merged.append(normalized)
+    return merged[:10]
+
+
+def resolve_followup_referent(user_question: str, context: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Resolve Chinese demonstratives and rank ordinals to prior result artifacts."""
+
+    compact = re.sub(r"\s+", "", str(user_question or ""))
+    if not _looks_like_referent_question(compact):
+        return ReferentResolution(False, missing_reason="not_referent").to_dict()
+    artifacts = _active_artifacts(context)
+    artifact = _select_artifact(compact, artifacts)
+    if not artifact:
+        return ReferentResolution(False, missing_reason="REFERENT_ARTIFACT_MISSING").to_dict()
+    dimension = str(artifact.get("dimension") or "")
+    if _asks_specific_dimension(compact, "city") and not _dimension_matches_concept(dimension, "city"):
+        return ReferentResolution(False, missing_reason="REFERENT_ARTIFACT_MISSING").to_dict()
+    values = list(artifact.get("values") or [])
+    rank_index = _rank_index(compact)
+    source = "result_artifact:ranking"
+    if rank_index is not None:
+        if rank_index < 1 or rank_index > len(values):
+            return ReferentResolution(False, artifact_id=str(artifact.get("artifact_id") or ""), referent_dimension=dimension, missing_reason="REFERENT_VALUES_MISSING").to_dict()
+        values = [values[rank_index - 1]]
+        source = f"result_artifact:ranking:rank_{rank_index}"
+    if not values:
+        return ReferentResolution(False, artifact_id=str(artifact.get("artifact_id") or ""), referent_dimension=dimension, missing_reason="REFERENT_VALUES_MISSING").to_dict()
+    return ReferentResolution(
+        True,
+        artifact_id=str(artifact.get("artifact_id") or ""),
+        referent_dimension=dimension,
+        referent_values=values,
+        referent_source=source,
+    ).to_dict()
+
+
+def _active_artifacts(context: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
+    if not isinstance(context, Mapping):
+        return []
+    artifacts = context.get("active_result_artifacts")
+    if not isinstance(artifacts, list):
+        return []
+    return [item for item in artifacts if isinstance(item, Mapping)]
+
+
+def _select_artifact(compact: str, artifacts: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    ranking = [item for item in artifacts if str(item.get("artifact_type") or "") in {"ranking", "topn"}]
+    if not ranking:
+        return None
+    target_concept = _referent_dimension_concept(compact)
+    if target_concept:
+        for artifact in ranking:
+            if _dimension_matches_concept(str(artifact.get("dimension") or ""), target_concept):
+                return artifact
+        return None
+    return ranking[0]
+
+
+def _looks_like_referent_question(compact: str) -> bool:
+    if any(token in compact for token in ("这些Top对象", "这些top对象", "这些TOP对象", "Top城市", "top城市", "这些城市", "上述城市", "这些", "上述", "它们", "前几个")):
+        return True
+    return _rank_index(compact) is not None
+
+
+def _rank_index(compact: str) -> int | None:
+    patterns = (
+        (r"(?:第一名|第1名|排名第一|排名第1|第一|第1)", 1),
+        (r"(?:第二名|第2名|排名第二|排名第2|第二|第2)", 2),
+        (r"(?:第三名|第3名|排名第三|排名第3|第三|第3)", 3),
+    )
+    for pattern, index in patterns:
+        if re.search(pattern, compact):
+            return index
+    return None
+
+
+def _asks_specific_dimension(compact: str, concept: str) -> bool:
+    return _referent_dimension_concept(compact) == concept
+
+
+def _referent_dimension_concept(compact: str) -> str:
+    if any(token in compact for token in ("城市", "地区", "区域")):
+        return "city"
+    if any(token in compact for token in ("产品", "商品", "sku", "SKU")):
+        return "product"
+    if any(token in compact for token in ("客户", "顾客")):
+        return "customer"
+    return ""
+
+
+def _dimension_matches_concept(dimension: str, concept: str) -> bool:
+    aliases = {
+        "city": ("city", "城市", "市", "region", "area", "地区", "区域"),
+        "product": ("product", "sku", "item", "goods", "产品", "商品"),
+        "customer": ("customer", "cust", "client", "buyer", "客户", "顾客"),
+    }.get(concept, ())
+    normalized = _normalize(dimension)
+    return any(_normalize(alias) and _normalize(alias) in normalized for alias in aliases)
+
+
+def _artifact_id(*, run_id: str, operation: str, dimension: str, metric: str, values: list[Any]) -> str:
+    seed = repr((run_id, operation, dimension, metric, [str(value) for value in values[:20]]))
+    return "artifact_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+
+
+def _looks_like_ranking(operation: str, question: str) -> bool:
+    text = f"{operation} {question}".lower()
+    return any(token in text for token in ("ranking", "top", "rank", "排名", "排行", "前", "最高", "最低", "最多", "最少"))
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _first_non_dimension_value(*, row: Mapping[str, Any], dimension: str) -> Any:
+    for key, value in row.items():
+        if key == dimension:
+            continue
+        return value
+    return None
+
+
+def _normalize(value: str) -> str:
+    return "".join(char for char in str(value or "").lower() if char.isalnum() or "\u4e00" <= char <= "\u9fff")
+
+
+def _gap_task_artifacts(task_contract: Mapping[str, Any], rows: list[dict[str, Any]], answer: str) -> dict[str, Any]:
+    metric = str(task_contract.get("metric") or "")
+    if not metric and rows:
+        dimension = str(task_contract.get("dimension") or "")
+        metric = next((key for key in rows[0] if key != dimension and _as_float(rows[0].get(key)) is not None), "")
+    gap_rows: list[dict[str, Any]] = []
+    if len(rows) >= 2 and metric:
+        leader_value = _as_float(rows[0].get(metric))
+        previous_value = leader_value
+        for index, row in enumerate(rows):
+            value = _as_float(row.get(metric))
+            gap_row = dict(row)
+            if leader_value is not None and value is not None:
+                gap_row["gap_to_leader"] = leader_value - value
+            if index > 0 and previous_value is not None and value is not None:
+                gap_row["gap_from_previous"] = previous_value - value
+                gap_row["adjacent_gap"] = previous_value - value
+            gap_rows.append(gap_row)
+            previous_value = value
+    return {
+        "gap_rows": gap_rows,
+        "direct_gap_summary": str(answer or "").splitlines()[0].strip(),
+    }
+
+
+def _trend_task_artifacts(task_contract: Mapping[str, Any], rows: list[dict[str, Any]], answer: str) -> dict[str, Any]:
+    metric = str(task_contract.get("metric") or "")
+    values = [_as_float(row.get(metric)) for row in rows] if metric else []
+    numeric_values = [value for value in values if value is not None]
+    return {
+        "time_series": [dict(row) for row in rows],
+        "trend_description": _trend_description(numeric_values),
+        "direct_trend_summary": str(answer or "").splitlines()[0].strip(),
+    }
+
+
+def _trend_description(values: list[float]) -> str:
+    if len(values) <= 1:
+        return "无法判断趋势"
+    deltas = [values[index + 1] - values[index] for index in range(len(values) - 1)]
+    positives = [delta for delta in deltas if delta > 0]
+    negatives = [delta for delta in deltas if delta < 0]
+    if positives and not negatives:
+        return "整体上升"
+    if negatives and not positives:
+        return "整体下降"
+    if len(deltas) >= 2 and deltas[0] > 0 and any(delta < 0 for delta in deltas[1:]):
+        return "先升后降"
+    if len(deltas) >= 2 and deltas[0] < 0 and any(delta > 0 for delta in deltas[1:]):
+        return "先降后升"
+    return "波动"
+
+
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

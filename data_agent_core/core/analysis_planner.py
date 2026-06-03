@@ -7,6 +7,7 @@ from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm
 from data_agent_core.core.capability_registry import capability_for_operation
+from data_agent_core.task_execution_contracts import build_task_execution_contract
 
 
 COUNT_LIKE_BUSINESS_OPERATIONS = frozenset(
@@ -22,10 +23,12 @@ COUNT_LIKE_BUSINESS_OPERATIONS = frozenset(
 )
 
 
-def build_analysis_plan(logic_form: LogicForm) -> AnalysisPlan:
+def build_analysis_plan(logic_form: LogicForm, *, question: str = "") -> AnalysisPlan:
     """Build a backend-neutral AnalysisPlan from a LogicForm."""
 
     logic_form = complete_generalization_contract(logic_form)
+    task_contract = build_task_execution_contract(logic_form, question=question)
+    logic_form.task_contract = {} if task_contract is None else _contract_payload(task_contract)
     plan_seed = f"{logic_form.task_type}:{logic_form.operation}:{logic_form.filters}:{logic_form.parameters}"
     plan_id = "plan_" + hashlib.sha1(plan_seed.encode("utf-8")).hexdigest()[:12]
     return AnalysisPlan(
@@ -64,6 +67,7 @@ def build_analysis_plan(logic_form: LogicForm) -> AnalysisPlan:
                 "output_contract": bool(logic_form.output_contract),
             },
         },
+        task_contract=task_contract,
     )
 
 
@@ -277,3 +281,11 @@ def _candidate_field(group_field: Any, params: dict[str, Any]) -> Any:
     if isinstance(group_field, list):
         return group_field[0] if group_field else None
     return group_field
+
+
+def _contract_payload(contract: Any) -> dict[str, Any]:
+    if hasattr(contract, "__dataclass_fields__"):
+        from dataclasses import asdict
+
+        return asdict(contract)
+    return dict(contract) if isinstance(contract, dict) else {}

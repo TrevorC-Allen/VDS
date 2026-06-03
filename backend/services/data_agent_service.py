@@ -60,6 +60,7 @@ from data_agent_core.output.process_narrative import build_chat_process_view, pr
 from data_agent_core.output.response_builder import build_response
 from data_agent_core.output.source_overview import build_dataset_source_overview_response
 from data_agent_core.output.text_answer_framework import apply_text_answer_framework
+from data_agent_core.task_contract_builder import referent_contract_guideline
 from data_agent_core.tracing.live_monitor import emit_monitor_event
 from data_agent_core.verifier.rule_checker import verify_execution
 from multi_agent_workflows.end_to_end_data_analysis_workflow import DataAnalysisMultiAgentWorkflow
@@ -426,7 +427,7 @@ class DataAgentService:
                     status="completed" if fee_rule_response.get("success") else "failed",
                     payload=process_view_monitor_payload(fee_rule_response),
                 )
-                return to_json_ready(fee_rule_response)
+                return to_json_ready(_ensure_semantic_response_fields(fee_rule_response))
             semantic_route = self._route_dataset_message(
                 question=question,
                 profile=profile,
@@ -473,7 +474,7 @@ class DataAgentService:
                     status="completed",
                     payload=process_view_monitor_payload(response),
                 )
-                return response
+                return _ensure_semantic_response_fields(response)
             if semantic_route["route"] == "cleaning_guidance":
                 _raise_if_cancelled(cancel_checker)
                 response = to_json_ready(
@@ -514,7 +515,7 @@ class DataAgentService:
                     status="completed",
                     payload=process_view_monitor_payload(response),
                 )
-                return response
+                return _ensure_semantic_response_fields(response)
             if semantic_route["route"] == "dataset_overview":
                 _raise_if_cancelled(cancel_checker)
                 response = to_json_ready(
@@ -566,7 +567,7 @@ class DataAgentService:
                     status="completed",
                     payload=process_view_monitor_payload(response),
                 )
-                return response
+                return _ensure_semantic_response_fields(response)
             if agent_mode == "single_agent":
                 _raise_if_cancelled(cancel_checker)
                 emit_monitor_event(
@@ -725,7 +726,7 @@ class DataAgentService:
                 status="completed" if response.success else "failed",
                 payload=process_view_monitor_payload(payload),
             )
-            return to_json_ready(payload)
+            return to_json_ready(_ensure_semantic_response_fields(payload))
         except Exception as exc:  # noqa: BLE001 - service must normalize API errors.
             emit_monitor_event(
                 monitor_run_id,
@@ -779,7 +780,7 @@ class DataAgentService:
         if logic_form.operation not in FEE_ID_RULE_OPERATIONS:
             return None
 
-        plan = build_analysis_plan(logic_form)
+        plan = build_analysis_plan(logic_form, question=question)
         execution_result = pandas_executor.execute_plan(plan, context)
         user_question = UserQuestion(
             dataset_id=dataset_id,
@@ -834,7 +835,7 @@ class DataAgentService:
             verification_passed=verification.passed,
             answer_count=_fee_id_answer_count(execution_result.value),
         )
-        return payload
+        return _ensure_semantic_response_fields(payload)
 
     def _route_dataset_message(
         self,
@@ -1311,6 +1312,8 @@ class DataAgentService:
                 "应沿用上一轮的主事实表、指标和时间范围；如果请求维度在事实表中不存在，应说明缺口，不要强行跨表猜关联。",
             )
         pending_actions = followup_context.get("pending_actions") if isinstance(followup_context.get("pending_actions"), list) else []
+        if len(pending_actions) == 1:
+            guidelines = _combine_guidelines(guidelines, _referent_guideline_from_action(pending_actions[0]))
         emit_monitor_event(
             monitor_run_id,
             "message_requested",
@@ -1446,11 +1449,12 @@ class DataAgentService:
             if not action_question:
                 continue
             sub_run_id = f"{run_id}_a{index}"
+            action_guidelines = _combine_guidelines(guidelines, _referent_guideline_from_action(action))
             sub_response = self.analyze_dataset(
                 dataset_id=dataset_id,
                 question=action_question,
                 execution_mode=execution_mode,
-                guidelines=guidelines,
+                guidelines=action_guidelines,
                 agent_mode=agent_mode,
                 user_rule_file_id=user_rule_file_id,
                 monitor_run_id=monitor_run_id,
@@ -4855,6 +4859,15 @@ def _combine_guidelines(*parts: str) -> str:
     return "\n\n".join(part.strip() for part in parts if part and part.strip())
 
 
+def _referent_guideline_from_action(action: Any) -> str:
+    if not isinstance(action, dict):
+        return ""
+    contract = action.get("referent_contract")
+    if not isinstance(contract, dict) or not contract:
+        return ""
+    return referent_contract_guideline(contract)
+
+
 def _benchmark_name(parsed_rule: dict[str, Any], fallback: str) -> str:
     return str(parsed_rule.get("benchmark_name") or parsed_rule.get("name") or Path(fallback).stem or "uploaded_benchmark")
 
@@ -4933,6 +4946,75 @@ def _result_preview_for_llm(result: Any) -> dict[str, Any]:
         "rows": rows[:5],
         "value": result.get("value") if not rows else None,
     }
+
+
+def _ensure_semantic_response_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Expose semantic-contract instrumentation without upgrading legacy paths to pass."""
+
+    if not isinstance(payload, dict):
+        return payload
+    debug = payload.get("debug") if isinstance(payload.get("debug"), dict) else {}
+    verification = payload.get("verification") if isinstance(payload.get("verification"), dict) else {}
+    contract_report = (
+        payload.get("contract_report")
+        if isinstance(payload.get("contract_report"), dict)
+        else verification.get("contract_report")
+        if isinstance(verification.get("contract_report"), dict)
+        else debug.get("contract_report")
+        if isinstance(debug.get("contract_report"), dict)
+        else None
+    )
+    task_contract = (
+        payload.get("task_contract")
+        if isinstance(payload.get("task_contract"), dict)
+        else verification.get("task_contract")
+        if isinstance(verification.get("task_contract"), dict)
+        else debug.get("task_contract")
+        if isinstance(debug.get("task_contract"), dict)
+        else None
+    )
+    oracle_result = (
+        payload.get("oracle_result")
+        if isinstance(payload.get("oracle_result"), dict)
+        else verification.get("oracle_result")
+        if isinstance(verification.get("oracle_result"), dict)
+        else debug.get("oracle_result")
+        if isinstance(debug.get("oracle_result"), dict)
+        else None
+    )
+    semantic_status = (
+        payload.get("semantic_status")
+        or verification.get("semantic_status")
+        or debug.get("semantic_status")
+        or "legacy_unverified"
+    )
+    payload["semantic_status"] = str(semantic_status)
+    payload["contract_satisfied"] = contract_report.get("passed") if isinstance(contract_report, dict) else payload.get("contract_satisfied")
+    if payload["contract_satisfied"] is None and not isinstance(contract_report, dict):
+        payload["contract_satisfied"] = None
+    payload["contract_family"] = (
+        payload.get("contract_family")
+        or (task_contract or {}).get("task_family")
+        or (contract_report or {}).get("task_family")
+    )
+    payload["violations"] = list((contract_report or {}).get("violations") or payload.get("violations") or [])
+    payload["oracle_result"] = oracle_result if oracle_result is not None else payload.get("oracle_result")
+    if payload["oracle_result"] is None:
+        payload["oracle_result"] = {
+            "oracle_available": False,
+            "expected_result": None,
+            "actual_result": None,
+            "passed": None,
+            "diff_summary": "No deterministic oracle result is attached to this legacy response path.",
+            "issue_codes": ["oracle_not_instrumented"],
+        }
+    payload.setdefault("debug", {})
+    if isinstance(payload["debug"], dict):
+        payload["debug"].setdefault("semantic_status", payload["semantic_status"])
+        payload["debug"].setdefault("task_contract", task_contract)
+        payload["debug"].setdefault("contract_report", contract_report)
+        payload["debug"].setdefault("oracle_result", payload["oracle_result"])
+    return payload
 
 
 def _safe_dict_for_llm(value: Any, *, limit: int = 1000) -> dict[str, Any]:

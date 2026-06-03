@@ -60,6 +60,16 @@ def apply_text_answer_framework(response: dict[str, Any], *, question: str) -> d
 
     kind = _classify_kind(question, response)
     context = _FrameContext(question=question, response=response, original_answer=answer, kind=kind)
+    direct_answer = _render_direct_answer(context)
+    if direct_answer:
+        response["answer"] = direct_answer
+        insight = response.get("insight")
+        if isinstance(insight, dict) and not str(insight.get("summary") or "").strip():
+            insight["summary"] = _first_sentence(direct_answer, limit=180)
+        _mark_debug(response, applied=True, reason=f"direct_kind={kind}")
+        _attach_process_note(response, direct=True)
+        return response
+
     sections = _compose_structured_sections(context)
     framed = _render_structured_sections(sections)
     if not framed:
@@ -144,7 +154,21 @@ def _classify_kind(question: str, response: dict[str, Any]) -> str:
     debug = _as_dict(response.get("debug"))
     text = (str(question or "") + " " + operation + " " + str(debug.get("operation") or "")).lower().replace(" ", "")
     answer = str(response.get("answer") or "")
-    if response.get("success") is False or answer.strip() == "Not Applicable" or operation == "not_applicable" or answer_type == "clarification":
+    verification = _as_dict(response.get("verification"))
+    debug = _as_dict(response.get("debug"))
+    semantic_status = str(
+        verification.get("semantic_status")
+        or debug.get("semantic_status")
+        or debug.get("semantic_verification_status")
+        or ""
+    ).lower()
+    if (
+        response.get("success") is False
+        or answer.strip() == "Not Applicable"
+        or operation == "not_applicable"
+        or answer_type == "clarification"
+        or semantic_status in {"failed", "needs_clarification", "need_clarification"}
+    ):
         return "clarification"
     if answer_type == "cleaning_simulation" or operation in {"data_quality_report", "outlier_count", "null_check"} or "cleaning" in operation or "清洗" in text or "质量" in text or "异常" in text:
         if any(token in text for token in ("缺失", "重复", "异常", "质量", "clean")):
@@ -158,11 +182,315 @@ def _classify_kind(question: str, response: dict[str, Any]) -> str:
         return "analysis"
     if any(token in text for token in ("完成率", "目标", "实际", "达标", "target", "actual", "achievement")):
         return "target_actual"
+    if any(token in text for token in ("差距", "相差", "差多少", "gap", "delta", "difference")):
+        return "gap"
     if any(token in text for token in ("趋势", "环比", "同比", "增长", "下降", "波动", "trend", "mom", "yoy", "growth")):
         return "trend"
     if any(token in text for token in ("排名", "top", "最高", "最低", "最大", "最小", "第一", "last", "ranking")) or operation in {"ranking", "top_count", "topn"}:
         return "ranking"
     return "analysis"
+
+
+def _requires_contract_overview(question: str) -> bool:
+    compact = str(question or "").lower().replace(" ", "")
+    signals = (
+        "概览",
+        "overview",
+        "数据结构",
+        "表结构",
+        "能支持哪些分析",
+        "支持哪些分析",
+        "能分析什么",
+        "可分析方向",
+        "分析方向",
+        "上传文件能分析什么",
+    )
+    return any(signal in compact for signal in signals)
+
+
+def _requires_contract_quality(question: str) -> bool:
+    compact = str(question or "").lower().replace(" ", "")
+    has_quality = any(token in compact for token in ("数据质量", "质量检查", "quality", "做分析前", "清洗"))
+    has_missing = any(token in compact for token in ("缺失", "missing", "null"))
+    has_duplicate = any(token in compact for token in ("重复", "duplicate"))
+    has_outlier = any(token in compact for token in ("异常值", "离群", "outlier"))
+    return has_quality and has_missing and has_duplicate and has_outlier
+
+
+def _render_direct_answer(context: _FrameContext) -> str:
+    if _should_preserve_existing_answer(context):
+        return ""
+    if context.kind == "overview" and _requires_contract_overview(context.question):
+        return render_overview_answer(context)
+    if context.kind == "gap":
+        return render_gap_answer(context)
+    if context.kind == "trend":
+        return render_trend_answer(context)
+    if context.kind == "quality" and (_requires_contract_quality(context.question) or _quality_field_rows(context)):
+        return render_quality_answer(context)
+    if context.kind == "ranking":
+        if len(context.rows) == 1:
+            return render_single_best_answer(context)
+        return render_topn_answer(context)
+    return ""
+
+
+def render_topn_answer(context: _FrameContext) -> str:
+    """Render a TopN answer with the result in the first sentence."""
+
+    if not context.rows:
+        return ""
+    insufficient = _topn_insufficient_contract_answer(context)
+    if insufficient:
+        return insufficient
+    if _result_shape_issue(context):
+        return ""
+    metric = _preferred_metric_column(context.columns, context.rows)
+    label = _preferred_label_column(context.columns, metric)
+    if not metric or not label:
+        return ""
+    direction = _ranking_direction(context)
+    requested_n = _requested_topn_count(context.question) or len(context.rows)
+    items = [
+        f"{str(row.get(label)).strip()}（{_format_cell_value(row.get(metric), metric)}）"
+        for row in context.rows[:requested_n]
+        if row.get(label) not in {None, ""} and row.get(metric) not in {None, ""}
+    ]
+    if not items:
+        return ""
+    dimension_label = _display_dimension_label(label)
+    answer = f"{metric}{direction}的 {len(items)} 个{dimension_label}是：" + "、".join(items) + "。"
+    scope = _short_scope_suffix(context)
+    return _sanitize_text(answer + scope)
+
+
+def _topn_insufficient_contract_answer(context: _FrameContext) -> str:
+    semantic_status = str(context.response.get("semantic_status") or _as_dict(context.response.get("debug")).get("semantic_status") or "")
+    if semantic_status not in {"passed_with_insufficient_data", "partial"}:
+        return ""
+    task_contract = _as_dict(context.response.get("task_contract")) or _as_dict(_as_dict(context.response.get("debug")).get("task_contract"))
+    if str(task_contract.get("task_family") or "") != "topn":
+        return ""
+    required_n = _to_int(task_contract.get("required_n"))
+    dimension = str(task_contract.get("dimension") or "对象")
+    if not required_n:
+        return ""
+    distinct_count = len({row.get(dimension) for row in context.rows if row.get(dimension) not in {None, ""}}) if dimension else len(context.rows)
+    if distinct_count >= required_n:
+        return ""
+    return f"数据集中只有 {distinct_count} 个不同{dimension}，因此无法返回 Top {required_n}，只能展示 Top {distinct_count}。"
+
+
+def _to_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def render_single_best_answer(context: _FrameContext) -> str:
+    """Render a one-row best/worst ranking without the section framework."""
+
+    if len(context.rows) != 1:
+        return ""
+    row = context.rows[0]
+    metric = _preferred_metric_column(context.columns, context.rows)
+    label = _preferred_label_column(context.columns, metric)
+    if not metric or not label or row.get(label) in {None, ""}:
+        return ""
+    direction = _ranking_direction(context)
+    dimension_label = _display_dimension_label(label)
+    join_prefix = _join_answer_prefix(context)
+    answer = f"{join_prefix}{metric}{direction}的{dimension_label}是{row.get(label)}，{metric}为 {_format_cell_value(row.get(metric), metric)}。"
+    scope = _short_scope_suffix(context, include_join=True)
+    return _sanitize_text(answer + scope)
+
+
+def render_gap_answer(context: _FrameContext) -> str:
+    """Render adjacent and first-place gaps directly."""
+
+    if len(context.rows) < 2:
+        return ""
+    metric = _preferred_metric_column(context.columns, context.rows)
+    label = _preferred_label_column(context.columns, metric)
+    if not metric or not label:
+        return ""
+    ranked = [
+        (str(row.get(label)).strip(), _to_float(row.get(metric)))
+        for row in context.rows
+        if row.get(label) not in {None, ""} and _to_float(row.get(metric)) is not None
+    ]
+    if len(ranked) < 2:
+        return ""
+    top_n = _requested_topn_count(context.question) or min(len(ranked), 3)
+    ranked = ranked[:top_n]
+    adjacent = []
+    for (left_name, left_value), (right_name, right_value) in zip(ranked, ranked[1:]):
+        if left_value is None or right_value is None:
+            continue
+        diff = left_value - right_value
+        relation = "高" if diff >= 0 else "低"
+        adjacent.append(f"{left_name}比{right_name}{relation} {_format_plain_value(abs(diff))}")
+    first_name, first_value = ranked[0]
+    last_name, last_value = ranked[-1]
+    tail = ""
+    if len(ranked) >= 3 and first_value is not None and last_value is not None:
+        diff = first_value - last_value
+        relation = "低" if diff >= 0 else "高"
+        tail = f"；{last_name}比第一名{first_name}{relation} {_format_plain_value(abs(diff))}"
+    dimension_label = _display_dimension_label(label)
+    if not adjacent:
+        return ""
+    return f"Top {len(ranked)} {dimension_label}中，" + "，".join(adjacent) + tail + "。以上为相邻排名与第一名的差距。"
+
+
+def render_trend_answer(context: _FrameContext) -> str:
+    """Render a trend using ordered period-to-value movements."""
+
+    metric = _preferred_metric_column(context.columns, context.rows)
+    period = _preferred_period_column(context.columns)
+    if not metric or not period:
+        return ""
+    value_columns = [column for column in context.columns if column != period and _numeric_ratio(context.rows, column) >= 0.5 and not _looks_identifier(column)]
+    if len(value_columns) > 1:
+        return ""
+    pairs = [
+        (str(row.get(period)).strip(), _to_float(row.get(metric)), row.get(metric))
+        for row in context.rows
+        if row.get(period) not in {None, ""} and _to_float(row.get(metric)) is not None
+    ]
+    if not pairs:
+        return ""
+    pairs = sorted(pairs, key=lambda item: item[0])
+    trend = describe_trend([(label, value) for label, value, _ in pairs])
+    sequence = _trend_sequence_text(pairs, metric)
+    return f"按{period}看，{metric}{trend}：{sequence}。"
+
+
+def render_overview_answer(context: _FrameContext) -> str:
+    """Render an overview answer with a compact field list."""
+
+    report = context.overview_report
+    if isinstance(report.get("tables_summary"), list) and report.get("tables_summary"):
+        return _render_multi_table_contract_overview(report)
+    rows = _overview_field_rows(context)
+    if not rows:
+        return ""
+    table = str(report.get("table") or "这张表")
+    row_count = report.get("row_count")
+    column_count = report.get("column_count") or len(rows)
+    first = f"{table} 是一张包含 {_format_plain_value(row_count)} 行、{_format_plain_value(column_count)} 个字段的数据表；字段清单见下表。"
+    directions = _overview_analysis_directions(report)
+    quality = "数据质量摘要：缺失 / 重复 / 异常当前统计未发现非 0 问题；正式分析前仍可运行字段级质量检查。"
+    if int(report.get("quality_issue_count") or 0):
+        quality = f"数据质量摘要：当前识别到 {int(report.get('quality_issue_count') or 0)} 类质量信号。"
+    return (
+        first
+        + "\n\n"
+        + _markdown_table(["字段", "类型", "角色", "可用于什么分析"], rows)
+        + "\n\n可分析方向：\n"
+        + "\n".join(f"- {item}" for item in directions)
+        + "\n\n"
+        + quality
+    )
+
+
+def render_quality_answer(context: _FrameContext) -> str:
+    """Render data quality as a direct answer plus a field-level table."""
+
+    compact_rows = _quality_compact_field_rows(context)
+    if compact_rows:
+        issue_count = sum(
+            int(row.get("缺失数") or 0) + int(row.get("重复数") or 0) + int(row.get("异常数") or 0)
+            for row in compact_rows
+        )
+        first = (
+            "本次质量检查未发现缺失、重复或异常值。"
+            if issue_count == 0
+            else f"本次质量检查发现 {issue_count} 个缺失、重复或异常值信号；具体字段级结果如下。"
+        )
+        return first + "\n\n" + _markdown_table(["字段", "类型", "缺失数", "重复数", "异常数"], compact_rows[:50])
+
+    rows = _quality_field_rows(context)
+    issue_count = sum(
+        int(row.get("缺失数") or 0) + int(row.get("类型异常数") or 0) + int(row.get("异常值数") or 0)
+        for row in rows
+    )
+    duplicate_text = _quality_duplicate_rule_text(context)
+    first = (
+        "本次质量检查未发现缺失、重复或异常值。按当前规则检查，各字段缺失、重复、异常统计均为 0；具体字段级结果如下。"
+        if issue_count == 0 and "full_row_duplicate_count=0" in duplicate_text
+        else f"本次质量检查发现 {issue_count} 个字段级质量信号；具体字段级结果如下。"
+    )
+    if not rows:
+        rows = [{"字段": "当前结果字段", "类型": "unknown", "缺失数": 0, "缺失率": "0.00%", "类型异常数": 0, "异常值数": 0, "检测规则": "missing placeholder scan; non-null type parse failure; numeric IQR rule", "备注": "字段级结果不可用"}]
+    table = _markdown_table(["字段", "缺失数", "缺失率", "类型异常数", "异常值数", "检测规则", "备注"], rows[:50])
+    rules = "\n".join(
+        [
+            f"重复规则：{duplicate_text}",
+            "异常规则：numeric IQR rule；未实现 z-score 时不声明 z-score 结果；类型异常按 non-null type parse failure 统计。",
+        ]
+    )
+    return first + "\n\n" + table + "\n\n" + rules
+
+
+def describe_trend(values_by_time: Any) -> str:
+    """Classify a time series by adjacent movements instead of first/last only."""
+
+    pairs: list[tuple[str, float]] = []
+    if isinstance(values_by_time, dict):
+        pairs = [(str(key), value) for key, value in values_by_time.items() if _to_float(value) is not None]
+    elif isinstance(values_by_time, list):
+        for item in values_by_time:
+            if isinstance(item, dict):
+                label = str(item.get("time") or item.get("period") or item.get("label") or "")
+                value = _to_float(item.get("value"))
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                label = str(item[0])
+                value = _to_float(item[1])
+            else:
+                label = str(len(pairs) + 1)
+                value = _to_float(item)
+            if value is not None:
+                pairs.append((label, value))
+    if len(pairs) <= 1:
+        return "只有一个周期，无法判断趋势"
+    values = [value for _, value in pairs]
+    movements = []
+    for previous, current in zip(values, values[1:]):
+        if math.isclose(previous, current, rel_tol=1e-9, abs_tol=1e-9):
+            movements.append(0)
+        else:
+            movements.append(1 if current > previous else -1)
+    non_zero = [item for item in movements if item != 0]
+    if not non_zero:
+        return "基本持平"
+    if all(item > 0 for item in non_zero):
+        return "单调上升"
+    if all(item < 0 for item in non_zero):
+        return "单调下降"
+    signs = [item for index, item in enumerate(non_zero) if index == 0 or item != non_zero[index - 1]]
+    if signs == [1, -1]:
+        suffix = ""
+        if values[-1] > values[0] and max(values) != values[-1]:
+            suffix = f"，末期仍高于首期，但低于{pairs[values.index(max(values))][0]}峰值"
+        return "先升后降" + suffix
+    if signs == [-1, 1]:
+        suffix = ""
+        if values[-1] < values[0] and min(values) != values[-1]:
+            suffix = f"，末期仍低于首期，但高于{pairs[values.index(min(values))][0]}低点"
+        return "先降后升" + suffix
+    return "波动"
+
+
+def _should_preserve_existing_answer(context: _FrameContext) -> bool:
+    debug = _as_dict(context.response.get("debug"))
+    shaping = _as_dict(debug.get("user_experience_shaping"))
+    if shaping.get("reason") == "vds_current_metric_top_answer_summary":
+        return True
+    if context.kind == "ranking" and re.search(r"(^|[；;\n])\s*\d+[.、]", context.original_answer):
+        return True
+    return False
 
 
 def _compose_structured_sections(context: _FrameContext) -> dict[str, list[str]]:
@@ -210,6 +538,10 @@ def _is_scalar_value_context(*, answer_type: str, operation: str) -> bool:
 
 
 def _core_conclusion(context: _FrameContext) -> str:
+    if context.kind == "gap":
+        direct = render_gap_answer(context)
+        if direct:
+            return _first_sentence(direct, limit=260)
     if context.kind == "overview":
         return _overview_core(context)
     if context.kind in {"cleaning", "quality"}:
@@ -236,6 +568,299 @@ def _core_conclusion(context: _FrameContext) -> str:
         if top:
             return top
     return _fallback_core(context)
+
+
+def _ranking_direction(context: _FrameContext) -> str:
+    text = context.question.lower() + " " + str(context.logic_form.get("operation") or "")
+    params = _as_dict(context.logic_form.get("parameters"))
+    sort_order = str(params.get("sort_order") or params.get("order") or "").lower()
+    if sort_order == "asc" or any(token in text for token in ("最低", "最少", "bottom", "lowest", "min")):
+        return "最低"
+    return "最高"
+
+
+def _display_dimension_label(column: str | None) -> str:
+    text = str(column or "对象").strip()
+    lowered = text.lower()
+    if any(token in text for token in ("城市", "city")) or "city" in lowered:
+        return "城市"
+    if any(token in text for token in ("客户", "customer")) or "customer" in lowered:
+        return "客户"
+    if any(token in text for token in ("产品", "商品", "sku", "product")) or "product" in lowered:
+        return "产品"
+    if any(token in text for token in ("月份", "日期", "时间", "month", "date", "period")) or any(token in lowered for token in ("month", "date", "period")):
+        return "周期"
+    if any(token in text for token in ("区域", "region")) or "region" in lowered:
+        return "区域"
+    return text
+
+
+def _join_answer_prefix(context: _FrameContext) -> str:
+    params = _as_dict(context.logic_form.get("parameters"))
+    join_plan = _as_dict(params.get("join_plan") or context.logic_form.get("join_plan"))
+    tables: list[str] = []
+    left = str(join_plan.get("left_table") or "").strip()
+    right = str(join_plan.get("right_table") or "").strip()
+    if left and right:
+        tables = [left, right]
+    elif isinstance(context.logic_form.get("source_tables"), list):
+        tables = [str(item) for item in context.logic_form.get("source_tables") or [] if str(item)]
+    if len(tables) >= 2:
+        return "关联 " + " 和 ".join(tables[:2]) + " 后，"
+    return ""
+
+
+def _short_scope_suffix(context: _FrameContext, *, include_join: bool = True) -> str:
+    notes: list[str] = []
+    params = _as_dict(context.logic_form.get("parameters"))
+    if include_join:
+        join_plan = _as_dict(params.get("join_plan") or context.logic_form.get("join_plan"))
+        link = _join_link_text(join_plan)
+        if link and join_plan.get("trusted"):
+            notes.append(f"关联口径：{link}。")
+    derived = _derived_metric_scope(context)
+    if derived:
+        notes.append(f"口径：{derived}。")
+    return (" " + " ".join(notes)) if notes else ""
+
+
+def _trend_sequence_text(pairs: list[tuple[str, float | None, Any]], metric: str) -> str:
+    parts: list[str] = []
+    previous: float | None = None
+    for index, (label, value, raw_value) in enumerate(pairs):
+        formatted = _format_cell_value(raw_value, metric)
+        if index == 0 or previous is None or value is None:
+            parts.append(f"{label} 为 {formatted}")
+        elif value > previous:
+            parts.append(f"{label} 升至 {formatted}")
+        elif value < previous:
+            parts.append(f"{label} 回落到 {formatted}")
+        else:
+            parts.append(f"{label} 持平在 {formatted}")
+        previous = value
+    return "，".join(parts)
+
+
+def _overview_field_rows(context: _FrameContext) -> list[dict[str, Any]]:
+    report = context.overview_report
+    field_meanings = report.get("field_meanings")
+    rows: list[dict[str, Any]] = []
+    if isinstance(field_meanings, list):
+        for item in field_meanings:
+            if not isinstance(item, dict):
+                continue
+            field = str(item.get("field") or item.get("name") or item.get("字段") or "").strip()
+            if not field:
+                continue
+            rows.append(
+                {
+                    "字段": field,
+                    "类型": str(item.get("type") or item.get("dtype") or item.get("数据类型") or "unknown"),
+                    "角色": str(item.get("role") or item.get("meaning") or item.get("含义") or "待确认"),
+                    "可用于什么分析": str(item.get("analysis_use") or item.get("meaning") or "需结合业务说明确认"),
+                }
+            )
+    if not rows:
+        for column in context.columns:
+            rows.append({"字段": column, "类型": "numeric" if _numeric_ratio(context.rows, column) >= 0.5 else "text", "角色": "待确认", "可用于什么分析": "需结合业务说明确认"})
+    return rows
+
+
+def _render_multi_table_contract_overview(report: dict[str, Any]) -> str:
+    tables = [item for item in report.get("tables_summary") or [] if isinstance(item, dict)]
+    lines = [
+        f"这批上传文件包含 {int(report.get('table_count') or len(tables))} 张表，共 {_format_plain_value(report.get('total_row_count') or 0)} 行、{_format_plain_value(report.get('total_column_count') or 0)} 个字段；需要先按表理解字段，再确认关联键后做跨表分析。",
+        "关键字段已按表列出如下。",
+        "",
+        "每张表字段清单：",
+    ]
+    for table in tables:
+        lines.extend(
+            [
+                "",
+                f"{table.get('table')}（{_format_plain_value(table.get('row_count') or 0)} 行、{_format_plain_value(table.get('column_count') or 0)} 列）",
+                "字段 | 类型 | 角色 | 可用于什么分析",
+                "--- | --- | --- | ---",
+            ]
+        )
+        for field in table.get("field_meanings") or []:
+            item = _as_dict(field)
+            if not item:
+                continue
+            lines.append(
+                " | ".join(
+                    [
+                        str(item.get("field") or ""),
+                        str(item.get("type") or "unknown"),
+                        str(item.get("role") or "待确认"),
+                        str(item.get("analysis_use") or item.get("meaning") or "需结合业务说明确认"),
+                    ]
+                )
+            )
+    join_keys = report.get("candidate_join_keys") if isinstance(report.get("candidate_join_keys"), list) else []
+    join_text = "；".join(str(_as_dict(item).get("text") or "") for item in join_keys if _as_dict(item).get("text")) or "未识别到稳定的同名 ID / 编码 / 日期类候选关联键"
+    lines.extend(["", "候选关联键：", f"- {join_text}", "", "可分析方向："])
+    lines.extend(f"- {item}" for item in _multi_table_overview_directions(tables))
+    total_quality = sum(int(_to_float(table.get("quality_issue_count") or 0) or 0) for table in tables)
+    quality_text = "各表缺失 / 重复 / 异常当前统计未发现非 0 问题；仍需逐表查看字段级结果。" if total_quality == 0 else f"当前共识别 {total_quality} 类质量信号，需逐表确认。"
+    lines.extend(
+        [
+            "",
+            "join 风险和数据质量摘要：",
+            "- join 风险：候选键必须再检查唯一性、缺失率、一对多关系和业务主键定义；不能仅凭同名字段直接 join。",
+            f"- 数据质量：{quality_text}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _overview_analysis_directions(report: dict[str, Any]) -> list[str]:
+    metrics = [str(item) for item in report.get("metric_candidates") or [] if str(item)]
+    dimensions = [str(item) for item in report.get("dimension_candidates") or [] if str(item)]
+    times = [str(item) for item in report.get("time_columns") or [] if str(item)]
+    metric_text = "/".join(metrics[:3]) or str(report.get("metric_column") or "核心指标")
+    directions: list[str] = []
+    for dimension in dimensions[:3]:
+        directions.append(f"按 {dimension} 分组汇总 {metric_text}")
+    for time_column in times[:2]:
+        directions.append(f"按 {time_column} 看 {metric_text} 趋势")
+    if not directions:
+        directions.append("先确认一个指标字段和一个维度字段，再做分组汇总或趋势分析")
+    return directions
+
+
+def _multi_table_overview_directions(tables: list[dict[str, Any]]) -> list[str]:
+    metrics: list[str] = []
+    dimensions: list[str] = []
+    times: list[str] = []
+    for table in tables:
+        for source, target in (
+            (table.get("metric_candidates") or [], metrics),
+            (table.get("dimension_candidates") or [], dimensions),
+            (table.get("time_columns") or [], times),
+        ):
+            for item in source:
+                text = str(item)
+                if text and text not in target:
+                    target.append(text)
+    metric_text = "/".join(metrics[:3]) or "核心指标"
+    directions: list[str] = []
+    if times:
+        directions.append(f"按 {times[0]} 看 {metric_text} 趋势")
+    for dimension in dimensions[:2]:
+        directions.append(f"按 {dimension} 分组汇总 {metric_text}")
+    if len(tables) >= 2:
+        directions.append(f"关联 {tables[0].get('table')} 与 {tables[1].get('table')} 后，结合 {', '.join(dimensions[:2]) or '维度字段'} 分析 {metric_text}")
+    return directions or ["先选事实表、指标字段和关联键，再做跨表汇总分析"]
+
+
+def _quality_field_rows(context: _FrameContext) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    report = context.quality_report
+    field_level = report.get("field_level_table") if isinstance(report.get("field_level_table"), list) else []
+    if field_level:
+        for item in field_level:
+            row = _as_dict(item)
+            field = str(row.get("字段") or row.get("field") or row.get("column") or row.get("column_name") or "").strip()
+            if not field:
+                continue
+            rows.append(
+                {
+                    "字段": field,
+                    "类型": str(row.get("类型") or row.get("type") or row.get("dtype") or "unknown"),
+                    "缺失数": int(_to_float(row.get("缺失数") or row.get("missing_count") or 0) or 0),
+                    "缺失率": str(row.get("缺失率") or row.get("missing_rate") or "0.00%"),
+                    "类型异常数": int(_to_float(row.get("类型异常数") or row.get("type_parse_failure_count") or 0) or 0),
+                    "异常值数": int(_to_float(row.get("异常值数") or row.get("outlier_count") or row.get("anomaly_count") or 0) or 0),
+                    "检测规则": str(row.get("检测规则") or "missing placeholder scan; non-null type parse failure; numeric IQR rule"),
+                    "备注": str(row.get("备注") or ""),
+                }
+            )
+        return rows
+    for row in context.rows:
+        field = str(row.get("字段") or row.get("field") or row.get("column") or row.get("column_name") or "").strip()
+        if not field:
+            continue
+        rows.append(
+                {
+                    "字段": field,
+                    "类型": str(row.get("类型") or row.get("type") or row.get("dtype") or "unknown"),
+                    "缺失数": int(_to_float(row.get("缺失数") or row.get("missing_count") or row.get("null_count") or 0) or 0),
+                    "缺失率": str(row.get("缺失率") or row.get("missing_rate") or "0.00%"),
+                    "类型异常数": int(_to_float(row.get("类型异常数") or row.get("type_parse_failure_count") or 0) or 0),
+                    "异常值数": int(_to_float(row.get("异常值数") or row.get("异常数") or row.get("outlier_count") or row.get("anomaly_count") or 0) or 0),
+                    "检测规则": str(row.get("检测规则") or "missing placeholder scan; non-null type parse failure; numeric IQR rule"),
+                    "备注": str(row.get("备注") or ""),
+                }
+        )
+    if rows:
+        return rows
+    issues = report.get("issues") if isinstance(report.get("issues"), list) else []
+    by_field: dict[str, dict[str, Any]] = {}
+    for issue in issues:
+        issue_dict = _as_dict(issue)
+        field = str(issue_dict.get("column_name") or issue_dict.get("field") or "全表").strip()
+        current = by_field.setdefault(field, {"字段": field, "类型": "unknown", "缺失数": 0, "缺失率": "0.00%", "类型异常数": 0, "异常值数": 0, "检测规则": "missing placeholder scan; non-null type parse failure; numeric IQR rule", "备注": ""})
+        issue_type = str(issue_dict.get("issue_type") or "").lower()
+        count = int(_to_float(issue_dict.get("affected_rows") or 1) or 1)
+        if any(token in issue_type for token in ("missing", "null", "缺失")):
+            current["缺失数"] += count
+        elif any(token in issue_type for token in ("mixed", "invalid_dates", "parse", "type")):
+            current["类型异常数"] += count
+        else:
+            current["异常值数"] += count
+    return list(by_field.values())
+
+
+def _quality_compact_field_rows(context: _FrameContext) -> list[dict[str, Any]]:
+    columns = set(context.columns)
+    if not {"字段", "类型", "缺失数", "重复数", "异常数"}.issubset(columns):
+        return []
+    rows: list[dict[str, Any]] = []
+    for row in context.rows:
+        field = str(row.get("字段") or row.get("field") or row.get("column") or "").strip()
+        if not field:
+            continue
+        rows.append(
+            {
+                "字段": field,
+                "类型": str(row.get("类型") or row.get("type") or row.get("dtype") or "unknown"),
+                "缺失数": int(_to_float(row.get("缺失数") or row.get("missing_count") or 0) or 0),
+                "重复数": int(_to_float(row.get("重复数") or row.get("duplicate_count") or 0) or 0),
+                "异常数": int(_to_float(row.get("异常数") or row.get("异常值数") or row.get("outlier_count") or row.get("anomaly_count") or 0) or 0),
+            }
+        )
+    return rows
+
+
+def _quality_duplicate_rule_text(context: _FrameContext) -> str:
+    report = context.quality_report
+    rules = report.get("duplicate_rules") if isinstance(report.get("duplicate_rules"), list) else []
+    if not rules:
+        return "full_row_duplicate_count=0；key_duplicate_count=无候选键"
+    parts: list[str] = []
+    for rule in rules:
+        item = _as_dict(rule)
+        table = str(item.get("table") or "当前表")
+        full_count = int(_to_float(item.get("full_row_duplicate_count") or 0) or 0)
+        key_counts = item.get("key_duplicate_count") if isinstance(item.get("key_duplicate_count"), dict) else {}
+        key_text = ", ".join(f"{key}={value}" for key, value in key_counts.items()) if key_counts else "无候选键"
+        parts.append(f"{table}: full_row_duplicate_count={full_count}; key_duplicate_count={key_text}")
+    return "；".join(parts)
+
+
+def _markdown_table(columns: list[str], rows: list[dict[str, Any]]) -> str:
+    header = "| " + " | ".join(columns) + " |"
+    separator = "| " + " | ".join("---" for _ in columns) + " |"
+    lines = [header, separator]
+    for row in rows:
+        lines.append("| " + " | ".join(_markdown_cell(row.get(column)) for column in columns) + " |")
+    return "\n".join(lines)
+
+
+def _markdown_cell(value: Any) -> str:
+    text = _sanitize_text("" if value is None else value).replace("\n", " ")
+    return re.sub(r"\s+", " ", text).strip().replace("|", "\\|")
 
 
 def _overview_core(context: _FrameContext) -> str:
@@ -371,6 +996,14 @@ def _overview_evidence(context: _FrameContext) -> str:
         suffix = f"；{original[0]}" if original else ""
         return f"从结构上看，核心对象分散在多张表里，主要表包括 {examples or '已识别表'}；多表关系还需要主键、时间粒度或说明文件确认{suffix}"
     fields = []
+    if _asks_field_roles(context.question):
+        fields.append(
+            "字段角色："
+            f"指标={_format_role_values(report.get('metric_candidates') or ([report.get('metric_column')] if report.get('metric_column') else []))}；"
+            f"维度={_format_role_values(report.get('dimension_candidates') or ([report.get('dimension_column')] if report.get('dimension_column') else []))}；"
+            f"时间={_format_role_values(report.get('time_columns') or ([report.get('period_column')] if report.get('period_column') else []))}；"
+            f"ID={_format_role_values(report.get('id_candidates') or [])}"
+        )
     if report.get("period_column"):
         fields.append(f"时间字段是 {report.get('period_column')}")
     if report.get("metric_column"):
@@ -389,6 +1022,19 @@ def _overview_evidence(context: _FrameContext) -> str:
     original = _original_points(context, limit=1)
     suffix = f"；{original[0]}" if original else ""
     return "从结构上看，" + size + (_short_join(fields, limit=4, separator="；") or "这不是只看行列数的问题，还需要结合字段角色判断可分析方向") + suffix
+
+
+def _asks_field_roles(question: str) -> bool:
+    compact = str(question or "").lower().replace(" ", "")
+    return "字段" in compact and all(token in compact for token in ("指标", "维度", "时间")) and ("id" in compact or "ID" in question)
+
+
+def _format_role_values(values: Any) -> str:
+    if isinstance(values, list):
+        cleaned = [str(item) for item in values if str(item)]
+    else:
+        cleaned = [str(values)] if str(values or "") else []
+    return "、".join(cleaned[:6]) if cleaned else "待确认"
 
 
 def _cleaning_evidence(context: _FrameContext) -> str:
@@ -1132,8 +1778,8 @@ def _next_questions(context: _FrameContext) -> list[str]:
         ]
     elif context.kind in {"cleaning", "quality"}:
         generated = [
-            "列出每类质量问题影响的字段和行数",
-            "确认哪些规则可以删除、填充或只标记",
+            "按缺失率或异常值数排序查看高风险字段",
+            "确认哪些字段需要删除、填充或只标记",
             "生成一份不覆盖原始数据的清洗后副本",
         ]
     elif context.kind == "clarification":
@@ -1255,14 +1901,30 @@ def _trend_summary(context: _FrameContext) -> str:
     period = _preferred_period_column(context.columns)
     if not metric or len(context.rows) < 2:
         return _fallback_core(context)
-    first = _to_float(context.rows[0].get(metric))
-    last = _to_float(context.rows[-1].get(metric))
-    if first is None or last is None:
+    time_points: list[tuple[str, float, Any]] = []
+    for row in context.rows:
+        value = _to_float(row.get(metric))
+        if value is None:
+            continue
+        label = str(row.get(period) if period else "")
+        time_points.append((label, value, row.get(metric)))
+    if len(time_points) < 2:
         return _fallback_core(context)
-    direction = "上升" if last > first else "下降" if last < first else "基本持平"
-    start_label = str(context.rows[0].get(period) if period else "首期")
-    end_label = str(context.rows[-1].get(period) if period else "末期")
-    return f"{metric}整体呈{direction}趋势，从 {start_label} 的 {_format_cell_value(context.rows[0].get(metric), metric)} 到 {end_label} 的 {_format_cell_value(context.rows[-1].get(metric), metric)}"
+    sequence = [(label or str(index), value) for index, (label, value, _raw) in enumerate(time_points)]
+    trend = describe_trend(sequence)
+    if trend == "单调上升":
+        direction = "整体上升"
+    elif trend == "单调下降":
+        direction = "整体下降"
+    elif trend == "基本持平":
+        direction = "整体持平"
+    else:
+        direction = trend
+    start_label = str(time_points[0][0] or "首期")
+    end_label = str(time_points[-1][0] or "末期")
+    start_value = time_points[0][2]
+    end_value = time_points[-1][2]
+    return f"{metric}{direction}趋势，从 {start_label} 的 {_format_cell_value(start_value, metric)} 到 {end_label} 的 {_format_cell_value(end_value, metric)}"
 
 
 def _extrema_text(context: _FrameContext) -> str:
@@ -1579,7 +2241,7 @@ def _looks_frameworked(text: str) -> bool:
 
 
 def _sanitize_text(value: Any) -> str:
-    text = str(value or "").strip()
+    text = "" if value is None else str(value).strip()
     if not text:
         return ""
     safe_lines = []
@@ -1628,7 +2290,7 @@ def _mark_debug(response: dict[str, Any], *, applied: bool, reason: str) -> None
         }
 
 
-def _attach_process_note(response: dict[str, Any]) -> None:
+def _attach_process_note(response: dict[str, Any], *, direct: bool = False) -> None:
     process = response.get("process_view_v2")
     if not isinstance(process, dict):
         return
@@ -1640,9 +2302,9 @@ def _attach_process_note(response: dict[str, Any]) -> None:
     steps.append(
         {
             "title": "整理结构化回答",
-            "summary": "已把已验证结果整理为数据摘要、分析洞察、业务建议、口径边界和下一步；没有重新计算数字。",
+            "summary": "已把已验证结果整理为直答或结构化回答；没有重新计算数字。" if direct else "已把已验证结果整理为数据摘要、分析洞察、业务建议、口径边界和下一步；没有重新计算数字。",
             "status": "completed",
-            "evidence": ["text_framework=bigcat_evidence_report_v2"],
+            "evidence": ["text_framework=direct_answer_v1" if direct else "text_framework=bigcat_evidence_report_v2"],
             "assumptions": [],
             "caveats": ["只使用 response 中已有的验证结果、概览报告、质量报告和来源引用。"],
             "confidence": 0.86,

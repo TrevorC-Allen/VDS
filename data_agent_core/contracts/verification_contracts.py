@@ -29,6 +29,10 @@ class VerificationResult:
     notes: list[str] = field(default_factory=list)
     semantic_verification_notes: list[str] = field(default_factory=list)
     correction_action: dict[str, Any] | None = None
+    task_contract: dict[str, Any] | None = None
+    contract_report: dict[str, Any] | None = None
+    oracle_result: dict[str, Any] | None = None
+    semantic_status: str = "legacy_unverified"
 
 
 @dataclass

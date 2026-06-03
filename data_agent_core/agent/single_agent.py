@@ -93,7 +93,7 @@ class DataAnalysisAgent:
             guardrail_logic_form=guardrail_logic_form,
         )
         logic_form = self._validated_logic_form(llm_plan.logic_form, guardrail_logic_form)
-        plan = build_analysis_plan(logic_form)
+        plan = build_analysis_plan(logic_form, question=question)
         pandas_result = pandas_executor.execute_plan(plan, self.context)
         not_applicable_attribution = classify_not_applicable(pandas_result.value, plan)
         sql_result = None
@@ -683,7 +683,7 @@ class UploadedDatasetAgent(DataAnalysisAgent):
             guardrail_logic_form=guardrail_logic_form,
         )
         logic_form = self._validated_logic_form(llm_plan.logic_form, guardrail_logic_form)
-        plan = build_analysis_plan(logic_form)
+        plan = build_analysis_plan(logic_form, question=question)
         pandas_result = pandas_executor.execute_plan(plan, self.context)
         not_applicable_attribution = classify_not_applicable(pandas_result.value, plan)
         sql_result = None

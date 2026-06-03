@@ -18,6 +18,7 @@ from data_agent_core.core.schema_profiler import profile_tables
 from data_agent_core.executors import pandas_executor, sql_executor
 from data_agent_core.output.chart_planner import build_chart_spec
 from data_agent_core.output.insight_generator import generate_insight
+from data_agent_core.task_execution_contracts import TaskExecutionContract
 from data_agent_core.verifier.result_comparator import compare_results
 from data_agent_core.verifier.rule_checker import verify_execution
 
@@ -232,6 +233,7 @@ def _logic_form_from_payload(payload: dict[str, Any], column_mapping: dict[str, 
         answer_target=payload.get("answer_target") or dict(payload.get("output_format") or {}).get("answer_target"),
         output_format=dict(payload.get("output_format") or {}),
         output_contract=dict(payload.get("output_contract") or {}),
+        task_contract=dict(payload.get("task_contract") or {}),
     )
 
 
@@ -245,6 +247,30 @@ def _analysis_plan_from_payload(payload: dict[str, Any]) -> AnalysisPlan:
         steps=list(data.get("steps") or []),
         expected_result_shape=str(data.get("expected_result_shape") or "scalar"),
         constraints=dict(data.get("constraints") or {}),
+        task_contract=_task_contract_from_payload(data.get("task_contract") or getattr(logic_form, "task_contract", None)),
+    )
+
+
+def _task_contract_from_payload(payload: Any) -> TaskExecutionContract | None:
+    if isinstance(payload, TaskExecutionContract):
+        return payload
+    if not isinstance(payload, dict) or not payload:
+        return None
+    return TaskExecutionContract(
+        contract_id=str(payload.get("contract_id") or "contract_payload"),
+        task_family=str(payload.get("task_family") or "unknown"),  # type: ignore[arg-type]
+        required_n=payload.get("required_n"),
+        metric=payload.get("metric"),
+        dimension=payload.get("dimension"),
+        required_output_columns=list(payload.get("required_output_columns") or []),
+        required_answer_elements=list(payload.get("required_answer_elements") or []),
+        requires_previous_artifact=bool(payload.get("requires_previous_artifact")),
+        referent_artifact_id=payload.get("referent_artifact_id"),
+        referent_dimension=payload.get("referent_dimension"),
+        referent_values=list(payload.get("referent_values") or []),
+        referent_policy=str(payload.get("referent_policy") or "must_filter_to_previous_result_objects"),
+        verification_rules=dict(payload.get("verification_rules") or {}),
+        insufficiency_policy=str(payload.get("insufficiency_policy") or "fail_closed"),
     )
 
 

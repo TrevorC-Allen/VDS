@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan, UserQuestion
@@ -10,6 +11,13 @@ from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.contracts.verification_contracts import ComparisonResult, VerificationResult
 from data_agent_core.core.analysis_planner import complete_generalization_contract
 from data_agent_core.core.capability_registry import capability_for_operation
+from data_agent_core.oracle_results import build_oracle_result
+from data_agent_core.task_execution_contracts import (
+    TaskExecutionContract,
+    build_task_execution_contract,
+    semantic_status_from_report,
+    verify_task_execution_contract,
+)
 
 
 def verify_execution(
@@ -31,11 +39,30 @@ def verify_execution(
     if comparison is not None and not comparison.consistent:
         issues.extend(comparison.issues)
     semantic_passed = True
+    task_contract = _task_contract_from_plan(plan, user_question) if plan is not None else None
+    contract_report = None
+    oracle_result = build_oracle_result(task_contract, primary)
+    semantic_status = "legacy_unverified"
+    if task_contract is not None:
+        contract_report = verify_task_execution_contract(task_contract, primary)
+        semantic_status = semantic_status_from_report(contract=task_contract, report=contract_report)
+        semantic_notes.append(f"Task contract {task_contract.contract_id} checked as {task_contract.task_family}.")
+        if not contract_report.passed:
+            semantic_passed = False
+            issues.append("Task semantic execution contract failed.")
+            semantic_notes.extend(item.message for item in contract_report.violations)
+            correction_action = correction_action or _referent_correction_action(task_contract, contract_report)
     if plan is not None and user_question is not None:
         complete_generalization_contract(plan.logic_form)
-        semantic_passed, semantic_notes, correction_action = _verify_semantic_contract(plan, user_question, primary)
-        if not semantic_passed:
+        generalization_passed, generalization_notes, generalization_action = _verify_semantic_contract(plan, user_question, primary)
+        semantic_notes.extend(generalization_notes)
+        if generalization_action is not None:
+            correction_action = generalization_action
+        if not generalization_passed:
+            semantic_passed = False
             issues.append("Semantic metric definition does not match the user question.")
+    if contract_report is not None and not contract_report.passed and _needs_clarification(contract_report):
+        semantic_status = "needs_clarification"
     passed = not issues
     return VerificationResult(
         passed=passed,
@@ -46,7 +73,84 @@ def verify_execution(
         notes=["Verifier checked execution success, optional backend consistency, and semantic metric contract."],
         semantic_verification_notes=semantic_notes,
         correction_action=correction_action,
+        task_contract=_json_ready(task_contract) if task_contract is not None else None,
+        contract_report=_json_ready(contract_report) if contract_report is not None else None,
+        oracle_result=_json_ready(oracle_result),
+        semantic_status=semantic_status,
     )
+
+
+def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuestion | None) -> TaskExecutionContract | None:
+    if plan is None:
+        return None
+    contract = getattr(plan, "task_contract", None)
+    if isinstance(contract, TaskExecutionContract):
+        return contract
+    if isinstance(contract, dict) and contract:
+        return TaskExecutionContract(
+            contract_id=str(contract.get("contract_id") or "contract_payload"),
+            task_family=str(contract.get("task_family") or "unknown"),  # type: ignore[arg-type]
+            required_n=contract.get("required_n"),
+            metric=contract.get("metric"),
+            dimension=contract.get("dimension"),
+            sort_order=contract.get("sort_order"),
+            gap_mode=contract.get("gap_mode"),
+            required_output_columns=list(contract.get("required_output_columns") or []),
+            required_answer_elements=list(contract.get("required_answer_elements") or []),
+            requires_previous_artifact=bool(contract.get("requires_previous_artifact")),
+            referent_artifact_id=contract.get("referent_artifact_id"),
+            referent_dimension=contract.get("referent_dimension"),
+            referent_values=list(contract.get("referent_values") or []),
+            referent_policy=str(contract.get("referent_policy") or "must_filter_to_previous_result_objects"),
+            verification_rules=dict(contract.get("verification_rules") or {}),
+            insufficiency_policy=str(contract.get("insufficiency_policy") or "fail_closed"),
+        )
+    logic_contract = getattr(plan.logic_form, "task_contract", None)
+    if isinstance(logic_contract, dict) and logic_contract:
+        return _task_contract_from_plan(
+            AnalysisPlan(
+                plan_id=plan.plan_id,
+                logic_form=plan.logic_form,
+                steps=plan.steps,
+                expected_result_shape=plan.expected_result_shape,
+                constraints=plan.constraints,
+                task_contract=logic_contract,
+            ),
+            user_question,
+        )
+    return build_task_execution_contract(plan.logic_form, question="" if user_question is None else user_question.question)
+
+
+def _needs_clarification(report: Any) -> bool:
+    violations = getattr(report, "violations", []) or []
+    return any(getattr(item, "severity", "") == "needs_clarification" for item in violations)
+
+
+def _referent_correction_action(contract: TaskExecutionContract, report: Any) -> dict[str, object] | None:
+    violations = getattr(report, "violations", []) or []
+    codes = {str(getattr(item, "code", "") or "") for item in violations}
+    if "REFERENT_FILTER_NOT_APPLIED" not in codes:
+        return None
+    return {
+        "action": "repair_referent_filter",
+        "reason": "REFERENT_FILTER_NOT_APPLIED",
+        "referent_artifact_id": contract.referent_artifact_id,
+        "referent_dimension": contract.referent_dimension,
+        "referent_values": list(contract.referent_values),
+        "referent_policy": contract.referent_policy,
+    }
+
+
+def _json_ready(value: Any) -> Any:
+    if value is None:
+        return None
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, list):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _json_ready(item) for key, item in value.items()}
+    return value
 
 
 def _verify_semantic_contract(
@@ -821,6 +925,11 @@ def _logic_uses_explicit_derived_formula(logic: Any) -> bool:
     params = getattr(logic, "parameters", {}) or {}
     derived_metric = params.get("derived_metric")
     if not isinstance(derived_metric, dict) or not derived_metric:
+        operation = str(getattr(logic, "operation", "") or "")
+        output_format = getattr(logic, "output_format", {}) or {}
+        answer_type = str(output_format.get("answer_type") or "")
+        if operation.startswith("retail_") and operation.endswith("_rate") and answer_type in {"percentage", "ratio", "number"}:
+            return True
         return False
     return bool(derived_metric.get("name") and derived_metric.get("numerator") and derived_metric.get("denominator") and derived_metric.get("formula"))
 

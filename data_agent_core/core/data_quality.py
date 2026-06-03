@@ -22,10 +22,36 @@ def build_data_quality_report(
     """Scan tables and return a stable quality report."""
 
     issues: list[DataQualityIssue] = []
+    field_level_table: list[dict[str, Any]] = []
+    duplicate_rules: list[dict[str, Any]] = []
+    outlier_rules: list[dict[str, Any]] = []
+    type_parse_failure_rules: list[dict[str, Any]] = []
     for table_name, df in tables.items():
         issues.extend(_table_issues(table_name, df))
+        duplicate_rules.append(_duplicate_rule(table_name, df))
         for column_name in df.columns:
-            issues.extend(_column_issues(table_name, str(column_name), df[column_name]))
+            column = str(column_name)
+            column_quality = _column_quality_row(table_name, column, df[column])
+            field_level_table.append(column_quality)
+            outlier_rules.append(
+                {
+                    "table": table_name,
+                    "field": column,
+                    "rule": "numeric IQR rule",
+                    "affected_rows": column_quality["异常值数"],
+                    "affected_rate": column_quality["异常值率"],
+                }
+            )
+            type_parse_failure_rules.append(
+                {
+                    "table": table_name,
+                    "field": column,
+                    "rule": column_quality["类型检测规则"],
+                    "affected_rows": column_quality["类型异常数"],
+                    "affected_rate": column_quality["类型异常率"],
+                }
+            )
+            issues.extend(_column_issues(table_name, column, df[column]))
 
     issues = _dedupe_issues(issues)
     score = _quality_score(issues)
@@ -37,6 +63,10 @@ def build_data_quality_report(
         issue_count=len(issues),
         summary=summary,
         issues=issues,
+        field_level_table=field_level_table,
+        duplicate_rules=duplicate_rules,
+        outlier_rules=outlier_rules,
+        type_parse_failure_rules=type_parse_failure_rules,
         generated_from=generated_from,
     )
 
@@ -94,6 +124,104 @@ def _table_issues(table_name: str, df: pd.DataFrame) -> list[DataQualityIssue]:
             )
         )
     return issues
+
+
+def _duplicate_rule(table_name: str, df: pd.DataFrame) -> dict[str, Any]:
+    row_count = len(df)
+    full_row_duplicate_count = int(df.duplicated().sum()) if row_count else 0
+    key_duplicate_counts: dict[str, int] = {}
+    for column_name in df.columns:
+        column = str(column_name)
+        if not _looks_identifier(column):
+            continue
+        series = df[column_name]
+        non_null = series[~_missing_mask(series)]
+        key_duplicate_counts[column] = int(non_null.duplicated(keep=False).sum())
+    return {
+        "table": table_name,
+        "rule": "full_row_duplicate_count",
+        "full_row_duplicate_count": full_row_duplicate_count,
+        "full_row_duplicate_rate": _safe_rate(full_row_duplicate_count, row_count),
+        "key_duplicate_count": key_duplicate_counts,
+        "row_count": row_count,
+    }
+
+
+def _column_quality_row(table_name: str, column_name: str, series: pd.Series) -> dict[str, Any]:
+    row_count = len(series)
+    missing_mask = _missing_mask(series)
+    missing_count = int(missing_mask.sum())
+    non_null = series[~missing_mask]
+    type_failure_count, type_rule = _type_parse_failure_count(column_name, non_null)
+    outlier_count = _numeric_iqr_outlier_count(column_name, non_null)
+    return {
+        "表": table_name,
+        "字段": column_name,
+        "类型": _column_type_label(series),
+        "缺失数": missing_count,
+        "缺失率": _format_rate(_safe_rate(missing_count, row_count)),
+        "类型异常数": type_failure_count,
+        "类型异常率": _format_rate(_safe_rate(type_failure_count, row_count)),
+        "异常值数": outlier_count,
+        "异常值率": _format_rate(_safe_rate(outlier_count, row_count)),
+        "检测规则": "missing placeholder scan; non-null type parse failure; numeric IQR rule",
+        "类型检测规则": type_rule,
+        "备注": "按当前规则未发现字段级问题" if missing_count + type_failure_count + outlier_count == 0 else "存在字段级质量信号，需结合业务口径确认",
+        "row_count": row_count,
+        "affected_rows": missing_count + type_failure_count + outlier_count,
+        "affected_rate": _format_rate(_safe_rate(missing_count + type_failure_count + outlier_count, row_count)),
+    }
+
+
+def _column_type_label(series: pd.Series) -> str:
+    non_null = series.dropna()
+    if non_null.empty:
+        return "unknown"
+    if pd.api.types.is_bool_dtype(non_null):
+        return "boolean"
+    if pd.api.types.is_numeric_dtype(non_null):
+        return "numeric"
+    if pd.api.types.is_datetime64_any_dtype(non_null):
+        return "datetime"
+    numeric = pd.to_numeric(non_null, errors="coerce")
+    if float(numeric.notna().mean()) >= 0.95:
+        return "numeric"
+    parsed_dates = pd.to_datetime(non_null, errors="coerce")
+    if float(parsed_dates.notna().mean()) >= 0.95 and _looks_date_name(str(series.name or "")):
+        return "datetime"
+    return "text"
+
+
+def _type_parse_failure_count(column_name: str, non_null: pd.Series) -> tuple[int, str]:
+    if non_null.empty:
+        return 0, "non-null type parse failure"
+    boolean_like = pd.api.types.is_bool_dtype(non_null)
+    if _looks_date_name(column_name):
+        parsed = pd.to_datetime(non_null, errors="coerce")
+        return int(parsed.isna().sum()), "non-null date parse failure"
+    numeric = pd.to_numeric(non_null, errors="coerce")
+    numeric_rate = float(numeric.notna().mean())
+    if not boolean_like and (_looks_metric_name(column_name) or numeric_rate >= 0.95):
+        return int(numeric.isna().sum()), "non-null numeric parse failure"
+    return 0, "non-null type parse failure"
+
+
+def _numeric_iqr_outlier_count(column_name: str, non_null: pd.Series) -> int:
+    if non_null.empty:
+        return 0
+    boolean_like = pd.api.types.is_bool_dtype(non_null)
+    numeric = pd.to_numeric(non_null, errors="coerce")
+    if boolean_like or numeric.notna().sum() < 8 or float(numeric.notna().mean()) < 0.95:
+        return 0
+    valid = numeric.dropna()
+    q1 = float(valid.quantile(0.25))
+    q3 = float(valid.quantile(0.75))
+    iqr = q3 - q1
+    if iqr == 0:
+        return 0
+    lower = q1 - 3 * iqr
+    upper = q3 + 3 * iqr
+    return int(((numeric < lower) | (numeric > upper)).sum())
 
 
 def _column_issues(table_name: str, column_name: str, series: pd.Series) -> list[DataQualityIssue]:
@@ -325,3 +453,11 @@ def _summary(issues: list[DataQualityIssue], table_count: int) -> str:
     medium = sum(1 for issue in issues if issue.severity == "medium")
     low = sum(1 for issue in issues if issue.severity == "low")
     return f"已扫描 {table_count} 张表，发现 {len(issues)} 个潜在问题：high={high}, medium={medium}, low={low}。"
+
+
+def _safe_rate(count: int, total: int) -> float:
+    return 0.0 if total <= 0 else float(count) / float(total)
+
+
+def _format_rate(rate: float) -> str:
+    return f"{rate:.2%}"

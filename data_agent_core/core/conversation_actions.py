@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan
 from data_agent_core.core.capability_registry import capability_for_operation
+from data_agent_core.result_artifacts import build_result_artifacts, merge_result_artifacts, resolve_followup_referent
 
 
 def build_analysis_context(
@@ -33,6 +34,10 @@ def build_analysis_context(
             "active": state_name == "awaiting_clarification",
             "history_depth": int(previous.get("history_depth") or 0),
             "available_followup_actions": list(previous.get("available_followup_actions") or []),
+            "last_result_artifact_id": str(previous.get("last_result_artifact_id") or ""),
+            "active_result_artifacts": list(previous.get("active_result_artifacts") or []),
+            "last_ranking_artifact_id": str(previous.get("last_ranking_artifact_id") or ""),
+            "referent_resolution_trace": list(previous.get("referent_resolution_trace") or []),
         }
 
     operation = str(logic.get("operation") or logic.get("task_type") or "")
@@ -44,6 +49,24 @@ def build_analysis_context(
     focus_sets = _merge_focus_sets(
         previous.get("focus_sets") if isinstance(previous.get("focus_sets"), list) else [],
         _focus_sets_from_logic_result(logic, params, operation, rows),
+    )
+    current_artifacts = build_result_artifacts(
+        logic=logic,
+        params=params,
+        operation=operation,
+        rows=rows,
+        run_id=str(active_payload.get("run_id") or ""),
+        question=str(original_question or active_payload.get("question") or ""),
+    )
+    active_artifacts = merge_result_artifacts(previous.get("active_result_artifacts"), current_artifacts)
+    last_artifact_id = str(current_artifacts[0].get("artifact_id") or "") if current_artifacts else str(previous.get("last_result_artifact_id") or "")
+    last_ranking_artifact_id = next(
+        (
+            str(artifact.get("artifact_id") or "")
+            for artifact in active_artifacts
+            if str(artifact.get("artifact_type") or "") in {"ranking", "topn"}
+        ),
+        str(previous.get("last_ranking_artifact_id") or ""),
     )
     context = {
         "state_version": "v1",
@@ -69,6 +92,10 @@ def build_analysis_context(
             "first_row": rows[0] if rows else {},
         },
         "focus_sets": focus_sets,
+        "last_result_artifact_id": last_artifact_id,
+        "active_result_artifacts": active_artifacts,
+        "last_ranking_artifact_id": last_ranking_artifact_id,
+        "referent_resolution_trace": list(previous.get("referent_resolution_trace") or [])[-10:],
         "history_depth": int(previous.get("history_depth") or 0) + 1,
     }
     context["available_followup_actions"] = build_next_actions(
@@ -99,11 +126,14 @@ def build_next_actions(
     metric = _first_text(logic.get("metric"), parameters.get("metric"), _first_numeric_column(rows, columns), "核心指标")
     dimension = _first_text(logic.get("group_by"), parameters.get("dimension"), parameters.get("group_by"), _first_dimension_column(rows, columns))
 
+    def finish(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sanitize_next_actions(question=question_text, operation=operation, actions=actions)
+
     if operation == "retail_category_distribution_monthly_trend" or (
         "分品类" in question_text and "历史分销金额" in question_text and "趋势" in question_text
     ):
         window = _retail_month_window_text(parameters.get("start_ym"), parameters.get("end_ym")) or _retail_month_window_from_question(question_text)
-        return [
+        return finish([
             _action(
                 action_id="review_extremes",
                 label="复核峰值、低点和最大波动期",
@@ -131,11 +161,11 @@ def build_next_actions(
                 parameters={"dimension": "sku_name", "metric": "sign_amt"},
                 dimension="sku_name",
             ),
-        ]
+        ])
 
     if operation == "retail_distribution_topn_chart":
         window = _retail_month_window_text(parameters.get("start_ym"), parameters.get("end_ym"))
-        return [
+        return finish([
             _action(
                 action_id="switch_to_customer_source",
                 label="按客户拆分来源",
@@ -154,33 +184,132 @@ def build_next_actions(
                 parameters={"dimension": "sku_name", "metric": "sign_amt"},
                 dimension="sku_name",
             ),
-        ]
+        ])
 
     if _looks_like_trend(operation, question_text):
-        return [
+        return finish([
             _action(
-                action_id="review_extremes",
-                label="复核峰值、低点和最大波动期",
-                operation=operation,
-                question=f"把{_metric_question_label(metric)}的峰值、低点和最大波动期标出来？",
+                action_id="switch_to_time_trend",
+                label="按时间查看趋势",
+                operation="aggregation",
+                question=f"按{_dimension_question_label(dimension)}继续展示{_metric_question_label(metric)}趋势。",
                 inherited_parameters=_generic_inherited_parameters(logic, parameters),
                 parameters={"metric": metric, "dimension": dimension},
                 dimension=dimension,
-            )
-        ]
+            ),
+            _action(
+                action_id="grouped_metric_distribution",
+                label=f"按{_dimension_question_label(dimension)}汇总{_metric_question_label(metric)}",
+                operation="aggregation",
+                question=f"按{_dimension_question_label(dimension)}汇总{_metric_question_label(metric)}。",
+                inherited_parameters=_generic_inherited_parameters(logic, parameters),
+                parameters={"metric": metric, "dimension": dimension},
+                dimension=dimension,
+            ),
+            _action(
+                action_id="check_metric_anomaly",
+                label="检查指标异常",
+                operation="outlier_count",
+                question=f"{_metric_question_label(metric)}是否异常？",
+                inherited_parameters=_generic_inherited_parameters(logic, parameters),
+                parameters={"metric": metric},
+                dimension=dimension,
+            ),
+        ])
     if _looks_like_ranking(operation, question_text):
-        return [
+        return finish([
             _action(
-                action_id="drilldown_top_results",
-                label="继续比较 Top 结果",
-                operation=operation,
-                question=f"按{dimension or '对象'}看{_metric_question_label(metric)}排名前3。",
+                action_id="grouped_metric_distribution",
+                label=f"按{_dimension_question_label(dimension)}汇总{_metric_question_label(metric)}",
+                operation="aggregation",
+                question=f"按{_dimension_question_label(dimension)}汇总{_metric_question_label(metric)}。",
                 inherited_parameters=_generic_inherited_parameters(logic, parameters),
                 parameters={"metric": metric, "dimension": dimension},
                 dimension=dimension,
-            )
-        ]
+            ),
+            _action(
+                action_id="check_metric_anomaly",
+                label="检查指标异常",
+                operation="outlier_count",
+                question=f"{_metric_question_label(metric)}是否异常？",
+                inherited_parameters=_generic_inherited_parameters(logic, parameters),
+                parameters={"metric": metric},
+                dimension=dimension,
+            ),
+        ])
     return []
+
+
+def sanitize_next_actions(
+    *,
+    question: str,
+    operation: str,
+    actions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop repetitive or vague follow-up actions after the current answer is done."""
+
+    current = _compact_question(question)
+    current_operation = str(operation or "")
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        candidate = dict(action)
+        action_question = str(candidate.get("question") or "").strip()
+        compact_action = _compact_question(action_question)
+        action_operation = str(candidate.get("operation") or "")
+        if compact_action and compact_action == current:
+            continue
+        if _repeats_completed_work(current=current, current_operation=current_operation, action_question=compact_action, action_operation=action_operation):
+            continue
+        if _specificity_score(candidate, action_question) < 2:
+            continue
+        key = (action_operation, compact_action)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(candidate)
+    return result
+
+
+def _compact_question(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "").lower())
+
+
+def _repeats_completed_work(*, current: str, current_operation: str, action_question: str, action_operation: str) -> bool:
+    if not current and not current_operation:
+        return False
+    current_text = current + current_operation.lower()
+    action_text = action_question + action_operation.lower()
+    current_is_topn = any(token in current_text for token in ("top", "前", "排名", "最高", "最低", "topn", "ranking"))
+    action_is_topn = any(token in action_text for token in ("top", "前", "排名", "最高", "最低", "topn", "ranking"))
+    if current_is_topn and action_is_topn and action_operation == current_operation and (
+        action_question in current or current in action_question
+    ):
+        return True
+    if any(token in current_text for token in ("差距", "相差", "gap", "delta", "difference")) and any(token in action_text for token in ("差距", "相差", "gap", "delta", "difference")):
+        return True
+    if any(token in current_text for token in ("峰值", "低点", "最大波动")) and any(token in action_text for token in ("峰值", "低点", "最大波动")):
+        return True
+    return False
+
+
+def _specificity_score(action: dict[str, Any], question: str) -> int:
+    params = action.get("parameters") if isinstance(action.get("parameters"), dict) else {}
+    inherited = action.get("inherited_parameters") if isinstance(action.get("inherited_parameters"), dict) else {}
+    text = str(question or "")
+    score = 0
+    if action.get("metric") or params.get("metric") or any(token in text for token in ("销售额", "金额", "收入", "利润", "数量", "sign_amt", "sales", "revenue", "amount", "metric")):
+        score += 1
+    if action.get("dimension") or params.get("dimension") or params.get("group_by") or any(token in text for token in ("城市", "客户", "产品", "品类", "渠道", "区域", "city", "customer", "product", "category", "dimension")):
+        score += 1
+    if inherited.get("start_ym") or inherited.get("end_ym") or inherited.get("time_window") or any(token in text for token in ("202", "月份", "月", "季度", "年度", "时间", "month", "date", "period")):
+        score += 1
+    filters = action.get("filters") or params.get("filters") or inherited.get("filters") or inherited.get("value_filters")
+    if filters or any(token in text for token in ("筛选", "过滤", "条件", "为", "只看", "filter", "where")):
+        score += 1
+    return score
 
 
 def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> list[dict[str, Any]]:
@@ -196,6 +325,9 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
     params = logic.get("parameters") if isinstance(logic.get("parameters"), Mapping) else {}
     available = list(context.get("available_followup_actions") or [])
     actions: list[dict[str, Any]] = []
+    referent_resolution = resolve_followup_referent(question, context)
+    if str(referent_resolution.get("missing_reason", "")).upper() == "REFERENT_ARTIFACT_MISSING" and not bool(referent_resolution.get("resolved")):
+        return []
 
     if operation in {"quality_summary", "data_quality_report", "cleaning_policy", "anomaly_rules"} and _asks_quality_followup(compact):
         return []
@@ -342,12 +474,57 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
     unique: list[dict[str, Any]] = []
     seen = set()
     for action in actions:
+        action = _attach_referent_resolution(action, referent_resolution, compact)
         key = (action.get("operation"), action.get("question"))
         if key in seen:
             continue
         seen.add(key)
         unique.append(dict(action))
     return unique
+
+
+def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str, Any], compact: str) -> dict[str, Any]:
+    if not resolution.get("resolved"):
+        return action
+    dimension = str(resolution.get("referent_dimension") or "")
+    values = list(resolution.get("referent_values") or [])
+    if not dimension or not values:
+        return action
+    enriched = dict(action)
+    parameters = dict(enriched.get("parameters") or {})
+    inherited = dict(enriched.get("inherited_parameters") or {})
+    filters = dict(inherited.get("filters") or {})
+    filters[dimension] = values
+    inherited["filters"] = filters
+    parameters.update(
+        {
+            "requires_previous_artifact": True,
+            "referent_artifact_id": str(resolution.get("artifact_id") or ""),
+            "referent_dimension": dimension,
+            "referent_values": values,
+            "referent_policy": "must_filter_to_previous_result_objects",
+        }
+    )
+    label = _dimension_question_label(dimension)
+    value_text = _filter_value_text(values)
+    question = str(enriched.get("question") or "")
+    if label and value_text and f"筛选{value_text}{label}的数据" not in question:
+        prefix = f"筛选{value_text}{label}的数据，"
+        if "Top对象" in compact or "top对象" in compact or "TOP对象" in compact or "这些" in compact:
+            prefix = f"这些Top对象来自上一轮结果，仅包含{value_text}{label}；{prefix}"
+        question = prefix + question
+    enriched["question"] = question
+    enriched["parameters"] = parameters
+    enriched["inherited_parameters"] = inherited
+    enriched["referent_contract"] = {
+        "requires_previous_artifact": True,
+        "referent_artifact_id": str(resolution.get("artifact_id") or ""),
+        "referent_values": values,
+        "referent_dimension": dimension,
+        "referent_policy": "must_filter_to_previous_result_objects",
+    }
+    enriched["referent_resolution_trace"] = dict(resolution)
+    return enriched
 
 
 def action_questions(actions: list[Mapping[str, Any]]) -> list[str]:

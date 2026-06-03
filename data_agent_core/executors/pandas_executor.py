@@ -608,6 +608,9 @@ def _aggregation_dataframe(data: pd.DataFrame, filters: dict[str, Any], params: 
                 _aggregate_metric_specs_with_derived(data, metric_specs, derived_metric, dimension),
                 params,
             )
+        group_dimensions = _aggregation_group_dimensions(params)
+        if len(group_dimensions) > 1:
+            return _attach_group_share_if_requested(_aggregate_derived_ratio_grouped_multi(data, group_dimensions, derived_metric), params)
         if dimension:
             return _attach_group_share_if_requested(_aggregate_derived_ratio_grouped(data, str(dimension), derived_metric), params)
         return _aggregate_derived_ratio(data, derived_metric)
@@ -623,6 +626,12 @@ def _aggregation_dataframe(data: pd.DataFrame, filters: dict[str, Any], params: 
     dimension = params.get("dimension")
     aggregation = str(params.get("aggregation") or "sum")
     if dimension:
+        group_dimensions = _aggregation_group_dimensions(params)
+        if len(group_dimensions) > 1:
+            return _attach_group_share_if_requested(
+                _aggregate_grouped_multi(data, group_dimensions, None if metric is None else str(metric), aggregation),
+                params,
+            )
         return _attach_group_share_if_requested(
             _aggregate_grouped(data, str(dimension), None if metric is None else str(metric), aggregation),
             params,
@@ -757,6 +766,53 @@ def _aggregate_derived_ratio_grouped(data: pd.DataFrame, dimension: str, derived
         axis=1,
     )
     return grouped[[dimension, metric_name]].to_dict(orient="records")
+
+
+def _aggregate_derived_ratio_grouped_multi(data: pd.DataFrame, dimensions: list[str], derived_metric: dict[str, Any]) -> list[dict[str, Any]]:
+    numerator = str(derived_metric.get("numerator") or "")
+    denominator = str(derived_metric.get("denominator") or "")
+    metric_name = str(derived_metric.get("name") or "ratio")
+    missing_dimensions = [dimension for dimension in dimensions if dimension not in data.columns]
+    if missing_dimensions:
+        raise ValueError("Unknown dimension column(s): " + ", ".join(missing_dimensions))
+    if numerator not in data.columns or denominator not in data.columns:
+        raise ValueError("Derived ratio metric requires numerator and denominator columns.")
+    working = data[[*dimensions, numerator, denominator]].copy()
+    working[numerator] = pd.to_numeric(working[numerator], errors="coerce")
+    working[denominator] = pd.to_numeric(working[denominator], errors="coerce")
+    grouped = working.groupby(dimensions, dropna=True)[[numerator, denominator]].sum().reset_index()
+    grouped[metric_name] = grouped.apply(
+        lambda row: 0.0 if float(row[denominator] or 0) == 0 else float(row[numerator]) / float(row[denominator]),
+        axis=1,
+    )
+    return grouped[[*dimensions, metric_name]].to_dict(orient="records")
+
+
+def _aggregate_grouped_multi(data: pd.DataFrame, dimensions: list[str], metric: str | None, aggregation: str) -> list[dict[str, Any]]:
+    missing = [dimension for dimension in dimensions if dimension not in data.columns]
+    if missing:
+        raise ValueError("Unknown dimension column(s): " + ", ".join(missing))
+    if metric is not None and metric not in data.columns and metric != "__row_count__":
+        raise ValueError(f"Unknown metric column: {metric}")
+    if metric is None or metric == "__row_count__" or aggregation == "count":
+        grouped = data.groupby(dimensions, dropna=True).size().reset_index(name="count")
+        return grouped.to_dict(orient="records")
+    if aggregation in {"nunique", "distinct_count"}:
+        grouped = data.groupby(dimensions, dropna=True)[metric].nunique().reset_index(name="count")
+        return grouped.to_dict(orient="records")
+    working = data[[*dimensions, metric]].copy()
+    working[metric] = pd.to_numeric(working[metric], errors="coerce")
+    grouped = working.groupby(dimensions, dropna=True)[metric].agg(aggregation).reset_index()
+    return grouped.to_dict(orient="records")
+
+
+def _aggregation_group_dimensions(params: dict[str, Any]) -> list[str]:
+    dimensions: list[str] = []
+    for key in ("dimension", "series_dimension"):
+        value = str(params.get(key) or "").strip()
+        if value and value not in dimensions:
+            dimensions.append(value)
+    return dimensions
 
 
 def _aggregate_derived_ratio(data: pd.DataFrame, derived_metric: dict[str, Any]) -> dict[str, float]:
