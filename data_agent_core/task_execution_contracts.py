@@ -762,8 +762,16 @@ def _as_float(value: Any) -> float | None:
 def _required_n_from_question(question: str) -> int | None:
     import re
 
-    match = re.search(r"(?:top|前|排名前|最高的?|最低的?|最大的?|最小的?|最多的?|最少的?)\s*(\d+|[一二两三四五六七八九十]+)", str(question or ""), re.I)
+    text = str(question or "")
+    compact = "".join(text.split()).lower()
+    match = re.search(r"(?:top|前|排名前|最高的?|最低的?|最大的?|最小的?|最多的?|最少的?)\s*(\d+|[一二两三四五六七八九十]+)", text, re.I)
     if not match:
+        if any(token in compact for token in ("最高", "最低", "最大", "最小", "最多", "最少")) or re.search(
+            r"\b(top|highest|lowest|largest|smallest|most|least)\b",
+            text,
+            re.I,
+        ):
+            return 1
         return None
     raw = match.group(1)
     if raw.isdigit():

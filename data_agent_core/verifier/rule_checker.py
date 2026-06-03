@@ -83,11 +83,14 @@ def verify_execution(
 def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuestion | None) -> TaskExecutionContract | None:
     if plan is None:
         return None
+    question_contract = build_task_execution_contract(plan.logic_form, question="" if user_question is None else user_question.question)
     contract = getattr(plan, "task_contract", None)
     if isinstance(contract, TaskExecutionContract):
+        if _question_contract_is_more_specific(contract, question_contract):
+            return question_contract
         return contract
     if isinstance(contract, dict) and contract:
-        return TaskExecutionContract(
+        payload_contract = TaskExecutionContract(
             contract_id=str(contract.get("contract_id") or "contract_payload"),
             task_family=str(contract.get("task_family") or "unknown"),  # type: ignore[arg-type]
             required_n=contract.get("required_n"),
@@ -105,9 +108,12 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
             verification_rules=dict(contract.get("verification_rules") or {}),
             insufficiency_policy=str(contract.get("insufficiency_policy") or "fail_closed"),
         )
+        if _question_contract_is_more_specific(payload_contract, question_contract):
+            return question_contract
+        return payload_contract
     logic_contract = getattr(plan.logic_form, "task_contract", None)
     if isinstance(logic_contract, dict) and logic_contract:
-        return _task_contract_from_plan(
+        payload_contract = _task_contract_from_plan(
             AnalysisPlan(
                 plan_id=plan.plan_id,
                 logic_form=plan.logic_form,
@@ -118,7 +124,25 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
             ),
             user_question,
         )
-    return build_task_execution_contract(plan.logic_form, question="" if user_question is None else user_question.question)
+        if _question_contract_is_more_specific(payload_contract, question_contract):
+            return question_contract
+        return payload_contract
+    return question_contract
+
+
+def _question_contract_is_more_specific(
+    current: TaskExecutionContract | None,
+    question_contract: TaskExecutionContract | None,
+) -> bool:
+    if current is None or question_contract is None:
+        return False
+    if current.task_family != question_contract.task_family:
+        return False
+    if current.task_family == "topn" and current.required_n is None and question_contract.required_n is not None:
+        return True
+    if not current.required_output_columns and question_contract.required_output_columns:
+        return True
+    return False
 
 
 def _needs_clarification(report: Any) -> bool:
