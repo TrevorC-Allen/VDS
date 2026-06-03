@@ -29,6 +29,7 @@ from scripts.run_agent_random_conversation_eval import (
     _expected_dimension_from_question,
     _expected_dimensions_from_question,
     _expected_metric_from_question,
+    _deterministic_fixture_oracle_result,
     _llm_generated_conversation_issues,
     _turn_evidence,
     _turn_plan_from_generated_question,
@@ -4636,6 +4637,41 @@ class AgentRandomConversationEvalTest(unittest.TestCase):
         self.assertEqual("ranking", evidence.operation)
         self.assertEqual("city", evidence.actual_dimension)
         self.assertEqual("利润率", evidence.actual_metric)
+
+    def test_trend_followup_deterministic_oracle_exports_expected_result(self) -> None:
+        turn = TurnPlan(
+            "按月份看这个指标的趋势",
+            expected_kind="followup_analysis",
+            capability_family="trend_followup",
+            required_operation="aggregation",
+        )
+        response = {
+            "success": True,
+            "answer": "销售额先升后降，2 月达到峰值后回落。",
+            "answer_type": "table",
+            "conversation_id": "conv_trend_oracle",
+            "logic_form": {"operation": "aggregation", "parameters": {"metric": "sales", "dimension": "month"}},
+            "result": {
+                "rows": [
+                    {"month": "2026-01", "sales": 396},
+                    {"month": "2026-02", "sales": 550},
+                    {"month": "2026-03", "sales": 482},
+                ]
+            },
+            "debug": {"result_artifacts": {"trend_description": "先升后降"}},
+            "current_analysis_context": {"state_name": "analysis_ready"},
+            "followup_context": {"is_followup": True, "reason": "structured_followup_action"},
+        }
+
+        oracle = _deterministic_fixture_oracle_result(response["logic_form"], response, {}, turn=turn)
+
+        self.assertTrue(oracle["oracle_available"])
+        self.assertTrue(oracle["passed"])
+        self.assertEqual("up_then_down", oracle["expected_result"]["trend_shape"])
+        self.assertEqual({"month": "2026-02", "value": 550.0}, oracle["expected_result"]["peak"])
+        self.assertEqual({"month": "2026-01", "value": 396.0}, oracle["expected_result"]["low"])
+        self.assertEqual({"from": "2026-01", "to": "2026-02", "delta": 154.0}, oracle["expected_result"]["max_change"])
+        self.assertEqual(["整体上升", "单调上升", "持续上升"], oracle["expected_result"]["forbidden_descriptions"])
 
 
 if __name__ == "__main__":

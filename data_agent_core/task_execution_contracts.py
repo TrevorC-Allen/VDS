@@ -94,7 +94,14 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
     required_n = question_required_n or _positive_int(params.get("limit") or params.get("top_n") or params.get("k"))
     sort_order = _first_text(params.get("sort_order")) or ("asc" if _asks_lowest(question) else "desc")
     gap_mode = "rank_pair" if family == "gap" and _asks_rank_pair(question) else "adjacent_and_to_leader" if family == "gap" else None
-    required_columns = _required_columns(family=family, metric=metric, dimension=dimension, output_format=output_format)
+    required_columns = _required_columns(
+        family=family,
+        operation=operation,
+        metric=metric,
+        dimension=dimension,
+        output_format=output_format,
+        params=params,
+    )
     requires_previous = bool(params.get("requires_previous_artifact") or params.get("referent_artifact_id") or _looks_like_followup(question))
     referent_dimension = _first_text(params.get("referent_dimension"))
     referent_values = list(params.get("referent_values") or [])
@@ -303,9 +310,21 @@ def _task_family(*, operation: str, task_type: str, question: str, source_tables
     return "unknown"
 
 
-def _required_columns(*, family: TaskFamily, metric: str | None, dimension: str | None, output_format: dict[str, Any]) -> list[str]:
+def _required_columns(
+    *,
+    family: TaskFamily,
+    operation: str,
+    metric: str | None,
+    dimension: str | None,
+    output_format: dict[str, Any],
+    params: dict[str, Any],
+) -> list[str]:
     columns: list[str] = []
-    for value in (dimension, metric, output_format.get("entity_field"), output_format.get("metric")):
+    required_metric = metric
+    if str(operation or "") == "growth_ranking" and metric:
+        growth_mode = str(params.get("growth_mode") or "rate")
+        required_metric = f"{metric}_growth_rate" if growth_mode == "rate" else f"{metric}_growth_delta"
+    for value in (dimension, required_metric, output_format.get("entity_field"), output_format.get("metric")):
         text = str(value or "").strip()
         if text and text not in columns and family in {"topn", "gap", "trend"}:
             columns.append(text)
@@ -586,19 +605,29 @@ DISPLAY_COLUMN_ALIASES = {
 }
 
 
+def _normalize_display_column_name(value: Any) -> str:
+    return str(value).strip().lower()
+
+
 def _column_present(column: str, available_columns: set[str]) -> bool:
-    if column in available_columns:
+    normalized_available = {_normalize_display_column_name(name) for name in available_columns}
+    if _normalize_display_column_name(column) in normalized_available:
         return True
     aliases = DISPLAY_COLUMN_ALIASES.get(str(column), ())
-    return any(alias in available_columns for alias in aliases)
+    return any(_normalize_display_column_name(alias) in normalized_available for alias in aliases)
 
 
 def _row_value(row: dict[str, Any], column: str) -> Any:
+    normalized_row = {_normalize_display_column_name(key): key for key in row if str(key).strip()}
     if column in row:
         return row.get(column)
+    direct_key = normalized_row.get(_normalize_display_column_name(column))
+    if direct_key is not None:
+        return row.get(direct_key)
     for alias in DISPLAY_COLUMN_ALIASES.get(str(column), ()):
-        if alias in row:
-            return row.get(alias)
+        alias_key = normalized_row.get(_normalize_display_column_name(alias))
+        if alias_key is not None:
+            return row.get(alias_key)
     return None
 
 

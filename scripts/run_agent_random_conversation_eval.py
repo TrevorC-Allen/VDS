@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend.services.data_agent_service import DataAgentService
 from backend.storage.temp_file_store import TempFileStore
+from data_agent_core.oracle_results import oracle_topn_followup_gap, oracle_trend_followup_series
 from data_agent_core.llm.client import LLMClient, MissingLLMConfigError, MockLLMClient, load_llm_client_from_env
 
 
@@ -43,6 +44,7 @@ OPERATION_EQUIVALENTS = {
     "growth_ranking": {"growth_ranking"},
     "cleaning_policy": {"cleaning_policy", "quality_summary", "data_quality_report", "anomaly_rules", "outlier_count", "numeric_quality", "temporal_quality"},
 }
+TREND_FOLLOWUP_FORBIDDEN_DESCRIPTIONS = ("整体上升", "单调上升", "持续上升")
 
 
 @dataclass
@@ -101,6 +103,8 @@ class TurnEvidence:
     oracle_available: bool = False
     oracle_passed: bool | None = None
     oracle_issue_codes: list[str] = field(default_factory=list)
+    expected_result: Any | None = None
+    actual_result: Any | None = None
     answer_preview: str = ""
     next_action_questions: list[str] = field(default_factory=list)
 
@@ -1183,6 +1187,8 @@ def _turn_evidence(index: int, turn: TurnPlan, response: dict[str, Any], *, tabl
         oracle_available=bool(oracle_result.get("oracle_available")),
         oracle_passed=oracle_result.get("passed") if isinstance(oracle_result.get("passed"), bool) else None,
         oracle_issue_codes=[str(item) for item in oracle_result.get("issue_codes") or []],
+        expected_result=oracle_result.get("expected_result"),
+        actual_result=oracle_result.get("actual_result"),
         answer_preview=_preview_text(response.get("answer"), limit=520),
         next_action_questions=_action_questions(actions),
     )
@@ -1385,14 +1391,19 @@ def _deterministic_fixture_oracle_result(
     turn: TurnPlan | None = None,
 ) -> dict[str, Any]:
     operation = str(logic.get("operation") or "")
-    if operation not in {"ranking", "aggregation"} or not tables:
+    if operation not in {"ranking", "aggregation"}:
         return {}
     if not _deterministic_fixture_oracle_supported(logic, response, turn=turn):
         return {}
+    if turn is not None and turn.capability_family == "trend_followup":
+        return _deterministic_fixture_oracle_result_trend_followup(logic, response)
     params = logic.get("parameters") if isinstance(logic.get("parameters"), dict) else {}
     metric = _actual_metric_from_logic(logic)
     dimension = _actual_dimension_from_logic(logic)
+    question = str(turn.question if turn is not None else response.get("question") or "")
     if not metric or not dimension:
+        return {}
+    if not tables:
         return {}
     table = _select_oracle_table(tables, params=params, metric=metric, dimension=dimension)
     if table is None:
@@ -1415,7 +1426,7 @@ def _deterministic_fixture_oracle_result(
         if metric_mode == "profit_rate":
             grouped = filtered.groupby(dimension_column, dropna=True).agg({metric_column: "sum", sales_column: "sum"}).reset_index()  # type: ignore[name-defined]
             grouped[metric] = grouped.apply(
-                lambda row: None if not _oracle_float(row.get(sales_column)) else (_oracle_float(row.get(metric_column)) or 0.0) / (_oracle_float(row.get(sales_column)) or 1.0) * 100,
+                lambda row: None if not _oracle_float(row.get(sales_column)) else (_oracle_float(row.get(metric_column)) or 0.0) / (_oracle_float(row.get(sales_column)) or 1.0),
                 axis=1,
             )
             value_column = metric
@@ -1432,6 +1443,37 @@ def _deterministic_fixture_oracle_result(
             grouped = grouped.head(limit)
     else:
         grouped = grouped.sort_values(dimension_column, ascending=True)
+    if turn is not None and turn.expected_kind == "followup_analysis" and _is_ranking_followup_gap_question(question):
+        if not limit:
+            response_rows = _extract_gap_followup_rows(response)
+            if response_rows:
+                limit = len(response_rows)
+        if limit:
+            grouped = grouped.head(limit)
+        expected_payload = _build_gap_fixture_payload(
+            rows=[
+                {dimension: row[dimension_column], metric: _round_oracle_value(row[value_column])}
+                for _, row in grouped.iterrows()
+                if row.get(dimension_column) not in (None, "")
+            ],
+            dimension=dimension,
+            metric=metric,
+        )
+        actual_payload = _extract_gap_payload_from_response(response, dimension=dimension, metric=metric)
+        oracle_result = oracle_topn_followup_gap(
+            expected_payload,
+            actual_payload,
+            answer=str(response.get("answer") or ""),
+        )
+        return {
+            "oracle_available": oracle_result.oracle_available,
+            "expected_result": oracle_result.expected_result,
+            "actual_result": oracle_result.actual_result,
+            "passed": oracle_result.passed,
+            "diff_summary": oracle_result.diff_summary,
+            "issue_codes": oracle_result.issue_codes,
+            "source": "deterministic_eval_fixture",
+        }
     expected_rows = [
         {dimension: row[dimension_column], metric: _round_oracle_value(row[value_column])}
         for _, row in grouped.iterrows()
@@ -1450,14 +1492,248 @@ def _deterministic_fixture_oracle_result(
     }
 
 
+def _deterministic_fixture_oracle_result_trend_followup(
+    logic: dict[str, Any],
+    response: dict[str, Any],
+) -> dict[str, Any]:
+    trend_series = _extract_trend_followup_series(logic=logic, response=response)
+    expected_result = oracle_trend_followup_series([{"month": item["month"], "value": item["value"]} for item in trend_series])
+    actual_result = _build_actual_trend_followup_payload(logic, response, trend_series=trend_series)
+    issue_codes = _trend_followup_oracle_issue_codes(expected_result, actual_result, answer=str(response.get("answer") or ""))
+    passed = not issue_codes
+    return {
+        "oracle_available": True,
+        "expected_result": expected_result,
+        "actual_result": actual_result,
+        "passed": passed,
+        "diff_summary": None if passed else "Trend follow-up deterministic oracle payload differs from expected.",
+        "issue_codes": issue_codes,
+        "source": "deterministic_eval_fixture_trend_followup",
+    }
+
+
+def _extract_trend_followup_series(logic: dict[str, Any], response: dict[str, Any]) -> list[dict[str, Any]]:
+    result = response.get("result") if isinstance(response.get("result"), dict) else {}
+    rows = [row for row in result.get("rows") or [] if isinstance(row, dict)]
+    if not rows:
+        return []
+    metric = _actual_metric_from_logic(logic)
+    period = _actual_dimension_from_logic(logic)
+    metric_key = str(metric or "").split(",")[0].strip() if metric else ""
+    period_key = str(period or "").strip()
+    sample = rows[0]
+    metric_column = _resolve_metric_column(sample, metric_key=metric_key, period_key=period_key)
+    period_column = _resolve_period_column(sample, period_key=period_key)
+    if not period_column:
+        return []
+    values: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        month_value = row.get(period_column)
+        if month_value is None:
+            continue
+        if metric_column and metric_column in row:
+            series_value = _oracle_float(row.get(metric_column))
+        else:
+            series_value = _first_numeric_not_period(row, period_column)
+        if series_value is None:
+            continue
+        values.append({"month": str(month_value), "value": series_value})
+    return values
+
+
+def _build_actual_trend_followup_payload(
+    logic: dict[str, Any],
+    response: dict[str, Any],
+    *,
+    trend_series: list[dict[str, Any]],
+) -> dict[str, Any]:
+    payload = oracle_trend_followup_series(trend_series)
+    trend_shape = _normalize_trend_shape(_extract_trend_followup_description(response, fallback=str(payload.get("trend_description") or "")))
+    if trend_shape:
+        payload["trend_shape"] = trend_shape
+    trend_description = _extract_trend_followup_description(response, fallback=str(payload.get("trend_description") or ""))
+    if trend_description:
+        payload["trend_description"] = trend_description
+    payload["series"] = trend_series
+    payload["forbidden_descriptions"] = list(TREND_FOLLOWUP_FORBIDDEN_DESCRIPTIONS)
+    if logic:
+        payload["operation"] = str(logic.get("operation") or "")
+    return payload
+
+
+def _trend_followup_oracle_issue_codes(
+    expected_result: dict[str, Any],
+    actual_result: dict[str, Any],
+    *,
+    answer: str,
+) -> list[str]:
+    issue_codes: list[str] = []
+    if not _trend_series_matches(expected_result.get("series"), actual_result.get("series")):
+        issue_codes.append("trend_followup_oracle_series_mismatch")
+    if not _trend_shape_equivalent(
+        str(expected_result.get("trend_shape") or ""),
+        str(actual_result.get("trend_shape") or ""),
+    ):
+        issue_codes.append("trend_followup_oracle_shape_mismatch")
+    if not _trend_extreme_point_matches(expected_result.get("peak"), actual_result.get("peak")):
+        issue_codes.append("trend_followup_oracle_peak_mismatch")
+    if not _trend_extreme_point_matches(expected_result.get("low"), actual_result.get("low")):
+        issue_codes.append("trend_followup_oracle_low_mismatch")
+    if not _trend_max_change_matches(expected_result.get("max_change"), actual_result.get("max_change")):
+        issue_codes.append("trend_followup_oracle_max_change_mismatch")
+    if _contains_forbidden_trend_description(answer, expected_result):
+        issue_codes.append("trend_followup_forbidden_trend_description_present")
+    return sorted(set(issue_codes))
+
+
+def _trend_series_matches(expected: Any, actual: Any) -> bool:
+    if len(expected or []) != len(actual or []):
+        return False
+    for expected_point, actual_point in zip(expected or [], actual or [], strict=False):
+        if not isinstance(expected_point, dict) or not isinstance(actual_point, dict):
+            return False
+        if str(expected_point.get("month") or "") != str(actual_point.get("month") or ""):
+            return False
+        if not _trend_number_matches(expected_point.get("value"), actual_point.get("value")):
+            return False
+    return True
+
+
+def _trend_extreme_point_matches(expected: Any, actual: Any) -> bool:
+    if expected is None and actual is None:
+        return True
+    if expected is None or actual is None:
+        return False
+    if not isinstance(expected, dict) or not isinstance(actual, dict):
+        return expected == actual
+    if str(expected.get("month") or "") != str(actual.get("month") or ""):
+        return False
+    if not _trend_number_matches(expected.get("value"), actual.get("value")):
+        return False
+    return True
+
+
+def _extract_trend_followup_description(response: dict[str, Any], *, fallback: str) -> str:
+    debug = response.get("debug") if isinstance(response.get("debug"), dict) else {}
+    artifacts = debug.get("result_artifacts") if isinstance(debug.get("result_artifacts"), dict) else {}
+    description = str(artifacts.get("trend_description") or "")
+    if description:
+        return description
+    answer = str(response.get("answer") or "")
+    if answer:
+        return answer.splitlines()[0].strip()
+    return fallback
+
+
+def _contains_forbidden_trend_description(answer: str, expected_result: dict[str, Any]) -> bool:
+    normalized_shape = _normalize_trend_shape(str(expected_result.get("trend_shape") or ""))
+    if normalized_shape not in {"up_then_down", "down_then_up", "fluctuation"}:
+        return False
+    compact = "".join(str(answer or "").split())
+    for token in expected_result.get("forbidden_descriptions") or []:
+        if token in compact:
+            return True
+    return False
+
+
+def _normalize_trend_shape(shape: str) -> str:
+    compact = "".join(str(shape or "").split())
+    if any(token in compact for token in ("先升后降", "up_then_down", "fluctuation_backdown", "先上升后下降", "peak", "波动后", "峰值后", "先升")):
+        return "up_then_down"
+    if any(token in compact for token in ("先降后升", "down_then_up", "先下降后上升")):
+        return "down_then_up"
+    if any(token in compact for token in ("整体上升", "持续上升", "单调上升", "上升", "increasing", "increase", "上涨")):
+        return "increasing"
+    if any(token in compact for token in ("整体下降", "持续下降", "单调下降", "下降", "decreasing", "decrease", "下跌")):
+        return "decreasing"
+    if any(token in compact for token in ("波动", "fluctuation", "mixed", "振幅")):
+        return "fluctuation"
+    if "无法判断" in compact or "insufficient_periods_for_trend" in compact:
+        return "insufficient_periods_for_trend"
+    return compact
+
+
+def _trend_max_change_matches(expected: Any, actual: Any) -> bool:
+    if expected is None and actual is None:
+        return True
+    if expected is None or actual is None:
+        return False
+    if not isinstance(expected, dict) or not isinstance(actual, dict):
+        return False
+    if str(expected.get("from") or "") != str(actual.get("from") or ""):
+        return False
+    if str(expected.get("to") or "") != str(actual.get("to") or ""):
+        return False
+    return _trend_number_matches(expected.get("delta"), actual.get("delta"))
+
+
+def _trend_number_matches(expected: Any, actual: Any) -> bool:
+    expected_value = _oracle_float(expected)
+    actual_value = _oracle_float(actual)
+    if expected_value is None or actual_value is None:
+        return str(expected) == str(actual)
+    return math.isclose(expected_value, actual_value, rel_tol=1e-6, abs_tol=0.01)
+
+
+def _trend_shape_equivalent(expected: str, actual: str) -> bool:
+    return _normalize_trend_shape(expected) == _normalize_trend_shape(actual)
+
+
+def _resolve_period_column(sample_row: dict[str, Any], *, period_key: str) -> str:
+    if period_key:
+        for key in sample_row:
+            if key == period_key or _dimension_matches(period_key, str(key)):
+                return key
+    for key in sample_row:
+        if str(key) in {"month", "月份", "月度", "时点", "日期", "date", "period", "time"}:
+            return key
+    for key in sample_row:
+        if str(key).lower() in {"month", "date", "time"}:
+            return key
+    return ""
+
+
+def _resolve_metric_column(sample_row: dict[str, Any], *, metric_key: str, period_key: str) -> str:
+    if metric_key:
+        for key in sample_row:
+            if key == metric_key or (_metric_matches(metric_key, str(key)) and str(key) != period_key):
+                return key
+    for key in sample_row:
+        if str(key) == period_key:
+            continue
+        if _oracle_float(sample_row.get(key)) is not None:
+            return key
+    return ""
+
+
+def _first_numeric_not_period(row: dict[str, Any], period_column: str) -> float | None:
+    for key, value in row.items():
+        if str(key) == period_column:
+            continue
+        value_number = _oracle_float(value)
+        if value_number is not None:
+            return value_number
+    return None
+
+
 def _deterministic_fixture_oracle_supported(logic: dict[str, Any], response: dict[str, Any], *, turn: TurnPlan | None) -> bool:
     if response.get("success") is not True:
         return False
+    is_derived_metric_followup = turn is not None and turn.capability_family == "derived_metric_followup"
     if turn is not None and turn.expected_kind == "followup_analysis":
-        return False
+        if turn.capability_family == "trend_followup":
+            return True
+        if _is_ranking_followup_gap_question(str(turn.question or response.get("question") or "")):
+            return True
+        if not is_derived_metric_followup:
+            return False
     question = str(turn.question if turn is not None else response.get("question") or "")
     compact = "".join(question.split())
-    if any(token in compact for token in ("这个指标", "这些Top", "这些top", "这些前", "这些排名", "这些对象", "刚才", "上面", "上一轮", "继续")):
+    if _is_ranking_followup_gap_question(question):
+        return True
+    if not is_derived_metric_followup and any(token in compact for token in ("这个指标", "这些Top", "这些top", "这些前", "这些排名", "这些对象", "刚才", "上面", "上一轮", "继续")):
         return False
     params = logic.get("parameters") if isinstance(logic.get("parameters"), dict) else {}
     filters = logic.get("filters") if isinstance(logic.get("filters"), dict) else {}
@@ -1467,10 +1743,145 @@ def _deterministic_fixture_oracle_supported(logic: dict[str, Any], response: dic
         return False
     metric = _actual_metric_from_logic(logic)
     if _metric_matches(metric, "利润率"):
-        return False
+        return turn is not None and turn.capability_family == "derived_metric_followup"
     if "," in metric:
         return False
     return True
+
+
+def _is_ranking_followup_gap_question(question: str) -> bool:
+    compact = "".join(str(question or "").split())
+    lowered = compact.lower()
+    if not compact:
+        return False
+    gap_signal = any(token in lowered for token in ("gap", "difference", "差距", "相差", "差额"))
+    if not gap_signal:
+        return False
+    top_signal = any(token in compact for token in ("Top", "top", "前", "排名")) or any(token in lowered for token in ("top", "top3", "top5"))
+    return top_signal and any(token in lowered for token in ("比较", "比", "compare", "对比", "差距", "difference", "gap"))
+
+
+def _extract_gap_followup_rows(response: dict[str, Any]) -> list[dict[str, Any]]:
+    result = response.get("result")
+    if isinstance(result, dict):
+        candidate = result.get("candidate_table")
+        if isinstance(candidate, list):
+            return [row for row in candidate if isinstance(row, dict)]
+        candidate = result.get("rows")
+        if isinstance(candidate, list):
+            return [row for row in candidate if isinstance(row, dict)]
+    if isinstance(result, list):
+        return [row for row in result if isinstance(row, dict)]
+    direct = response.get("rows")
+    if isinstance(direct, list):
+        return [row for row in direct if isinstance(row, dict)]
+    return []
+
+
+def _extract_gap_payload_from_response(response: dict[str, Any], *, dimension: str, metric: str) -> dict[str, Any]:
+    debug = response.get("debug") if isinstance(response.get("debug"), dict) else {}
+    result_artifacts = debug.get("result_artifacts")
+    if isinstance(result_artifacts, Mapping):
+        payload = _coerce_gap_payload(result_artifacts)
+        if payload:
+            return payload
+    rows = _extract_gap_followup_rows(response)
+    return _build_gap_fixture_payload(rows=rows, dimension=dimension, metric=metric)
+
+
+def _coerce_gap_payload(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    top_objects = []
+    for item in value.get("top_objects") or []:
+        if not isinstance(item, Mapping):
+            continue
+        top_objects.append(
+            {
+                "rank": item.get("rank"),
+                "value": item.get("value"),
+                "metric_value": item.get("metric_value"),
+            }
+        )
+    adjacent_gaps = list(value.get("adjacent_gaps") or [])
+    gap_to_leader = list(value.get("gap_to_leader") or [])
+    should_derive = len(gap_to_leader) != len(top_objects) or len(adjacent_gaps) != max(len(top_objects) - 1, 0)
+    if should_derive:
+        derived = _build_gap_fixture_payload(
+            rows=[
+                {"value": item.get("value"), "metric_value": item.get("metric_value")}
+                for item in top_objects
+            ],
+            dimension="value",
+            metric="metric_value",
+        )
+        if len(gap_to_leader) != len(derived["gap_to_leader"]):
+            gap_to_leader = derived["gap_to_leader"]
+        if len(adjacent_gaps) != len(derived["adjacent_gaps"]):
+            adjacent_gaps = derived["adjacent_gaps"]
+    return {
+        "top_objects": top_objects,
+        "adjacent_gaps": adjacent_gaps,
+        "gap_to_leader": gap_to_leader,
+    }
+
+
+def _build_gap_fixture_payload(*, rows: list[dict[str, Any]], dimension: str, metric: str) -> dict[str, Any]:
+    top_objects: list[dict[str, Any]] = []
+    payload_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, Mapping):
+            continue
+        raw_value = row.get(dimension)
+        if raw_value in (None, ""):
+            continue
+        metric_value = row.get(metric)
+        top_objects.append(
+            {
+                "rank": index,
+                "value": raw_value,
+                "metric_value": metric_value,
+            }
+        )
+        payload_rows.append(
+            {
+                "metric_value": metric_value,
+                "gap_to_leader": row.get("gap_to_leader"),
+                "gap_from_previous": row.get("gap_from_previous"),
+            }
+        )
+    if not top_objects:
+        return {"top_objects": [], "adjacent_gaps": [], "gap_to_leader": []}
+    adjacent_gaps: list[Any] = []
+    gap_to_leader: list[Any] = []
+    leader_float = _oracle_float(payload_rows[0].get("metric_value"))
+    previous_float = leader_float
+    for index, item in enumerate(payload_rows):
+        metric_float = _oracle_float(item.get("metric_value"))
+        explicit_to_leader = item.get("gap_to_leader")
+        explicit_prev_gap = item.get("gap_from_previous")
+        if explicit_to_leader is not None:
+            gap_to_leader.append(_oracle_float(explicit_to_leader))
+        else:
+            if index == 0 and leader_float is not None:
+                gap_to_leader.append(0.0)
+            else:
+                gap_to_leader.append(_round_oracle_gap(leader_float - metric_float) if leader_float is not None and metric_float is not None else None)
+        if index > 0:
+            if explicit_prev_gap is not None:
+                adjacent_gaps.append(_oracle_float(explicit_prev_gap))
+            else:
+                adjacent_gaps.append(
+                    _round_oracle_gap(previous_float - metric_float) if previous_float is not None and metric_float is not None else None
+                )
+        previous_float = metric_float
+    return {"top_objects": top_objects, "adjacent_gaps": adjacent_gaps, "gap_to_leader": gap_to_leader}
+
+
+def _round_oracle_gap(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(value, 4)
 
 
 def _select_oracle_table(tables: dict[str, Any], *, params: dict[str, Any], metric: str, dimension: str) -> Any:
@@ -2018,6 +2429,10 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
     oracle_available_turns = 0
     oracle_passed_turns = 0
     oracle_failed_turns = 0
+    oracle_expected_result_present_turns = 0
+    oracle_actual_result_present_turns = 0
+    oracle_expected_result_missing_turns = 0
+    oracle_actual_result_missing_turns = 0
     contract_checked_turns = 0
     contract_satisfied_turns = 0
     semantic_passed_turns = 0
@@ -2059,6 +2474,16 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
                 oracle_passed_turns += 1
             if turn.oracle_passed is False:
                 oracle_failed_turns += 1
+            has_oracle_payload = bool(turn.oracle_issue_codes or turn.oracle_available or turn.oracle_passed is not None)
+            if has_oracle_payload:
+                if turn.expected_result is not None:
+                    oracle_expected_result_present_turns += 1
+                else:
+                    oracle_expected_result_missing_turns += 1
+                if turn.actual_result is not None:
+                    oracle_actual_result_present_turns += 1
+                else:
+                    oracle_actual_result_missing_turns += 1
             if turn.contract_checked:
                 contract_checked_turns += 1
             if turn.contract_satisfied is True:
@@ -2089,6 +2514,10 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
         "oracle_available_turns": oracle_available_turns,
         "oracle_passed_turns": oracle_passed_turns,
         "oracle_failed_turns": oracle_failed_turns,
+        "oracle_expected_result_present_turns": oracle_expected_result_present_turns,
+        "oracle_actual_result_present_turns": oracle_actual_result_present_turns,
+        "oracle_expected_result_missing_turns": oracle_expected_result_missing_turns,
+        "oracle_actual_result_missing_turns": oracle_actual_result_missing_turns,
         "contract_checked_turns": contract_checked_turns,
         "contract_satisfied_turns": contract_satisfied_turns,
         "semantic_passed_turns": semantic_passed_turns,
@@ -2972,9 +3401,12 @@ def _write_turn_records_csv(report: dict[str, Any], path: Path) -> None:
         "contract_family",
         "contract_checked",
         "contract_violation_codes",
+        "violations",
         "oracle_available",
         "oracle_passed",
         "oracle_issue_codes",
+        "expected_result_present",
+        "actual_result_present",
         "context_status",
         "followup_reason",
         "action_count",
@@ -3017,9 +3449,12 @@ def _write_turn_records_csv(report: dict[str, Any], path: Path) -> None:
                         "contract_family": turn.get("contract_family") or "",
                         "contract_checked": bool(turn.get("contract_checked")),
                         "contract_violation_codes": ";".join(str(item) for item in turn.get("contract_violation_codes") or []),
+                        "violations": ";".join(str(item) for item in turn.get("contract_violation_codes") or []),
                         "oracle_available": bool(turn.get("oracle_available")),
                         "oracle_passed": turn.get("oracle_passed"),
                         "oracle_issue_codes": ";".join(str(item) for item in turn.get("oracle_issue_codes") or []),
+                        "expected_result_present": bool(turn.get("expected_result") is not None),
+                        "actual_result_present": bool(turn.get("actual_result") is not None),
                         "context_status": turn.get("context_status") or "",
                         "followup_reason": turn.get("followup_reason") or "",
                         "action_count": turn.get("action_count", 0),

@@ -77,16 +77,7 @@ def build_task_artifacts(*, task_contract: Mapping[str, Any], rows: list[dict[st
     if family in {"topn", "ranking"}:
         dimension = str(task_contract.get("dimension") or "")
         metric = str(task_contract.get("metric") or "")
-        top_objects: list[dict[str, Any]] = []
-        for index, row in enumerate(rows, start=1):
-            normalized = dict(row)
-            normalized["rank"] = index
-            normalized["value"] = row.get(dimension)
-            if metric:
-                normalized["metric_value"] = row.get(metric)
-            else:
-                normalized["metric_value"] = _first_non_dimension_value(row=row, dimension=dimension)
-            top_objects.append(normalized)
+        top_objects = _build_top_objects(rows=rows, dimension=dimension, metric=metric, start=1)
         distinct_count = len({row.get(dimension) for row in rows if dimension and row.get(dimension) not in {None, ""}})
         return {
             "top_objects": top_objects,
@@ -253,6 +244,12 @@ def _gap_task_artifacts(task_contract: Mapping[str, Any], rows: list[dict[str, A
     if not metric and rows:
         dimension = str(task_contract.get("dimension") or "")
         metric = next((key for key in rows[0] if key != dimension and _as_float(rows[0].get(key)) is not None), "")
+    dimension = str(task_contract.get("dimension") or "")
+    top_objects = _build_top_objects(rows=rows, dimension=dimension, metric=metric, start=1)
+    adjacent_gaps: list[Any] = []
+    gap_to_leader: list[Any] = []
+    if top_objects:
+        adjacent_gaps, gap_to_leader = _derive_gap_series(top_objects=top_objects)
     gap_rows: list[dict[str, Any]] = []
     if len(rows) >= 2 and metric:
         leader_value = _as_float(rows[0].get(metric))
@@ -268,9 +265,56 @@ def _gap_task_artifacts(task_contract: Mapping[str, Any], rows: list[dict[str, A
             gap_rows.append(gap_row)
             previous_value = value
     return {
+        "top_objects": top_objects,
+        "adjacent_gaps": adjacent_gaps,
+        "gap_to_leader": gap_to_leader,
         "gap_rows": gap_rows,
         "direct_gap_summary": str(answer or "").splitlines()[0].strip(),
     }
+
+
+def _build_top_objects(*, rows: list[dict[str, Any]], dimension: str, metric: str, start: int) -> list[dict[str, Any]]:
+    top_objects: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=start):
+        if not isinstance(row, Mapping):
+            continue
+        value = row.get(dimension)
+        if value in {None, ""}:
+            continue
+        normalized = dict(row)
+        normalized["rank"] = index
+        normalized["value"] = value
+        normalized["metric_value"] = row.get(metric) if metric else _first_non_dimension_value(row=row, dimension=dimension)
+        top_objects.append(normalized)
+    return top_objects
+
+
+def _derive_gap_series(*, top_objects: list[dict[str, Any]]) -> tuple[list[Any], list[Any]]:
+    adjacent_gaps: list[Any] = []
+    gap_to_leader: list[Any] = []
+    if not top_objects:
+        return adjacent_gaps, gap_to_leader
+    leader_value = _as_float(top_objects[0].get("metric_value"))
+    previous_value = leader_value
+    for index, row in enumerate(top_objects):
+        value = _as_float(row.get("metric_value"))
+        if leader_value is not None and value is not None:
+            gap_to_leader.append(_round_gap_value(leader_value - value))
+        else:
+            gap_to_leader.append(None)
+        if index > 0:
+            if previous_value is not None and value is not None:
+                adjacent_gaps.append(_round_gap_value(previous_value - value))
+            else:
+                adjacent_gaps.append(None)
+        previous_value = value
+    return adjacent_gaps, gap_to_leader
+
+
+def _round_gap_value(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(value, 4)
 
 
 def _trend_task_artifacts(task_contract: Mapping[str, Any], rows: list[dict[str, Any]], answer: str) -> dict[str, Any]:
