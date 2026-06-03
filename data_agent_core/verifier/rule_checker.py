@@ -84,8 +84,10 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
     if plan is None:
         return None
     question_contract = build_task_execution_contract(plan.logic_form, question="" if user_question is None else user_question.question)
+    question_contract = _clear_overview_referent_requirements(question_contract)
     contract = getattr(plan, "task_contract", None)
     if isinstance(contract, TaskExecutionContract):
+        contract = _clear_overview_referent_requirements(contract)
         if _question_contract_is_more_specific(contract, question_contract):
             return question_contract
         return contract
@@ -96,6 +98,7 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
             required_n=contract.get("required_n"),
             metric=contract.get("metric"),
             dimension=contract.get("dimension"),
+            time_dimension=contract.get("time_dimension"),
             sort_order=contract.get("sort_order"),
             gap_mode=contract.get("gap_mode"),
             required_output_columns=list(contract.get("required_output_columns") or []),
@@ -108,6 +111,7 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
             verification_rules=dict(contract.get("verification_rules") or {}),
             insufficiency_policy=str(contract.get("insufficiency_policy") or "fail_closed"),
         )
+        payload_contract = _clear_overview_referent_requirements(payload_contract)
         if _question_contract_is_more_specific(payload_contract, question_contract):
             return question_contract
         return payload_contract
@@ -128,6 +132,34 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
             return question_contract
         return payload_contract
     return question_contract
+
+
+def _clear_overview_referent_requirements(contract: TaskExecutionContract | None) -> TaskExecutionContract | None:
+    if contract is None:
+        return None
+    if contract.task_family not in {"overview", "multi_file_overview", "data_quality"}:
+        return contract
+    if not contract.requires_previous_artifact and not contract.referent_artifact_id and not contract.referent_values:
+        return contract
+    return TaskExecutionContract(
+        contract_id=contract.contract_id,
+        task_family=contract.task_family,
+        required_n=contract.required_n,
+        metric=contract.metric,
+        dimension=contract.dimension,
+        time_dimension=contract.time_dimension,
+        sort_order=contract.sort_order,
+        gap_mode=contract.gap_mode,
+        required_output_columns=list(contract.required_output_columns),
+        required_answer_elements=list(contract.required_answer_elements),
+        requires_previous_artifact=False,
+        referent_artifact_id=None,
+        referent_dimension=None,
+        referent_values=[],
+        referent_policy=str(contract.referent_policy),
+        verification_rules=dict(contract.verification_rules),
+        insufficiency_policy="fail_closed",
+    )
 
 
 def _question_contract_is_more_specific(

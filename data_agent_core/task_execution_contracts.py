@@ -62,6 +62,7 @@ class TaskExecutionContract:
     required_n: int | None = None
     metric: str | None = None
     dimension: str | None = None
+    time_dimension: str | None = None
     sort_order: str | None = None
     gap_mode: str | None = None
     required_output_columns: list[str] = field(default_factory=list)
@@ -90,6 +91,7 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
     dimension = _first_text(params.get("dimension"), params.get("group_by"), _get(logic_form, "group_by"), output_format.get("entity_field"))
     if family == "trend":
         dimension = _first_text(params.get("time_column"), params.get("time_dimension"), dimension)
+    time_dimension = dimension if family == "trend" else None
     question_required_n = _required_n_from_question(question)
     required_n = question_required_n or _positive_int(params.get("limit") or params.get("top_n") or params.get("k"))
     sort_order = _first_text(params.get("sort_order")) or ("asc" if _asks_lowest(question) else "desc")
@@ -102,9 +104,13 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
         output_format=output_format,
         params=params,
     )
-    requires_previous = bool(params.get("requires_previous_artifact") or params.get("referent_artifact_id") or _looks_like_followup(question))
-    referent_dimension = _first_text(params.get("referent_dimension"))
-    referent_values = list(params.get("referent_values") or [])
+    file_scope_family = family in {"overview", "multi_file_overview", "data_quality"}
+    requires_previous = bool(
+        not file_scope_family
+        and (params.get("requires_previous_artifact") or params.get("referent_artifact_id") or _looks_like_followup(question))
+    )
+    referent_dimension = None if file_scope_family else _first_text(params.get("referent_dimension"))
+    referent_values = [] if file_scope_family else list(params.get("referent_values") or [])
     referent_filter_applied = False
     if referent_dimension and referent_values:
         filter_value = _dict(_get(logic_form, "filters", {})).get(referent_dimension)
@@ -127,12 +133,13 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
         required_n=required_n,
         metric=metric,
         dimension=dimension,
+        time_dimension=time_dimension,
         sort_order=sort_order if family == "topn" else None,
         gap_mode=gap_mode,
         required_output_columns=required_columns,
         required_answer_elements=_required_answer_elements(family),
         requires_previous_artifact=requires_previous,
-        referent_artifact_id=_first_text(params.get("referent_artifact_id")),
+        referent_artifact_id=None if file_scope_family else _first_text(params.get("referent_artifact_id")),
         referent_dimension=referent_dimension,
         referent_values=referent_values,
         referent_policy=str(params.get("referent_policy") or "must_filter_to_previous_result_objects"),
@@ -162,7 +169,11 @@ def verify_task_execution_contract(contract: TaskExecutionContract, execution_re
                 correction_hint="Repair the LogicForm or executor path before trusting the answer.",
             )
         )
-    if contract.verification_rules.get("requires_non_empty_value") and _empty_value(execution_result.value, execution_result.rows):
+    if (
+        contract.task_family != "trend"
+        and contract.verification_rules.get("requires_non_empty_value")
+        and _empty_value(execution_result.value, execution_result.rows)
+    ):
         violations.append(
             ContractViolation(
                 code="empty_result",
@@ -172,17 +183,18 @@ def verify_task_execution_contract(contract: TaskExecutionContract, execution_re
             )
         )
     available_columns = _available_result_columns(execution_result)
-    missing_columns = [column for column in contract.required_output_columns if column and not _column_present(column, available_columns)]
-    if missing_columns and _tabular_result_present(execution_result):
-        violations.append(
-            ContractViolation(
-                code="required_output_column_missing",
-                severity="error",
-                message="The result is missing contract-required output columns.",
-                correction_hint="Regenerate the execution plan with the requested metric and dimension columns.",
-                metadata={"missing_columns": missing_columns, "available_columns": sorted(available_columns)},
+    if contract.task_family != "trend":
+        missing_columns = [column for column in contract.required_output_columns if column and not _column_present(column, available_columns)]
+        if missing_columns and _tabular_result_present(execution_result):
+            violations.append(
+                ContractViolation(
+                    code="required_output_column_missing",
+                    severity="error",
+                    message="The result is missing contract-required output columns.",
+                    correction_hint="Regenerate the execution plan with the requested metric and dimension columns.",
+                    metadata={"missing_columns": missing_columns, "available_columns": sorted(available_columns)},
+                )
             )
-        )
     row_count = _row_count(execution_result)
     if (
         contract.task_family == "topn"
@@ -431,10 +443,24 @@ def _verify_trend_contract(contract: TaskExecutionContract, result: ExecutionRes
     rows = _result_rows(result)
     answer_text = _direct_answer_text(result)
     if not rows:
-        return [_violation("TREND_TIME_SERIES_MISSING", "Trend contract requires a complete time series.", {})]
-    metric = contract.metric or _first_numeric_column(rows, exclude={str(contract.dimension or "")})
+        return [_violation("TREND_EMPTY_RESULT", "Trend contract requires at least one row for time-series analysis.", {})]
+
+    time_dimension = _first_text(contract.time_dimension, contract.dimension)
+    available_columns = _available_result_columns(result)
+    if time_dimension and not _column_present(time_dimension, available_columns):
+        return [_violation("TREND_TIME_COLUMN_MISSING", "Trend contract requires a time dimension column.", {"time_dimension": time_dimension})]
+
+    metric = contract.metric or _first_numeric_column(rows, exclude={str(time_dimension or contract.dimension or "")})
     if not metric:
-        return [_violation("TREND_METRIC_MISSING", "Trend contract requires a numeric metric column.", {})]
+        return [_violation("TREND_METRIC_COLUMN_MISSING", "Trend contract requires a numeric metric column.", {})]
+    if contract.metric and not _column_present(metric, available_columns):
+        return [_violation("TREND_METRIC_COLUMN_MISSING", "Trend contract requires a numeric metric column.", {"metric": contract.metric})]
+    if not _trend_value_column_present(result, rows, metric):
+        return [_violation("TREND_METRIC_COLUMN_MISSING", "Trend contract requires a numeric metric column.", {"metric": metric})]
+
+    if not _trend_has_time_series_artifact(result, rows):
+        return [_violation("TREND_TIME_SERIES_MISSING", "Trend contract requires a complete time series artifact.", {})]
+
     values = [value for value in (_as_float(row.get(metric)) for row in rows) if value is not None]
     if contract.referent_values and contract.referent_dimension and str(contract.referent_dimension) in rows[0]:
         return []
@@ -461,6 +487,33 @@ def _verify_trend_contract(contract: TaskExecutionContract, result: ExecutionRes
             )
         )
     return violations
+
+
+def _trend_value_column_present(result: ExecutionResult, rows: list[dict[str, Any]], metric: str) -> bool:
+    for row in rows:
+        if _as_float(_row_value(row, metric)) is not None:
+            return True
+    if isinstance(result.value, dict):
+        candidate_table = result.value.get("candidate_table")
+        if isinstance(candidate_table, list):
+            for row in candidate_table:
+                if isinstance(row, dict) and _as_float(_row_value(row, metric)) is not None:
+                    return True
+    return False
+
+
+def _trend_has_time_series_artifact(result: ExecutionResult, rows: list[dict[str, Any]]) -> bool:
+    if isinstance(result.value, list):
+        return len(result.value) > 0
+    if not isinstance(result.value, dict):
+        return False
+    time_series = result.value.get("time_series")
+    if isinstance(time_series, list):
+        return len(time_series) > 0
+    if not rows:
+        return False
+    candidate_table = result.value.get("candidate_table")
+    return isinstance(candidate_table, list) and len(candidate_table) > 0
 
 
 def _verify_overview_contract(contract: TaskExecutionContract, result: ExecutionResult) -> list[ContractViolation]:
@@ -883,8 +936,54 @@ def _empty_value(value: Any, rows: list[dict[str, Any]]) -> bool:
 
 
 def _looks_like_followup(question: str) -> bool:
+    import re
+
     compact = "".join(str(question or "").split()).lower()
-    return any(token in compact for token in ("继续", "刚才", "上面", "这些", "this", "previous", "same"))
+    if not compact:
+        return False
+    file_scope_tokens = (
+        "这些文件",
+        "这些上传文件",
+        "这批数据",
+        "这批客户订单收入文件",
+        "上传的数据",
+        "上传文件",
+        "当前数据",
+        "数据结构",
+        "数据概览",
+        "概览",
+        "能支持哪些分析",
+        "支持哪些分析",
+        "数据质量",
+        "缺失",
+        "重复",
+        "异常值",
+    )
+    previous_result_tokens = (
+        "这些top",
+        "这些top对象",
+        "这些top城市",
+        "上述top",
+        "上面top",
+        "刚才top",
+        "前几个",
+        "第一名",
+        "第二名",
+        "第1名",
+        "第2名",
+        "它们",
+        "previous",
+        "same",
+    )
+    if any(token in compact for token in previous_result_tokens):
+        return True
+    if any(token in compact for token in file_scope_tokens):
+        return False
+    return bool(
+        re.search(r"第[一二两三四五六七八九十\d]+名", compact)
+        or re.search(r"\btop\s*\d+", compact)
+        or any(token in compact for token in ("刚才的结果", "上面的结果", "上一轮结果", "previousresult"))
+    )
 
 
 def _positive_int(value: Any) -> int | None:
