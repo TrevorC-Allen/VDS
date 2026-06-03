@@ -13,6 +13,9 @@ TaskFamily = Literal[
     "topn",
     "gap",
     "trend",
+    "contribution",
+    "share",
+    "contribution_followup",
     "followup_referent",
     "overview",
     "multi_file_overview",
@@ -174,6 +177,20 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
             "preferred_top_n": preferred_top_n,
             "auto_expand_topn_if_needed": auto_expand_topn_if_needed,
             "expansion_source": str(params.get("expansion_source") or ""),
+            **(
+                {
+                    "requires_referent_values": True,
+                    "requires_numerator_metric": True,
+                    "requires_denominator_total_metric": True,
+                    "numerator_metric": metric,
+                    "denominator_total_metric": _first_text(params.get("total_metric_column"), f"total_{metric}" if metric else ""),
+                    "share_column": _first_text(params.get("share_column"), f"{metric}_share" if metric else "share"),
+                    "share_metric": _first_text(params.get("share_metric"), metric),
+                    "combined_share_only": _asks_combined_share(question),
+                }
+                if family in {"contribution", "share", "contribution_followup"}
+                else {}
+            ),
             **_family_verification_rules(family),
         },
         insufficiency_policy="needs_clarification" if requires_previous else "fail_closed",
@@ -257,6 +274,8 @@ def verify_task_execution_contract(contract: TaskExecutionContract, execution_re
         violations.extend(_verify_gap_contract(contract, execution_result))
     if contract.task_family == "trend":
         violations.extend(_verify_trend_contract(contract, execution_result))
+    if contract.task_family in {"contribution", "share", "contribution_followup"}:
+        violations.extend(_verify_contribution_contract(contract, execution_result))
     if contract.requires_previous_artifact and not contract.referent_artifact_id:
         violations.append(
             ContractViolation(
@@ -337,7 +356,11 @@ def _task_family(*, operation: str, task_type: str, question: str, source_tables
         return "data_quality"
     if quality_question:
         return "data_quality"
-    if operation in {"ranking", "top_count", "top_k_share", "growth_ranking", "vds_current_filtered_metric_top"} or task_type == "ranking":
+    if operation == "top_k_share" or any(token in compact_question for token in ("占比", "占总", "占整体", "贡献率", "贡献", "share", "contribution")):
+        if _looks_like_followup(question):
+            return "contribution_followup"
+        return "contribution"
+    if operation in {"ranking", "top_count", "growth_ranking", "vds_current_filtered_metric_top"} or task_type == "ranking":
         if any(token in compact_question for token in ("差距", "gap", "compare", "比较")):
             return "gap"
         return "topn"
@@ -362,6 +385,14 @@ def _required_columns(
     if str(operation or "") == "growth_ranking" and metric:
         growth_mode = str(params.get("growth_mode") or "rate")
         required_metric = f"{metric}_growth_rate" if growth_mode == "rate" else f"{metric}_growth_delta"
+    if family in {"contribution", "share", "contribution_followup"}:
+        total_column = _first_text(params.get("total_metric_column"), f"total_{metric}" if metric else "")
+        share_column = _first_text(params.get("share_column"), f"{metric}_share" if metric else "share")
+        for value in (dimension, metric, total_column, share_column):
+            text = str(value or "").strip()
+            if text and text not in columns:
+                columns.append(text)
+        return columns
     for value in (dimension, required_metric, output_format.get("entity_field"), output_format.get("metric")):
         text = str(value or "").strip()
         if text and text not in columns and family in {"topn", "gap", "trend"}:
@@ -376,6 +407,8 @@ def _required_answer_elements(family: TaskFamily) -> list[str]:
         return ["comparison_baseline", "gap_value"]
     if family == "trend":
         return ["time_grain", "metric_series"]
+    if family in {"contribution", "share", "contribution_followup"}:
+        return ["referent_value", "metric_value", "total_metric_value", "share"]
     if family in {"overview", "multi_file_overview"}:
         return ["schema_summary", "analysis_directions"]
     if family == "data_quality":
@@ -403,6 +436,13 @@ def _family_verification_rules(family: TaskFamily) -> dict[str, Any]:
         return {
             "trend_time_series_required": True,
             "trend_description_matches_values": True,
+        }
+    if family in {"contribution", "share", "contribution_followup"}:
+        return {
+            "referent_values_match_previous_top_objects": True,
+            "denominator_total_metric_required": True,
+            "per_referent_share_required": True,
+            "scalar_only_for_combined_share_only": True,
         }
     if family in {"overview", "multi_file_overview"}:
         return {
@@ -526,6 +566,45 @@ def _verify_trend_contract(contract: TaskExecutionContract, result: ExecutionRes
                 {"values": values},
             )
         )
+    return violations
+
+
+def _verify_contribution_contract(contract: TaskExecutionContract, result: ExecutionResult) -> list[ContractViolation]:
+    rows = _result_rows(result)
+    answer_text = _direct_answer_text(result)
+    violations: list[ContractViolation] = []
+    combined_only = bool(contract.verification_rules.get("combined_share_only"))
+    if combined_only and not rows:
+        return violations
+    if not rows:
+        violations.append(_violation("CONTRIBUTION_ROWS_MISSING", "Contribution follow-up requires per-referent result rows.", {}))
+        return violations
+
+    dimension = contract.referent_dimension or contract.dimension or ""
+    metric = contract.metric or str(contract.verification_rules.get("numerator_metric") or "")
+    total_column = str(contract.verification_rules.get("denominator_total_metric") or "")
+    share_column = str(contract.verification_rules.get("share_column") or "")
+    available_columns = _available_result_columns(result)
+    if dimension and not _column_present(dimension, available_columns):
+        violations.append(_violation("CONTRIBUTION_REFERENT_COLUMN_MISSING", "Contribution output must include the referent dimension column.", {"referent_dimension": dimension}))
+    if metric and not _column_present(metric, available_columns) and not _column_present("metric_value", available_columns):
+        violations.append(_violation("CONTRIBUTION_NUMERATOR_MISSING", "Contribution output must include the per-referent numerator metric.", {"metric": metric}))
+    if total_column and not _column_present(total_column, available_columns) and not _column_present("total_metric_value", available_columns):
+        violations.append(_violation("CONTRIBUTION_DENOMINATOR_MISSING", "Contribution output must include the total denominator under the same metric/filter scope.", {"denominator_total_metric": total_column}))
+    if share_column and not _column_present(share_column, available_columns) and not any(_column_present(alias, available_columns) for alias in ("share", "percent", "ratio", "contribution", "contribution_rate", "share_percent")):
+        violations.append(_violation("CONTRIBUTION_SHARE_MISSING", "Contribution output must include a share/percent value per referent.", {"share_column": share_column}))
+
+    if contract.referent_values and dimension and _column_present(dimension, available_columns):
+        expected = {str(value) for value in contract.referent_values}
+        observed = {str(_row_value(row, dimension)) for row in rows if _row_value(row, dimension) not in (None, "")}
+        missing = expected - observed
+        extra = observed - expected
+        if missing:
+            violations.append(_violation("CONTRIBUTION_REFERENT_MISSING", "Contribution output is missing one or more previous Top referent values.", {"missing": sorted(missing)}))
+        if extra:
+            violations.append(_violation("CONTRIBUTION_EXTRA_REFERENT", "Contribution output contains referents outside the previous Top result.", {"extra": sorted(extra)}))
+    if answer_text.strip() and not combined_only and "占" not in answer_text and "%" not in answer_text:
+        violations.append(_violation("CONTRIBUTION_DIRECT_SHARE_SUMMARY_MISSING", "Direct answer must include the per-referent share result.", {}))
     return violations
 
 
@@ -940,6 +1019,13 @@ def _asks_lowest(question: str) -> bool:
     lowered = str(question or "").lower()
     return any(token in compact for token in ("最低", "最小", "最少", "从低到高")) or any(
         token in lowered for token in ("lowest", "smallest", "least", "bottom", "ascending")
+    )
+
+
+def _asks_combined_share(question: str) -> bool:
+    compact = "".join(str(question or "").split())
+    return any(token in compact for token in ("合计占", "合起来占", "总共占", "一共占", "整体占比", "总体占比")) and not any(
+        token in compact for token in ("分别", "各自", "每个", "逐个", "各个")
     )
 
 

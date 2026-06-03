@@ -45,6 +45,8 @@ def build_oracle_result(
         expected_result, issue_metadata = _build_missing_expected_result_oracle_payload(
             contract=contract, actual=actual, answer=answer
         )
+        if _is_contribution_share_expected(expected_result):
+            return oracle_contribution_share(expected_result, actual, tolerance=_share_tolerance(contract))
         if _is_trend_constraint_expected(expected_result):
             actual_summary = _build_trend_constraint_actual_summary(expected_result, actual)
             issue_codes = _trend_constraint_issue_codes(expected_result, actual_summary)
@@ -75,6 +77,8 @@ def build_oracle_result(
         if isinstance(execution_result.value, Mapping):
             answer = str(execution_result.value.get("answer") or "")
         return oracle_topn_followup_gap(expected, actual, answer=answer)
+    if _is_contribution_share_expected(expected) or _is_contribution_share_contract(contract):
+        return oracle_contribution_share(expected, actual, tolerance=_share_tolerance(contract))
     if _is_multi_table_join_ranking_expected(expected):
         return oracle_multi_table_join_ranking(expected, actual)
     passed = expected == actual
@@ -190,6 +194,197 @@ def oracle_quality_field_counts(expected: Any, actual: Any) -> OracleResult:
         diff_summary=None if not issue_codes else "Quality field-level output differs from expected values.",
         issue_codes=sorted(set(issue_codes)),
     )
+
+
+def oracle_contribution_share(expected: Any, actual: Any, *, tolerance: float = 0.01) -> OracleResult:
+    """Build deterministic oracle result for per-referent contribution/share follow-ups."""
+
+    expected_payload = _coerce_contribution_payload(expected)
+    actual_payload = _coerce_contribution_payload(actual, expected=expected_payload)
+    if expected_payload is None:
+        return OracleResult(
+            oracle_available=False,
+            actual_result=actual_payload,
+            passed=False,
+            diff_summary="Invalid expected_result payload for contribution/share oracle.",
+            issue_codes=["oracle_expected_result_invalid"],
+        )
+    if actual_payload is None:
+        return OracleResult(
+            oracle_available=True,
+            expected_result=expected_payload,
+            actual_result=actual_payload,
+            passed=False,
+            diff_summary="Contribution/share actual_result is missing per-referent rows.",
+            issue_codes=["contribution_referent_missing"],
+        )
+
+    issue_codes: list[str] = []
+    expected_items = [item for item in expected_payload.get("items") or [] if isinstance(item, Mapping)]
+    actual_items = [item for item in actual_payload.get("items") or [] if isinstance(item, Mapping)]
+    actual_by_value = {str(item.get("value")): item for item in actual_items if item.get("value") not in (None, "")}
+
+    for expected_item in expected_items:
+        value = str(expected_item.get("value") or "")
+        actual_item = actual_by_value.get(value)
+        if actual_item is None:
+            issue_codes.append("contribution_referent_missing")
+            continue
+        if expected_item.get("metric_value") is not None and not _numbers_close(expected_item.get("metric_value"), actual_item.get("metric_value")):
+            issue_codes.append("contribution_metric_mismatch")
+        if expected_item.get("total_metric_value") is not None:
+            if actual_item.get("total_metric_value") is None:
+                issue_codes.append("contribution_denominator_missing")
+            elif not _numbers_close(expected_item.get("total_metric_value"), actual_item.get("total_metric_value")):
+                issue_codes.append("contribution_denominator_mismatch")
+        if expected_item.get("share") is not None:
+            if actual_item.get("share") is None:
+                issue_codes.append("contribution_share_missing")
+            else:
+                expected_share = _oracle_float(expected_item.get("share"))
+                actual_share = _oracle_float(actual_item.get("share"))
+                if expected_share is None or actual_share is None or not math.isclose(expected_share, actual_share, rel_tol=1e-6, abs_tol=tolerance):
+                    issue_codes.append("contribution_share_mismatch")
+
+    expected_values = {str(item.get("value")) for item in expected_items if item.get("value") not in (None, "")}
+    actual_values = {str(item.get("value")) for item in actual_items if item.get("value") not in (None, "")}
+    if expected_values and not expected_values.issubset(actual_values):
+        issue_codes.append("contribution_referent_missing")
+    if any(item.get("share") is None for item in actual_items):
+        issue_codes.append("contribution_share_missing")
+    if any(item.get("total_metric_value") is None for item in actual_items):
+        issue_codes.append("contribution_denominator_missing")
+
+    issue_codes = sorted(set(issue_codes))
+    return OracleResult(
+        oracle_available=True,
+        expected_result=expected_payload,
+        actual_result=actual_payload,
+        passed=not issue_codes,
+        diff_summary=None if not issue_codes else "Contribution/share actual_result differs from expected per-referent shares.",
+        issue_codes=issue_codes,
+    )
+
+
+def _is_contribution_share_contract(contract: TaskExecutionContract | None) -> bool:
+    if contract is None:
+        return False
+    family = str(contract.task_family or "")
+    operation = str(contract.verification_rules.get("operation") or "")
+    capability_family = str(contract.verification_rules.get("capability_family") or "")
+    return family in {"contribution", "share", "contribution_followup"} or operation == "top_k_share" or capability_family in {"contribution_followup", "share_followup"}
+
+
+def _is_contribution_share_expected(value: Any) -> bool:
+    return isinstance(value, Mapping) and str(value.get("task_family") or "") in {"contribution", "share", "contribution_followup", "topn_contribution"} and isinstance(value.get("items"), list)
+
+
+def _share_tolerance(contract: TaskExecutionContract | None) -> float:
+    if contract is None:
+        return 0.01
+    raw = contract.verification_rules.get("share_tolerance")
+    try:
+        tolerance = float(raw)
+    except (TypeError, ValueError):
+        return 0.01
+    return tolerance if tolerance >= 0 else 0.01
+
+
+def _coerce_contribution_payload(value: Any, *, expected: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        rows = _extract_tabular_rows(value)
+        if not rows:
+            return None
+        value = {"rows": rows}
+    if _is_contribution_share_expected(value):
+        return {
+            "task_family": "contribution_followup",
+            "dimension": str(value.get("dimension") or (expected or {}).get("dimension") or ""),
+            "metric": str(value.get("metric") or (expected or {}).get("metric") or ""),
+            "total_metric_value": _round_oracle_value(_oracle_float(value.get("total_metric_value"))),
+            "items": [_coerce_contribution_item(item, expected=value) for item in value.get("items") or [] if isinstance(item, Mapping)],
+        }
+    rows = _extract_tabular_rows(value)
+    if not rows:
+        return None
+    dimension = str(value.get("dimension") or (expected or {}).get("dimension") or "")
+    metric = str(value.get("metric") or (expected or {}).get("metric") or "")
+    dimension_column = _infer_referent_dimension(rows, preferred=dimension, excluded=set())
+    metric_column = _find_contribution_column(rows, ("metric_value", metric, "value", "amount", "sales", "销售额"), excluded={dimension_column or ""})
+    total_column = _find_contribution_column(rows, ("total_metric_value", f"total_{metric}" if metric else "", "total", "denominator", "总销售额", "总体", "合计"), excluded={dimension_column or "", metric_column or ""})
+    share_column = _find_contribution_column(
+        rows,
+        ("share", "percent", "ratio", "contribution", "contribution_rate", "share_percent", f"{metric}_share" if metric else "", "占比", "贡献率", "比例"),
+        excluded={dimension_column or "", metric_column or "", total_column or ""},
+        require_numeric=False,
+    )
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        referent = _value_for_column(row, dimension_column)
+        if referent in (None, ""):
+            continue
+        metric_value = _oracle_float(_value_for_column(row, metric_column))
+        total_value = _oracle_float(_value_for_column(row, total_column))
+        share_value = _normalize_share_value(_value_for_column(row, share_column))
+        items.append(
+            {
+                "value": referent,
+                "metric_value": _round_oracle_value(metric_value),
+                "total_metric_value": _round_oracle_value(total_value),
+                "share": _round_oracle_value(share_value),
+            }
+        )
+    if not items:
+        return None
+    return {
+        "task_family": "contribution_followup",
+        "dimension": dimension_column or dimension,
+        "metric": metric_column or metric,
+        "total_metric_value": next((item.get("total_metric_value") for item in items if item.get("total_metric_value") is not None), None),
+        "items": items,
+    }
+
+
+def _coerce_contribution_item(item: Mapping[str, Any], *, expected: Mapping[str, Any]) -> dict[str, Any]:
+    dimension = str(expected.get("dimension") or "")
+    metric = str(expected.get("metric") or "")
+    return {
+        "value": item.get("value") or item.get(dimension) or item.get("dimension_value") or item.get("referent") or item.get("name"),
+        "metric_value": _round_oracle_value(_oracle_float(_first_present(item.get("metric_value"), item.get(metric), item.get("value_metric")))),
+        "total_metric_value": _round_oracle_value(_oracle_float(_first_present(item.get("total_metric_value"), item.get(f"total_{metric}" if metric else ""), item.get("total")))),
+        "share": _round_oracle_value(_normalize_share_value(_first_present(item.get("share"), item.get("percent"), item.get("ratio"), item.get("contribution"), item.get("contribution_rate"), item.get("share_percent"), item.get(f"{metric}_share" if metric else "")))),
+    }
+
+
+def _find_contribution_column(rows: list[Mapping[str, Any]], candidates: tuple[str, ...], *, excluded: set[str], require_numeric: bool = True) -> str | None:
+    columns = _available_row_columns(rows)
+    excluded = {column for column in excluded if column}
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if _column_present_in_names(candidate, columns):
+            matched = _matching_column_name(candidate, columns)
+            if matched not in excluded:
+                return matched
+    for column in columns:
+        if column in excluded:
+            continue
+        if require_numeric and not any(_oracle_float(row.get(column)) is not None for row in rows):
+            continue
+        lowered = column.lower()
+        if any(str(candidate).lower() in lowered for candidate in candidates if candidate):
+            return str(column)
+    return None
+
+
+def _normalize_share_value(value: Any) -> float | None:
+    number = _oracle_float(value)
+    if number is None:
+        return None
+    text = str(value)
+    if "%" not in text and abs(number) <= 1:
+        return number * 100
+    return number
 
 
 def _looks_like_quality_oracle_expected(value: Any) -> bool:

@@ -1285,21 +1285,24 @@ def _generic_ranked_entity_share_action(context: Mapping[str, Any], compact: str
         params.get("dimension"),
         logic.get("group_by"),
     )
-    metric = _first_text(_explicit_metric_column(compact, available), _explicit_metric_concept(compact), scope.get("metric"), params.get("metric"), logic.get("metric"), "核心指标")
+    metric = _first_text(_explicit_metric_column(compact, available), scope.get("metric"), params.get("metric"), logic.get("metric"), _explicit_metric_concept(compact), "核心指标")
     if not dimension or not metric:
         return {}
     limit = _extract_limit_from_compact(compact, default=1)
     label = _dimension_question_label(dimension)
     metric_label = _metric_question_label(metric)
-    return _action(
+    share_column = f"{metric}_share" if metric and metric != "核心指标" else "share"
+    action = _action(
         action_id="ranked_entity_share",
         label="计算已排名对象贡献占比",
         operation="top_k_share",
-        question=f"按{label}看{metric_label}前{limit}名贡献占比是多少？",
+        question=f"按{label}看{metric_label}前{limit}名分别贡献占比是多少？",
         inherited_parameters=_generic_inherited_parameters_for_question(logic, params, compact),
-        parameters={"metric": metric, "dimension": dimension, "limit": limit},
+        parameters={"metric": metric, "share_metric": metric, "share_column": share_column, "dimension": dimension, "limit": limit},
         dimension=dimension,
     )
+    action["capability_family"] = "share_followup"
+    return action
 
 
 def _asks_extreme_review(compact: str) -> bool:
@@ -1709,7 +1712,24 @@ def _asks_same_analysis_for_new_time(compact: str) -> bool:
 
 
 def _asks_share_followup(compact: str) -> bool:
-    return any(token in compact for token in ("占比", "比例", "份额", "share", "percentage", "proportion"))
+    return any(
+        token in compact
+        for token in (
+            "占比",
+            "占总",
+            "占整体",
+            "占全",
+            "占多少",
+            "贡献率",
+            "贡献",
+            "比例",
+            "份额",
+            "share",
+            "percentage",
+            "proportion",
+            "contribution",
+        )
+    )
 
 
 def _asks_extreme_time_scoped_dimension_drilldown(compact: str) -> bool:
@@ -1731,9 +1751,35 @@ def _asks_extreme_time_scoped_dimension_drilldown(compact: str) -> bool:
 def _asks_ranked_entity_share_followup(compact: str) -> bool:
     if not _asks_share_followup(compact):
         return False
-    if not any(token in compact for token in ("排名第一", "排名第1", "第一名", "第1名", "Top1", "top1", "首位", "最高的", "最多的")):
+    top_set_signal = any(
+        token in compact
+        for token in (
+            "这些Top",
+            "这些top",
+            "这些TOP",
+            "Top对象",
+            "top对象",
+            "前几名",
+            "前几",
+            "前几位",
+            "排名前",
+            "前3",
+            "前三",
+            "Top3",
+            "top3",
+            "它们",
+            "这些",
+            "上述",
+        )
+    )
+    single_rank_signal = any(token in compact for token in ("排名第一", "排名第1", "第一名", "第1名", "Top1", "top1", "首位", "最高的", "最多的"))
+    if not (top_set_signal or single_rank_signal):
         return False
-    return bool(_explicit_dimension_concept(compact) or any(token in compact for token in ("客户", "城市", "产品", "服务线", "业务线", "客群", "细分")))
+    return bool(
+        _explicit_dimension_concept(compact)
+        or any(token in compact for token in ("对象", "客户", "城市", "产品", "服务线", "业务线", "客群", "细分"))
+        or top_set_signal
+    )
 
 
 def _asks_ranked_set_metric_display_followup(compact: str) -> bool:

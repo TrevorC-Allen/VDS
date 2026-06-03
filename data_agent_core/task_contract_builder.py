@@ -159,6 +159,28 @@ def build_topn_gap_trend_task_contract(question: str, logic_form: Any) -> dict[s
     params = dict(getattr(logic_form, "parameters", {}) or {})
     metric = str(getattr(logic_form, "metric", None) or params.get("metric") or "")
     dimension = str(params.get("dimension") or params.get("group_by") or getattr(logic_form, "group_by", None) or "")
+    if _contract_asks_share(question_text, logic_form):
+        total_column = str(params.get("total_metric_column") or (f"total_{metric}" if metric else "total_metric_value"))
+        share_column = str(params.get("share_column") or (f"{metric}_share" if metric else "share"))
+        return {
+            "task_family": "contribution_followup" if params.get("requires_previous_artifact") else "contribution",
+            "metric": metric,
+            "dimension": dimension,
+            "referent_dimension": str(params.get("referent_dimension") or dimension),
+            "referent_values": list(params.get("referent_values") or []),
+            "requires_previous_artifact": bool(params.get("requires_previous_artifact") or params.get("referent_artifact_id")),
+            "requires_referent_values": True,
+            "requires_numerator_metric": True,
+            "requires_denominator_total_metric": True,
+            "required_output_columns": [column for column in (dimension, metric, total_column, share_column) if column],
+            "required_answer_elements": ["referent_value", "metric_value", "total_metric_value", "share"],
+            "verification_rules": [
+                "referent_values_match_previous_top_objects",
+                "denominator_total_metric_required",
+                "per_referent_share_required",
+                "scalar_only_for_combined_share_only",
+            ],
+        }
     if _contract_asks_gap(question_text):
         return {
             "task_family": "gap",
@@ -230,6 +252,16 @@ def _contract_asks_rank_pair(question: str) -> bool:
 def _contract_asks_percent_gap(question: str) -> bool:
     lowered = question.lower()
     return any(token in question for token in ("百分比", "比例")) or any(token in lowered for token in ("percent", "%"))
+
+
+def _contract_asks_share(question: str, logic_form: Any) -> bool:
+    compact = re.sub(r"\s+", "", question)
+    lowered = question.lower()
+    if str(getattr(logic_form, "operation", "") or "") == "top_k_share":
+        return True
+    return any(token in compact for token in ("占比", "占总", "占整体", "占多少", "贡献率", "贡献", "比例", "份额")) or any(
+        token in lowered for token in ("share", "percentage", "proportion", "contribution")
+    )
 
 
 def _contract_asks_lowest(question: str) -> bool:

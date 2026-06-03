@@ -8,6 +8,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
 
+_TOP_OBJECT_CACHE: dict[tuple[str, str, tuple[str, ...]], list[dict[str, Any]]] = {}
+
+
 @dataclass
 class ReferentResolution:
     """Structured referent resolution for a follow-up question."""
@@ -52,8 +55,7 @@ def build_result_artifacts(
         metric=str(metric or ""),
         values=values,
     )
-    return [
-        {
+    artifact = {
             "artifact_id": artifact_id,
             "artifact_type": "ranking",
             "source": "result_rows",
@@ -75,7 +77,26 @@ def build_result_artifacts(
             "rank_map": {str(value): index for index, value in enumerate(values[:limit], start=1)},
             "rows": rows[:limit],
         }
-    ]
+    _remember_top_objects(dimension=str(dimension), metric=str(metric or ""), values=values[:limit], top_objects=top_objects)
+    return [artifact]
+
+
+def lookup_cached_top_objects(*, dimension: str, metric: str, values: list[Any]) -> list[dict[str, Any]]:
+    """Return prior TopN object metric values remembered in this process."""
+
+    key = _top_object_cache_key(dimension=dimension, metric=metric, values=values)
+    return [dict(item) for item in _TOP_OBJECT_CACHE.get(key, [])]
+
+
+def _remember_top_objects(*, dimension: str, metric: str, values: list[Any], top_objects: list[dict[str, Any]]) -> None:
+    if not dimension or not values or not top_objects:
+        return
+    key = _top_object_cache_key(dimension=dimension, metric=metric, values=values)
+    _TOP_OBJECT_CACHE[key] = [dict(item) for item in top_objects]
+
+
+def _top_object_cache_key(*, dimension: str, metric: str, values: list[Any]) -> tuple[str, str, tuple[str, ...]]:
+    return (_normalize(dimension), _normalize(metric), tuple(str(value) for value in values if value not in (None, "")))
 
 
 def build_task_artifacts(*, task_contract: Mapping[str, Any], rows: list[dict[str, Any]], answer: str = "") -> dict[str, Any]:

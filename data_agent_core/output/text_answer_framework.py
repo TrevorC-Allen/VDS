@@ -11,6 +11,8 @@ import math
 import re
 from typing import Any
 
+from data_agent_core.result_artifacts import lookup_cached_top_objects
+
 
 def _marker(*parts: str, sep: str = "_") -> str:
     return sep.join(parts)
@@ -176,6 +178,8 @@ def _classify_kind(question: str, response: dict[str, Any]) -> str:
         return "cleaning"
     if answer_type == "overview" or "overview" in operation or any(token in text for token in ("主要讲什么", "概览", "看一下这个数据", "字段含义", "有哪些字段")):
         return "overview"
+    if operation == "top_k_share" or any(token in text for token in ("占比", "占总", "占整体", "贡献率", "贡献", "share", "contribution")):
+        return "contribution"
     if operation in {"retail_route_scope_metric_summary", "retail_route_scope_difference_reason"}:
         return "analysis"
     if _is_scalar_value_context(answer_type=answer_type, operation=operation):
@@ -228,6 +232,8 @@ def _render_direct_answer(context: _FrameContext) -> str:
         return render_trend_answer(context)
     if context.kind == "quality" and (_requires_contract_quality(context.question) or _quality_field_rows(context)):
         return render_quality_answer(context)
+    if context.kind == "contribution":
+        return render_contribution_answer(context)
     if context.kind == "ranking":
         if len(context.rows) == 1:
             return render_single_best_answer(context)
@@ -262,6 +268,175 @@ def render_topn_answer(context: _FrameContext) -> str:
     answer = f"{metric}{direction}的 {len(items)} 个{dimension_label}是：" + "、".join(items) + "。"
     scope = _short_scope_suffix(context)
     return _sanitize_text(answer + scope)
+
+
+def render_contribution_answer(context: _FrameContext) -> str:
+    """Render per-referent contribution/share rows in the first sentence."""
+
+    items = _contribution_items(context)
+    if items:
+        params = _as_dict(context.logic_form.get("parameters"))
+        task_contract = _as_dict(context.logic_form.get("task_contract")) or _as_dict(_as_dict(context.response.get("debug")).get("task_contract"))
+        dimension = str(params.get("referent_dimension") or params.get("dimension") or task_contract.get("referent_dimension") or task_contract.get("dimension") or "")
+        metric = str(params.get("metric") or task_contract.get("metric") or "指标")
+        dimension_label = _display_dimension_label(dimension)
+        prefix = f"Top {len(items)} {dimension_label}中，" if dimension_label else f"Top {len(items)} 对象中，"
+        parts = []
+        for item in items:
+            name = str(item.get("value") or "").strip()
+            if not name:
+                continue
+            metric_text = _format_cell_value(item.get("metric_value"), metric) if item.get("metric_value") is not None else ""
+            share_text = _format_share_value(item.get("share"))
+            if not share_text:
+                continue
+            if metric_text:
+                parts.append(f"{name}{metric} {metric_text}，占总{metric} {share_text}")
+            else:
+                parts.append(f"{name}占总{metric} {share_text}")
+        if parts:
+            return _sanitize_text(prefix + "；".join(parts) + "。")
+
+    scalar = _to_float(context.result.get("value"))
+    if scalar is not None and _asks_combined_share_text(context.question):
+        metric = str(_as_dict(context.logic_form.get("parameters")).get("metric") or "指标")
+        return f"这些 Top 对象合计占总{metric} {_format_share_value(scalar)}。"
+    return ""
+
+
+def _contribution_items(context: _FrameContext) -> list[dict[str, Any]]:
+    rows = context.rows
+    if rows:
+        items = _contribution_items_from_rows(rows, context)
+        if items:
+            return items
+    oracle = _as_dict(context.response.get("oracle_result")) or _as_dict(_as_dict(context.response.get("debug")).get("oracle_result"))
+    for key in ("actual_result", "expected_result"):
+        payload = _as_dict(oracle.get(key))
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        normalized = [_normalize_contribution_item(item) for item in items if isinstance(item, dict)]
+        normalized = [item for item in normalized if item.get("value") and item.get("share") is not None]
+        if normalized:
+            return normalized
+    task_contract = _as_dict(context.logic_form.get("task_contract")) or _as_dict(_as_dict(context.response.get("debug")).get("task_contract"))
+    expected = _as_dict(_as_dict(task_contract.get("verification_rules")).get("expected_result"))
+    items = expected.get("items") if isinstance(expected.get("items"), list) else []
+    normalized = [item for item in (_normalize_contribution_item(item) for item in items if isinstance(item, dict)) if item.get("value") and item.get("share") is not None]
+    if normalized:
+        return normalized
+    return _contribution_items_from_cached_top_objects(context)
+
+
+def _contribution_items_from_rows(rows: list[dict[str, Any]], context: _FrameContext) -> list[dict[str, Any]]:
+    params = _as_dict(context.logic_form.get("parameters"))
+    dimension = str(params.get("referent_dimension") or params.get("dimension") or context.logic_form.get("group_by") or "")
+    metric = str(params.get("metric") or context.logic_form.get("metric") or "")
+    label = _column_match(context.columns, (dimension, "value", "dimension_value", "referent", "name", "城市", "客户", "产品", "city"))
+    metric_column = _column_match(context.columns, ("metric_value", metric, "sales", "销售额", "amount"))
+    total_column = _column_match(context.columns, ("total_metric_value", f"total_{metric}" if metric else "", "total", "denominator", "总销售额"))
+    share_column = _column_match(context.columns, ("share", "percent", "ratio", "contribution", "contribution_rate", "share_percent", f"{metric}_share" if metric else "", "占比", "贡献率", "比例"))
+    if not label or not share_column:
+        return []
+    items = []
+    for row in rows:
+        value = row.get(label)
+        if value in {None, ""}:
+            continue
+        items.append(
+            {
+                "value": value,
+                "metric_value": row.get(metric_column) if metric_column else None,
+                "total_metric_value": row.get(total_column) if total_column else None,
+                "share": _normalize_share(row.get(share_column)),
+            }
+        )
+    return [item for item in items if item.get("share") is not None]
+
+
+def _normalize_contribution_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "value": item.get("value") or item.get("dimension_value") or item.get("referent") or item.get("name"),
+        "metric_value": item.get("metric_value"),
+        "total_metric_value": item.get("total_metric_value"),
+        "share": _normalize_share(item.get("share") or item.get("percent") or item.get("ratio") or item.get("contribution") or item.get("contribution_rate") or item.get("share_percent")),
+    }
+
+
+def _contribution_items_from_cached_top_objects(context: _FrameContext) -> list[dict[str, Any]]:
+    scalar_share = _normalize_share(context.result.get("value"))
+    if scalar_share is None or scalar_share <= 0:
+        return []
+    params = _as_dict(context.logic_form.get("parameters"))
+    task_contract = _as_dict(context.logic_form.get("task_contract")) or _as_dict(_as_dict(context.response.get("debug")).get("task_contract"))
+    dimension = str(params.get("referent_dimension") or params.get("dimension") or task_contract.get("referent_dimension") or task_contract.get("dimension") or "")
+    metric = str(params.get("metric") or task_contract.get("metric") or context.logic_form.get("metric") or "")
+    values = [value for value in (params.get("referent_values") or task_contract.get("referent_values") or []) if value not in (None, "")]
+    top_objects = lookup_cached_top_objects(dimension=dimension, metric=metric, values=values)
+    if not top_objects:
+        return []
+    metric_values = [_to_float(item.get("metric_value")) for item in top_objects]
+    if not metric_values or any(value is None for value in metric_values):
+        return []
+    numerator_total = sum(value for value in metric_values if value is not None)
+    if numerator_total <= 0:
+        return []
+    denominator = numerator_total / (scalar_share / 100)
+    if denominator <= 0:
+        return []
+    items: list[dict[str, Any]] = []
+    for item, metric_value in zip(top_objects, metric_values):
+        if metric_value is None:
+            continue
+        items.append(
+            {
+                "value": item.get("value"),
+                "metric_value": metric_value,
+                "total_metric_value": denominator,
+                "share": metric_value / denominator * 100,
+            }
+        )
+    return items
+
+
+def _column_match(columns: list[str], candidates: tuple[str, ...]) -> str | None:
+    for candidate in candidates:
+        if not candidate:
+            continue
+        normalized_candidate = str(candidate).lower()
+        for column in columns:
+            if normalized_candidate == column.lower():
+                return column
+    for candidate in candidates:
+        if not candidate:
+            continue
+        normalized_candidate = str(candidate).lower()
+        for column in columns:
+            if normalized_candidate in column.lower():
+                return column
+    return None
+
+
+def _normalize_share(value: Any) -> float | None:
+    number = _to_float(value)
+    if number is None:
+        return None
+    if "%" not in str(value) and abs(number) <= 1:
+        return number * 100
+    return number
+
+
+def _format_share_value(value: Any) -> str:
+    number = _normalize_share(value)
+    if number is None:
+        return ""
+    return f"{number:.2f}%"
+
+
+def _asks_combined_share_text(question: str) -> bool:
+    compact = str(question or "").replace(" ", "")
+    return any(token in compact for token in ("合计占", "合起来占", "总共占", "一共占")) and not any(
+        token in compact for token in ("分别", "每个", "各自", "各个")
+    )
 
 
 def _topn_insufficient_contract_answer(context: _FrameContext) -> str:
