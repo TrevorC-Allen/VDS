@@ -112,6 +112,7 @@ class TurnEvidence:
     oracle_available: bool = False
     oracle_passed: bool | None = None
     oracle_issue_codes: list[str] = field(default_factory=list)
+    oracle_issue_metadata: dict[str, Any] = field(default_factory=dict)
     expected_result: Any | None = None
     actual_result: Any | None = None
     answer_preview: str = ""
@@ -1196,13 +1197,12 @@ def _turn_evidence(index: int, turn: TurnPlan, response: dict[str, Any], *, tabl
         oracle_available=bool(oracle_result.get("oracle_available")),
         oracle_passed=oracle_result.get("passed") if isinstance(oracle_result.get("passed"), bool) else None,
         oracle_issue_codes=[str(item) for item in oracle_result.get("issue_codes") or []],
+        oracle_issue_metadata=dict(oracle_result.get("issue_metadata") or {}),
         expected_result=oracle_result.get("expected_result"),
         actual_result=oracle_result.get("actual_result"),
         answer_preview=_preview_text(response.get("answer"), limit=520),
         next_action_questions=_action_questions(actions),
     )
-
-
 def _turn_role(index: int, expected_kind: str) -> str:
     if index == 1:
         return "初始问题"
@@ -3279,10 +3279,14 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
         "oracle_available_turns": oracle_available_turns,
         "oracle_passed_turns": oracle_passed_turns,
         "oracle_failed_turns": oracle_failed_turns,
+        "oracle_passed": oracle_passed_turns,
+        "oracle_failed": oracle_failed_turns,
         "oracle_expected_result_present_turns": oracle_expected_result_present_turns,
         "oracle_actual_result_present_turns": oracle_actual_result_present_turns,
         "oracle_expected_result_missing_turns": oracle_expected_result_missing_turns,
         "oracle_actual_result_missing_turns": oracle_actual_result_missing_turns,
+        "oracle_expected_missing": oracle_expected_result_missing_turns,
+        "oracle_actual_missing": oracle_actual_result_missing_turns,
         "contract_checked_turns": contract_checked_turns,
         "contract_satisfied_turns": contract_satisfied_turns,
         "semantic_passed_turns": semantic_passed_turns,
@@ -3544,6 +3548,10 @@ def _report_markdown(report: dict[str, Any]) -> str:
     lines.append(f"- Oracle available turns: {coverage.get('oracle_available_turns', 0)}")
     lines.append(f"- Oracle passed turns: {coverage.get('oracle_passed_turns', 0)}")
     lines.append(f"- Oracle failed turns: {coverage.get('oracle_failed_turns', 0)}")
+    lines.append(f"- Oracle passed: {coverage.get('oracle_passed', coverage.get('oracle_passed_turns', 0))}")
+    lines.append(f"- Oracle failed: {coverage.get('oracle_failed', coverage.get('oracle_failed_turns', 0))}")
+    lines.append(f"- Oracle expected missing: {coverage.get('oracle_expected_missing', coverage.get('oracle_expected_result_missing_turns', 0))}")
+    lines.append(f"- Oracle actual missing: {coverage.get('oracle_actual_missing', coverage.get('oracle_actual_result_missing_turns', 0))}")
     lines.append(f"- Contract checked turns: {coverage.get('contract_checked_turns', 0)}")
     lines.append(f"- Contract satisfied turns: {coverage.get('contract_satisfied_turns', 0)}")
     lines.append(f"- Semantic passed turns: {coverage.get('semantic_passed_turns', 0)}")
@@ -3865,6 +3873,10 @@ def _semantic_contract_summary_html(coverage: dict[str, Any]) -> str:
         ("oracle_available_turns", "Oracle available turns"),
         ("oracle_passed_turns", "Oracle passed turns"),
         ("oracle_failed_turns", "Oracle failed turns"),
+        ("oracle_passed", "Oracle passed"),
+        ("oracle_failed", "Oracle failed"),
+        ("oracle_expected_missing", "Oracle expected missing"),
+        ("oracle_actual_missing", "Oracle actual missing"),
         ("contract_checked_turns", "Contract checked turns"),
         ("contract_satisfied_turns", "Contract satisfied turns"),
         ("semantic_passed_turns", "Semantic passed turns"),
@@ -4170,6 +4182,7 @@ def _write_turn_records_csv(report: dict[str, Any], path: Path) -> None:
         "oracle_available",
         "oracle_passed",
         "oracle_issue_codes",
+        "oracle_issue_metadata",
         "expected_result_present",
         "actual_result_present",
         "context_status",
@@ -4218,6 +4231,7 @@ def _write_turn_records_csv(report: dict[str, Any], path: Path) -> None:
                         "oracle_available": bool(turn.get("oracle_available")),
                         "oracle_passed": turn.get("oracle_passed"),
                         "oracle_issue_codes": ";".join(str(item) for item in turn.get("oracle_issue_codes") or []),
+                        "oracle_issue_metadata": json.dumps(turn.get("oracle_issue_metadata") or {}),
                         "expected_result_present": bool(turn.get("expected_result") is not None),
                         "actual_result_present": bool(turn.get("actual_result") is not None),
                         "context_status": turn.get("context_status") or "",

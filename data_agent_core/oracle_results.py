@@ -21,6 +21,7 @@ class OracleResult:
     passed: bool | None = None
     diff_summary: str | None = None
     issue_codes: list[str] = field(default_factory=list)
+    issue_metadata: dict[str, Any] | None = None
 
 
 def build_oracle_result(
@@ -40,12 +41,30 @@ def build_oracle_result(
         )
     expected = contract.verification_rules.get("expected_result")
     if expected is None:
+        expected_result, issue_metadata = _build_missing_expected_result_oracle_payload(contract=contract, actual=actual)
+        if _is_trend_constraint_expected(expected_result):
+            actual_summary = _build_trend_constraint_actual_summary(expected_result, actual)
+            issue_codes = _trend_constraint_issue_codes(expected_result, actual_summary)
+            return OracleResult(
+                oracle_available=True,
+                expected_result=expected_result,
+                actual_result=actual_summary,
+                passed=not issue_codes,
+                diff_summary=None if not issue_codes else "Trend follow-up actual_result does not satisfy oracle constraints.",
+                issue_codes=issue_codes,
+                issue_metadata=issue_metadata,
+            )
+        if _is_gap_insufficient_expected(expected_result):
+            answer = _answer_text_from_execution_result(execution_result)
+            return oracle_topn_followup_gap(expected_result, actual, answer=answer)
         return OracleResult(
             oracle_available=False,
+            expected_result=expected_result,
             actual_result=actual,
             passed=None,
             diff_summary="No deterministic expected_result is defined for this contract.",
             issue_codes=["oracle_expected_result_missing"],
+            issue_metadata=issue_metadata,
         )
     if _is_ranking_followup_gap_expected(expected):
         answer = ""
@@ -178,6 +197,392 @@ def _looks_like_quality_oracle_expected(value: Any) -> bool:
         any(key in value for key in ("field_level_table", "field_level_quality", "duplicate_rules", "outlier_rules", "duplicate_checks"))
         and "tables" not in value
     )
+
+
+def _build_missing_expected_result_oracle_payload(
+    *, contract: TaskExecutionContract, actual: dict[str, Any] | list[Any] | None
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    family = str(contract.task_family or "")
+    metadata_reason_map = {
+        "topn": "missing_expected_result_for_ranking_top_rows",
+        "gap": "missing_expected_result_for_ranking_gap_followup",
+        "trend": "missing_expected_result_for_time_series_trend",
+        "overview": "missing_expected_result_for_overview_schema",
+        "multi_file_overview": "missing_expected_result_for_multi_file_overview_schema",
+    }
+    required_family = family in {"topn", "gap", "trend", "overview", "multi_file_overview"}
+    if not required_family:
+        return None, None
+
+    capability_family_map = {
+        "topn": "ranking",
+        "gap": "ranking_followup",
+        "trend": "trend_followup",
+        "overview": "overview",
+        "multi_file_overview": "multi_file_overview",
+    }
+    operation_map = {
+        "topn": "ranking",
+        "gap": "ranking",
+        "trend": "aggregation",
+        "overview": "dataset_overview",
+        "multi_file_overview": "multi_table_dataset_overview",
+    }
+    reason = metadata_reason_map[family]
+    issue_metadata = {
+        "task_family": family,
+        "capability_family": capability_family_map[family],
+        "operation": operation_map[family],
+        "reason": reason,
+    }
+    if family == "topn":
+        dimension = str(contract.dimension or "").strip()
+        metric = str(contract.metric or "").strip()
+        rows = _coerce_top_rows(actual, dimension, metric)
+        if rows:
+            return (
+                {"_oracle_expected_result_missing": "topn", "row_count": len(rows)},
+                issue_metadata,
+            )
+        return None, issue_metadata
+    if family == "gap":
+        gap_payload = _coerce_gap_payload(actual, dimension=contract.dimension or "", metric=contract.metric or "")
+        has_gap_followup = False
+        if gap_payload and gap_payload.get("top_objects"):
+            if len(gap_payload.get("top_objects") or []) == 1:
+                return (
+                    {
+                        "task_family": "gap_or_ranking_followup",
+                        "comparison_possible": False,
+                        "reason": "only_one_top_object",
+                        "minimum_required_objects": 2,
+                        "actual_object_count": 1,
+                        "object_dimension": contract.dimension,
+                        "metric": contract.metric,
+                    },
+                    issue_metadata,
+                )
+            if gap_payload.get("adjacent_gaps") or gap_payload.get("gap_to_leader"):
+                has_gap_followup = True
+        if has_gap_followup:
+            adjacent_gaps = gap_payload.get("adjacent_gaps") or []
+            gap_to_leader = gap_payload.get("gap_to_leader") or []
+            return (
+                {
+                    "_oracle_expected_result_missing": "gap",
+                    "top_row_count": len(gap_payload["top_objects"]),
+                    "adjacent_gap_count": len(adjacent_gaps),
+                    "gap_to_leader_count": len(gap_to_leader),
+                },
+                issue_metadata,
+            )
+        return None, issue_metadata
+    if family == "trend":
+        trend_expected = _build_trend_constraint_expected_result(contract=contract, actual=actual)
+        if trend_expected:
+            return trend_expected, issue_metadata
+        return None, issue_metadata
+    if family in {"overview", "multi_file_overview"}:
+        actual_payload = _coerce_overview_payload(actual or {}, allow_join_keys=family == "multi_file_overview")
+        if actual_payload:
+            return (
+                {
+                    "_oracle_expected_result_missing": "overview",
+                    "table_count": len(actual_payload.get("tables") or []),
+                    "profile_fields_count": sum(len(item.get("fields") or []) for item in actual_payload.get("tables") or []),
+                },
+                issue_metadata,
+            )
+    return None, issue_metadata
+
+
+def _coerce_oracle_trend_points(actual: dict[str, Any] | list[Any] | None) -> list[dict[str, Any]]:
+    rows: list[Mapping[str, Any]] = []
+    extracted_rows = _extract_tabular_rows(actual)
+    if extracted_rows:
+        rows = extracted_rows
+    if not rows:
+        return []
+    return _coerce_trend_series_points(rows)
+
+
+def _build_trend_constraint_expected_result(
+    *, contract: TaskExecutionContract, actual: dict[str, Any] | list[Any] | None
+) -> dict[str, Any] | None:
+    rows = _extract_tabular_rows(actual)
+    if not rows:
+        return None
+    time_dimension = _infer_time_dimension(rows, preferred=contract.time_dimension or contract.dimension)
+    if not time_dimension:
+        return None
+    metric = _infer_metric_column(rows, preferred=contract.metric, excluded={time_dimension, contract.referent_dimension or ""})
+    if not metric:
+        return None
+    referent_dimension = _infer_referent_dimension(
+        rows,
+        preferred=contract.referent_dimension,
+        excluded={time_dimension, metric},
+    )
+    referent_values = [str(value) for value in contract.referent_values if value not in (None, "")]
+    referent_values_source = "contract" if referent_values else ""
+    if not referent_values and referent_dimension:
+        referent_values = _unique_text_values(row.get(referent_dimension) for row in rows)
+        referent_values_source = "actual_result"
+    series_by_referent = _trend_series_by_referent(
+        rows,
+        time_dimension=time_dimension,
+        metric=metric,
+        referent_dimension=referent_dimension,
+    )
+    point_count = sum(len(points) for points in series_by_referent.values()) if series_by_referent else len(_coerce_trend_series_points(rows))
+    if point_count <= 0:
+        return None
+    shape_summary = _shape_summary_from_series_by_referent(series_by_referent)
+    required_columns = [column for column in [time_dimension, referent_dimension, metric] if column]
+    return {
+        "task_family": "trend_followup",
+        "metric": metric,
+        "time_dimension": time_dimension,
+        "referent_dimension": referent_dimension,
+        "referent_values": referent_values,
+        "referent_values_source": referent_values_source,
+        "required_columns": required_columns,
+        "expected_point_count": point_count,
+        "point_count": point_count,
+        "shape_summary": shape_summary,
+        "series_by_referent": series_by_referent,
+        "constraints": {
+            "required_columns_present": True,
+            "point_count_matches_actual": True,
+            "time_dimension_present": True,
+            "referent_values_covered": bool(referent_values) if referent_dimension else None,
+            "no_extra_referent_outside_expected": referent_values_source == "contract" if referent_values and referent_dimension else None,
+        },
+    }
+
+
+def _is_trend_constraint_expected(value: Any) -> bool:
+    return isinstance(value, Mapping) and value.get("task_family") in {"trend_followup", "trend"} and "expected_point_count" in value
+
+
+def _build_trend_constraint_actual_summary(expected: Any, actual: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+    if not isinstance(expected, Mapping):
+        return {}
+    rows = _extract_tabular_rows(actual)
+    time_dimension = str(expected.get("time_dimension") or "")
+    metric = str(expected.get("metric") or "")
+    referent_dimension = str(expected.get("referent_dimension") or "")
+    available_columns = _available_row_columns(rows)
+    series_by_referent = _trend_series_by_referent(
+        rows,
+        time_dimension=time_dimension,
+        metric=metric,
+        referent_dimension=referent_dimension or None,
+    )
+    point_count = sum(len(points) for points in series_by_referent.values()) if series_by_referent else 0
+    actual_referent_values = _unique_text_values(row.get(referent_dimension) for row in rows) if referent_dimension else []
+    return {
+        "available_columns": sorted(available_columns),
+        "point_count": point_count,
+        "time_dimension_present": bool(time_dimension and _column_present_in_names(time_dimension, available_columns)),
+        "metric_present": bool(metric and _column_present_in_names(metric, available_columns)),
+        "referent_dimension_present": bool(referent_dimension and _column_present_in_names(referent_dimension, available_columns)) if referent_dimension else None,
+        "referent_values": actual_referent_values,
+        "shape_summary": _shape_summary_from_series_by_referent(series_by_referent),
+        "series_by_referent": series_by_referent,
+    }
+
+
+def _trend_constraint_issue_codes(expected: Any, actual_summary: Mapping[str, Any]) -> list[str]:
+    if not isinstance(expected, Mapping):
+        return ["trend_constraint_expected_invalid"]
+    issue_codes: list[str] = []
+    available_columns = set(str(column) for column in actual_summary.get("available_columns") or [])
+    for column in expected.get("required_columns") or []:
+        if not _column_present_in_names(str(column), available_columns):
+            issue_codes.append(f"trend_required_column_missing:{column}")
+    if expected.get("expected_point_count") != actual_summary.get("point_count"):
+        issue_codes.append("trend_point_count_mismatch")
+    if expected.get("time_dimension") and not actual_summary.get("time_dimension_present"):
+        issue_codes.append("trend_time_dimension_missing")
+    expected_referents = [str(value) for value in expected.get("referent_values") or []]
+    actual_referents = [str(value) for value in actual_summary.get("referent_values") or []]
+    if expected_referents:
+        missing = [value for value in expected_referents if value not in actual_referents]
+        if missing:
+            issue_codes.append("trend_referent_values_missing")
+        if expected.get("referent_values_source") == "contract":
+            extra = [value for value in actual_referents if value not in expected_referents]
+            if extra:
+                issue_codes.append("trend_extra_referent_values")
+    return sorted(set(issue_codes))
+
+
+def _extract_tabular_rows(value: Any) -> list[Mapping[str, Any]]:
+    if isinstance(value, list):
+        return [row for row in value if isinstance(row, Mapping)]
+    if not isinstance(value, Mapping):
+        return []
+    candidates: list[Any] = [
+        value.get("rows"),
+        value.get("time_series"),
+        value.get("series"),
+        value.get("data"),
+    ]
+    for nested_key in ("result", "value", "actual_result"):
+        nested = value.get(nested_key)
+        if isinstance(nested, Mapping):
+            candidates.extend([nested.get("rows"), nested.get("time_series"), nested.get("series"), nested.get("data")])
+        elif isinstance(nested, list):
+            candidates.append(nested)
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            rows = [row for row in candidate if isinstance(row, Mapping)]
+            if rows:
+                return rows
+    if value and all(not isinstance(item, (list, dict)) for item in value.values()):
+        return [value]
+    return []
+
+
+def _infer_time_dimension(rows: list[Mapping[str, Any]], *, preferred: str | None = None) -> str | None:
+    columns = _available_row_columns(rows)
+    if preferred and _column_present_in_names(preferred, columns):
+        return _matching_column_name(preferred, columns)
+    preferred_tokens = ("month", "date", "time", "period", "day", "week", "year", "月份", "日期", "时间", "周期", "年份", "周")
+    for column in columns:
+        lowered = str(column).lower()
+        if any(token in lowered for token in preferred_tokens):
+            return str(column)
+    return None
+
+
+def _infer_metric_column(rows: list[Mapping[str, Any]], *, preferred: str | None = None, excluded: set[str] | None = None) -> str | None:
+    columns = _available_row_columns(rows)
+    excluded = {str(item) for item in excluded or set() if item}
+    if preferred and _column_present_in_names(preferred, columns):
+        return _matching_column_name(preferred, columns)
+    metric_tokens = ("sales", "revenue", "amount", "profit", "margin", "rate", "销售额", "销售", "收入", "金额", "利润", "利润率")
+    numeric_columns: list[str] = []
+    for column in columns:
+        if any(_dimension_matches(column, excluded_column) for excluded_column in excluded):
+            continue
+        values = [row.get(column) for row in rows if column in row]
+        if any(_oracle_float(value) is not None for value in values):
+            numeric_columns.append(str(column))
+    for token in metric_tokens:
+        for column in numeric_columns:
+            if token.lower() in column.lower():
+                return column
+    return numeric_columns[0] if numeric_columns else None
+
+
+def _infer_referent_dimension(
+    rows: list[Mapping[str, Any]], *, preferred: str | None = None, excluded: set[str] | None = None
+) -> str | None:
+    columns = _available_row_columns(rows)
+    excluded = {str(item) for item in excluded or set() if item}
+    if preferred and _column_present_in_names(preferred, columns):
+        return _matching_column_name(preferred, columns)
+    dimension_tokens = ("city", "product", "category", "region", "customer", "store", "城市", "产品", "品类", "地区", "客户", "门店")
+    candidates: list[str] = []
+    for column in columns:
+        if any(_dimension_matches(column, excluded_column) for excluded_column in excluded):
+            continue
+        values = [row.get(column) for row in rows if column in row]
+        if values and any(_oracle_float(value) is None for value in values if value not in (None, "")):
+            candidates.append(str(column))
+    for token in dimension_tokens:
+        for column in candidates:
+            if token.lower() in column.lower():
+                return column
+    return candidates[0] if candidates else None
+
+
+def _trend_series_by_referent(
+    rows: list[Mapping[str, Any]], *, time_dimension: str, metric: str, referent_dimension: str | None
+) -> dict[str, list[dict[str, Any]]]:
+    series: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        time_value = _value_for_column(row, time_dimension)
+        metric_value = _oracle_float(_value_for_column(row, metric))
+        if time_value in (None, "") or metric_value is None:
+            continue
+        referent = str(_value_for_column(row, referent_dimension) if referent_dimension else "all")
+        if not referent or referent == "None":
+            referent = "all"
+        series.setdefault(referent, []).append({"time": str(time_value), "value": _round_oracle_value(metric_value)})
+    for points in series.values():
+        points.sort(key=lambda item: str(item.get("time") or ""))
+    return series
+
+
+def _shape_summary_from_series_by_referent(series_by_referent: Mapping[str, list[Mapping[str, Any]]]) -> str:
+    shapes = [_trend_shape_summary(points) for points in series_by_referent.values() if points]
+    if not shapes:
+        return "unknown"
+    unique_shapes = sorted(set(shapes))
+    return unique_shapes[0] if len(unique_shapes) == 1 else "mixed"
+
+
+def _trend_shape_summary(points: list[Mapping[str, Any]]) -> str:
+    values = [_oracle_float(point.get("value")) for point in points]
+    values = [value for value in values if value is not None]
+    if len(values) <= 1:
+        return "unknown"
+    deltas = [next_value - current for current, next_value in zip(values[:-1], values[1:])]
+    if all(math.isclose(delta, 0.0, abs_tol=1e-9) for delta in deltas):
+        return "flat"
+    if all(delta >= 0 for delta in deltas) and any(delta > 0 for delta in deltas):
+        return "up"
+    if all(delta <= 0 for delta in deltas) and any(delta < 0 for delta in deltas):
+        return "down"
+    if deltas[0] > 0 and any(delta < 0 for delta in deltas[1:]):
+        return "up_then_down"
+    if deltas[0] < 0 and any(delta > 0 for delta in deltas[1:]):
+        return "down_then_up"
+    return "mixed"
+
+
+def _available_row_columns(rows: list[Mapping[str, Any]]) -> set[str]:
+    columns: set[str] = set()
+    for row in rows:
+        columns.update(str(column) for column in row.keys())
+    return columns
+
+
+def _column_present_in_names(column: str, names: set[str]) -> bool:
+    return any(_dimension_matches(column, candidate) for candidate in names)
+
+
+def _matching_column_name(column: str, names: set[str]) -> str:
+    for candidate in names:
+        if _dimension_matches(column, candidate):
+            return str(candidate)
+    return str(column)
+
+
+def _value_for_column(row: Mapping[str, Any], column: str | None) -> Any | None:
+    if not column:
+        return None
+    for key, value in row.items():
+        if _dimension_matches(str(column), str(key)):
+            return value
+    return None
+
+
+def _unique_text_values(values: Any) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        if value in (None, ""):
+            continue
+        text = str(value)
+        if text in seen:
+            continue
+        seen.add(text)
+        output.append(text)
+    return output
 
 
 def _coerce_quality_oracle_expected_payload(value: Any) -> dict[str, Any] | None:
@@ -1318,7 +1723,14 @@ def _actual_payload(execution_result: ExecutionResult) -> dict[str, Any] | list[
 
 
 def _is_ranking_followup_gap_expected(expected: Any) -> bool:
-    return isinstance(expected, Mapping) and all(key in expected for key in ("top_objects", "adjacent_gaps", "gap_to_leader"))
+    return (
+        isinstance(expected, Mapping)
+        and all(key in expected for key in ("top_objects", "adjacent_gaps", "gap_to_leader"))
+    ) or _is_gap_insufficient_expected(expected)
+
+
+def _is_gap_insufficient_expected(expected: Any) -> bool:
+    return isinstance(expected, Mapping) and expected.get("task_family") == "gap_or_ranking_followup" and expected.get("comparison_possible") is False
 
 
 def _is_multi_table_join_ranking_expected(expected: Any) -> bool:
@@ -1337,6 +1749,8 @@ def _is_multi_table_join_ranking_expected(expected: Any) -> bool:
 
 
 def oracle_topn_followup_gap(expected: Any, actual: Any, *, answer: str = "") -> OracleResult:
+    if _is_gap_insufficient_expected(expected):
+        return _oracle_gap_insufficient_objects(expected, actual, answer=answer)
     expected_payload = _coerce_gap_payload(expected)
     actual_payload = _coerce_gap_payload(actual)
     if expected_payload is None or actual_payload is None:
@@ -1359,10 +1773,20 @@ def oracle_topn_followup_gap(expected: Any, actual: Any, *, answer: str = "") ->
     if any(_oracle_float(item.get("metric_value")) is None for item in actual_top):
         issue_codes.append("gap_metric_value_missing")
 
-    matched = _compare_top_objects(expected_top, actual_top) and _compare_gap_values(
+    adjacent_gap_matched = _compare_gap_values(
         expected_payload["adjacent_gaps"],
         actual_payload["adjacent_gaps"],
-    ) and _compare_gap_values(expected_payload["gap_to_leader"], actual_payload["gap_to_leader"])
+    )
+    gap_to_leader_matched = _compare_gap_values(
+        expected_payload["gap_to_leader"],
+        actual_payload["gap_to_leader"],
+    )
+    if not adjacent_gap_matched:
+        issue_codes.append("gap_mismatch:adjacent_gaps")
+    if not gap_to_leader_matched:
+        issue_codes.append("gap_mismatch:gap_to_leader")
+
+    matched = _compare_top_objects(expected_top, actual_top) and adjacent_gap_matched and gap_to_leader_matched
 
     if not matched or issue_codes:
         return OracleResult(
@@ -1394,11 +1818,45 @@ def oracle_topn_followup_gap(expected: Any, actual: Any, *, answer: str = "") ->
     )
 
 
-def _coerce_gap_payload(value: Any) -> dict[str, Any] | None:
+def _oracle_gap_insufficient_objects(expected: Any, actual: Any, *, answer: str = "") -> OracleResult:
+    actual_payload = _coerce_gap_payload(
+        actual,
+        dimension=str(expected.get("object_dimension") or expected.get("dimension") or ""),
+        metric=str(expected.get("metric") or ""),
+    )
+    actual_count = len(actual_payload.get("top_objects") or []) if actual_payload else 0
+    expected_payload = dict(expected) if isinstance(expected, Mapping) else {}
+    if actual_count and expected_payload.get("actual_object_count") != actual_count:
+        expected_payload["actual_object_count"] = actual_count
+    explained = _answer_explains_insufficient_gap(answer)
+    issue_code = "gap_insufficient_objects_not_explained"
+    return OracleResult(
+        oracle_available=True,
+        expected_result=expected_payload,
+        actual_result=actual_payload or actual,
+        passed=explained,
+        diff_summary=None if explained else "Only one top object is available, but the answer does not clearly explain that comparison is impossible.",
+        issue_codes=[] if explained else [issue_code],
+    )
+
+
+def _coerce_gap_payload(value: Any, *, dimension: str = "", metric: str = "") -> dict[str, Any] | None:
+    rows = _extract_tabular_rows(value)
     if not isinstance(value, Mapping):
+        if rows:
+            top_objects = _top_objects_from_rows(rows, dimension=dimension, metric=metric)
+            return {"top_objects": top_objects, "adjacent_gaps": [], "gap_to_leader": []} if top_objects else None
         return None
+    raw_top_objects = value.get("top_objects", [])
+    if not raw_top_objects and rows:
+        top_objects = _top_objects_from_rows(rows, dimension=dimension, metric=metric)
+        return {
+            "top_objects": top_objects,
+            "adjacent_gaps": list(value.get("adjacent_gaps") or []),
+            "gap_to_leader": list(value.get("gap_to_leader") or []),
+        } if top_objects else None
     top_objects = []
-    for item in value.get("top_objects", []):
+    for item in raw_top_objects:
         if not isinstance(item, Mapping):
             continue
         top_objects.append(
@@ -1413,6 +1871,29 @@ def _coerce_gap_payload(value: Any) -> dict[str, Any] | None:
         "adjacent_gaps": list(value.get("adjacent_gaps") or []),
         "gap_to_leader": list(value.get("gap_to_leader") or []),
     }
+
+
+def _top_objects_from_rows(rows: list[Mapping[str, Any]], *, dimension: str = "", metric: str = "") -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    dimension_column = _infer_referent_dimension(rows, preferred=dimension, excluded={metric} if metric else set())
+    metric_column = _infer_metric_column(rows, preferred=metric, excluded={dimension_column or ""})
+    if not dimension_column or not metric_column:
+        return []
+    top_objects: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        value = _value_for_column(row, dimension_column)
+        metric_value = _oracle_float(_value_for_column(row, metric_column))
+        if value in (None, ""):
+            continue
+        top_objects.append(
+            {
+                "rank": _parse_rank(row.get("rank") or row.get("排名"), index),
+                "value": value,
+                "metric_value": _round_oracle_value(metric_value),
+            }
+        )
+    return top_objects
 
 
 def _compare_top_objects(expected_top: list[dict[str, Any]], actual_top: list[dict[str, Any]]) -> bool:
@@ -1548,3 +2029,52 @@ def _answer_mentions_gap(answer_text: str) -> bool:
     compact = "".join(str(answer_text or "").split())
     lowered = str(answer_text or "").lower()
     return any(token in compact for token in ("差距", "相差", "差额")) or any(token in lowered for token in ("gap", "difference"))
+
+
+def _answer_explains_insufficient_gap(answer_text: str) -> bool:
+    compact = "".join(str(answer_text or "").split())
+    lowered = str(answer_text or "").lower()
+    chinese_tokens = (
+        "无法比较",
+        "不能比较",
+        "没法比较",
+        "无法对比",
+        "不能对比",
+        "没法对比",
+        "无法计算差距",
+        "不能计算差距",
+        "没法计算差距",
+        "无法算差距",
+        "不能算差距",
+        "没法算差距",
+        "没法算相邻差距",
+        "没有第二名",
+        "只有一个",
+        "仅有一个",
+        "只有1个",
+        "仅有1个",
+        "只有一条",
+        "仅有一条",
+        "不足两个",
+        "少于两个",
+    )
+    english_tokens = (
+        "only one",
+        "only 1",
+        "single",
+        "insufficient",
+        "not enough",
+        "cannot compare",
+        "can't compare",
+        "unable to compare",
+        "no second",
+    )
+    return any(token in compact for token in chinese_tokens) or any(token in lowered for token in english_tokens)
+
+
+def _answer_text_from_execution_result(execution_result: ExecutionResult) -> str:
+    if isinstance(execution_result, Mapping):
+        return str(execution_result.get("answer") or "")
+    if isinstance(execution_result.value, Mapping):
+        return str(execution_result.value.get("answer") or execution_result.value.get("text") or "")
+    return ""

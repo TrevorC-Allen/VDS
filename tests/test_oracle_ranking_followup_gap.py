@@ -36,9 +36,13 @@ class OracleRankingFollowupGapTest(unittest.TestCase):
 
     def test_oracle_gap_case_2_only_top1_reports_insufficient_objects(self) -> None:
         expected = {
-            "top_objects": [{"rank": 1, "value": "深圳", "metric_value": 749}],
-            "adjacent_gaps": [],
-            "gap_to_leader": [0],
+            "task_family": "gap_or_ranking_followup",
+            "comparison_possible": False,
+            "reason": "only_one_top_object",
+            "minimum_required_objects": 2,
+            "actual_object_count": 1,
+            "object_dimension": "value",
+            "metric": "metric_value",
         }
         actual = {
             "top_objects": [{"rank": 1, "value": "深圳", "metric_value": 749}],
@@ -48,8 +52,9 @@ class OracleRankingFollowupGapTest(unittest.TestCase):
 
         result = oracle_topn_followup_gap(expected, actual, answer="只有深圳一条，没法算相邻差距。")
 
-        self.assertFalse(result.passed)
-        self.assertIn("insufficient_objects_for_gap", result.issue_codes)
+        self.assertTrue(result.passed)
+        self.assertEqual([], result.issue_codes)
+        self.assertFalse((result.expected_result or {}).get("comparison_possible"))
 
     def test_oracle_gap_case_3_metric_value_missing_flags_issue(self) -> None:
         expected = {
