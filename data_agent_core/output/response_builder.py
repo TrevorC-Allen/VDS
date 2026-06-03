@@ -301,6 +301,8 @@ def _referent_answer_prefix(verification: VerificationResult) -> str:
     task_contract = verification.task_contract if isinstance(verification.task_contract, dict) else {}
     if not task_contract.get("requires_previous_artifact"):
         return ""
+    if task_contract.get("auto_expand_topn_if_needed"):
+        return ""
     values = [str(value) for value in task_contract.get("referent_values") or [] if str(value)]
     if not values:
         return ""

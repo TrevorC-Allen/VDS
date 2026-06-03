@@ -309,10 +309,14 @@ def render_single_best_answer(context: _FrameContext) -> str:
 def render_gap_answer(context: _FrameContext) -> str:
     """Render adjacent and first-place gaps directly."""
 
-    if len(context.rows) < 2:
-        return ""
     metric = _preferred_metric_column(context.columns, context.rows)
     label = _preferred_label_column(context.columns, metric)
+    if len(context.rows) < 2:
+        dimension_label = _display_dimension_label(label or "对象")
+        count = len({row.get(label) for row in context.rows if label and row.get(label) not in {None, ""}}) if label else len(context.rows)
+        if count <= 1:
+            return f"当前数据按该口径只有 {count} 个可比较{dimension_label}，因此无法计算{dimension_label}之间的差距。"
+        return ""
     if not metric or not label:
         return ""
     ranked = [

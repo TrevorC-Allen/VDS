@@ -109,6 +109,11 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
             referent_values=list(contract.get("referent_values") or []),
             referent_policy=str(contract.get("referent_policy") or "must_filter_to_previous_result_objects"),
             referent_source=str(contract.get("referent_source") or ""),
+            requires_gap_comparison=bool(contract.get("requires_gap_comparison")),
+            minimum_required_objects=contract.get("minimum_required_objects"),
+            preferred_top_n=contract.get("preferred_top_n"),
+            auto_expand_topn_if_needed=bool(contract.get("auto_expand_topn_if_needed")),
+            expansion_source=str(contract.get("expansion_source") or ""),
             verification_rules=dict(contract.get("verification_rules") or {}),
             insufficiency_policy=str(contract.get("insufficiency_policy") or "fail_closed"),
         )
@@ -159,6 +164,11 @@ def _clear_overview_referent_requirements(contract: TaskExecutionContract | None
         referent_values=[],
         referent_policy=str(contract.referent_policy),
         referent_source=str(contract.referent_source),
+        requires_gap_comparison=bool(contract.requires_gap_comparison),
+        minimum_required_objects=contract.minimum_required_objects,
+        preferred_top_n=contract.preferred_top_n,
+        auto_expand_topn_if_needed=bool(contract.auto_expand_topn_if_needed),
+        expansion_source=str(contract.expansion_source),
         verification_rules=dict(contract.verification_rules),
         insufficiency_policy="fail_closed",
     )

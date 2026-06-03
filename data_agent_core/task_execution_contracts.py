@@ -73,6 +73,11 @@ class TaskExecutionContract:
     referent_values: list[Any] = field(default_factory=list)
     referent_policy: str = "must_filter_to_previous_result_objects"
     referent_source: str = ""
+    requires_gap_comparison: bool = False
+    minimum_required_objects: int | None = None
+    preferred_top_n: int | None = None
+    auto_expand_topn_if_needed: bool = False
+    expansion_source: str = ""
     verification_rules: dict[str, Any] = field(default_factory=dict)
     insufficiency_policy: str = "fail_closed"
 
@@ -112,6 +117,13 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
     )
     referent_dimension = None if file_scope_family else _first_text(params.get("referent_dimension"))
     referent_values = [] if file_scope_family else list(params.get("referent_values") or [])
+    auto_expand_topn_if_needed = bool(params.get("auto_expand_topn_if_needed"))
+    minimum_required_objects = _positive_int(params.get("minimum_required_objects"))
+    preferred_top_n = _positive_int(params.get("preferred_top_n"))
+    if family == "gap" and auto_expand_topn_if_needed:
+        minimum_required_objects = minimum_required_objects or 2
+        preferred_top_n = preferred_top_n or 3
+        required_n = max(required_n or 0, preferred_top_n)
     referent_filter_applied = False
     if referent_dimension and referent_values:
         filter_value = _dict(_get(logic_form, "filters", {})).get(referent_dimension)
@@ -145,6 +157,11 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
         referent_values=referent_values,
         referent_policy=str(params.get("referent_policy") or "must_filter_to_previous_result_objects"),
         referent_source=str(params.get("referent_source") or ""),
+        requires_gap_comparison=bool(params.get("requires_gap_comparison") or family == "gap"),
+        minimum_required_objects=minimum_required_objects,
+        preferred_top_n=preferred_top_n,
+        auto_expand_topn_if_needed=auto_expand_topn_if_needed,
+        expansion_source=str(params.get("expansion_source") or ""),
         verification_rules={
             "requires_execution_success": True,
             "requires_non_empty_value": family not in {"overview", "multi_file_overview", "data_quality"},
@@ -152,6 +169,11 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
             "referent_filter_applied": referent_filter_applied,
             "candidate_set": _dict(_get(logic_form, "candidate_set", {})),
             "explicit_required_n": question_required_n is not None,
+            "requires_gap_comparison": bool(params.get("requires_gap_comparison") or family == "gap"),
+            "minimum_required_objects": minimum_required_objects,
+            "preferred_top_n": preferred_top_n,
+            "auto_expand_topn_if_needed": auto_expand_topn_if_needed,
+            "expansion_source": str(params.get("expansion_source") or ""),
             **_family_verification_rules(family),
         },
         insufficiency_policy="needs_clarification" if requires_previous else "fail_closed",
@@ -253,7 +275,8 @@ def verify_task_execution_contract(contract: TaskExecutionContract, execution_re
                 correction_hint="Ask for clarification or rebuild from the previous result artifact.",
             )
         )
-    if contract.requires_previous_artifact and contract.referent_values and not contract.verification_rules.get("referent_filter_applied"):
+    requires_referent_filter = contract.referent_policy == "must_filter_to_previous_result_objects" and not contract.auto_expand_topn_if_needed
+    if contract.requires_previous_artifact and contract.referent_values and requires_referent_filter and not contract.verification_rules.get("referent_filter_applied"):
         violations.append(
             ContractViolation(
                 code="REFERENT_FILTER_NOT_APPLIED",
@@ -263,7 +286,7 @@ def verify_task_execution_contract(contract: TaskExecutionContract, execution_re
                 metadata={"referent_dimension": contract.referent_dimension, "referent_values": contract.referent_values},
             )
         )
-    if contract.requires_previous_artifact and contract.referent_values:
+    if contract.requires_previous_artifact and contract.referent_values and requires_referent_filter:
         violations.extend(_verify_referent_result_scope(contract, execution_result))
     if contract.task_family in {"overview", "multi_file_overview"}:
         violations.extend(_verify_overview_contract(contract, execution_result))
@@ -431,13 +454,16 @@ def _verify_gap_contract(contract: TaskExecutionContract, result: ExecutionResul
     answer_text = _direct_answer_text(result)
     gap_rows = _gap_rows(rows, contract)
     violations: list[ContractViolation] = []
+    minimum_required = contract.minimum_required_objects or int(contract.verification_rules.get("minimum_required_objects") or 0)
+    if contract.auto_expand_topn_if_needed and minimum_required and len(gap_rows) < minimum_required:
+        return []
     has_adjacent = any(_as_float(row.get("gap_from_previous")) is not None or _as_float(row.get("adjacent_gap")) is not None for row in gap_rows)
     has_to_leader = any(_as_float(row.get("gap_to_leader")) is not None for row in gap_rows)
     if not has_adjacent:
         violations.append(_violation("GAP_ADJACENT_MISSING", "Gap contract requires gap_from_previous or adjacent_gap.", {}))
     if not has_to_leader:
         violations.append(_violation("GAP_TO_LEADER_MISSING", "Gap contract requires gap_to_leader.", {}))
-    if not _answer_mentions_gap(answer_text):
+    if answer_text.strip() and not _answer_mentions_gap(answer_text):
         violations.append(_violation("GAP_DIRECT_SUMMARY_MISSING", "Direct answer must include a gap summary.", {}))
     return violations
 

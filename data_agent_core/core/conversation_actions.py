@@ -340,6 +340,7 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
         _asks_ranked_entity_share_followup(compact) or _asks_ranked_set_metric_display_followup(compact)
         or _asks_extreme_time_scoped_dimension_drilldown(compact)
         or _asks_focus_entity_rank_position_followup(compact, context)
+        or (_asks_gap_comparison(compact) and bool(referent_resolution.get("resolved")))
     ):
         return []
 
@@ -467,7 +468,7 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
             if action:
                 actions.append(action)
     if not actions and _asks_top_or_gap_followup(compact) and not _asks_share_followup(compact):
-        if _is_self_contained_ranking_request(compact, context):
+        if _is_self_contained_ranking_request(compact, context) and not (_asks_gap_comparison(compact) and bool(referent_resolution.get("resolved"))):
             return []
         available_columns = [str(column) for column in params.get("available_columns") or []]
         explicit_metric = _explicit_answer_metric_column(compact, available_columns) or _explicit_metric_concept(compact)
@@ -497,17 +498,44 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
     enriched = dict(action)
     parameters = dict(enriched.get("parameters") or {})
     inherited = dict(enriched.get("inherited_parameters") or {})
+    ranking_context = dict(resolution.get("ranking_context") or {})
+    auto_expand = _should_auto_expand_gap_followup(compact=compact, values=values, ranking_context=ranking_context)
+    if ranking_context:
+        inherited.update({key: value for key, value in ranking_context.items() if key in {"table", "join_plan", "table_selection_reason", "source_tables"} and value not in (None, "", [], {})})
+        inherited["filters"] = dict(ranking_context.get("filters") or inherited.get("filters") or {})
+        for key in ("metric", "dimension", "aggregation", "sort_order"):
+            value = ranking_context.get(key)
+            if value not in (None, "", [], {}):
+                parameters.setdefault(key, value)
     filters = dict(inherited.get("filters") or {})
-    filters[dimension] = values
+    if auto_expand:
+        filters.pop(dimension, None)
+    else:
+        filters[dimension] = values
     inherited["filters"] = filters
+    minimum_required_objects = 2 if auto_expand else None
+    preferred_top_n = 3 if auto_expand else None
     parameters.update(
         {
             "requires_previous_artifact": True,
             "referent_artifact_id": str(resolution.get("artifact_id") or ""),
             "referent_dimension": dimension,
             "referent_values": values,
-            "referent_policy": "must_filter_to_previous_result_objects",
+            "referent_policy": "auto_expand_previous_metric_dimension_context" if auto_expand else "must_filter_to_previous_result_objects",
             "referent_source": str(resolution.get("referent_source") or "result_artifact"),
+            **(
+                {
+                    "requires_gap_comparison": True,
+                    "minimum_required_objects": minimum_required_objects,
+                    "preferred_top_n": preferred_top_n,
+                    "auto_expand_topn_if_needed": True,
+                    "expansion_source": "previous_metric_dimension_context",
+                    "limit": preferred_top_n,
+                    "top_n": preferred_top_n,
+                }
+                if auto_expand
+                else {}
+            ),
         }
     )
     if resolution.get("metric") and not parameters.get("metric"):
@@ -515,7 +543,10 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
     label = _dimension_question_label(dimension)
     value_text = _filter_value_text(values)
     question = str(enriched.get("question") or "")
-    if label and value_text and f"筛选{value_text}{label}的数据" not in question:
+    if auto_expand and _asks_gap_comparison(compact):
+        metric_label = _metric_question_label(str(parameters.get("metric") or ranking_context.get("metric") or "核心指标"))
+        question = f"按{label or dimension}看{metric_label}排名前3，并比较Top{label or dimension}之间的差距。"
+    elif label and value_text and f"筛选{value_text}{label}的数据" not in question:
         prefix = f"筛选{value_text}{label}的数据，"
         if "Top对象" in compact or "top对象" in compact or "TOP对象" in compact or "这些" in compact:
             prefix = f"这些Top对象来自上一轮结果，仅包含{value_text}{label}；{prefix}"
@@ -528,13 +559,40 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
         "referent_artifact_id": str(resolution.get("artifact_id") or ""),
         "referent_values": values,
         "referent_dimension": dimension,
-        "referent_policy": "must_filter_to_previous_result_objects",
+        "referent_policy": "auto_expand_previous_metric_dimension_context" if auto_expand else "must_filter_to_previous_result_objects",
         "referent_source": str(resolution.get("referent_source") or "result_artifact"),
         "inherited_parameters": inherited,
         "action_parameters": parameters,
+        **(
+            {
+                "requires_gap_comparison": True,
+                "minimum_required_objects": minimum_required_objects,
+                "preferred_top_n": preferred_top_n,
+                "auto_expand_topn_if_needed": True,
+                "expansion_source": "previous_metric_dimension_context",
+                "ranking_context": ranking_context,
+            }
+            if auto_expand
+            else {}
+        ),
     }
     enriched["referent_resolution_trace"] = dict(resolution)
     return enriched
+
+
+def _should_auto_expand_gap_followup(*, compact: str, values: list[Any], ranking_context: Mapping[str, Any]) -> bool:
+    if len(values) >= 2:
+        return False
+    if not _asks_gap_comparison(compact):
+        return False
+    return bool(ranking_context.get("metric") and ranking_context.get("dimension"))
+
+
+def _asks_gap_comparison(compact: str) -> bool:
+    lowered = str(compact or "").lower()
+    return any(token in compact for token in ("差距", "差多少", "相差", "差额", "比较Top", "比较top", "前N名", "第一名和第二名")) or any(
+        token in lowered for token in ("gap", "difference", "compare top")
+    )
 
 
 def action_questions(actions: list[Mapping[str, Any]]) -> list[str]:
@@ -658,11 +716,15 @@ def _generic_ranking_action(context: Mapping[str, Any], compact: str = "") -> di
     operation = str(context.get("operation") or logic.get("operation") or "ranking")
     metric = _first_text(_explicit_answer_metric_column(compact, available), _explicit_metric_concept(compact), scope.get("metric"), params.get("metric"), logic.get("metric"), "核心指标")
     dimension = _first_text(_explicit_rank_target_dimension_column(compact, available), _explicit_dimension_column(compact, available), _explicit_dimension_concept(compact), scope.get("dimension"), params.get("dimension"), logic.get("group_by"), "对象")
+    label = _dimension_question_label(dimension)
+    question = f"按{dimension}看{_metric_question_label(metric)}排名前3。"
+    if _asks_gap_comparison(compact):
+        question = f"按{dimension}看{_metric_question_label(metric)}排名前3，并比较Top{label or dimension}之间的差距。"
     return _action(
         action_id="drilldown_top_results",
         label="继续比较 Top 结果",
         operation=operation,
-        question=f"按{dimension}看{_metric_question_label(metric)}排名前3。",
+        question=question,
         inherited_parameters=_generic_inherited_parameters_for_question(logic, params, compact),
         parameters={"metric": metric, "dimension": dimension},
         dimension=dimension,

@@ -19,6 +19,7 @@ class ReferentResolution:
     metric: str = ""
     referent_source: str = ""
     missing_reason: str = ""
+    ranking_context: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -65,6 +66,10 @@ def build_result_artifacts(
             "limit": limit,
             "sort_order": str(params.get("sort_order") or "desc"),
             "filters": dict(logic.get("filters") or {}),
+            "source_tables": _source_tables(logic, params),
+            "join_plan": dict(logic.get("join_plan") or params.get("join_plan") or {}),
+            "table": str(params.get("table") or ""),
+            "table_selection_reason": str(logic.get("table_selection_reason") or params.get("table_selection_reason") or ""),
             "values": values[:limit],
             "top_objects": top_objects,
             "rank_map": {str(value): index for index, value in enumerate(values[:limit], start=1)},
@@ -139,6 +144,7 @@ def resolve_followup_referent(user_question: str, context: Mapping[str, Any] | N
         referent_values=values,
         metric=str(artifact.get("metric") or ""),
         referent_source=source,
+        ranking_context=_ranking_context_from_artifact(artifact),
     ).to_dict()
 
 
@@ -199,6 +205,43 @@ def _artifact_from_focus_set(focus_set: Mapping[str, Any]) -> dict[str, Any] | N
             for index, value in enumerate(values, start=1)
         ],
     }
+
+
+def _ranking_context_from_artifact(artifact: Mapping[str, Any]) -> dict[str, Any]:
+    """Carry enough prior ranking metadata to rerun TopN for follow-up gaps."""
+
+    keep = {
+        "metric": artifact.get("metric"),
+        "metric_column": artifact.get("metric") or artifact.get("metric_column"),
+        "dimension": artifact.get("dimension"),
+        "dimension_column": artifact.get("dimension") or artifact.get("dimension_column"),
+        "filters": dict(artifact.get("filters") or {}),
+        "source_tables": [str(item) for item in artifact.get("source_tables") or [] if str(item)],
+        "join_plan": dict(artifact.get("join_plan") or {}),
+        "aggregation": artifact.get("aggregation") or "sum",
+        "sort_order": artifact.get("sort_order") or "desc",
+        "table": artifact.get("table"),
+        "table_selection_reason": artifact.get("table_selection_reason"),
+    }
+    return {key: value for key, value in keep.items() if value not in (None, "", [], {})}
+
+
+def _source_tables(logic: Mapping[str, Any], params: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+    for item in logic.get("source_tables") or []:
+        if item:
+            values.append(str(item))
+    for key in ("source_tables", "tables", "table"):
+        raw = params.get(key)
+        if isinstance(raw, list):
+            values.extend(str(item) for item in raw if item)
+        elif raw:
+            values.append(str(raw))
+    deduped: list[str] = []
+    for value in values:
+        if value and value not in deduped:
+            deduped.append(value)
+    return deduped
 
 
 def _looks_like_referent_question(compact: str) -> bool:
@@ -311,7 +354,7 @@ def _gap_task_artifacts(task_contract: Mapping[str, Any], rows: list[dict[str, A
         "adjacent_gaps": adjacent_gaps,
         "gap_to_leader": gap_to_leader,
         "gap_rows": gap_rows,
-        "direct_gap_summary": str(answer or "").splitlines()[0].strip(),
+        "direct_gap_summary": (str(answer or "").splitlines() or [""])[0].strip(),
     }
 
 
