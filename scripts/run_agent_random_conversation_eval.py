@@ -25,7 +25,16 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend.services.data_agent_service import DataAgentService
 from backend.storage.temp_file_store import TempFileStore
-from data_agent_core.oracle_results import oracle_topn_followup_gap, oracle_trend_followup_series
+from data_agent_core.oracle_results import (
+    build_oracle_result,
+    oracle_multi_table_join_ranking,
+    oracle_quality_field_counts,
+    oracle_multi_file_dataset_overview,
+    oracle_overview_schema_field_coverage,
+    oracle_topn_followup_gap,
+    oracle_trend_followup_series,
+)
+from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
 from data_agent_core.llm.client import LLMClient, MissingLLMConfigError, MockLLMClient, load_llm_client_from_env
 
 
@@ -1391,10 +1400,51 @@ def _deterministic_fixture_oracle_result(
     turn: TurnPlan | None = None,
 ) -> dict[str, Any]:
     operation = str(logic.get("operation") or "")
-    if operation not in {"ranking", "aggregation"}:
+    if turn is not None and turn.capability_family == "multi_table_join_ranking":
+        return _deterministic_fixture_oracle_result_multi_table_join_ranking(logic, response, tables, turn=turn)
+    if operation not in {"ranking", "aggregation", "dataset_overview", "multi_table_dataset_overview"}:
+        if _operation_present("cleaning_policy", {operation}) or (
+            turn is not None and _operation_present("cleaning_policy", {turn.required_operation or ""})
+        ):
+            quality_expected = _build_quality_oracle_expected_payload(tables)
+            if not quality_expected:
+                return {}
+            quality_actual = _extract_quality_oracle_actual_payload(response)
+            oracle_result = oracle_quality_field_counts(quality_expected, quality_actual)
+            return {
+                "oracle_available": oracle_result.oracle_available,
+                "expected_result": oracle_result.expected_result,
+                "actual_result": oracle_result.actual_result,
+                "passed": oracle_result.passed,
+                "diff_summary": oracle_result.diff_summary,
+                "issue_codes": oracle_result.issue_codes,
+                "source": "deterministic_eval_fixture",
+            }
         return {}
     if not _deterministic_fixture_oracle_supported(logic, response, turn=turn):
         return {}
+    if operation in {"dataset_overview", "multi_table_dataset_overview"}:
+        overview_payload = _extract_overview_report(response)
+        if not isinstance(overview_payload, Mapping):
+            return {}
+        expected_payload = _build_overview_expected_result_from_logic(logic, tables, is_multi=(operation == "multi_table_dataset_overview"))
+        actual_payload = _build_overview_actual_result_payload(operation=operation, report=overview_payload)
+        if not expected_payload or actual_payload is None:
+            return {}
+        oracle_result = (
+            oracle_multi_file_dataset_overview(expected_payload, actual_payload)
+            if operation == "multi_table_dataset_overview"
+            else oracle_overview_schema_field_coverage(expected_payload, actual_payload)
+        )
+        return {
+            "oracle_available": oracle_result.oracle_available,
+            "expected_result": oracle_result.expected_result,
+            "actual_result": oracle_result.actual_result,
+            "passed": oracle_result.passed,
+            "diff_summary": oracle_result.diff_summary,
+            "issue_codes": oracle_result.issue_codes,
+            "source": "deterministic_eval_fixture",
+        }
     if turn is not None and turn.capability_family == "trend_followup":
         return _deterministic_fixture_oracle_result_trend_followup(logic, response)
     params = logic.get("parameters") if isinstance(logic.get("parameters"), dict) else {}
@@ -1490,6 +1540,721 @@ def _deterministic_fixture_oracle_result(
         "issue_codes": [] if passed else ["deterministic_fixture_oracle_mismatch"],
         "source": "deterministic_eval_fixture",
     }
+
+
+def _deterministic_fixture_oracle_result_multi_table_join_ranking(
+    logic: dict[str, Any],
+    response: dict[str, Any],
+    tables: dict[str, Any],
+    *,
+    turn: TurnPlan | None = None,
+) -> dict[str, Any]:
+    expected_result = _build_multi_table_join_ranking_expected_result(logic=logic, response=response, tables=tables)
+    if not expected_result:
+        return {}
+    actual_result = _extract_multi_table_join_ranking_actual_result(logic=logic, response=response, expected=expected_result)
+    if actual_result is None:
+        return {}
+    oracle_result = oracle_multi_table_join_ranking(expected_result, actual_result)
+    return {
+        "oracle_available": oracle_result.oracle_available,
+        "expected_result": oracle_result.expected_result,
+        "actual_result": oracle_result.actual_result,
+        "passed": oracle_result.passed,
+        "diff_summary": oracle_result.diff_summary,
+        "issue_codes": oracle_result.issue_codes,
+        "source": "deterministic_eval_fixture",
+    }
+
+
+def _build_multi_table_join_ranking_expected_result(
+    logic: dict[str, Any],
+    response: dict[str, Any],
+    tables: dict[str, Any],
+) -> dict[str, Any] | None:
+    params = logic.get("parameters") if isinstance(logic.get("parameters"), Mapping) else {}
+    logic_source_tables = _coerce_text_list(
+        logic.get("source_tables")
+        or logic.get("tables")
+        or logic.get("source_table")
+        or params.get("source_tables")
+        or params.get("tables")
+        or params.get("source_table")
+    )
+    debug = response.get("debug") if isinstance(response.get("debug"), Mapping) else {}
+    debug_source_tables = []
+    if isinstance(response.get("logic_form"), Mapping):
+        debug_source_tables = _coerce_text_list(response["logic_form"].get("source_tables"))
+    debug_source_tables.extend(_coerce_text_list(debug.get("source_tables")))
+    source_tables = _dedupe_preserve(logic_source_tables + debug_source_tables)
+    if not source_tables:
+        source_tables = [str(name) for name in tables.keys()]
+    table_candidates = [name for name in source_tables if name in tables and tables.get(name) is not None]
+    available_tables = {name: tables[name] for name in table_candidates}
+    if len(available_tables) < 2:
+        return None
+    metric = _actual_metric_from_logic(logic)
+    dimension = _actual_dimension_from_logic(logic)
+    if not metric or not dimension:
+        return None
+    if "," in metric:
+        return None
+    join_key = _extract_multi_table_join_key(logic=logic, response=response)
+    join_plan = _resolve_join_key_for_compute(join_key=join_key, tables=available_tables, source_tables=list(available_tables.keys()))
+    if not join_plan:
+        return None
+    ranking_rows = _compute_join_ranking_rows(
+        tables=available_tables,
+        join_plan=join_plan,
+        dimension=dimension,
+        metric=metric,
+        params=params,
+    )
+    if not ranking_rows:
+        return None
+    top_object = dict(ranking_rows[0])
+    top_object.pop("rank", None)
+    return {
+        "source_tables": list(available_tables.keys()),
+        "join_key": join_key,
+        "dimension": dimension,
+        "metric": metric,
+        "ranking_rows": ranking_rows,
+        "top_object": top_object,
+        "top_value": top_object.get(metric),
+    }
+
+
+def _compute_join_ranking_rows(
+    *,
+    tables: dict[str, Any],
+    join_plan: dict[str, str],
+    dimension: str,
+    metric: str,
+    params: dict[str, Any],
+) -> list[dict[str, Any]]:
+    left_table_name = str(join_plan.get("left_table") or "").strip()
+    right_table_name = str(join_plan.get("right_table") or "").strip()
+    left_key = str(join_plan.get("left_key") or "").strip()
+    right_key = str(join_plan.get("right_key") or "").strip()
+    if left_table_name not in tables or right_table_name not in tables:
+        return []
+    if not left_key or not right_key:
+        return []
+    left_table = tables[left_table_name]
+    right_table = tables[right_table_name]
+    try:
+        joined = left_table.merge(right_table, left_on=left_key, right_on=right_key, how="inner")
+    except Exception:
+        try:
+            joined = left_table.merge(right_table, on=[left_key], how="inner")
+        except Exception:
+            return []
+    dimension_column = _find_oracle_column(joined, dimension, role="dimension")
+    metric_column = _find_oracle_column(joined, metric, role="metric")
+    if not dimension_column or not metric_column:
+        return []
+    try:
+        grouped = joined.groupby(dimension_column, dropna=True)[metric_column].sum(numeric_only=False).reset_index()
+    except Exception:
+        return []
+    if grouped is None:
+        return []
+    grouped = grouped.copy()
+    grouped[metric_column] = grouped[metric_column].map(_oracle_float)
+    grouped = grouped.dropna(subset=[dimension_column, metric_column])
+    if grouped.empty:
+        return []
+    ascending = str(params.get("sort_order") or "").lower() == "asc"
+    grouped = grouped.sort_values([metric_column, dimension_column], ascending=[ascending, True], kind="mergesort")
+    limit = _positive_int(params.get("limit") or params.get("top_n") or params.get("k"))
+    if limit:
+        grouped = grouped.head(limit)
+    rows: list[dict[str, Any]] = []
+    for _, row in grouped.iterrows():
+        dimension_value = row.get(dimension_column)
+        metric_value = row.get(metric_column)
+        if str(dimension_value).strip() == "":
+            continue
+        rows.append(
+            {
+                "rank": len(rows) + 1,
+                dimension: dimension_value,
+                metric: _round_oracle_value(metric_value),
+            }
+        )
+    return rows
+
+
+def _extract_multi_table_join_ranking_actual_result(
+    logic: dict[str, Any],
+    response: dict[str, Any],
+    *,
+    expected: dict[str, Any],
+) -> dict[str, Any] | None:
+    params = logic.get("parameters") if isinstance(logic.get("parameters"), Mapping) else {}
+    metric = _actual_metric_from_logic(logic)
+    dimension = _actual_dimension_from_logic(logic)
+    if not metric or not dimension:
+        metric = str(expected.get("metric") or "")
+        dimension = str(expected.get("dimension") or "")
+    if not metric or not dimension:
+        return None
+    source_tables = _coerce_text_list(
+        logic.get("source_tables")
+        or logic.get("tables")
+        or logic.get("source_table")
+        or params.get("source_tables")
+        or params.get("tables")
+        or params.get("source_table")
+    )
+    if not source_tables:
+        logic_form = response.get("logic_form") if isinstance(response.get("logic_form"), Mapping) else {}
+        source_tables = _coerce_text_list(logic_form.get("source_tables"))
+    if not source_tables:
+        source_tables = _coerce_text_list(response.get("debug", {}).get("source_tables") if isinstance(response.get("debug"), Mapping) else [])
+    if not source_tables:
+        source_tables = [str(item) for item in expected.get("source_tables", [])]
+    ranking_rows = _extract_multi_table_join_ranking_rows(response=response, dimension=dimension, metric=metric)
+    top_object = ranking_rows[0] if ranking_rows else {}
+    top_object = {k: v for k, v in dict(top_object).items() if k != "rank"}
+    return {
+        "source_tables": source_tables,
+        "join_key": _extract_multi_table_join_key(logic=logic, response=response),
+        "dimension": dimension,
+        "metric": metric,
+        "ranking_rows": ranking_rows,
+        "top_object": top_object,
+        "top_value": top_object.get(metric),
+    }
+
+
+def _extract_multi_table_join_ranking_rows(
+    response: dict[str, Any],
+    *,
+    dimension: str,
+    metric: str,
+) -> list[dict[str, Any]]:
+    result = response.get("result") if isinstance(response.get("result"), Mapping) else {}
+    rows = [row for row in result.get("rows") or result.get("candidate_table") or [] if isinstance(row, Mapping)]
+    direct_rows = response.get("rows")
+    if isinstance(direct_rows, list):
+        rows.extend(row for row in direct_rows if isinstance(row, Mapping))
+    if not rows:
+        debug = response.get("debug") if isinstance(response.get("debug"), Mapping) else {}
+        result_artifacts = debug.get("result_artifacts") if isinstance(debug.get("result_artifacts"), Mapping) else {}
+        top_objects = [row for row in result_artifacts.get("top_objects") or [] if isinstance(row, Mapping)]
+        rows = [
+            {
+                "rank": row.get("rank"),
+                "value": row.get("value"),
+                "metric_value": row.get("metric_value"),
+            }
+            for row in top_objects
+            if row.get("value") not in (None, "")
+        ]
+    payload: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        candidate_dimension = row.get(dimension)
+        if candidate_dimension in (None, ""):
+            candidate_dimension = row.get("value")
+        if candidate_dimension in (None, ""):
+            continue
+        candidate_metric = row.get(metric)
+        if candidate_metric is None and "metric_value" in row:
+            candidate_metric = row.get("metric_value")
+        payload.append(
+            {
+                dimension: candidate_dimension,
+                metric: _round_oracle_value(candidate_metric),
+            }
+        )
+        raw_rank = row.get("rank")
+        payload[-1]["rank"] = int(raw_rank) if isinstance(raw_rank, int) else len(payload)
+    if not payload:
+        return payload
+    payload.sort(key=lambda item: int(item.get("rank") or 0))
+    return payload
+
+
+def _extract_multi_table_join_key(logic: dict[str, Any], response: dict[str, Any]) -> dict[str, str] | None:
+    candidates: list[Any] = []
+    sources = [
+        logic,
+        logic.get("parameters") if isinstance(logic.get("parameters"), Mapping) else {},
+        response.get("debug") if isinstance(response.get("debug"), Mapping) else {},
+        response.get("verification") if isinstance(response.get("verification"), Mapping) else {},
+    ]
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        if source.get("join_plan") is not None:
+            candidates.append(source.get("join_plan"))
+        candidate_join_keys = source.get("candidate_join_keys")
+        if isinstance(candidate_join_keys, list):
+            candidates.extend(candidate_join_keys)
+        elif candidate_join_keys:
+            candidates.append(candidate_join_keys)
+    for candidate in candidates:
+        parsed = _coerce_oracle_join_key(candidate)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _resolve_join_key_for_compute(
+    join_key: dict[str, str] | None,
+    tables: dict[str, Any],
+    *,
+    source_tables: list[str],
+) -> dict[str, str] | None:
+    if len(source_tables) < 2:
+        return None
+    if join_key:
+        left_table, left_key = _resolve_join_side(join_key.get("left", ""), tables=tables, source_tables=source_tables)
+        right_table, right_key = _resolve_join_side(join_key.get("right", ""), tables=tables, source_tables=source_tables)
+        if left_table and left_key and right_table and right_key:
+            return {"left_table": left_table, "left_key": left_key, "right_table": right_table, "right_key": right_key}
+    inferred = _infer_join_key_from_tables(tables, source_tables=source_tables)
+    if inferred:
+        return {
+            "left_table": inferred[0],
+            "left_key": inferred[2],
+            "right_table": inferred[1],
+            "right_key": inferred[3],
+        }
+    return None
+
+
+def _resolve_join_side(value: str, tables: dict[str, Any], *, source_tables: list[str]) -> tuple[str, str]:
+    normalized = str(value).strip().strip("`")
+    if not normalized:
+        return "", ""
+    if "." in normalized:
+        left_table, left_key = _normalize_join_side(normalized)
+        table_columns = _table_columns(tables.get(left_table, []))
+        if left_key and left_table in tables and left_key in table_columns:
+            return left_table, left_key
+    else:
+        for table_name in source_tables:
+            if table_name not in tables:
+                continue
+            if normalized in _table_columns(tables[table_name]):
+                return table_name, normalized
+    return "", ""
+
+
+def _infer_join_key_from_tables(tables: dict[str, Any], *, source_tables: list[str]) -> tuple[str, str, str, str] | None:
+    for left_table in source_tables:
+        if left_table not in tables:
+            continue
+        for right_table in source_tables:
+            if right_table not in tables or right_table == left_table:
+                continue
+            left_columns = set(_table_columns(tables[left_table]))
+            right_columns = set(_table_columns(tables[right_table]))
+            overlap = left_columns & right_columns
+            if not overlap:
+                continue
+            for candidate in ("customer_id", "user_id", "order_id", "id", "customerid", "orderid"):
+                if candidate in overlap:
+                    return left_table, right_table, candidate, candidate
+            fallback = sorted(overlap)[0]
+            return left_table, right_table, fallback, fallback
+    return None
+
+
+def _normalize_join_side(value: str) -> tuple[str, str]:
+    normalized = str(value).strip().strip("`")
+    if "." not in normalized:
+        return "", normalized
+    left, right = normalized.rsplit(".", 1)
+    return left.strip(), right.strip()
+
+
+def _coerce_oracle_join_key(value: Any) -> dict[str, str] | None:
+    if not value:
+        return None
+    if isinstance(value, Mapping):
+        left = str(value.get("left") or value.get("left_table") or value.get("left_source") or "").strip()
+        right = str(value.get("right") or value.get("right_table") or value.get("right_source") or "").strip()
+        left_key = str(value.get("left_key") or value.get("left_field") or value.get("left_column") or "").strip()
+        right_key = str(value.get("right_key") or value.get("right_field") or value.get("right_column") or "").strip()
+        if left and "." in left and not left_key:
+            left, left_key = _normalize_join_side(left)
+        if right and "." in right and not right_key:
+            right, right_key = _normalize_join_side(right)
+        if left and not right_key and "_" in left:
+            left_key = left.split(".")[-1]
+        if right and not right_key and "_" in right:
+            right_key = right.split(".")[-1]
+        if left and not left_key:
+            return {"left": left, "right": right} if left and right else None
+        if right and not right_key:
+            return {"left": left, "right": right} if left and right else None
+        if left and left_key and right and right_key:
+            return {"left": left if "." in left else f"{left}.{left_key}", "right": right if "." in right else f"{right}.{right_key}"}
+        if isinstance(value.get("text"), str):
+            return _coerce_oracle_join_key(value.get("text"))
+        return None
+
+    if isinstance(value, str):
+        text = str(value).strip()
+        if "->" in text:
+            left, right = [item.strip() for item in text.split("->", 1)]
+            if left and right:
+                return {"left": left, "right": right}
+        if "=" in text:
+            left, right = [item.strip() for item in text.split("=", 1)]
+            if left and right:
+                return {"left": left, "right": right}
+    return None
+
+
+def _table_columns(table: Any) -> list[str]:
+    columns = getattr(table, "columns", [])
+    if isinstance(columns, list):
+        return [str(item) for item in columns]
+    if hasattr(columns, "tolist"):
+        return [str(item) for item in columns.tolist()]
+    return []
+
+
+def _extract_overview_report(response: dict[str, Any]) -> dict[str, Any] | None:
+    direct = response.get("overview_report") if isinstance(response.get("overview_report"), Mapping) else None
+    if direct is not None:
+        return direct
+    result = response.get("result") if isinstance(response.get("result"), Mapping) else {}
+    value = result.get("value") if isinstance(result.get("value"), Mapping) else {}
+    for item in (direct, value.get("overview_report"), result.get("overview_report")):
+        if isinstance(item, Mapping):
+            return item
+    return None
+
+
+def _build_quality_oracle_expected_payload(tables: dict[str, Any]) -> dict[str, Any] | None:
+    if not tables:
+        return None
+    report = report_to_dict(build_data_quality_report(tables, generated_from="random_conversation_quality_oracle"))
+    if not isinstance(report, Mapping):
+        return None
+    if "field_level_table" not in report and "field_level_quality" not in report:
+        return None
+    return report
+
+
+def _extract_quality_oracle_actual_payload(response: dict[str, Any]) -> Any:
+    if not isinstance(response, Mapping):
+        return None
+    candidates: list[Any] = [response]
+    if isinstance(response.get("quality_report"), Mapping):
+        candidates.append(response.get("quality_report"))
+    if isinstance(response.get("result"), Mapping):
+        candidates.append(response.get("result"))
+        result = response["result"]
+        if isinstance(result.get("quality_report"), Mapping):
+            candidates.append(result.get("quality_report"))
+        if isinstance(result.get("value"), Mapping):
+            candidates.append(result.get("value"))
+    if isinstance(response.get("verification"), Mapping) and isinstance(response["verification"], Mapping):
+        verification = response["verification"]
+        if isinstance(verification.get("quality_report"), Mapping):
+            candidates.append(verification.get("quality_report"))
+        candidates.append(verification)
+    if isinstance(response.get("debug"), Mapping):
+        debug = response["debug"]
+        if isinstance(debug.get("quality_report"), Mapping):
+            candidates.append(debug.get("quality_report"))
+        if isinstance(debug.get("result"), Mapping):
+            candidates.append(debug.get("result"))
+        candidates.append(debug)
+
+    for payload in candidates:
+        if not isinstance(payload, Mapping):
+            continue
+        if (
+            "field_level_table" in payload
+            or "field_level_quality" in payload
+            or "duplicate_rules" in payload
+            or "duplicate_checks" in payload
+            or "outlier_rules" in payload
+        ):
+            return dict(payload)
+    return None
+
+
+def _build_overview_expected_result_from_logic(
+    logic: dict[str, Any],
+    tables: dict[str, Any],
+    *,
+    is_multi: bool,
+) -> dict[str, Any] | None:
+    params = logic.get("parameters") if isinstance(logic.get("parameters"), Mapping) else {}
+    requested_names = _coerce_text_list(params.get("tables") or params.get("source_tables") or [])
+    if not requested_names:
+        requested_name = str(params.get("table") or params.get("source_table") or "").strip()
+        if requested_name:
+            requested_names = [requested_name]
+    if not requested_names and tables:
+        requested_names = [str(name) for name in tables.keys()]
+    if not requested_names and not is_multi and len(tables) == 1:
+        requested_names = [str(next(iter(tables.keys())))]
+    expected_tables: list[dict[str, Any]] = []
+    metric_candidates: list[str] = []
+    dimension_candidates: list[str] = []
+    time_columns: list[str] = []
+
+    for table_name in requested_names:
+        table_payload = tables.get(table_name)
+        if table_payload is None:
+            continue
+        table_columns = [str(column) for column in getattr(table_payload, "columns", [])]
+        if not table_columns:
+            continue
+        fields: list[dict[str, Any]] = []
+        for column in table_columns:
+            series = getattr(table_payload, column, None) if hasattr(table_payload, column) else None
+            role = _infer_overview_field_role(column, series, table_columns)
+            dtype = getattr(getattr(table_payload, column, None), "dtype", "")
+            fields.append({"name": column, "role": role, "type": str(dtype) if dtype is not None else ""})
+            if role == "time":
+                time_columns.append(column)
+            elif role == "metric":
+                metric_candidates.append(column)
+            elif not _looks_like_identifier_column(column):
+                dimension_candidates.append(column)
+        expected_tables.append(
+            {
+                "name": table_name,
+                "fields": fields,
+                "required_fields": [field["name"] for field in fields],
+            }
+        )
+
+    if not expected_tables:
+        return None
+
+    expected_result = {
+        "tables": expected_tables,
+        "metric_candidates": _dedupe_preserve(metric_candidates),
+        "dimension_candidates": _dedupe_preserve(dimension_candidates),
+        "time_columns": _dedupe_preserve(time_columns),
+        "analysis_directions": _infer_overview_analysis_directions(
+            metric_candidates=_dedupe_preserve(metric_candidates),
+            dimension_candidates=_dedupe_preserve(dimension_candidates),
+            time_columns=_dedupe_preserve(time_columns),
+        ),
+    }
+    if is_multi:
+        expected_result["join_keys"] = _infer_overview_join_keys(expected_tables)
+    return expected_result
+
+
+def _build_overview_actual_result_payload(
+    *,
+    operation: str,
+    report: dict[str, Any],
+) -> dict[str, Any] | None:
+    if operation == "dataset_overview":
+        table_name = str(report.get("table") or "").strip()
+        fields = _coerce_overview_field_list(report.get("field_meanings"))
+        if not table_name or not fields:
+            return None
+        metric_candidates = _coerce_text_list(report.get("metric_candidates"))
+        dimension_candidates = _coerce_text_list(report.get("dimension_candidates"))
+        time_columns = _coerce_text_list(report.get("time_columns"))
+        analysis_directions = _coerce_text_list(report.get("analysis_directions"))
+        if not analysis_directions:
+            analysis_directions = _infer_overview_analysis_directions(
+                metric_candidates=metric_candidates,
+                dimension_candidates=dimension_candidates,
+                time_columns=time_columns,
+            )
+        return {
+            "tables": [
+                {
+                    "name": table_name,
+                    "fields": fields,
+                    "required_fields": [field["name"] for field in fields],
+                }
+            ],
+            "metric_candidates": metric_candidates,
+            "dimension_candidates": dimension_candidates,
+            "time_columns": time_columns,
+            "analysis_directions": analysis_directions,
+        }
+
+    table_summaries = [item for item in report.get("tables_summary") or [] if isinstance(item, Mapping)]
+    tables: list[dict[str, Any]] = []
+    metric_candidates: list[str] = []
+    dimension_candidates: list[str] = []
+    time_columns: list[str] = []
+    for summary in table_summaries:
+        table_name = str(summary.get("table") or "").strip()
+        fields = _coerce_overview_field_list(summary.get("field_meanings"))
+        if not table_name or not fields:
+            continue
+        tables.append({"name": table_name, "fields": fields, "required_fields": [field["name"] for field in fields]})
+        metric_candidates.extend(_coerce_text_list(summary.get("metric_candidates")))
+        dimension_candidates.extend(_coerce_text_list(summary.get("dimension_candidates")))
+        time_columns.extend(_coerce_text_list(summary.get("time_columns")))
+    if not tables:
+        return None
+    analysis_directions = _coerce_text_list(report.get("analysis_directions"))
+    if not analysis_directions:
+        analysis_directions = _infer_overview_analysis_directions(
+            metric_candidates=_dedupe_preserve(metric_candidates),
+            dimension_candidates=_dedupe_preserve(dimension_candidates),
+            time_columns=_dedupe_preserve(time_columns),
+        )
+    return {
+        "tables": tables,
+        "metric_candidates": _dedupe_preserve(metric_candidates),
+        "dimension_candidates": _dedupe_preserve(dimension_candidates),
+        "time_columns": _dedupe_preserve(time_columns),
+        "join_keys": _coerce_overview_join_key_records(report.get("candidate_join_keys")),
+        "analysis_directions": analysis_directions,
+    }
+
+
+def _infer_overview_field_role(column: str, series: Any, columns: list[str]) -> str:
+    if _looks_like_time_column(column):
+        return "time"
+    if _series_is_numeric(series):
+        return "metric"
+    if _looks_like_identifier_column(column):
+        return "dimension"
+    if _normalized_field_name(column) in {"city", "customer", "product", "segment", "service", "order", "region"}:
+        return "dimension"
+    if _looks_like_identifier_column(column):
+        return "dimension"
+    if column not in columns:
+        return "dimension"
+    return "dimension"
+
+
+def _infer_overview_analysis_directions(*, metric_candidates: list[str], dimension_candidates: list[str], time_columns: list[str]) -> list[str]:
+    return _dedupe_preserve(_coerce_text_list(metric_candidates) + _coerce_text_list(dimension_candidates) + _coerce_text_list(time_columns))
+
+
+def _coerce_overview_field_list(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    fields: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        name = str(item.get("field") or item.get("name") or item.get("field_name") or "").strip()
+        if not name:
+            continue
+        fields.append(
+            {
+                "name": name,
+                "role": str(item.get("role") or "").strip(),
+                "type": str(item.get("type") or item.get("field_type") or "").strip(),
+            }
+        )
+    return fields
+
+
+def _infer_overview_join_keys(tables: list[dict[str, Any]]) -> list[dict[str, str]]:
+    if len(tables) < 2:
+        return []
+    field_by_table = {
+        str(item.get("name") or ""): {str(field.get("name") or "") for field in item.get("fields", []) if str(field.get("name") or "").strip()}
+        for item in tables
+        if item.get("name") and isinstance(item.get("fields"), list)
+    }
+    names = [name for name in field_by_table.keys() if name]
+    if len(names) < 2:
+        return []
+    for left in range(len(names) - 1):
+        left_name = names[left]
+        for right_name in names[left + 1 :]:
+            overlap = field_by_table.get(left_name, set()) & field_by_table.get(right_name, set())
+            candidate_names = [
+                column
+                for column in ("customer_id", "user_id", "order_id", "id", "customerid", "orderid")
+                if column in overlap
+            ]
+            if not candidate_names:
+                candidate_names = sorted(overlap)
+            if not candidate_names:
+                continue
+            key = candidate_names[0]
+            if key:
+                return [{"left": f"{left_name}.{key}", "right": f"{right_name}.{key}"}]
+    return []
+
+
+def _coerce_overview_join_key_records(value: Any) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    if not value:
+        return records
+    items = value if isinstance(value, list) else [value]
+    for item in items:
+        if not isinstance(item, (Mapping, str)):
+            continue
+        parsed = _coerce_overview_join_key_item(item)
+        if parsed is not None and parsed not in records:
+            records.append(parsed)
+    return records
+
+
+def _coerce_text_list(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _coerce_overview_join_key_item(item: Any) -> dict[str, str] | None:
+    if isinstance(item, str):
+        text = item.strip()
+    elif isinstance(item, Mapping):
+        if item.get("text") and isinstance(item.get("text"), str):
+            text = str(item.get("text")).strip()
+        else:
+            text = ""
+            left = str(item.get("left") or item.get("left_table") or item.get("left_source") or "").strip()
+            right = str(item.get("right") or item.get("right_table") or item.get("right_source") or "").strip()
+            if left and right:
+                return {"left": left, "right": right}
+    else:
+        return None
+
+    if text:
+        if "->" in text:
+            left, right = [part.strip() for part in text.split("->", 1)]
+            if left and right:
+                return {"left": left, "right": right}
+        if "=" in text:
+            left, right = [part.strip() for part in text.split("=", 1)]
+            if left and right:
+                return {"left": left, "right": right}
+    return None
+
+
+def _dedupe_preserve(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        if not value:
+            continue
+        item = str(value).strip()
+        if item in seen:
+            continue
+        seen.add(item)
+        output.append(item)
+    return output
+
+
+def _normalized_field_name(value: str) -> str:
+    return str(value or "").strip().lower().replace("_", "")
 
 
 def _deterministic_fixture_oracle_result_trend_followup(

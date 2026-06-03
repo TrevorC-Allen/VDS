@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
 import json
 import re
@@ -34,6 +35,7 @@ from backend.services.export_service import generate_export_artifacts
 from data_agent_core.agent.single_agent import DataAnalysisAgent, UploadedDatasetAgent
 from data_agent_core.benchmark.evaluator import question_scorer
 from data_agent_core.contracts.analysis_contracts import UserQuestion
+from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.core.conversation_actions import (
     action_questions,
@@ -60,6 +62,11 @@ from data_agent_core.output.process_narrative import build_chat_process_view, pr
 from data_agent_core.output.response_builder import build_response
 from data_agent_core.output.source_overview import build_dataset_source_overview_response
 from data_agent_core.output.text_answer_framework import apply_text_answer_framework
+from data_agent_core.task_execution_contracts import (
+    build_task_execution_contract,
+    semantic_status_from_report,
+    verify_task_execution_contract,
+)
 from data_agent_core.task_contract_builder import referent_contract_guideline
 from data_agent_core.tracing.live_monitor import emit_monitor_event
 from data_agent_core.verifier.rule_checker import verify_execution
@@ -536,6 +543,7 @@ class DataAgentService:
                     route="dataset_overview",
                     table_count=len(tables),
                 )
+                _attach_fast_path_overview_contract_checks(response, question=question.strip())
                 _attach_source_references(response, profile=profile)
                 response = _apply_gpt_like_text_framework(response, question=question.strip())
                 _ensure_activity_trace_v2(response)
@@ -4936,6 +4944,61 @@ def _truncate_for_llm(value: Any, limit: int = 1000) -> str:
     text = value if isinstance(value, str) else json.dumps(to_json_ready(value), ensure_ascii=False, default=str)
     text = str(text or "").strip()
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _attach_fast_path_overview_contract_checks(response: dict[str, Any], *, question: str) -> None:
+    if not isinstance(response, dict):
+        return
+    if response.get("answer_type") != "overview":
+        return
+    logic_form = response.get("logic_form")
+    if not isinstance(logic_form, dict):
+        return
+    debug = response.setdefault("debug", {}) if isinstance(response.get("debug"), dict) else {}
+    response["debug"] = debug
+    contract = build_task_execution_contract(logic_form, question=question)
+    if contract is None or contract.task_family not in {"overview", "multi_file_overview"}:
+        return
+    result_payload = response.get("result")
+    if not isinstance(result_payload, dict):
+        return
+    value_payload = result_payload.get("value")
+    execution_value: dict[str, Any] = value_payload if isinstance(value_payload, dict) else {}
+    execution_value["overview_report"] = response.get("overview_report") if response.get("overview_report") is not None else execution_value.get("overview_report")
+    execution_result = ExecutionResult(
+        backend="fast_path_overview",
+        success=bool(response.get("success")),
+        columns=list(result_payload.get("columns") or []),
+        rows=list(result_payload.get("rows") or []) if isinstance(result_payload.get("rows"), list) else [],
+        value=execution_value,
+        summary=str(response.get("answer") or ""),
+        debug={"path": "fast_path_overview", "operation": str((logic_form or {}).get("operation") or "dataset_overview")},
+    )
+    try:
+        contract_report = verify_task_execution_contract(contract, execution_result)
+        report_dict = asdict(contract_report)
+        response["contract_report"] = report_dict
+        response["contract_satisfied"] = bool(contract_report.passed)
+        response["contract_family"] = contract_report.task_family
+        response["semantic_status"] = semantic_status_from_report(contract=contract, report=contract_report)
+        response["violations"] = list(report_dict.get("violations") or [])
+        verification = response.get("verification") if isinstance(response.get("verification"), dict) else {}
+        verification.setdefault("contract_report", report_dict)
+        verification.setdefault("task_contract", asdict(contract))
+        verification.setdefault("semantic_status", response["semantic_status"])
+        verification.setdefault("notes", []).append("overview fast-path contract verified")
+        response["verification"] = verification
+        debug["contract_report"] = report_dict
+        debug["task_contract"] = asdict(contract)
+        debug["semantic_status"] = response["semantic_status"]
+    except Exception as exc:  # noqa: BLE001 - overview fast-path contract should never block user answers.
+        response["semantic_status"] = "legacy_unverified"
+        response["unverified_reason"] = f"overview fast-path contract verification unavailable: {type(exc).__name__}: {str(exc)[:180]}"
+        response["contract_satisfied"] = None
+        response.setdefault("violations", [])
+        response["contract_report"] = response.get("contract_report")
+        debug["semantic_status"] = response["semantic_status"]
+        debug["unverified_reason"] = response["unverified_reason"]
 
 
 def _result_preview_for_llm(result: Any) -> dict[str, Any]:
