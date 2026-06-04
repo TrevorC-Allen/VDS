@@ -351,10 +351,12 @@ def oracle_drilldown_followup(expected: Any, actual: Any) -> OracleResult:
     metric = str(expected_payload.get("metric") or "")
     expected_filters = dict(expected_payload.get("merged_filters") or {})
     expected_referents = [str(value) for value in expected_payload.get("referent_values") or [] if value not in (None, "")]
-    actual_rows = _coerce_top_rows(actual, dimension, metric)
     raw_rows = _extract_tabular_rows(actual)
+    actual_rows = _coerce_top_rows(raw_rows, dimension, metric)
     actual_filters = _actual_filters(actual)
     available_columns = _available_row_columns(raw_rows)
+    expected_derived = _derived_metric_metadata(expected_payload)
+    actual_derived = _derived_metric_metadata(actual if isinstance(actual, Mapping) else {})
     issue_codes: list[str] = []
     if not dimension:
         issue_codes.append("drilldown_dimension_missing")
@@ -367,18 +369,40 @@ def oracle_drilldown_followup(expected: Any, actual: Any) -> OracleResult:
         if missing_filter_keys:
             issue_codes.append("drilldown_filter_missing")
             issue_codes.append("drilldown_scope_missing")
+            if expected_derived:
+                issue_codes.append("derived_metric_filter_missing")
     else:
         issue_codes.append("drilldown_scope_missing")
     expected_rows = _coerce_top_rows(expected_payload.get("rows"), dimension, metric)
+    if expected_derived:
+        if expected_derived.get("metric_formula") and actual_derived.get("metric_formula") != expected_derived.get("metric_formula"):
+            issue_codes.append("derived_metric_formula_missing")
+        if expected_derived.get("numerator_column") and actual_derived.get("numerator_column") not in {"", expected_derived.get("numerator_column")}:
+            issue_codes.append("derived_metric_numerator_missing")
+        if expected_derived.get("denominator_column") and actual_derived.get("denominator_column") not in {"", expected_derived.get("denominator_column")}:
+            issue_codes.append("derived_metric_denominator_missing")
+        numerator = expected_derived.get("numerator_column") or ""
+        denominator = expected_derived.get("denominator_column") or ""
+        if raw_rows and metric and not _column_present_in_names(metric, available_columns):
+            if numerator and _column_present_in_names(numerator, available_columns):
+                issue_codes.append("derived_metric_wrong_sort_metric")
+            elif denominator and _column_present_in_names(denominator, available_columns):
+                issue_codes.append("derived_metric_wrong_sort_metric")
     if expected_rows and actual_rows:
         if len(expected_rows) != len(actual_rows):
             issue_codes.append("drilldown_row_count_mismatch")
         for expected_row, actual_row in zip(expected_rows, actual_rows):
             if dimension and str(expected_row.get(dimension)) != str(actual_row.get(dimension)):
                 issue_codes.append("drilldown_filter_missing")
+                if expected_derived:
+                    issue_codes.append("derived_metric_filter_missing")
+                    if metric and _column_present_in_names(metric, available_columns):
+                        issue_codes.append("derived_metric_wrong_aggregation")
                 break
             if metric and not _numbers_close(expected_row.get(metric), actual_row.get(metric)):
                 issue_codes.append("drilldown_metric_mismatch")
+                if expected_derived:
+                    issue_codes.append("derived_metric_wrong_aggregation")
                 break
     elif expected_rows and not actual_rows:
         issue_codes.append("drilldown_actual_rows_missing")
@@ -393,6 +417,7 @@ def oracle_drilldown_followup(expected: Any, actual: Any) -> OracleResult:
             "filters": actual_filters,
             "row_count": len(actual_rows),
             "rows": actual_rows,
+            **actual_derived,
         },
         passed=not issue_codes,
         diff_summary=None if not issue_codes else "Drilldown actual_result does not satisfy referent filter and child ranking scope.",
@@ -406,6 +431,26 @@ def _actual_filters(actual: Any) -> dict[str, Any]:
         if isinstance(filters, Mapping):
             return dict(filters)
     return {}
+
+
+def _derived_metric_metadata(payload: Mapping[str, Any]) -> dict[str, str]:
+    derived = payload.get("derived_metric") if isinstance(payload.get("derived_metric"), Mapping) else {}
+    name = str(payload.get("derived_metric_name") or derived.get("name") or "").strip()
+    numerator = str(payload.get("numerator_column") or derived.get("numerator") or "").strip()
+    denominator = str(payload.get("denominator_column") or derived.get("denominator") or "").strip()
+    formula = str(payload.get("metric_formula") or derived.get("formula") or "").strip()
+    if not formula and numerator and denominator:
+        formula = f"sum({numerator})/sum({denominator})"
+    return {
+        key: value
+        for key, value in {
+            "derived_metric_name": name,
+            "metric_formula": formula,
+            "numerator_column": numerator,
+            "denominator_column": denominator,
+        }.items()
+        if value
+    }
 
 
 def _filter_value_covers(actual_value: Any, expected_value: Any) -> bool:

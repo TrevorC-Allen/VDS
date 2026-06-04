@@ -310,19 +310,19 @@ def render_drilldown_answer(context: _FrameContext) -> str:
         return ""
     if len(referent_values) == 1:
         city = referent_values[0]
-        return _sanitize_text(f"排名第一的城市{city}中，{metric_label}最高的是" + "、".join(items) + "。")
+        return _sanitize_text(f"排名第一的城市{city}中，{metric_label}最高的是" + "、".join(items) + "。" + _derived_metric_followup_scope(context))
     scope = f"Top{len(referent_values)} 城市"
     if region:
         scope += f"且{region}区域"
     suffix = f"范围城市：{'、'.join(referent_values)}。" if referent_values else ""
-    return _sanitize_text(f"在 {scope}内，{metric_label}排名为" + "、".join(items) + "。" + suffix)
+    return _sanitize_text(f"在 {scope}内，{metric_label}排名为" + "、".join(items) + "。" + suffix + _derived_metric_followup_scope(context))
 
 
 def _drilldown_metric_label(metric: str) -> str:
     lowered = str(metric or "").lower()
     if lowered in {"order_amount", "amount", "sales", "revenue"} or any(token in str(metric) for token in ("销售额", "金额", "收入")):
         return "产品销售额"
-    return f"产品{metric}"
+    return f"产品{_derived_metric_display_name(metric)}"
 
 
 def _supplemental_topn_columns(columns: list[str], *, label: str, metric: str) -> list[str]:
@@ -614,7 +614,7 @@ def render_trend_answer(context: _FrameContext) -> str:
     pairs = sorted(pairs, key=lambda item: item[0])
     trend = describe_trend([(label, value) for label, value, _ in pairs])
     sequence = _trend_sequence_text(pairs, metric)
-    return f"按{period}看，{metric}{trend}：{sequence}。"
+    return f"按{period}看，{metric}{trend}：{sequence}。" + _derived_metric_scope_sentence(context)
 
 
 def _render_multi_referent_trend_answer(context: _FrameContext, *, metric: str, period: str) -> str:
@@ -644,7 +644,7 @@ def _render_multi_referent_trend_answer(context: _FrameContext, *, metric: str, 
         return ""
     period_label = _display_period_label(period)
     metric_label = _display_metric_label(metric)
-    return f"这些 Top {dimension_label}的{period_label}{metric_label}趋势为：" + "；".join(parts) + "。"
+    return f"这些 Top {dimension_label}的{period_label}{metric_label}趋势为：" + "；".join(parts) + "。" + _derived_metric_scope_sentence(context)
 
 
 def _preferred_referent_column(context: _FrameContext, *, metric: str, period: str) -> str | None:
@@ -2176,10 +2176,42 @@ def _derived_metric_scope(context: _FrameContext) -> str:
     numerator = str(derived_metric.get("numerator") or "").strip()
     denominator = str(derived_metric.get("denominator") or "").strip()
     if formula:
-        return f"{name}={formula}"
+        return f"{_derived_metric_display_name(name)}按 {formula} 计算"
     if numerator and denominator:
-        return f"{name}=sum({numerator})/sum({denominator})"
+        return f"{_derived_metric_display_name(name)}按 sum({numerator})/sum({denominator}) 计算"
     return ""
+
+
+def _derived_metric_scope_sentence(context: _FrameContext) -> str:
+    scope = _derived_metric_scope(context)
+    return f" {scope}。" if scope else ""
+
+
+def _derived_metric_followup_scope(context: _FrameContext) -> str:
+    params = _as_dict(context.logic_form.get("parameters"))
+    derived_metric = _as_dict(params.get("derived_metric"))
+    name = _derived_metric_display_name(str(derived_metric.get("name") or params.get("derived_metric_name") or params.get("metric") or "派生指标"))
+    formula = str(params.get("metric_formula") or derived_metric.get("formula") or "").strip()
+    numerator = str(params.get("numerator_column") or derived_metric.get("numerator") or "").strip()
+    denominator = str(params.get("denominator_column") or derived_metric.get("denominator") or "").strip()
+    if not formula and numerator and denominator:
+        formula = f"sum({numerator})/sum({denominator})"
+    if not formula:
+        return ""
+    return f" 继承同一{name}口径：{name}按 {formula} 计算。"
+
+
+def _derived_metric_display_name(name: str) -> str:
+    lowered = str(name or "").lower()
+    if "profit_margin" in lowered or "利润率" in str(name):
+        return "利润率"
+    if "conversion_rate" in lowered or "转化率" in str(name):
+        return "转化率"
+    if "retention_rate" in lowered or "留存率" in str(name):
+        return "留存率"
+    if "average_order_value" in lowered or "客单价" in str(name):
+        return "客单价"
+    return str(name or "派生指标")
 
 
 def _multi_metric_result_text(context: _FrameContext) -> str:

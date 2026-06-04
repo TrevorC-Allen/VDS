@@ -101,6 +101,9 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
             "referent_source": str(contract.get("referent_source") or "result_artifact"),
         }
     )
+    derived_metadata = _derived_metric_metadata(params)
+    if derived_metadata:
+        params.update(derived_metadata)
     if str(contract.get("capability_family") or action_parameters.get("capability_family") or "") == "drilldown_followup":
         params["capability_family"] = "drilldown_followup"
         params["merged_filters"] = dict(filters)
@@ -125,6 +128,7 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
             "referent_values": values,
             "referent_policy": str(contract.get("referent_policy") or action_parameters.get("referent_policy") or "must_filter_to_previous_result_objects"),
             "referent_source": str(contract.get("referent_source") or "result_artifact"),
+            **derived_metadata,
             **({"merged_filters": dict(filters)} if str(params.get("capability_family") or "") == "drilldown_followup" else {}),
             **(
                 {
@@ -176,6 +180,8 @@ def build_topn_gap_trend_task_contract(question: str, logic_form: Any) -> dict[s
     params = dict(getattr(logic_form, "parameters", {}) or {})
     metric = str(getattr(logic_form, "metric", None) or params.get("metric") or "")
     dimension = str(params.get("dimension") or params.get("group_by") or getattr(logic_form, "group_by", None) or "")
+    derived_metadata = _derived_metric_metadata(params)
+    derived_rules = ["derived_metric_formula_required", "derived_metric_safe_division"] if derived_metadata else []
     if _contract_asks_share(question_text, logic_form):
         total_column = str(params.get("total_metric_column") or (f"total_{metric}" if metric else "total_metric_value"))
         share_column = str(params.get("share_column") or (f"{metric}_share" if metric else "share"))
@@ -215,8 +221,13 @@ def build_topn_gap_trend_task_contract(question: str, logic_form: Any) -> dict[s
             "task_family": "trend",
             "time_dimension": time_dimension,
             "metric": metric,
+            **derived_metadata,
             "required_output_columns": [column for column in (time_dimension, metric) if column],
-            "verification_rules": ["trend_time_series_required", "trend_description_matches_values"],
+            "verification_rules": [
+                "trend_time_series_required",
+                "trend_description_matches_values",
+                *derived_rules,
+            ],
         }
     if _contract_asks_topn(question_text, logic_form):
         required_n = _contract_required_n(question_text) or _positive_int(params.get("limit")) or 1
@@ -225,6 +236,7 @@ def build_topn_gap_trend_task_contract(question: str, logic_form: Any) -> dict[s
             "required_n": required_n,
             "metric": metric,
             "dimension": dimension,
+            **derived_metadata,
             "sort_order": str(params.get("sort_order") or ("asc" if _contract_asks_lowest(question_text) else "desc")),
             "required_output_columns": [column for column in (dimension, metric) if column],
             "verification_rules": [
@@ -232,9 +244,30 @@ def build_topn_gap_trend_task_contract(question: str, logic_form: Any) -> dict[s
                 "topn_sort_order",
                 "topn_required_columns",
                 "topn_insufficient_explanation",
+                *derived_rules,
             ],
         }
     return {}
+
+
+def _derived_metric_metadata(params: Mapping[str, Any]) -> dict[str, str]:
+    derived = _mapping(params.get("derived_metric"))
+    name = str(params.get("derived_metric_name") or derived.get("name") or "").strip()
+    numerator = str(params.get("numerator_column") or derived.get("numerator") or "").strip()
+    denominator = str(params.get("denominator_column") or derived.get("denominator") or "").strip()
+    formula = str(params.get("metric_formula") or derived.get("formula") or "").strip()
+    if not formula and numerator and denominator:
+        formula = f"sum({numerator})/sum({denominator})"
+    return {
+        key: value
+        for key, value in {
+            "derived_metric_name": name,
+            "metric_formula": formula,
+            "numerator_column": numerator,
+            "denominator_column": denominator,
+        }.items()
+        if value
+    }
 
 
 def _contract_asks_topn(question: str, logic_form: Any) -> bool:

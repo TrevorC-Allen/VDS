@@ -46,6 +46,7 @@ def build_result_artifacts(
     if not values:
         return []
     metric = _first_text(logic.get("metric"), params.get("metric"))
+    derived_metadata = _derived_metric_metadata(params)
     limit = _positive_int(params.get("limit") or params.get("top_n") or params.get("k")) or len(values)
     top_objects = _build_top_objects(rows=rows[:limit], dimension=str(dimension), metric=str(metric or ""), start=1)
     artifact_id = _artifact_id(
@@ -78,6 +79,7 @@ def build_result_artifacts(
             "top_objects": top_objects,
             "rank_map": {str(value): index for index, value in enumerate(values[:limit], start=1)},
             "rows": rows[:limit],
+            **derived_metadata,
         }
     _remember_top_objects(dimension=str(dimension), metric=str(metric or ""), values=values[:limit], top_objects=top_objects)
     return [artifact]
@@ -105,6 +107,7 @@ def build_task_artifacts(*, task_contract: Mapping[str, Any], rows: list[dict[st
     """Build task artifacts for TopN, Gap, and Trend contracts."""
 
     family = str(task_contract.get("task_family") or "")
+    derived_metadata = _derived_metric_metadata(task_contract)
     if family in {"topn", "ranking", "drilldown_followup"}:
         dimension = str(task_contract.get("dimension") or "")
         metric = str(task_contract.get("metric") or "")
@@ -131,6 +134,7 @@ def build_task_artifacts(*, task_contract: Mapping[str, Any], rows: list[dict[st
             "result_rows": rows,
             "filters": merged_filters,
             "merged_filters": merged_filters,
+            **derived_metadata,
         }
         if family == "drilldown_followup":
             artifact["referent_dimension"] = str(task_contract.get("referent_dimension") or "")
@@ -347,11 +351,44 @@ def _ranking_context_from_artifact(artifact: Mapping[str, Any]) -> dict[str, Any
         "aggregation": artifact.get("aggregation") or "sum",
         "limit": _positive_int(artifact.get("limit")),
         "derived_metric": dict(artifact.get("derived_metric") or {}),
+        "derived_metric_name": artifact.get("derived_metric_name"),
+        "metric_formula": artifact.get("metric_formula"),
+        "numerator_column": artifact.get("numerator_column"),
+        "denominator_column": artifact.get("denominator_column"),
         "sort_order": artifact.get("sort_order") or "desc",
         "table": artifact.get("table"),
         "table_selection_reason": artifact.get("table_selection_reason"),
     }
     return {key: value for key, value in keep.items() if value not in (None, "", [], {})}
+
+
+def _derived_metric_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
+    derived = payload.get("derived_metric") if isinstance(payload.get("derived_metric"), Mapping) else {}
+    name = _first_text(payload.get("derived_metric_name"), derived.get("name"))
+    numerator = _first_text(payload.get("numerator_column"), derived.get("numerator"))
+    denominator = _first_text(payload.get("denominator_column"), derived.get("denominator"))
+    formula = _first_text(payload.get("metric_formula"), derived.get("formula"))
+    if not formula and numerator and denominator:
+        formula = f"sum({numerator})/sum({denominator})"
+    if not (name or numerator or denominator or formula):
+        return {}
+    normalized = {
+        "derived_metric_name": name,
+        "metric_formula": formula,
+        "numerator_column": numerator,
+        "denominator_column": denominator,
+        "derived_metric": {
+            key: value
+            for key, value in {
+                "name": name,
+                "numerator": numerator,
+                "denominator": denominator,
+                "formula": formula,
+            }.items()
+            if value not in (None, "")
+        },
+    }
+    return {key: value for key, value in normalized.items() if value not in (None, "", {})}
 
 
 def _source_tables(logic: Mapping[str, Any], params: Mapping[str, Any]) -> list[str]:
@@ -421,7 +458,25 @@ def _normalize_join_keys(raw: Any) -> list[dict[str, str]]:
 
 
 def _looks_like_referent_question(compact: str) -> bool:
-    if any(token in compact for token in ("这些Top对象", "这些top对象", "这些TOP对象", "Top城市", "top城市", "这些城市", "上述城市", "这些", "上述", "它们", "前几个")):
+    if any(
+        token in compact
+        for token in (
+            "这些Top对象",
+            "这些top对象",
+            "这些TOP对象",
+            "Top城市",
+            "top城市",
+            "这些城市",
+            "上述城市",
+            "这些",
+            "上述",
+            "它们",
+            "前几个",
+            "相邻时间段",
+            "相关对象",
+            "同一指标",
+        )
+    ):
         return True
     return _rank_index(compact) is not None
 
@@ -632,6 +687,7 @@ def _trend_task_artifacts(task_contract: Mapping[str, Any], rows: list[dict[str,
         "time_series": [dict(row) for row in rows],
         "trend_description": _trend_description(numeric_values),
         "direct_trend_summary": str(answer or "").splitlines()[0].strip(),
+        **_derived_metric_metadata(task_contract),
     }
 
 
