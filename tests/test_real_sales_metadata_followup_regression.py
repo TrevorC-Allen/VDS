@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import pandas as pd
 
+from backend.services.data_agent_service import DataAgentService
+from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.contracts.analysis_contracts import LogicForm, UserQuestion
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.core.conversation_actions import build_analysis_context, plan_followup_actions
 from data_agent_core.core.intent_parser import parse_generic_table_question
 from data_agent_core.executors.pandas_executor import execute_plan
+from data_agent_core.llm.client import MockLLMClient
 from data_agent_core.oracle_results import oracle_topn_followup_gap
 from data_agent_core.output.response_builder import build_response
 from data_agent_core.task_contract_builder import apply_referent_contract
@@ -148,6 +153,64 @@ class RealSalesMetadataFollowupRegressionTest(unittest.TestCase):
         self.assertEqual("张三", result.rows[0]["emp_name"])
         self.assertIn("sign_amt_growth_rate", result.rows[0])
 
+    def test_service_salesperson_growth_ranking_escapes_prior_adjacent_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = _write_sales_fact_csv(root)
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="sales_fact.csv")
+            dataset_id = str(upload["dataset_id"])
+
+            first_response = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="哪个城市订单金额最大？",
+                execution_mode="dual",
+            )
+            conversation_id = str(first_response["conversation_id"])
+            second_response = service.respond_to_message(
+                dataset_id=dataset_id,
+                conversation_id=conversation_id,
+                question="对比相邻时间段或相关对象的同一指标",
+                execution_mode="dual",
+            )
+            third_response = service.respond_to_message(
+                dataset_id=dataset_id,
+                conversation_id=conversation_id,
+                question="销售员增长率排名",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(first_response["success"], first_response.get("errors"))
+        self.assertEqual("ranking", first_response["logic_form"]["operation"])
+        self.assertEqual("city", first_response["logic_form"]["parameters"].get("dimension"))
+        self.assertEqual("杭州市", first_response["result"]["rows"][0]["city"])
+        self.assertTrue(second_response.get("followup_context", {}).get("is_followup"), second_response.get("followup_context"))
+
+        self.assertTrue(third_response["success"], third_response.get("errors"))
+        self.assertEqual("self_contained_followup", third_response.get("followup_context", {}).get("reason"))
+
+        logic = third_response["logic_form"]
+        params = logic["parameters"]
+        self.assertEqual("growth_ranking", logic["operation"])
+        self.assertEqual("emp_name", params.get("dimension"))
+        self.assertEqual("sign_amt", params.get("metric"))
+        self.assertEqual("sign_time", params.get("time_column"))
+        self.assertEqual("sales_fact", params.get("table"))
+        self.assertEqual(["sales_fact"], params.get("source_tables"))
+        self.assertNotIn("city", logic.get("filters") or {})
+
+        task_contract = third_response["verification"]["task_contract"]
+        self.assertEqual("emp_name", task_contract.get("dimension"))
+        self.assertEqual("sign_amt", task_contract.get("metric"))
+        self.assertIn("emp_name", task_contract.get("required_output_columns") or [])
+        self.assertIn("sign_amt_growth_rate", task_contract.get("required_output_columns") or [])
+
+        rows = third_response["result"]["rows"]
+        self.assertEqual("张三", rows[0]["emp_name"])
+        self.assertIn("sign_amt_growth_rate", rows[0])
+        self.assertNotEqual(["sign_time", "sign_amt"], third_response["result"]["columns"])
+        self.assertIn("张三", third_response.get("answer") or "")
+
 
 def _execute_response(question: str, tables: dict[str, pd.DataFrame]) -> dict[str, object]:
     logic = parse_generic_table_question(question, tables, "")
@@ -217,6 +280,20 @@ def _sales_tables(*, with_quantity: bool) -> dict[str, pd.DataFrame]:
         FACT_TABLE: pd.DataFrame(fact_rows),
         METADATA_TABLE: pd.DataFrame(metadata_rows),
     }
+
+
+def _write_sales_fact_csv(root: Path) -> Path:
+    rows = [
+        {"order_id": "A1", "city": "杭州市", "emp_name": "张三", "sign_amt": 50000.25, "sign_time": "2026-01-15"},
+        {"order_id": "A2", "city": "上海市", "emp_name": "李四", "sign_amt": 60000.00, "sign_time": "2026-01-20"},
+        {"order_id": "A3", "city": "杭州市", "emp_name": "张三", "sign_amt": 86330.49, "sign_time": "2026-02-15"},
+        {"order_id": "A4", "city": "上海市", "emp_name": "李四", "sign_amt": 30000.00, "sign_time": "2026-02-20"},
+        {"order_id": "A5", "city": "北京市", "emp_name": "王五", "sign_amt": 45000.00, "sign_time": "2026-01-18"},
+        {"order_id": "A6", "city": "北京市", "emp_name": "王五", "sign_amt": 47000.00, "sign_time": "2026-02-18"},
+    ]
+    path = root / "sales_fact.csv"
+    pd.DataFrame(rows).to_csv(path, index=False)
+    return path
 
 
 if __name__ == "__main__":

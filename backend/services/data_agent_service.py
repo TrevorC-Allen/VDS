@@ -4417,6 +4417,8 @@ def _looks_like_self_contained_analysis_request(question: str) -> bool:
         return False
     if _looks_like_extreme_time_scoped_dimension_drilldown_request(compact):
         return False
+    if _looks_like_personnel_growth_ranking_request(compact, str(question or "").lower()):
+        return True
     if any(
         token in compact
         for token in (
@@ -4511,6 +4513,48 @@ def _looks_like_self_contained_analysis_request(question: str) -> bool:
         )
     )
     return has_metric and has_dimension and has_analysis_operator
+
+
+def _looks_like_personnel_growth_ranking_request(compact: str, lowered: str) -> bool:
+    personnel_signal = any(
+        token in compact
+        for token in (
+            "销售员",
+            "销售人员",
+            "销售代表",
+            "业务员",
+            "业代",
+            "员工",
+            "人员",
+        )
+    ) or any(token in lowered for token in ("salesperson", "sales rep", "sales representative", "employee", "personnel"))
+    if not personnel_signal:
+        return False
+    ranking_signal = any(token in compact for token in ("排名", "排行", "排序", "从高到低", "从低到高")) or any(
+        token in lowered for token in ("ranking", "rank", "sort", "order by")
+    )
+    growth_signal = any(token in compact for token in ("增长率", "增速", "增幅")) or any(
+        token in lowered for token in ("growth rate", "growth ranking")
+    )
+    fastest_growth_signal = any(
+        token in compact
+        for token in (
+            "增长最快",
+            "增长最多",
+            "提升最快",
+            "提升最多",
+            "下降最快",
+            "下降最多",
+            "变化最大",
+            "变化最多",
+            "变动最大",
+            "变动最多",
+        )
+    ) or any(
+        token in lowered
+        for token in ("fastest growth", "largest growth", "highest growth", "biggest increase", "largest increase", "fastest decline")
+    )
+    return (growth_signal and ranking_signal) or fastest_growth_signal
 
 
 def _looks_like_extreme_time_scoped_dimension_drilldown_request(compact: str) -> bool:
