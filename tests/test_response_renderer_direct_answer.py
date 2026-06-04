@@ -237,6 +237,43 @@ class ResponseRendererDirectAnswerTest(unittest.TestCase):
         caveats = " ".join(sections.get("caveats") or [])
         self.assertIn("当前只有 2 个城市，无法满足 Top 5", caveats)
 
+    def test_topn_insufficient_with_passed_status_uses_request_vs_returned_shortfall(self) -> None:
+        response = apply_text_answer_framework(
+            {
+                "success": True,
+                "answer_type": "table",
+                "answer": "",
+                "task_contract": {
+                    "task_family": "topn",
+                    "metric": "订单金额",
+                    "dimension": "sku",
+                    "required_n": 5,
+                },
+                "logic_form": {
+                    "operation": "ranking",
+                    "parameters": {"metric": "订单金额", "dimension": "sku", "limit": 5},
+                },
+                "verification": {"passed": True, "semantic_status": "passed", "task_contract": {"task_family": "topn", "required_n": 5, "dimension": "sku"}},
+                "result": {
+                    "columns": ["sku", "订单金额"],
+                    "rows": [{"sku": "SKU-A", "订单金额": 22}, {"sku": "SKU-B", "订单金额": 10}, {"sku": "SKU-C", "订单金额": 8}],
+                },
+            },
+            question="订单金额最高的 Top 5 SKU 是哪些？",
+        )
+
+        self.assertTrue(response["answer"].startswith("你请求了 Top 5"))
+        self.assertIn("实际只有 3 个不同sku", response["answer"])
+        self.assertIn("只能返回 Top 3", response["answer"])
+        self.assertIn("source field 为 sku", response["answer"])
+        self.assertIn("不是系统漏算", response["answer"])
+
+        sections = response.get("structured_answer_sections") or {}
+        caveats = " ".join(sections.get("caveats") or [])
+        self.assertIn("当前只有 3", caveats)
+        self.assertIn("source field 为 sku", caveats)
+        self.assertIn("Top 5", caveats)
+
 
 if __name__ == "__main__":
     unittest.main()

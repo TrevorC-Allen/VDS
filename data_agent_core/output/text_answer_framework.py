@@ -506,9 +506,6 @@ def _asks_combined_share_text(question: str) -> bool:
 
 
 def _topn_insufficient_contract_answer(context: _FrameContext) -> str:
-    semantic_status = str(context.response.get("semantic_status") or _as_dict(context.response.get("debug")).get("semantic_status") or "")
-    if semantic_status not in {"passed_with_insufficient_data", "partial"}:
-        return ""
     task_contract = _as_dict(context.response.get("task_contract")) or _as_dict(_as_dict(context.response.get("debug")).get("task_contract"))
     if str(task_contract.get("task_family") or "") != "topn":
         return ""
@@ -524,7 +521,7 @@ def _topn_insufficient_contract_answer(context: _FrameContext) -> str:
         f"你请求了 Top {required_n}，"
         f"当前只有 {distinct_count} 个{dimension}，无法返回 Top {required_n}，"
         f"当前数据中{dimension}实际只有 {distinct_count} 个不同{dimension}，"
-        f"source field 为 {source_field}，因此只能展示 Top {distinct_count}。"
+        f"source field 为 {source_field}，因此只能返回 Top {distinct_count}。"
         "这不是系统漏算。"
     )
 
