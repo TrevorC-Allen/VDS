@@ -17,6 +17,7 @@ TaskFamily = Literal[
     "contribution",
     "share",
     "contribution_followup",
+    "drilldown_followup",
     "followup_referent",
     "overview",
     "multi_file_overview",
@@ -99,10 +100,23 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
     output_format = _dict(_get(logic_form, "output_format", {}))
     source_tables = list(_get(logic_form, "source_tables", []) or params.get("source_tables") or [])
     family = _task_family(operation=operation, task_type=task_type, question=question, source_tables=source_tables)
+    explicit_dimension = _first_text(params.get("dimension"), params.get("group_by"), _get(logic_form, "group_by"), output_format.get("entity_field"))
+    explicit_referent_dimension = _first_text(params.get("referent_dimension"))
+    if (
+        str(params.get("capability_family") or "") == "drilldown_followup"
+        or (
+            family == "topn"
+            and bool(params.get("requires_previous_artifact") or params.get("referent_values"))
+            and bool(explicit_dimension)
+            and bool(explicit_referent_dimension)
+            and str(explicit_dimension) != str(explicit_referent_dimension)
+        )
+    ):
+        family = "drilldown_followup"
     if family == "unknown":
         return None
     metric = _first_text(params.get("metric"), _get(logic_form, "metric"), output_format.get("metric"))
-    dimension = _first_text(params.get("dimension"), params.get("group_by"), _get(logic_form, "group_by"), output_format.get("entity_field"))
+    dimension = explicit_dimension
     if family == "trend":
         dimension = _first_text(params.get("time_column"), params.get("time_dimension"), dimension)
     time_dimension = dimension if family == "trend" else None
@@ -171,7 +185,7 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
         metric=metric,
         dimension=dimension,
         time_dimension=time_dimension,
-        sort_order=sort_order if family == "topn" else None,
+        sort_order=sort_order if family in {"topn", "drilldown_followup"} else None,
         gap_mode=gap_mode,
         required_output_columns=required_columns,
         required_answer_elements=_required_answer_elements(family),
@@ -196,6 +210,7 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
             "required_output_columns": required_columns,
             "referent_filter_applied": referent_filter_applied,
             "candidate_set": _dict(_get(logic_form, "candidate_set", {})),
+            "merged_filters": dict(_dict(_get(logic_form, "filters", {}))),
             "explicit_required_n": question_required_n is not None,
             "requires_gap_comparison": bool(params.get("requires_gap_comparison") or family == "gap"),
             "minimum_required_objects": minimum_required_objects,
@@ -316,6 +331,34 @@ def verify_task_execution_contract(contract: TaskExecutionContract, execution_re
         violations.extend(_verify_trend_contract(contract, execution_result))
     if contract.task_family in {"contribution", "share", "contribution_followup"}:
         violations.extend(_verify_contribution_contract(contract, execution_result))
+    if contract.task_family == "drilldown_followup":
+        if contract.verification_rules.get("requires_drilldown_dimension") and not contract.dimension:
+            violations.append(
+                ContractViolation(
+                    code="drilldown_dimension_missing",
+                    severity="needs_clarification",
+                    message="Drilldown follow-up needs a new child dimension.",
+                    correction_hint="Ask the user which child dimension to rank, or infer it from the question.",
+                )
+            )
+        if contract.verification_rules.get("requires_referent_values") and not contract.referent_values:
+            violations.append(
+                ContractViolation(
+                    code="drilldown_referent_missing",
+                    severity="needs_clarification",
+                    message="Drilldown follow-up needs previous TopN referent values.",
+                    correction_hint="Bind the previous ranking artifact before executing the drilldown.",
+                )
+            )
+        if contract.verification_rules.get("requires_merged_filters") and not contract.verification_rules.get("merged_filters"):
+            violations.append(
+                ContractViolation(
+                    code="drilldown_scope_missing",
+                    severity="error",
+                    message="Drilldown follow-up did not record the merged parent and explicit filters.",
+                    correction_hint="Merge previous referent filters with explicit user filters before execution.",
+                )
+            )
     if contract.requires_previous_artifact and not contract.referent_artifact_id:
         violations.append(
             ContractViolation(
@@ -400,7 +443,7 @@ def _task_family(*, operation: str, task_type: str, question: str, source_tables
         if _looks_like_followup(question):
             return "contribution_followup"
         return "contribution"
-    if operation in {"ranking", "top_count", "growth_ranking", "vds_current_filtered_metric_top"} or task_type == "ranking":
+    if operation in {"ranking", "filtered_metric_ranking", "top_count", "growth_ranking", "vds_current_filtered_metric_top"} or task_type == "ranking":
         if any(token in compact_question for token in ("差距", "gap", "compare", "比较")):
             return "gap"
         return "topn"
@@ -445,7 +488,7 @@ def _required_columns(
         return columns
     for value in (dimension, required_metric, output_format.get("entity_field"), output_format.get("metric")):
         text = str(value or "").strip()
-        if text and text not in columns and family in {"topn", "gap", "trend"}:
+        if text and text not in columns and family in {"topn", "gap", "trend", "drilldown_followup"}:
             columns.append(text)
     return columns
 
@@ -459,6 +502,8 @@ def _required_answer_elements(family: TaskFamily) -> list[str]:
         return ["time_grain", "metric_series"]
     if family in {"contribution", "share", "contribution_followup"}:
         return ["referent_value", "metric_value", "total_metric_value", "share"]
+    if family == "drilldown_followup":
+        return ["previous_referent_values", "drilldown_dimension", "merged_filters", "output_ranking_rows"]
     if family in {"overview", "multi_file_overview"}:
         return ["schema_summary", "analysis_directions"]
     if family == "data_quality":
@@ -493,6 +538,13 @@ def _family_verification_rules(family: TaskFamily) -> dict[str, Any]:
             "denominator_total_metric_required": True,
             "per_referent_share_required": True,
             "scalar_only_for_combined_share_only": True,
+        }
+    if family == "drilldown_followup":
+        return {
+            "requires_referent_values": True,
+            "requires_drilldown_dimension": True,
+            "requires_merged_filters": True,
+            "requires_output_ranking_rows": True,
         }
     if family in {"overview", "multi_file_overview"}:
         return {

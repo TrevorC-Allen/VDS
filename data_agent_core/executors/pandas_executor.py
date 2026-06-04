@@ -85,7 +85,7 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
     if op == "aggregation":
         return _aggregation_dataframe(_analysis_dataframe(context, params), filters, params)
     if op == "ranking":
-        return _ranking_dataframe(_analysis_dataframe(context, params), params)
+        return _ranking_dataframe(_analysis_dataframe(context, params), params, filters)
     if op == "growth_ranking":
         return _growth_ranking(_analysis_dataframe(context, params), filters, params)
     if op == "row_count":
@@ -699,7 +699,8 @@ def _ranking(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> list[di
     return _ranking_dataframe(data, params)
 
 
-def _ranking_dataframe(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
+def _ranking_dataframe(data: pd.DataFrame, params: dict[str, Any], filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    data = _apply_dataframe_filters(data, filters or {})
     data = _apply_candidate_topn_filter(data, params, source_data=data)
     dimension = params.get("dimension")
     if not dimension:
@@ -2026,27 +2027,28 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
             ).dt.month
             data = data[months == int(expected)]
             continue
-        if column not in data.columns:
+        actual_column = _resolve_filter_column(data, str(column))
+        if actual_column not in data.columns:
             continue
         if isinstance(expected, dict) and ("month" in expected or "year" in expected or "month_range" in expected):
-            data = _apply_date_part_filter(data, column, expected)
+            data = _apply_date_part_filter(data, actual_column, expected)
             continue
         if expected == "__NULL__":
-            data = data[_null_mask(data[column])]
+            data = data[_null_mask(data[actual_column])]
             continue
         if expected == "__NOT_NULL__":
-            data = data[~_null_mask(data[column])]
+            data = data[~_null_mask(data[actual_column])]
             continue
         if isinstance(expected, dict) and "operator" in expected:
-            data = _apply_condition(data, str(column), str(expected.get("operator") or "="), expected.get("value"))
+            data = _apply_condition(data, str(actual_column), str(expected.get("operator") or "="), expected.get("value"))
             continue
-        if _is_day_of_year_range_filter(column, expected):
+        if _is_day_of_year_range_filter(actual_column, expected):
             start, end = expected
-            values = pd.to_numeric(data[column], errors="coerce")
+            values = pd.to_numeric(data[actual_column], errors="coerce")
             data = data[(values >= float(start)) & (values <= float(end))]
             continue
         if isinstance(expected, dict) and ("min" in expected or "max" in expected):
-            values = pd.to_numeric(data[column], errors="coerce")
+            values = pd.to_numeric(data[actual_column], errors="coerce")
             mask = values.notna()
             if expected.get("min") is not None:
                 mask &= values >= float(expected["min"])
@@ -2054,8 +2056,27 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
                 mask &= values <= float(expected["max"])
             data = data[mask]
             continue
-        data = data[_series_equals(data[column], expected)]
+        data = data[_series_equals(data[actual_column], expected)]
     return data
+
+
+def _resolve_filter_column(data: pd.DataFrame, column: str) -> str:
+    if column in data.columns:
+        return column
+    aliases = {
+        "city": ("city", "customer_city", "城市", "客户城市"),
+        "region": ("region", "area", "区域", "大区"),
+        "area": ("area", "region", "区域", "大区"),
+        "product": ("product", "product_name", "sku", "sku_name", "产品", "商品"),
+        "product_name": ("product_name", "product", "sku", "sku_name", "产品", "商品"),
+        "sku": ("sku", "sku_name", "product", "product_name", "产品", "商品"),
+    }.get(str(column), ())
+    normalized = {str(item).strip().lower(): str(item) for item in data.columns}
+    for alias in aliases:
+        matched = normalized.get(str(alias).strip().lower())
+        if matched:
+            return matched
+    return column
 
 
 def _apply_date_part_filter(data: pd.DataFrame, column: str, expected: dict[str, Any]) -> pd.DataFrame:

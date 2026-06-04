@@ -239,6 +239,9 @@ def _render_direct_answer(context: _FrameContext) -> str:
     if context.kind == "contribution":
         return render_contribution_answer(context)
     if context.kind == "ranking":
+        drilldown = render_drilldown_answer(context)
+        if drilldown:
+            return drilldown
         if len(context.rows) == 1 and _single_row_ranking_uses_structured_frame(context):
             return ""
         if len(context.rows) == 1:
@@ -281,6 +284,41 @@ def render_topn_answer(context: _FrameContext) -> str:
     answer = f"{metric}{direction}的 {len(items)} 个{dimension_label}是：" + "、".join(items) + "。"
     scope = _short_scope_suffix(context)
     return _sanitize_text(answer + scope)
+
+
+def render_drilldown_answer(context: _FrameContext) -> str:
+    task_contract = _as_dict(context.logic_form.get("task_contract")) or _as_dict(_as_dict(context.response.get("debug")).get("task_contract"))
+    params = _as_dict(context.logic_form.get("parameters"))
+    if str(task_contract.get("task_family") or params.get("capability_family") or "") != "drilldown_followup":
+        return ""
+    if not context.rows:
+        return ""
+    metric = _preferred_metric_column(context.columns, context.rows)
+    label = _preferred_label_column(context.columns, metric)
+    if not metric or not label:
+        return ""
+    referent_values = [str(value) for value in (params.get("referent_values") or task_contract.get("referent_values") or []) if value not in (None, "")]
+    filters = _as_dict(context.logic_form.get("filters")) or _as_dict(params.get("merged_filters")) or _as_dict(task_contract.get("merged_filters"))
+    region = filters.get("region") or filters.get("area") or filters.get("区域")
+    metric_label = _drilldown_metric_label(metric)
+    items = [f"{row.get(label)}（{_format_cell_value(row.get(metric), metric)}）" for row in context.rows if row.get(label) not in {None, ""} and row.get(metric) not in {None, ""}]
+    if not items:
+        return ""
+    if len(referent_values) == 1:
+        city = referent_values[0]
+        return _sanitize_text(f"排名第一的城市{city}中，{metric_label}最高的是" + "、".join(items) + "。")
+    scope = f"Top{len(referent_values)} 城市"
+    if region:
+        scope += f"且{region}区域"
+    suffix = f"范围城市：{'、'.join(referent_values)}。" if referent_values else ""
+    return _sanitize_text(f"在 {scope}内，{metric_label}排名为" + "、".join(items) + "。" + suffix)
+
+
+def _drilldown_metric_label(metric: str) -> str:
+    lowered = str(metric or "").lower()
+    if lowered in {"order_amount", "amount", "sales", "revenue"} or any(token in str(metric) for token in ("销售额", "金额", "收入")):
+        return "产品销售额"
+    return f"产品{metric}"
 
 
 def _supplemental_topn_columns(columns: list[str], *, label: str, metric: str) -> list[str]:
