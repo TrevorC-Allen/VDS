@@ -274,6 +274,7 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
 
 
 QUALITY_REPORT_OPERATIONS = {
+    "aggregation",
     "data_quality_report",
     "quality_summary",
     "cleaning_policy",
@@ -286,12 +287,24 @@ QUALITY_REPORT_OPERATIONS = {
 
 
 def _quality_debug_report(plan: AnalysisPlan, context: dict[str, Any]) -> dict[str, Any] | None:
-    if str(plan.logic_form.operation or "") not in QUALITY_REPORT_OPERATIONS:
+    operation = str(plan.logic_form.operation or "")
+    if operation not in QUALITY_REPORT_OPERATIONS and _contract_task_family(plan) not in {"overview", "data_quality"}:
         return None
     try:
         return report_to_dict(build_data_quality_report(_tables_for_quality(context), generated_from="analysis_request"))
     except Exception:  # noqa: BLE001 - quality debug evidence must not change execution success.
         return None
+
+
+def _contract_task_family(plan: AnalysisPlan) -> str:
+    for contract in (getattr(plan, "task_contract", None), getattr(plan.logic_form, "task_contract", None)):
+        if isinstance(contract, dict):
+            family = str(contract.get("task_family") or "").strip()
+        else:
+            family = str(getattr(contract, "task_family", "") or "").strip()
+        if family:
+            return family
+    return ""
 
 
 def _result_rows(value: Any) -> tuple[list[str], list[dict[str, Any]]]:
@@ -575,24 +588,42 @@ def _join_warnings(params: dict[str, Any]) -> list[str]:
 
 
 def _execution_summary(operation: str, debug: dict[str, Any]) -> str:
+    quality_summary = _quality_execution_summary(debug)
     if "same_schema_union_summary" in debug:
         summary = debug["same_schema_union_summary"]
         return (
             f"Executed operation {operation} after concatenating "
             f"{len(summary.get('source_tables') or [])} same-schema source tables."
-        )
+        ) + quality_summary
     if "join_execution_summary" in debug:
         summary = debug["join_execution_summary"]
         if isinstance(summary.get("steps"), list) and summary.get("steps"):
             return (
                 f"Executed operation {operation} after materializing "
                 f"{len(summary.get('steps') or [])} trusted join step(s)."
-            )
+            ) + quality_summary
         return (
             f"Executed operation {operation} after joining "
             f"{summary.get('left_table')} to {summary.get('right_table')}."
-        )
-    return f"Executed operation {operation}."
+        ) + quality_summary
+    return f"Executed operation {operation}." + quality_summary
+
+
+def _quality_execution_summary(debug: dict[str, Any]) -> str:
+    quality = debug.get("quality_report") if isinstance(debug.get("quality_report"), dict) else {}
+    rows = quality.get("field_level_table") if isinstance(quality.get("field_level_table"), list) else []
+    fields = [str(row.get("字段") or row.get("field") or "").strip() for row in rows if isinstance(row, dict)]
+    fields = [field for field in fields if field][:5]
+    if not fields:
+        return ""
+    first = fields[0]
+    second = fields[1] if len(fields) > 1 else first
+    return (
+        " 字段级质量摘要："
+        + "、".join(fields)
+        + " 已检查缺失、重复和异常规则。分析方向："
+        + f"检查 {first} 是否缺失或重复，检查 {second} 是否存在异常值或格式异常。"
+    )
 
 
 def _detail_lookup(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:

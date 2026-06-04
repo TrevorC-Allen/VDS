@@ -657,17 +657,17 @@ def render_overview_answer(context: _FrameContext) -> str:
     report = context.overview_report
     if isinstance(report.get("tables_summary"), list) and report.get("tables_summary"):
         return _render_multi_table_contract_overview(report)
-    rows = _overview_field_rows(context)
+    quality_rows = _quality_field_rows(context)
+    rows = _overview_field_rows(context) if report else _overview_rows_from_quality(quality_rows)
     if not rows:
         return ""
     table = str(report.get("table") or "这张表")
     row_count = report.get("row_count")
     column_count = report.get("column_count") or len(rows)
     first = f"{table} 是一张包含 {_format_plain_value(row_count)} 行、{_format_plain_value(column_count)} 个字段的数据表；字段清单见下表。"
-    directions = _overview_analysis_directions(report)
-    quality = "数据质量摘要：缺失 / 重复 / 异常当前统计未发现非 0 问题；正式分析前仍可运行字段级质量检查。"
-    if int(report.get("quality_issue_count") or 0):
-        quality = f"数据质量摘要：当前识别到 {int(report.get('quality_issue_count') or 0)} 类质量信号。"
+    directions = _overview_analysis_directions(report) if report else _overview_quality_directions(context, quality_rows)
+    quality = _overview_quality_summary(context, quality_rows)
+    quality_table = _overview_quality_table(quality_rows)
     return (
         first
         + "\n\n"
@@ -676,7 +676,81 @@ def render_overview_answer(context: _FrameContext) -> str:
         + "\n".join(f"- {item}" for item in directions)
         + "\n\n"
         + quality
+        + (("\n\n" + quality_table) if quality_table else "")
     )
+
+
+def _overview_rows_from_quality(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    overview_rows = []
+    for row in rows:
+        field = str(row.get("字段") or "").strip()
+        if not field:
+            continue
+        overview_rows.append(
+            {
+                "字段": field,
+                "类型": str(row.get("类型") or "unknown"),
+                "角色": "待确认",
+                "可用于什么分析": "可用于字段级质量、缺失、重复和异常检查",
+            }
+        )
+    return overview_rows
+
+
+def _overview_quality_directions(context: _FrameContext, rows: list[dict[str, Any]]) -> list[str]:
+    params = _as_dict(context.logic_form.get("parameters"))
+    preferred = [
+        str(params.get("metric") or ""),
+        *[str(item) for item in params.get("metrics") or [] if str(item)],
+        str(params.get("dimension") or ""),
+    ]
+    fields = [field for field in preferred if field]
+    fields.extend(str(row.get("字段") or "") for row in rows if str(row.get("字段") or ""))
+    fields = _dedupe_points(fields, limit=4)
+    if not fields:
+        return ["按字段检查缺失、重复、异常值和格式异常后，再选择指标与维度做分析"]
+    directions = [f"检查 {fields[0]} 是否缺失、重复或格式异常"]
+    if len(fields) > 1:
+        directions.append(f"检查 {fields[1]} 是否存在负值、极端值或异常值")
+    if len(fields) > 2:
+        directions.append(f"结合 {fields[2]} 分组复核质量问题是否集中在少数对象")
+    return directions
+
+
+def _overview_quality_summary(context: _FrameContext, rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        issue_count = int(context.overview_report.get("quality_issue_count") or 0)
+        if issue_count:
+            return f"数据质量摘要：当前识别到 {issue_count} 类质量信号。"
+        return "数据质量摘要：缺失 / 重复 / 异常当前统计未发现非 0 问题；正式分析前仍可运行字段级质量检查。"
+    missing = sum(int(row.get("缺失数") or 0) for row in rows)
+    type_errors = sum(int(row.get("类型异常数") or 0) for row in rows)
+    outliers = sum(int(row.get("异常值数") or 0) for row in rows)
+    duplicate_text = _quality_duplicate_rule_text(context)
+    anomaly_text = "未发现异常" if type_errors + outliers == 0 else f"异常数量为 {type_errors + outliers}"
+    return (
+        f"数据质量摘要：字段级检查覆盖 {len(rows)} 个字段，缺失数量为 {missing}，{anomaly_text}。"
+        + f" 重复规则：{duplicate_text}。异常规则：numeric IQR rule 和 non-null type parse failure。"
+    )
+
+
+def _overview_quality_table(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+    compact_rows = []
+    for row in rows[:50]:
+        anomaly_count = int(row.get("类型异常数") or 0) + int(row.get("异常值数") or 0)
+        compact_rows.append(
+            {
+                "字段": row.get("字段"),
+                "类型": row.get("类型"),
+                "缺失数": row.get("缺失数"),
+                "缺失率": row.get("缺失率"),
+                "重复数": 0,
+                "异常数": anomaly_count,
+            }
+        )
+    return _markdown_table(["字段", "类型", "缺失数", "缺失率", "重复数", "异常数"], compact_rows)
 
 
 def render_quality_answer(context: _FrameContext) -> str:

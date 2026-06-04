@@ -698,7 +698,9 @@ def _trend_has_time_series_artifact(result: ExecutionResult, rows: list[dict[str
 
 def _verify_overview_contract(contract: TaskExecutionContract, result: ExecutionResult) -> list[ContractViolation]:
     payload = _mapping_payload(result.value)
-    report = _mapping_payload(payload.get("overview_report")) or _mapping_payload(payload.get("value", {})).get("overview_report") or payload
+    debug = _mapping_payload(result.debug)
+    quality = _mapping_payload(debug.get("quality_report"))
+    report = _mapping_payload(payload.get("overview_report")) or _mapping_payload(payload.get("value", {})).get("overview_report") or _overview_report_from_quality(quality) or payload
     answer_text = _answer_text(payload, result)
     tables = _overview_tables(report)
     violations: list[ContractViolation] = []
@@ -737,6 +739,25 @@ def _verify_overview_contract(contract: TaskExecutionContract, result: Execution
     if contract.verification_rules.get("must_include_quality_summary") and "质量" not in answer_text:
         violations.append(_violation("QUALITY_FIELD_LEVEL_MISSING", "Overview answer must include a quality summary.", {}))
     return violations
+
+
+def _overview_report_from_quality(quality: dict[str, Any]) -> dict[str, Any]:
+    rows = quality.get("field_level_table") if isinstance(quality.get("field_level_table"), list) else []
+    fields = []
+    for row in rows:
+        item = _mapping_payload(row)
+        field = str(item.get("字段") or item.get("field") or item.get("column") or "").strip()
+        if not field:
+            continue
+        fields.append(
+            {
+                "field": field,
+                "type": str(item.get("类型") or item.get("type") or item.get("dtype") or "unknown"),
+            }
+        )
+    if not fields:
+        return {}
+    return {"field_meanings": fields}
 
 
 def _verify_data_quality_contract(result: ExecutionResult) -> list[ContractViolation]:
