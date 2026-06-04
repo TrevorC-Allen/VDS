@@ -105,7 +105,7 @@ def build_task_artifacts(*, task_contract: Mapping[str, Any], rows: list[dict[st
     """Build task artifacts for TopN, Gap, and Trend contracts."""
 
     family = str(task_contract.get("task_family") or "")
-    if family in {"topn", "ranking"}:
+    if family in {"topn", "ranking", "drilldown_followup"}:
         dimension = str(task_contract.get("dimension") or "")
         metric = str(task_contract.get("metric") or "")
         top_objects = _build_top_objects(rows=rows, dimension=dimension, metric=metric, start=1)
@@ -113,7 +113,10 @@ def build_task_artifacts(*, task_contract: Mapping[str, Any], rows: list[dict[st
         source_tables = [str(item) for item in task_contract.get("source_tables") or [] if str(item)]
         join_plan = dict(task_contract.get("join_plan") or {})
         join_keys = [dict(item) for item in task_contract.get("join_keys") or [] if isinstance(item, Mapping)]
+        verification_rules = dict(task_contract.get("verification_rules") or {})
+        merged_filters = dict(task_contract.get("merged_filters") or verification_rules.get("merged_filters") or {})
         artifact = {
+            "task_family": family,
             "top_objects": top_objects,
             "distinct_count": distinct_count if dimension else len(rows),
             "metric": metric,
@@ -126,7 +129,12 @@ def build_task_artifacts(*, task_contract: Mapping[str, Any], rows: list[dict[st
             "dimension": dimension,
             "dimension_column": dimension,
             "result_rows": rows,
+            "filters": merged_filters,
+            "merged_filters": merged_filters,
         }
+        if family == "drilldown_followup":
+            artifact["referent_dimension"] = str(task_contract.get("referent_dimension") or "")
+            artifact["referent_values"] = list(task_contract.get("referent_values") or [])
         if source_tables:
             artifact["source_tables"] = source_tables
         if join_plan:

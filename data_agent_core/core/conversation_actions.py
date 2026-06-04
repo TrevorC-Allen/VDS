@@ -571,6 +571,11 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
     )
     if resolution.get("metric") and not parameters.get("metric"):
         parameters["metric"] = str(resolution.get("metric") or "")
+    child_dimension = str(parameters.get("dimension") or enriched.get("dimension") or "")
+    drilldown_followup = bool(child_dimension and child_dimension != dimension and str(enriched.get("capability_family") or "") == "drilldown_followup")
+    if drilldown_followup:
+        parameters["capability_family"] = "drilldown_followup"
+        parameters["merged_filters"] = dict(filters)
     label = _dimension_question_label(dimension)
     value_text = _filter_value_text(values)
     question = str(enriched.get("question") or "")
@@ -594,6 +599,14 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
         "referent_source": str(resolution.get("referent_source") or "result_artifact"),
         "inherited_parameters": inherited,
         "action_parameters": parameters,
+        **(
+            {
+                "capability_family": "drilldown_followup",
+                "merged_filters": dict(filters),
+            }
+            if drilldown_followup
+            else {}
+        ),
         **(
             {
                 "requires_gap_comparison": True,
@@ -1290,17 +1303,28 @@ def _generic_grouped_distribution_action(context: Mapping[str, Any], compact: st
 def _generic_grouped_child_ranking_action(context: Mapping[str, Any], compact: str = "") -> dict[str, Any]:
     logic = context.get("logic_form") if isinstance(context.get("logic_form"), Mapping) else {}
     params = logic.get("parameters") if isinstance(logic.get("parameters"), Mapping) else {}
+    scope = context.get("scope") if isinstance(context.get("scope"), Mapping) else {}
     available = [str(column) for column in params.get("available_columns") or []]
-    child_dimension = _explicit_rank_target_dimension_column(compact, available) or _explicit_dimension_concept(compact)
-    return _action(
+    child_dimension = _explicit_child_drilldown_dimension(compact, available)
+    metric = _first_text(_explicit_metric_column(compact, available), scope.get("metric"), params.get("metric"), logic.get("metric"), "核心指标")
+    action = _action(
         action_id="grouped_child_ranking",
         label="在父级集合内查找子项 Top",
-        operation="grouped_child_ranking",
+        operation="filtered_metric_ranking",
         question=f"{compact}？" if compact and not compact.endswith(("?", "？")) else compact,
         inherited_parameters=_generic_inherited_parameters_for_question(logic, params, compact),
-        parameters={},
+        parameters={"metric": metric, "dimension": child_dimension, "sort_order": "desc"},
         dimension=child_dimension,
     )
+    action["capability_family"] = "drilldown_followup"
+    return action
+
+
+def _explicit_child_drilldown_dimension(compact: str, available_columns: list[str]) -> str:
+    available = [str(column) for column in available_columns if str(column or "").strip()]
+    if any(token in compact for token in ("产品", "商品", "sku", "SKU")):
+        return _pick_column_by_aliases(available, ("product", "product_name", "sku", "sku_name", "item", "goods", "产品", "商品")) or "product"
+    return _explicit_rank_target_dimension_column(compact, available) or _explicit_dimension_concept(compact)
 
 
 def _generic_ranked_entity_share_action(context: Mapping[str, Any], compact: str = "") -> dict[str, Any]:
@@ -1466,7 +1490,9 @@ def _asks_grouped_child_ranking_followup(compact: str) -> bool:
     child_question = any(token in compact for token in ("哪个", "哪些", "哪类", "哪种", "哪几个"))
     ranking_signal = any(token in compact for token in ("最高", "最低", "最多", "最少", "最大", "最小", "排名", "排行", "Top", "top"))
     parent_set_signal = any(token in compact for token in ("前", "排名", "排行", "Top", "top", "这些", "这几个", "上述"))
-    return grouped_parent and child_question and ranking_signal and parent_set_signal
+    child_dimension_signal = any(token in compact for token in ("产品", "商品", "sku", "SKU"))
+    parent_scope_signal = parent_set_signal or any(token in compact for token in ("它下面", "其下", "里面", "里"))
+    return ranking_signal and parent_scope_signal and child_dimension_signal and (grouped_parent or child_question or parent_set_signal)
 
 
 def _asks_reasonableness_boundary(compact: str) -> bool:

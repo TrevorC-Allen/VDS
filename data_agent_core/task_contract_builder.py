@@ -92,7 +92,7 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
     setattr(logic_form, "candidate_set", candidate_set)
     params.update(
         {
-            **{key: value for key, value in action_parameters.items() if key in {"metric", "dimension", "metrics", "aggregation", "time_column", "time_dimension", "candidate_filter"} and value not in (None, "", [], {})},
+            **{key: value for key, value in action_parameters.items() if key in {"metric", "dimension", "metrics", "aggregation", "time_column", "time_dimension", "candidate_filter", "limit", "top_n", "sort_order"} and value not in (None, "", [], {})},
             "requires_previous_artifact": True,
             "referent_artifact_id": str(contract.get("referent_artifact_id") or ""),
             "referent_dimension": dimension,
@@ -101,6 +101,9 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
             "referent_source": str(contract.get("referent_source") or "result_artifact"),
         }
     )
+    if str(contract.get("capability_family") or action_parameters.get("capability_family") or "") == "drilldown_followup":
+        params["capability_family"] = "drilldown_followup"
+        params["merged_filters"] = dict(filters)
     current_dimension = str(params.get("dimension") or getattr(logic_form, "group_by", None) or "")
     if current_dimension and current_dimension != dimension:
         params.setdefault("series_dimension", dimension)
@@ -115,12 +118,14 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
     task_contract = dict(getattr(logic_form, "task_contract", {}) or {})
     task_contract.update(
         {
+            **({"task_family": "drilldown_followup"} if str(params.get("capability_family") or "") == "drilldown_followup" else {}),
             "requires_previous_artifact": True,
             "referent_artifact_id": str(contract.get("referent_artifact_id") or ""),
             "referent_dimension": dimension,
             "referent_values": values,
             "referent_policy": str(contract.get("referent_policy") or action_parameters.get("referent_policy") or "must_filter_to_previous_result_objects"),
             "referent_source": str(contract.get("referent_source") or "result_artifact"),
+            **({"merged_filters": dict(filters)} if str(params.get("capability_family") or "") == "drilldown_followup" else {}),
             **(
                 {
                     "requires_gap_comparison": True,

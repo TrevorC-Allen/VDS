@@ -85,6 +85,8 @@ def build_oracle_result(
         return oracle_topn_followup_gap(expected, actual, answer=answer)
     if _is_topn_rows_expected(expected):
         return oracle_topn_rows(expected, actual)
+    if _is_drilldown_followup_expected(expected):
+        return oracle_drilldown_followup(expected, actual)
     if _is_combined_share_expected(expected):
         return oracle_combined_share(expected, actual)
     if _is_contribution_share_expected(expected) or _is_contribution_share_contract(contract):
@@ -337,6 +339,81 @@ def _combined_share_value(actual: Any) -> float | None:
 
 def _is_topn_rows_expected(value: Any) -> bool:
     return isinstance(value, Mapping) and str(value.get("task_family") or "") == "topn_rows" and isinstance(value.get("rows"), list)
+
+
+def _is_drilldown_followup_expected(value: Any) -> bool:
+    return isinstance(value, Mapping) and str(value.get("task_family") or "") == "drilldown_followup"
+
+
+def oracle_drilldown_followup(expected: Any, actual: Any) -> OracleResult:
+    expected_payload = dict(expected) if isinstance(expected, Mapping) else {}
+    dimension = str(expected_payload.get("drilldown_dimension") or expected_payload.get("dimension") or "")
+    metric = str(expected_payload.get("metric") or "")
+    expected_filters = dict(expected_payload.get("merged_filters") or {})
+    expected_referents = [str(value) for value in expected_payload.get("referent_values") or [] if value not in (None, "")]
+    actual_rows = _coerce_top_rows(actual, dimension, metric)
+    raw_rows = _extract_tabular_rows(actual)
+    actual_filters = _actual_filters(actual)
+    available_columns = _available_row_columns(raw_rows)
+    issue_codes: list[str] = []
+    if not dimension:
+        issue_codes.append("drilldown_dimension_missing")
+    if expected_payload.get("referent_dimension") and not expected_referents:
+        issue_codes.append("drilldown_referent_missing")
+    if dimension and raw_rows and not _column_present_in_names(dimension, available_columns):
+        issue_codes.append("drilldown_wrong_dimension")
+    if expected_filters:
+        missing_filter_keys = [key for key, value in expected_filters.items() if not _filter_value_covers(actual_filters.get(key), value)]
+        if missing_filter_keys:
+            issue_codes.append("drilldown_filter_missing")
+            issue_codes.append("drilldown_scope_missing")
+    else:
+        issue_codes.append("drilldown_scope_missing")
+    expected_rows = _coerce_top_rows(expected_payload.get("rows"), dimension, metric)
+    if expected_rows and actual_rows:
+        if len(expected_rows) != len(actual_rows):
+            issue_codes.append("drilldown_row_count_mismatch")
+        for expected_row, actual_row in zip(expected_rows, actual_rows):
+            if dimension and str(expected_row.get(dimension)) != str(actual_row.get(dimension)):
+                issue_codes.append("drilldown_filter_missing")
+                break
+            if metric and not _numbers_close(expected_row.get(metric), actual_row.get(metric)):
+                issue_codes.append("drilldown_metric_mismatch")
+                break
+    elif expected_rows and not actual_rows:
+        issue_codes.append("drilldown_actual_rows_missing")
+    issue_codes = sorted(set(issue_codes))
+    return OracleResult(
+        oracle_available=True,
+        expected_result=expected_payload,
+        actual_result={
+            "task_family": "drilldown_followup",
+            "dimension": dimension,
+            "metric": metric,
+            "filters": actual_filters,
+            "row_count": len(actual_rows),
+            "rows": actual_rows,
+        },
+        passed=not issue_codes,
+        diff_summary=None if not issue_codes else "Drilldown actual_result does not satisfy referent filter and child ranking scope.",
+        issue_codes=issue_codes,
+    )
+
+
+def _actual_filters(actual: Any) -> dict[str, Any]:
+    if isinstance(actual, Mapping):
+        filters = actual.get("filters") or actual.get("merged_filters")
+        if isinstance(filters, Mapping):
+            return dict(filters)
+    return {}
+
+
+def _filter_value_covers(actual_value: Any, expected_value: Any) -> bool:
+    if actual_value in (None, "", [], {}):
+        return False
+    expected_values = {str(item) for item in expected_value} if isinstance(expected_value, (list, tuple, set)) else {str(expected_value)}
+    actual_values = {str(item) for item in actual_value} if isinstance(actual_value, (list, tuple, set)) else {str(actual_value)}
+    return expected_values.issubset(actual_values)
 
 
 def oracle_topn_rows(expected: Any, actual: Any) -> OracleResult:
@@ -2199,6 +2276,10 @@ def _actual_payload(execution_result: ExecutionResult) -> dict[str, Any] | list[
     if isinstance(execution_result, list):
         return execution_result
     if execution_result.rows:
+        if isinstance(execution_result.value, Mapping):
+            payload = dict(execution_result.value)
+            payload.setdefault("rows", execution_result.rows)
+            return payload
         return execution_result.rows
     if isinstance(execution_result.value, (dict, list)):
         if (
