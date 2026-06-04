@@ -329,6 +329,7 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
     if (
         str(referent_resolution.get("missing_reason", "")).upper() == "REFERENT_ARTIFACT_MISSING"
         and not bool(referent_resolution.get("resolved"))
+        and not _has_contextual_referent_fallback(context)
         and not (_is_retail_context(operation) and (_asks_extreme_review(compact) or _asks_source_drilldown(compact)))
     ):
         return []
@@ -377,7 +378,7 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
             return actions
         return []
 
-    if not actions and _asks_grouped_child_ranking_followup(compact):
+    if not actions and _asks_grouped_child_ranking_followup(compact) and not _has_context_filters(context):
         action = _generic_grouped_child_ranking_action(context, compact)
         if action:
             actions.append(action)
@@ -432,6 +433,8 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
             else _generic_dimension_switch_action(context, compact)
         )
         if action:
+            if bool(referent_resolution.get("resolved")):
+                action["capability_family"] = "drilldown_followup"
             actions.append(action)
     if not actions and _asks_rank_retention_followup(compact):
         action = _generic_rank_retention_action(context, compact)
@@ -443,6 +446,10 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
             actions.append(action)
     if not actions and _asks_growth_ranking_followup(compact):
         action = _generic_growth_ranking_action(context, compact)
+        if action:
+            actions.append(action)
+    if not actions and _asks_same_metric_adjacent_comparison_followup(compact):
+        action = _generic_same_metric_adjacent_comparison_action(context, compact)
         if action:
             actions.append(action)
     if not actions and _asks_grouped_time_comparison_followup(compact):
@@ -509,6 +516,12 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
             value = ranking_context.get(key)
             if value not in (None, "", [], {}):
                 parameters.setdefault(key, value)
+        if isinstance(ranking_context.get("derived_metric"), Mapping) and ranking_context.get("derived_metric"):
+            parameters.setdefault("derived_metric", dict(ranking_context.get("derived_metric") or {}))
+        derived_metadata = _derived_metric_metadata(ranking_context) or _derived_metric_metadata(parameters)
+        parameters.update(derived_metadata)
+        if _compact_mentions_derived_metric(compact, derived_metadata):
+            parameters["metric"] = derived_metadata["derived_metric_name"]
     filters = dict(inherited.get("filters") or {})
     same_dimension_grouping = str(parameters.get("dimension") or "") == dimension and str(enriched.get("operation") or "") in {
         "aggregation",
@@ -572,8 +585,17 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
     if resolution.get("metric") and not parameters.get("metric"):
         parameters["metric"] = str(resolution.get("metric") or "")
     child_dimension = str(parameters.get("dimension") or enriched.get("dimension") or "")
-    drilldown_followup = bool(child_dimension and child_dimension != dimension and str(enriched.get("capability_family") or "") == "drilldown_followup")
+    derived_metadata_for_drilldown = _derived_metric_metadata(ranking_context) or _derived_metric_metadata(parameters)
+    drilldown_followup = bool(
+        child_dimension
+        and child_dimension != dimension
+        and (
+            str(enriched.get("capability_family") or "") == "drilldown_followup"
+            or _compact_mentions_derived_metric(compact, derived_metadata_for_drilldown)
+        )
+    )
     if drilldown_followup:
+        enriched["capability_family"] = "drilldown_followup"
         parameters["capability_family"] = "drilldown_followup"
         parameters["merged_filters"] = dict(filters)
     label = _dimension_question_label(dimension)
@@ -588,6 +610,10 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
             prefix = f"这些Top对象来自上一轮结果，仅包含{value_text}{label}；{prefix}"
         question = prefix + question
     enriched["question"] = question
+    derived_metadata = _derived_metric_metadata(ranking_context) or _derived_metric_metadata(parameters)
+    parameters.update(derived_metadata)
+    if _compact_mentions_derived_metric(compact, derived_metadata):
+        parameters["metric"] = derived_metadata["derived_metric_name"]
     enriched["parameters"] = parameters
     enriched["inherited_parameters"] = inherited
     enriched["referent_contract"] = {
@@ -678,6 +704,32 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _has_contextual_referent_fallback(context: Mapping[str, Any] | None) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    scope = context.get("scope") if isinstance(context.get("scope"), Mapping) else {}
+    if isinstance(scope.get("filters"), Mapping) and scope.get("filters"):
+        return True
+    last_result = context.get("last_result") if isinstance(context.get("last_result"), Mapping) else {}
+    if isinstance(last_result.get("first_row"), Mapping) and last_result.get("first_row"):
+        return True
+    if any(isinstance(item, Mapping) for item in context.get("focus_sets") or []):
+        return True
+    logic = context.get("logic_form") if isinstance(context.get("logic_form"), Mapping) else {}
+    return isinstance(logic.get("filters"), Mapping) and bool(logic.get("filters"))
+
+
+def _has_context_filters(context: Mapping[str, Any] | None) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    scope = context.get("scope") if isinstance(context.get("scope"), Mapping) else {}
+    logic = context.get("logic_form") if isinstance(context.get("logic_form"), Mapping) else {}
+    return any(
+        isinstance(filters, Mapping) and bool(filters)
+        for filters in (scope.get("filters"), logic.get("filters"))
+    )
+
+
 def _action(
     *,
     action_id: str,
@@ -689,6 +741,8 @@ def _action(
     dimension: str = "",
 ) -> dict[str, Any]:
     capability = capability_for_operation(operation)
+    parameters = dict(parameters)
+    parameters.update(_derived_metric_metadata(parameters))
     return {
         "action_id": action_id,
         "label": label,
@@ -701,6 +755,52 @@ def _action(
         "capability_family": capability.capability_family,
         "support_boundary": capability.support_boundary,
     }
+
+
+def _derived_metric_metadata(payload: Mapping[str, Any]) -> dict[str, str]:
+    derived = payload.get("derived_metric") if isinstance(payload.get("derived_metric"), Mapping) else {}
+    name = str(payload.get("derived_metric_name") or derived.get("name") or "").strip()
+    numerator = str(payload.get("numerator_column") or derived.get("numerator") or "").strip()
+    denominator = str(payload.get("denominator_column") or derived.get("denominator") or "").strip()
+    formula = str(payload.get("metric_formula") or derived.get("formula") or "").strip()
+    if not formula and numerator and denominator:
+        formula = f"sum({numerator})/sum({denominator})"
+    return {
+        key: value
+        for key, value in {
+            "derived_metric_name": name,
+            "metric_formula": formula,
+            "numerator_column": numerator,
+            "denominator_column": denominator,
+        }.items()
+        if value
+    }
+
+
+def _compact_mentions_derived_metric(compact: str, metadata: Mapping[str, Any]) -> bool:
+    if not metadata.get("derived_metric_name"):
+        return False
+    text = str(compact or "").lower()
+    name = str(metadata.get("derived_metric_name") or "").lower()
+    if name and name in text:
+        return True
+    return any(
+        token in text
+        for token in (
+            "利润率",
+            "profitmargin",
+            "profit_margin",
+            "转化率",
+            "conversionrate",
+            "conversion_rate",
+            "留存率",
+            "retentionrate",
+            "retention_rate",
+            "客单价",
+            "averageordervalue",
+            "average_order_value",
+        )
+    )
 
 
 def _find_action(actions: list[Any], action_id: str) -> dict[str, Any]:
@@ -956,13 +1056,16 @@ def _generic_dimension_switch_action(context: Mapping[str, Any], compact: str) -
         if ordinal_phrase
         else f"{scope_prefix}按{_dimension_question_label(dimension)}看{_metric_question_label(metric)}排名前3。"
     )
+    action_parameters = {"metric": metric, "dimension": dimension}
+    if isinstance(params.get("derived_metric"), Mapping) and params.get("derived_metric"):
+        action_parameters["derived_metric"] = dict(params.get("derived_metric") or {})
     return _action(
         action_id="switch_generic_dimension",
         label=f"按{_dimension_question_label(dimension)}切换维度",
         operation="ranking",
         question=question,
         inherited_parameters=_generic_inherited_parameters_for_question(logic, params, compact),
-        parameters={"metric": metric, "dimension": dimension},
+        parameters=action_parameters,
         dimension=dimension,
     )
 
@@ -1144,15 +1247,28 @@ def _generic_time_trend_action(context: Mapping[str, Any], compact: str = "") ->
     time_prefix = _combined_time_question_prefix(context, compact)
     time_prefix = _dedupe_time_prefix(time_prefix, filter_prefix)
     scope_prefix = _combined_scope_question_prefix(time_prefix, filter_prefix)
+    action_parameters = {"metric": metric, **({"metrics": explicit_metrics} if len(explicit_metrics) > 1 else {}), "dimension": time_column}
+    if isinstance(params.get("derived_metric"), Mapping) and params.get("derived_metric"):
+        action_parameters["derived_metric"] = dict(params.get("derived_metric") or {})
     return _action(
         action_id="switch_to_time_trend",
         label="按时间查看趋势",
         operation="aggregation",
         question=f"{scope_prefix}按{_time_question_label(time_column)}展示{metric_label}趋势，生成折线图。",
         inherited_parameters=_generic_inherited_parameters(logic, params),
-        parameters={"metric": metric, **({"metrics": explicit_metrics} if len(explicit_metrics) > 1 else {}), "dimension": time_column},
+        parameters=action_parameters,
         dimension=time_column,
     )
+
+
+def _generic_same_metric_adjacent_comparison_action(context: Mapping[str, Any], compact: str = "") -> dict[str, Any]:
+    action = _generic_time_trend_action(context, compact)
+    if not action:
+        return {}
+    enriched = dict(action)
+    enriched["action_id"] = "same_metric_adjacent_comparison"
+    enriched["label"] = "对比同一指标"
+    return enriched
 
 
 def _generic_grouped_time_comparison_action(context: Mapping[str, Any], compact: str = "") -> dict[str, Any]:
@@ -1492,7 +1608,7 @@ def _asks_grouped_child_ranking_followup(compact: str) -> bool:
     parent_set_signal = any(token in compact for token in ("前", "排名", "排行", "Top", "top", "这些", "这几个", "上述"))
     child_dimension_signal = any(token in compact for token in ("产品", "商品", "sku", "SKU"))
     parent_scope_signal = parent_set_signal or any(token in compact for token in ("它下面", "其下", "里面", "里"))
-    return ranking_signal and parent_scope_signal and child_dimension_signal and (grouped_parent or child_question or parent_set_signal)
+    return ranking_signal and parent_scope_signal and child_dimension_signal and grouped_parent and child_question
 
 
 def _asks_reasonableness_boundary(compact: str) -> bool:
@@ -1629,6 +1745,12 @@ def _asks_grouped_time_comparison_followup(compact: str) -> bool:
     if not grouped_entity:
         return False
     return any(token in compact for token in ("相比", "相较", "对比", "比较", "变化", "差异", "增减"))
+
+
+def _asks_same_metric_adjacent_comparison_followup(compact: str) -> bool:
+    if not any(token in compact for token in ("同一指标", "这个指标", "该指标", "同个指标")):
+        return False
+    return any(token in compact for token in ("相邻时间段", "相邻期间", "相关对象", "对比", "比较", "相比", "相较"))
 
 
 def _has_multiple_month_reference(compact: str) -> bool:

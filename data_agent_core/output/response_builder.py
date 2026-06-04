@@ -53,6 +53,7 @@ def build_response(
         display_result,
         output_format=plan.logic_form.output_format,
     )
+    display_result = _attach_derived_metric_metadata_to_display_rows(display_result, plan)
     if semantic_failure_answer is None:
         answer = _referent_answer_prefix(verification) + answer
     not_applicable_attribution = classify_not_applicable(execution_result.value, plan)
@@ -204,6 +205,47 @@ def _artifact_rows(execution_result: ExecutionResult) -> list[dict[str, Any]]:
         if isinstance(rows, list):
             return [row for row in rows if isinstance(row, dict)]
     return []
+
+
+def _attach_derived_metric_metadata_to_display_rows(display_result: dict[str, Any], plan: AnalysisPlan) -> dict[str, Any]:
+    metadata = _derived_metric_metadata_from_plan(plan)
+    if not metadata:
+        return display_result
+    metric_name = str(metadata.get("derived_metric_name") or "").strip()
+    if metric_name and not metric_name.isascii():
+        return display_result
+    rows = display_result.get("rows")
+    if isinstance(rows, list):
+        display_result = dict(display_result)
+        display_result["rows"] = [
+            {**row, **metadata} if isinstance(row, dict) else row
+            for row in rows
+        ]
+    return display_result
+
+
+def _derived_metric_metadata_from_plan(plan: AnalysisPlan) -> dict[str, str]:
+    params = dict(getattr(plan.logic_form, "parameters", {}) or {})
+    task_contract = getattr(plan, "task_contract", None)
+    if isinstance(task_contract, dict):
+        params = {**params, **{key: task_contract.get(key) for key in ("derived_metric_name", "metric_formula", "numerator_column", "denominator_column") if task_contract.get(key)}}
+    derived = params.get("derived_metric") if isinstance(params.get("derived_metric"), dict) else {}
+    name = str(params.get("derived_metric_name") or derived.get("name") or "").strip()
+    numerator = str(params.get("numerator_column") or derived.get("numerator") or "").strip()
+    denominator = str(params.get("denominator_column") or derived.get("denominator") or "").strip()
+    formula = str(params.get("metric_formula") or derived.get("formula") or "").strip()
+    if not formula and numerator and denominator:
+        formula = f"sum({numerator})/sum({denominator})"
+    return {
+        key: value
+        for key, value in {
+            "derived_metric_name": name,
+            "metric_formula": formula,
+            "numerator_column": numerator,
+            "denominator_column": denominator,
+        }.items()
+        if value
+    }
 
 
 def _topn_insufficient_answer(task_contract: dict[str, Any] | None, execution_result: ExecutionResult, semantic_status: str) -> str:
@@ -380,8 +422,6 @@ def _referent_answer_prefix(verification: VerificationResult) -> str:
     if not task_contract.get("requires_previous_artifact"):
         return ""
     if task_contract.get("auto_expand_topn_if_needed"):
-        return ""
-    if str(task_contract.get("task_family") or "") == "trend":
         return ""
     values = [str(value) for value in task_contract.get("referent_values") or [] if str(value)]
     if not values:
@@ -840,7 +880,10 @@ def _apply_structured_answer_framework(response: FinalResponse) -> FinalResponse
         return response
     response.answer = payload.get("answer", response.answer)
     if referent_prefix and not str(response.answer).startswith(referent_prefix):
-        response.answer = referent_prefix + str(response.answer)
+        if _should_append_referent_prefix(response):
+            response.answer = str(response.answer) + referent_prefix
+        else:
+            response.answer = referent_prefix + str(response.answer)
     response.debug = payload.get("debug", response.debug)
     sections = payload.get("structured_answer_sections")
     if isinstance(sections, dict):
@@ -854,6 +897,18 @@ def _apply_structured_answer_framework(response: FinalResponse) -> FinalResponse
         allowed = {field.name for field in fields(InsightResult)}
         response.insight = InsightResult(**{key: value for key, value in insight_payload.items() if key in allowed})
     return response
+
+
+def _should_append_referent_prefix(response: FinalResponse) -> bool:
+    if not isinstance(response.debug, dict):
+        return False
+    task_contract = response.debug.get("task_contract")
+    if not isinstance(task_contract, dict):
+        return False
+    return bool(
+        task_contract.get("requires_previous_artifact")
+        and str(task_contract.get("task_family") or "") == "trend"
+    )
 
 
 def _to_dict(value: Any) -> Any:

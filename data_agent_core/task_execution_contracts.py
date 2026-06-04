@@ -66,6 +66,10 @@ class TaskExecutionContract:
     task_family: TaskFamily
     required_n: int | None = None
     metric: str | None = None
+    derived_metric_name: str | None = None
+    metric_formula: str | None = None
+    numerator_column: str | None = None
+    denominator_column: str | None = None
     dimension: str | None = None
     time_dimension: str | None = None
     sort_order: str | None = None
@@ -116,6 +120,7 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
     if family == "unknown":
         return None
     metric = _first_text(params.get("metric"), _get(logic_form, "metric"), output_format.get("metric"))
+    derived_metadata = _derived_metric_metadata(params)
     dimension = explicit_dimension
     if family == "trend":
         dimension = _first_text(params.get("time_column"), params.get("time_dimension"), dimension)
@@ -178,17 +183,26 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
         "source_tables": source_tables,
     }
     contract_id = "contract_" + hashlib.sha1(repr(contract_seed).encode("utf-8")).hexdigest()[:12]
+    required_answer_elements = _required_answer_elements(family)
+    if derived_metadata:
+        for element in ("derived_metric_name", "metric_formula", "numerator_column", "denominator_column"):
+            if element not in required_answer_elements:
+                required_answer_elements.append(element)
     return TaskExecutionContract(
         contract_id=contract_id,
         task_family=family,
         required_n=required_n,
         metric=metric,
+        derived_metric_name=derived_metadata.get("derived_metric_name"),
+        metric_formula=derived_metadata.get("metric_formula"),
+        numerator_column=derived_metadata.get("numerator_column"),
+        denominator_column=derived_metadata.get("denominator_column"),
         dimension=dimension,
         time_dimension=time_dimension,
         sort_order=sort_order if family in {"topn", "drilldown_followup"} else None,
         gap_mode=gap_mode,
         required_output_columns=required_columns,
-        required_answer_elements=_required_answer_elements(family),
+        required_answer_elements=required_answer_elements,
         requires_previous_artifact=requires_previous,
         referent_artifact_id=None if file_scope_family else _first_text(params.get("referent_artifact_id")),
         referent_dimension=referent_dimension,
@@ -221,6 +235,18 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
             "join_scope": join_scope if join_scope["join_required"] else {},
             "join_plan": join_plan,
             "join_keys": join_keys,
+            **(
+                {
+                    **derived_metadata,
+                    "requires_derived_metric_formula": True,
+                    "requires_numerator_column": True,
+                    "requires_denominator_column": True,
+                    "requires_denominator_non_zero_safe_division": True,
+                    "requires_inherited_formula_on_followup": True,
+                }
+                if derived_metadata
+                else {}
+            ),
             **(
                 {
                     "requires_referent_values": True,
@@ -281,6 +307,7 @@ def verify_task_execution_contract(contract: TaskExecutionContract, execution_re
         )
     row_count = _row_count(execution_result)
     available_columns = _available_result_columns(execution_result)
+    violations.extend(_verify_derived_metric_contract(contract, execution_result, available_columns))
     if contract.task_family != "trend":
         missing_columns = [column for column in contract.required_output_columns if column and not _column_present(column, available_columns)]
         if missing_columns and _tabular_result_present(execution_result) and not (contract.task_family == "topn" and row_count == 0):
@@ -568,6 +595,81 @@ def _family_verification_rules(family: TaskFamily) -> dict[str, Any]:
             "must_include_field_level_table": True,
         }
     return {}
+
+
+def _derived_metric_metadata(params: dict[str, Any]) -> dict[str, str]:
+    derived = _dict(params.get("derived_metric"))
+    name = _first_text(params.get("derived_metric_name"), derived.get("name"))
+    numerator = _first_text(params.get("numerator_column"), derived.get("numerator"))
+    denominator = _first_text(params.get("denominator_column"), derived.get("denominator"))
+    formula = _first_text(params.get("metric_formula"), derived.get("formula"))
+    if not formula and numerator and denominator:
+        formula = f"sum({numerator})/sum({denominator})"
+    return {
+        key: value
+        for key, value in {
+            "derived_metric_name": name,
+            "metric_formula": formula,
+            "numerator_column": numerator,
+            "denominator_column": denominator,
+        }.items()
+        if value
+    }
+
+
+def _verify_derived_metric_contract(
+    contract: TaskExecutionContract,
+    result: ExecutionResult,
+    available_columns: set[str],
+) -> list[ContractViolation]:
+    rules = contract.verification_rules or {}
+    if not any(
+        rules.get(key)
+        for key in (
+            "requires_derived_metric_formula",
+            "requires_numerator_column",
+            "requires_denominator_column",
+            "requires_inherited_formula_on_followup",
+        )
+    ):
+        return []
+    violations: list[ContractViolation] = []
+    formula = _first_text(contract.metric_formula, rules.get("metric_formula"))
+    numerator = _first_text(contract.numerator_column, rules.get("numerator_column"))
+    denominator = _first_text(contract.denominator_column, rules.get("denominator_column"))
+    if rules.get("requires_derived_metric_formula") and not formula:
+        violations.append(
+            _violation(
+                "derived_metric_formula_missing",
+                "Derived metric contract requires an explicit formula.",
+                {"metric": contract.metric},
+            )
+        )
+    if rules.get("requires_numerator_column") and not numerator:
+        violations.append(
+            _violation(
+                "derived_metric_numerator_missing",
+                "Derived metric contract requires a numerator column.",
+                {"metric": contract.metric},
+            )
+        )
+    if rules.get("requires_denominator_column") and not denominator:
+        violations.append(
+            _violation(
+                "derived_metric_denominator_missing",
+                "Derived metric contract requires a denominator column.",
+                {"metric": contract.metric},
+            )
+        )
+    if contract.metric and _result_rows(result) and _tabular_result_present(result) and not _column_present(contract.metric, available_columns):
+        violations.append(
+            _violation(
+                "derived_metric_value_missing",
+                "Derived metric output rows must include the derived metric value column.",
+                {"metric": contract.metric, "available_columns": sorted(available_columns)},
+            )
+        )
+    return violations
 
 
 def _verify_topn_contract(contract: TaskExecutionContract, result: ExecutionResult) -> list[ContractViolation]:
