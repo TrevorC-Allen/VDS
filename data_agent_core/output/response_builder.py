@@ -249,7 +249,7 @@ def _derived_metric_metadata_from_plan(plan: AnalysisPlan) -> dict[str, str]:
 
 
 def _topn_insufficient_answer(task_contract: dict[str, Any] | None, execution_result: ExecutionResult, semantic_status: str) -> str:
-    if semantic_status not in {"passed_with_insufficient_data", "partial"} or not isinstance(task_contract, dict):
+    if not isinstance(task_contract, dict):
         return ""
     if str(task_contract.get("task_family") or "") != "topn":
         return ""

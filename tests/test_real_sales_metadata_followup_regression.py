@@ -72,6 +72,43 @@ class RealSalesMetadataFollowupRegressionTest(unittest.TestCase):
         self.assertIn("Top 5", caveats)
         self.assertIn("无法满足 Top 5", caveats)
 
+    def test_service_top5_sku_sales_only_three_distinct_items_shows_topn_shortage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = _write_sales_topn_qty_csv(root)
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="sales_fact.csv")
+            dataset_id = str(upload["dataset_id"])
+
+            response = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="前5个sku销量最高",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("topn", response.get("contract_family"))
+        self.assertEqual("passed", response.get("semantic_status"))
+
+        task_contract = response.get("verification", {}).get("task_contract") or {}
+        self.assertEqual(5, int(task_contract.get("required_n") or 0))
+        self.assertEqual("sku_factor", task_contract.get("dimension"))
+        self.assertEqual("qty", task_contract.get("metric"))
+        self.assertEqual(3, len(response["result"]["rows"]))
+
+        answer = str(response.get("answer") or "")
+        self.assertIn("Top 5", answer)
+        self.assertIn("当前数据中sku_factor实际只有 3 个不同sku_factor", answer)
+        self.assertIn("只能返回 Top 3", answer)
+        self.assertIn("source field 为 sku_factor", answer)
+        self.assertIn("不是系统漏算", answer)
+
+        sections = response.get("structured_answer_sections") or {}
+        caveats = " ".join(str(item) for item in sections.get("caveats") or [])
+        self.assertIn("Top 5", caveats)
+        self.assertIn("当前只有 3", caveats)
+        self.assertIn("source field 为 sku_factor", caveats)
+
     def test_city_order_amount_top1_keeps_dimension_and_metric_in_result_artifact(self) -> None:
         response = _execute_response("哪个城市订单金额最大", _sales_tables(with_quantity=True))
 
@@ -418,6 +455,12 @@ def _write_sales_fact_csv(root: Path) -> Path:
     ]
     path = root / "sales_fact.csv"
     pd.DataFrame(rows).to_csv(path, index=False)
+    return path
+
+
+def _write_sales_topn_qty_csv(root: Path) -> Path:
+    path = root / "sales_topn_qty.csv"
+    _sales_tables(with_quantity=True)[FACT_TABLE].drop(columns=["dist_ord_item_id", "emp_name"]).to_csv(path, index=False)
     return path
 
 
