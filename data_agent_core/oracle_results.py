@@ -47,6 +47,8 @@ def build_oracle_result(
         )
         if _is_contribution_share_expected(expected_result):
             return oracle_contribution_share(expected_result, actual, tolerance=_share_tolerance(contract))
+        if _is_combined_share_expected(expected_result):
+            return oracle_combined_share(expected_result, actual)
         if _is_trend_constraint_expected(expected_result):
             actual_summary = _build_trend_constraint_actual_summary(expected_result, actual)
             issue_codes = _trend_constraint_issue_codes(expected_result, actual_summary)
@@ -83,6 +85,8 @@ def build_oracle_result(
         return oracle_topn_followup_gap(expected, actual, answer=answer)
     if _is_topn_rows_expected(expected):
         return oracle_topn_rows(expected, actual)
+    if _is_combined_share_expected(expected):
+        return oracle_combined_share(expected, actual)
     if _is_contribution_share_expected(expected) or _is_contribution_share_contract(contract):
         return oracle_contribution_share(expected, actual, tolerance=_share_tolerance(contract))
     if _is_multi_table_join_ranking_expected(expected):
@@ -285,6 +289,52 @@ def _is_contribution_share_expected(value: Any) -> bool:
     return isinstance(value, Mapping) and str(value.get("task_family") or "") in {"contribution", "share", "contribution_followup", "topn_contribution"} and isinstance(value.get("items"), list)
 
 
+def _is_combined_share_expected(value: Any) -> bool:
+    return isinstance(value, Mapping) and str(value.get("task_family") or "") == "combined_share" and value.get("share") is not None
+
+
+def oracle_combined_share(expected: Any, actual: Any) -> OracleResult:
+    expected_payload = expected if isinstance(expected, Mapping) else {}
+    expected_share = _normalize_share_value(expected_payload.get("share"))
+    actual_share = _combined_share_value(actual)
+    issue_codes: list[str] = []
+    if actual_share is None:
+        issue_codes.append("combined_share_missing")
+    elif expected_share is None or not math.isclose(expected_share, actual_share, rel_tol=1e-6, abs_tol=0.01):
+        issue_codes.append("combined_share_mismatch")
+    return OracleResult(
+        oracle_available=True,
+        expected_result={
+            "task_family": "combined_share",
+            "metric": str(expected_payload.get("metric") or ""),
+            "share": _round_oracle_value(expected_share),
+        },
+        actual_result={
+            "task_family": "combined_share",
+            "share": _round_oracle_value(actual_share),
+        },
+        passed=not issue_codes,
+        diff_summary=None if not issue_codes else "Combined TopK share actual_result differs from expected share.",
+        issue_codes=issue_codes,
+    )
+
+
+def _combined_share_value(actual: Any) -> float | None:
+    if isinstance(actual, Mapping):
+        for key in ("share", "percent", "percentage", "ratio", "contribution", "value", "answer"):
+            value = _normalize_share_value(actual.get(key))
+            if value is not None:
+                return value
+    if isinstance(actual, list):
+        if len(actual) == 1:
+            return _combined_share_value(actual[0])
+        values = [_combined_share_value(item) for item in actual]
+        values = [value for value in values if value is not None]
+        if values:
+            return sum(values)
+    return _normalize_share_value(actual)
+
+
 def _is_topn_rows_expected(value: Any) -> bool:
     return isinstance(value, Mapping) and str(value.get("task_family") or "") == "topn_rows" and isinstance(value.get("rows"), list)
 
@@ -463,11 +513,14 @@ def _build_missing_expected_result_oracle_payload(
         "topn": "missing_expected_result_for_ranking_top_rows",
         "gap": "missing_expected_result_for_ranking_gap_followup",
         "trend": "missing_expected_result_for_time_series_trend",
+        "contribution": "missing_expected_result_for_combined_share",
+        "share": "missing_expected_result_for_combined_share",
+        "contribution_followup": "missing_expected_result_for_combined_share",
         "overview": "missing_expected_result_for_overview_schema",
         "multi_file_overview": "missing_expected_result_for_multi_file_overview_schema",
         "data_quality": "missing_expected_result_for_quality_field_counts",
     }
-    required_family = family in {"topn", "gap", "trend", "overview", "multi_file_overview", "data_quality"}
+    required_family = family in {"topn", "gap", "trend", "contribution", "share", "contribution_followup", "overview", "multi_file_overview", "data_quality"}
     if not required_family:
         return None, None
 
@@ -475,6 +528,9 @@ def _build_missing_expected_result_oracle_payload(
         "topn": "ranking",
         "gap": "ranking_followup",
         "trend": "trend_followup",
+        "contribution": "share_followup",
+        "share": "share_followup",
+        "contribution_followup": "share_followup",
         "overview": "overview",
         "multi_file_overview": "multi_file_overview",
         "data_quality": "data_quality",
@@ -483,6 +539,9 @@ def _build_missing_expected_result_oracle_payload(
         "topn": "ranking",
         "gap": "ranking",
         "trend": "aggregation",
+        "contribution": "top_k_share",
+        "share": "top_k_share",
+        "contribution_followup": "top_k_share",
         "overview": "dataset_overview",
         "multi_file_overview": "multi_table_dataset_overview",
         "data_quality": "data_quality_report",
@@ -499,6 +558,20 @@ def _build_missing_expected_result_oracle_payload(
         if quality_payload is not None:
             return quality_payload, issue_metadata
         return None, issue_metadata
+    if family in {"contribution", "share", "contribution_followup"}:
+        if not contract.verification_rules.get("combined_share_only"):
+            return None, issue_metadata
+        share = _combined_share_value(actual)
+        if share is None:
+            return None, issue_metadata
+        return (
+            {
+                "task_family": "combined_share",
+                "metric": str(contract.metric or ""),
+                "share": _round_oracle_value(share),
+            },
+            issue_metadata,
+        )
     if family == "topn":
         dimension = str(contract.dimension or "").strip()
         metric = str(contract.metric or "").strip()

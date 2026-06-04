@@ -88,6 +88,7 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
     contract = getattr(plan, "task_contract", None)
     if isinstance(contract, TaskExecutionContract):
         contract = _clear_overview_referent_requirements(contract)
+        contract = _inherit_combined_share_flag(contract, question_contract)
         if _question_contract_is_more_specific(contract, question_contract):
             return question_contract
         return contract
@@ -122,6 +123,7 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
             insufficiency_policy=str(contract.get("insufficiency_policy") or "fail_closed"),
         )
         payload_contract = _clear_overview_referent_requirements(payload_contract)
+        payload_contract = _inherit_combined_share_flag(payload_contract, question_contract)
         if _question_contract_is_more_specific(payload_contract, question_contract):
             return question_contract
         return payload_contract
@@ -204,6 +206,19 @@ def _question_contract_is_more_specific(
     if current.task_family == "topn" and question_contract.join_scope and not current.join_scope:
         return True
     return False
+
+
+def _inherit_combined_share_flag(
+    current: TaskExecutionContract | None,
+    question_contract: TaskExecutionContract | None,
+) -> TaskExecutionContract | None:
+    if current is None or question_contract is None:
+        return current
+    if current.task_family != question_contract.task_family:
+        return current
+    if question_contract.verification_rules.get("combined_share_only"):
+        current.verification_rules["combined_share_only"] = True
+    return current
 
 
 def _needs_clarification(report: Any) -> bool:

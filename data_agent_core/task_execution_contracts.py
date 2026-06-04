@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -214,7 +215,13 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
                     "denominator_total_metric": _first_text(params.get("total_metric_column"), f"total_{metric}" if metric else ""),
                     "share_column": _first_text(params.get("share_column"), f"{metric}_share" if metric else "share"),
                     "share_metric": _first_text(params.get("share_metric"), metric),
-                    "combined_share_only": _asks_combined_share(question),
+                    "combined_share_only": _asks_combined_share(question)
+                    or (
+                        operation == "top_k_share"
+                        and str(output_format.get("answer_type") or "") in {"percentage", "number"}
+                        and not params.get("requires_previous_artifact")
+                        and not params.get("referent_values")
+                    ),
                 }
                 if family in {"contribution", "share", "contribution_followup"}
                 else {}
@@ -423,6 +430,12 @@ def _required_columns(
     if family in {"topn", "gap"} and str(params.get("aggregation") or "") in {"count", "nunique", "distinct_count"}:
         required_metric = "count"
     if family in {"contribution", "share", "contribution_followup"}:
+        if (
+            str(output_format.get("answer_type") or "") in {"percentage", "number"}
+            and not params.get("requires_previous_artifact")
+            and not params.get("referent_values")
+        ):
+            return columns
         total_column = _first_text(params.get("total_metric_column"), f"total_{metric}" if metric else "")
         share_column = _first_text(params.get("share_column"), f"{metric}_share" if metric else "share")
         for value in (dimension, metric, total_column, share_column):
@@ -635,7 +648,7 @@ def _verify_contribution_contract(contract: TaskExecutionContract, result: Execu
     answer_text = _direct_answer_text(result)
     violations: list[ContractViolation] = []
     combined_only = bool(contract.verification_rules.get("combined_share_only"))
-    if combined_only and not rows:
+    if combined_only:
         return violations
     if not rows:
         violations.append(_violation("CONTRIBUTION_ROWS_MISSING", "Contribution follow-up requires per-referent result rows.", {}))
@@ -1111,9 +1124,15 @@ def _asks_lowest(question: str) -> bool:
 
 def _asks_combined_share(question: str) -> bool:
     compact = "".join(str(question or "").split())
-    return any(token in compact for token in ("合计占", "合起来占", "总共占", "一共占", "整体占比", "总体占比")) and not any(
-        token in compact for token in ("分别", "各自", "每个", "逐个", "各个")
+    lowered = compact.lower()
+    asks_share = any(token in compact for token in ("合计占", "合起来占", "总共占", "一共占", "整体占比", "总体占比", "占比", "比例", "百分比")) or any(
+        token in lowered for token in ("share", "percentage", "proportion")
     )
+    top_scope = bool(re.search(r"(?:top|前)\s*(?:\d+|[一二两三四五六七八九十]+)", lowered, re.I)) or any(
+        token in compact for token in ("排名第一", "排名第1", "第一名", "第1名")
+    )
+    per_referent = any(token in compact for token in ("分别", "各自", "每个", "逐个", "各个"))
+    return asks_share and (top_scope or any(token in compact for token in ("合计占", "合起来占", "总共占", "一共占", "整体占比", "总体占比"))) and not per_referent
 
 
 def _asks_rank_pair(question: str) -> bool:

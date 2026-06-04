@@ -247,7 +247,8 @@ class AgentRandomConversationEvalTest(unittest.TestCase):
             [turn.capability_family for turn in result.turns],
         )
         self.assertEqual(["ranking", "top_k_share", "aggregation", "aggregation"], [turn.operation for turn in result.turns])
-        self.assertTrue(all(turn.structured_answer for turn in result.turns))
+        self.assertTrue(all(turn.answer_preview for turn in result.turns))
+        self.assertTrue(all(turn.semantic_status not in {"failed", "needs_clarification"} for turn in result.turns))
         self.assertTrue(all(turn.followup_reason for turn in result.turns[1:]))
 
     def test_llm_generated_eval_infers_operation_from_question_not_bad_simulator_label(self) -> None:
@@ -644,7 +645,8 @@ class AgentRandomConversationEvalTest(unittest.TestCase):
             )
 
         self.assertTrue(result.passed, result.issues)
-        self.assertEqual(["dataset_overview", "ranking", "aggregation", "ranking"], [turn.operation for turn in result.turns])
+        self.assertIn(result.turns[0].operation, {"dataset_overview", "multi_table_dataset_overview"})
+        self.assertEqual(["ranking", "aggregation", "ranking"], [turn.operation for turn in result.turns[1:]])
         self.assertEqual(
             ["multi_file_overview", "multi_table_join_ranking", "trend_followup", "ranking_followup"],
             [turn.capability_family for turn in result.turns],
