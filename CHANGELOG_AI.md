@@ -70,6 +70,75 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-06-04 11:13 CST
+
+### 本次目标
+
+按用户要求更新 VDS 项目约束 / 治理文档，把当前真实产品目标、真实用户语义契约、回复格式红线、schema grounding、DeepSeek / LLM 调用路径诊断和测试验收纪律写入后续 Agent 必须遵守的规则。
+
+### 修改文件
+
+- AGENTS.md
+- MAIN_GOAL.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `AGENTS.md`：强化每轮开始前的 dirty / staged / untracked 审计要求，补充并行协作下不覆盖他人改动、修改前后复查状态、文档修改真实验收口径、真实用户语义契约、metadata 表 / DeepSeek 调用路径 / raw markdown 输出等红线。
+- `MAIN_GOAL.md`：把 VDS 产品目标明确为真实上传 CSV / Excel / 多文件数据后的连续自然语言数据分析，不是 benchmark solver；补充 Phase 14 当前优先级、random eval 仅为评估手段、真实数据暴露问题、当前不做边界、真实用户答案语义契约、回复格式与可读性红线、业务 schema grounding、LLM / DeepSeek 调用路径诊断和测试验收纪律。
+- `CHANGELOG_AI.md`：记录本轮治理文档更新，明确这是文档变更，不代表代码修复或测试通过。
+
+### 测试方式
+
+- `git diff --check -- AGENTS.md MAIN_GOAL.md CHANGELOG_AI.md`
+- 只读抽查 `AGENTS.md`、`MAIN_GOAL.md`、`CHANGELOG_AI.md` 相关段落和当前 diff。
+
+### 测试结果
+
+- `git diff --check -- AGENTS.md MAIN_GOAL.md CHANGELOG_AI.md` 通过。
+- 本轮未修改核心代码、前端、测试或 API；未运行代码单测、benchmark、random eval 或浏览器 smoke，不能据此声称代码行为已修复。
+
+### 遗留问题
+
+- 本轮只补治理文档和验收规则；真实数据暴露的 SKU metadata join、TopN / dimension 丢失、follow-up 上下文继承、销售增长率字段识别和前端渲染格式问题仍需要后续代码修复与回归验证。
+- 当前工作区在本轮开始前已有多处业务代码、前端和测试 dirty / staged / untracked 改动；本轮不认领、不覆盖这些改动。
+
+### 是否影响主流程
+
+否。只修改治理文档，不修改 backend、frontend、data_agent_core、runner 或执行链路。
+
+### 是否涉及 Benchmark
+
+涉及文档口径。明确 benchmark / random eval / LLM judge 只是评估手段，不是产品目标；未修改 benchmark runner、scorer、测试数据或评测脚本。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。仅重申 Microsoft Agent Framework / provider adapter 不能承载核心算法，未修改 adapter 代码。
+
+### 是否影响未来多 Agent 迁移
+
+是，影响治理约束。后续多 Agent / provider / planner / verifier / answer builder 修改必须遵守真实用户语义契约、schema grounding、LLM 调用路径诊断和 non-regression 规则。
+
+### 是否修改核心数据契约
+
+否。未修改 contracts、API payload、FinalResponse 或数据库 / 文件 schema。
+
+### 是否修改 API 契约
+
+否。未修改任何 API 路由、请求或响应字段。
+
+### 是否新增或修改错误类型
+
+否。未修改错误类型，只新增文档红线。
+
+### 是否新增或修改运行追踪逻辑
+
+否。未修改 trace、monitor、run store 或 activity trace 逻辑。
+
+### 是否已同步 README
+
+否。本轮没有改变用户可见功能、阶段完成状态、API、安装或运行方式；只更新治理规则和长期约束，因此不改 README。
+
 2026-06-01 13:23 CST
 
 ### 本次目标

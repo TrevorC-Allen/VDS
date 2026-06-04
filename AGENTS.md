@@ -13,7 +13,7 @@
 在修改前，必须检查：
 
 ```bash
-git status
+git status --short
 git branch --show-current
 git diff --stat
 git log --oneline -5
@@ -23,7 +23,8 @@ git worktree list
 然后先用中文说明：
 
 - 当前分支
-- 是否有未提交改动
+- 是否有 dirty / staged / untracked 文件
+- 哪些改动可能是已有改动或他人改动
 - 本轮任务目标
 - 预计修改范围
 - 明确不修改范围
@@ -54,6 +55,8 @@ git worktree list
 - 不要修改计划外文件。
 - 如果必须修改计划外文件，先暂停并说明原因，等待用户确认。
 - 如果发现当前任务可能会和另一个 Codex 实例冲突，先说明冲突点。
+- 不要假设 dirty 文件都是自己造成的；归属不清楚时先报告，不要覆盖、删除、回滚或格式化。
+- 修改前后都要检查 `git status --short` 和 `git diff --stat`。
 
 ## 共享敏感文件
 
@@ -96,6 +99,10 @@ git worktree list
 - benchmark 结果说明优先使用 `comparison.*`、`comparison_scored.*` 和 `scripts/score_comparison_answers.py` 相关产物；不要只用泛化的 gate exact / GPT-like 数量下结论。
 - 如果 benchmark 数字异常，先区分 smoke coverage、proxy/accepted-answer observation、offline scorer correctness，再修改结论或文档。
 - 对浏览器可见结果、demo、运行时行为的描述，必须写清楚实际验证的目录、分支、端口、URL 和验证方式。
+- 当前真实产品目标必须写成“真实上传 CSV / Excel / 多文件数据后的连续自然语言数据分析”，不要写成 benchmark solver、random eval 玩具或只为通过某个 eval。
+- Random eval、benchmark、LLM judge、`comparison_scored.*` 都只是评估手段；不能把 pass_rate、`success=true`、空 errors 或漂亮 overview 写成真实语义成功。
+- 如果只改文档，不能声称代码测试通过；只能说明“文档变更，未涉及代码测试”，并记录是否做了 markdown / diff 检查。
+- 每次修复用户可见行为，都应沉淀 focused regression、before / after 示例、API 级验证，必要时补 UI 可见验证；真实用户暴露的问题不能只靠 smoke 或单测结论覆盖。
 
 ## VDS 红线
 
@@ -109,6 +116,24 @@ git worktree list
 - 不要在文档中夸大 GPT-like parity；必须按语义正确性、文件解析、可见布局、回答风格分别说明差距和证据。
 - 不要在 dirty worktree 下用 `git add .` 或泛化 staging 提交文档；只 stage 本轮明确修改的文件。
 - 不要在未确认用户要求的情况下修改 `main`、push、改远程、删 worktree、覆盖已有目录或重写历史。
+- 不要让 LLM 绕过 executor、Result Normalizer、Verifier、Correction Planner 或 Response Builder 直接编最终答案。
+- 不要把规则文件、字段说明、schema / metadata / dictionary / catalog 类文件当作普通业务事实表参与 join，除非用户明确询问字段含义、表结构或数据字典。
+- 不要用低可信 join 硬算答案；如果本来应该单表计算，也不能让 join blocker 掩盖上游规划错误。
+- 不要假设配置了 DeepSeek / LLM provider 就代表真实分析链路已经调用它；涉及 planner、answer builder、judge 或 provider 的任务必须诊断实际调用路径和 fallback / mock 状态。
+- 不要在用户可见正常结果中暴露 raw markdown 标记，例如 `###`；标题和正文必须有清晰视觉层级，回答不能堆成一坨 markdown 文本。
+- 不要用“缺少指标口径、维表或映射关系”这类泛化模板掩盖可回答问题；必须指出缺哪个字段、候选字段是什么、可以采用什么安全默认口径。
+
+## 真实用户语义契约
+
+后续任何影响用户可见回答、planner、executor、verifier、output 或 frontend 渲染的修改，都必须维护以下契约：
+
+- 有答案时，第一屏必须先给直接答案。
+- TopN 问题必须返回 N 个对象，或者明确说明 distinct 值不足。
+- “哪个 X 最大 / 最高 / 最多”这类 groupby / ranking 问题必须保留 dimension + metric，不能压成只有 scalar `answer`。
+- “差距 / 对比 / 相差多少”必须直接计算 pairwise gap 或 adjacent gap。
+- follow-up 必须继承上一轮 source table、metric、dimension、filter、top objects、time range 和 operation。
+- 多文件 overview 必须列出所有相关表、字段、可能 join key 和分析方向，不能漏表。
+- 数据质量问题必须给字段级 / 规则级证据，例如缺失率、重复行、异常值、类型问题或不可解析日期。
 
 ## 修改后必须输出
 
