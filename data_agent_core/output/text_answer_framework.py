@@ -519,7 +519,14 @@ def _topn_insufficient_contract_answer(context: _FrameContext) -> str:
     distinct_count = len({row.get(dimension) for row in context.rows if row.get(dimension) not in {None, ""}}) if dimension else len(context.rows)
     if distinct_count >= required_n:
         return ""
-    return f"数据集中只有 {distinct_count} 个不同{dimension}，因此无法返回 Top {required_n}，只能展示 Top {distinct_count}。"
+    source_field = str(dimension or "").strip()
+    return (
+        f"你请求了 Top {required_n}，"
+        f"当前只有 {distinct_count} 个{dimension}，无法返回 Top {required_n}，"
+        f"当前数据中{dimension}实际只有 {distinct_count} 个不同{dimension}，"
+        f"source field 为 {source_field}，因此只能展示 Top {distinct_count}。"
+        "这不是系统漏算。"
+    )
 
 
 def _to_int(value: Any) -> int | None:
@@ -1002,7 +1009,10 @@ def _topn_insufficient_caveat(context: _FrameContext, direct_answer: str) -> str
     if distinct_count is None or not required_n:
         return ""
     dimension_text = _display_dimension_label(dimension) if dimension else "对象"
-    return f"当前只有 {distinct_count} 个{dimension_text}，无法满足 Top {required_n}；已展示当前可计算的全部{dimension_text}"
+    return (
+        f"当前只有 {distinct_count} 个{dimension_text}，无法满足 Top {required_n}，"
+        f"已展示当前可计算的全部{dimension_text}，source field 为 {dimension or dimension_text}，这不是系统漏算。"
+    )
 
 
 def _ensure_sentence(text: str) -> str:

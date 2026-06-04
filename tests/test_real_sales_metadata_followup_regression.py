@@ -44,6 +44,32 @@ class RealSalesMetadataFollowupRegressionTest(unittest.TestCase):
         self.assertTrue(result.success, result.errors)
         self.assertEqual([{"sku_factor": "SKU-A", "qty": 22}], result.value)
 
+    def test_top5_sku_sales_with_only_three_distinct_objects_reports_hard_caveat(self) -> None:
+        response = _execute_response("前5个sku销量最高", _sales_tables(with_quantity=True))
+
+        self.assertTrue(response["success"], response["errors"])
+        self.assertEqual("topn", response["contract_family"])
+        task_contract = response["verification"]["task_contract"]
+        self.assertEqual(5, int(task_contract.get("required_n") or 0))
+        self.assertEqual("sku_factor", task_contract.get("dimension"))
+        self.assertEqual("qty", task_contract.get("metric"))
+        self.assertEqual(3, len(response["result"]["rows"]))
+        self.assertEqual(3, response["debug"]["result_artifacts"]["distinct_count"])
+
+        answer = str(response.get("answer") or "")
+        self.assertIn("Top 5", answer)
+        self.assertIn("sku_factor", answer)
+        self.assertIn("实际只有 3", answer)
+        self.assertIn("只能返回 Top 3", answer)
+        self.assertIn("source field 为 sku_factor", answer)
+        self.assertIn("不是系统漏算", answer)
+
+        sections = response.get("structured_answer_sections") or {}
+        caveats = " ".join(str(item) for item in sections.get("caveats") or [])
+        self.assertIn("source field 为 sku_factor", caveats)
+        self.assertIn("Top 5", caveats)
+        self.assertIn("无法满足 Top 5", caveats)
+
     def test_city_order_amount_top1_keeps_dimension_and_metric_in_result_artifact(self) -> None:
         response = _execute_response("哪个城市订单金额最大", _sales_tables(with_quantity=True))
 
