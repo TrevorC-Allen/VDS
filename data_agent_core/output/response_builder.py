@@ -280,8 +280,14 @@ def _topn_insufficient_answer(task_contract: dict[str, Any] | None, execution_re
         if label in {None, ""} or value in {None, ""}:
             continue
         items.append(f"{label} {_format_display_number(value)}")
+    source_field = str(dimension or "").strip()
     suffix = "：" + "、".join(items) if items else ""
-    return f"按{dimension_text}统计{metric_label}，当前只有 {distinct_count} 个{dimension_text}，无法返回 Top {required_n}，因此返回 Top {distinct_count}{suffix}。"
+    detail = (
+        f"当前只有 {distinct_count} 个{dimension_text}，无法返回 Top {required_n}，"
+        f"当前数据中{dimension_text}实际只有 {distinct_count} 个不同{dimension_text}，"
+        f"source field 为 {source_field}，因此只能返回 Top {distinct_count}，这不是系统漏算。"
+    )
+    return f"你请求了 Top {required_n}，按{dimension_text}统计{metric_label}排序后，{detail}{suffix}。"
 
 
 def _trend_empty_answer(task_contract: dict[str, Any] | None, plan: AnalysisPlan, execution_result: ExecutionResult) -> str:
