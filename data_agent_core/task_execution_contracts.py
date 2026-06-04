@@ -741,7 +741,8 @@ def _verify_overview_contract(contract: TaskExecutionContract, result: Execution
 
 def _verify_data_quality_contract(result: ExecutionResult) -> list[ContractViolation]:
     payload = _mapping_payload(result.value)
-    quality = _mapping_payload(payload.get("quality_report")) or payload
+    debug = _mapping_payload(result.debug)
+    quality = _mapping_payload(payload.get("quality_report")) or _mapping_payload(debug.get("quality_report")) or payload
     field_rows = quality.get("field_level_table") if isinstance(quality.get("field_level_table"), list) else []
     answer_text = _answer_text(payload, result)
     violations: list[ContractViolation] = []
@@ -788,7 +789,11 @@ def _mapping_payload(value: Any) -> dict[str, Any]:
 
 
 def _answer_text(payload: dict[str, Any], result: ExecutionResult) -> str:
+    debug = _mapping_payload(result.debug)
+    quality = _mapping_payload(debug.get("quality_report"))
     parts = [str(payload.get("answer") or ""), str(result.summary or "")]
+    if quality:
+        parts.append(str(quality))
     if not parts[0] and isinstance(result.value, dict):
         parts.append(str(result.value))
     return "\n".join(parts)

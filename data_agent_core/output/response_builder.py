@@ -149,6 +149,8 @@ def build_response(
     response_quality_report = quality_report
     if response_quality_report is None and plan.logic_form.operation == "data_quality_report" and isinstance(execution_result.value, dict):
         response_quality_report = execution_result.value
+    if response_quality_report is None and isinstance(execution_result.debug, dict) and isinstance(execution_result.debug.get("quality_report"), dict):
+        response_quality_report = execution_result.debug.get("quality_report")
     response = FinalResponse(
         response_version="v1",
         success=success,

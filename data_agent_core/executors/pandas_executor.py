@@ -29,6 +29,9 @@ def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult
         columns, rows = _result_rows(value)
         warnings = _join_warnings(plan.logic_form.parameters)
         debug = _join_debug(plan.logic_form.parameters)
+        quality_report = _quality_debug_report(plan, context)
+        if quality_report is not None:
+            debug["quality_report"] = quality_report
         return ExecutionResult(
             backend="pandas",
             success=True,
@@ -268,6 +271,27 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
     if op == "fee_volume_threshold":
         return engine.fee_volume_threshold()
     raise ValueError(f"Unsupported operation: {op}")
+
+
+QUALITY_REPORT_OPERATIONS = {
+    "data_quality_report",
+    "quality_summary",
+    "cleaning_policy",
+    "anomaly_rules",
+    "outlier_count",
+    "null_check",
+    "numeric_quality",
+    "temporal_quality",
+}
+
+
+def _quality_debug_report(plan: AnalysisPlan, context: dict[str, Any]) -> dict[str, Any] | None:
+    if str(plan.logic_form.operation or "") not in QUALITY_REPORT_OPERATIONS:
+        return None
+    try:
+        return report_to_dict(build_data_quality_report(_tables_for_quality(context), generated_from="analysis_request"))
+    except Exception:  # noqa: BLE001 - quality debug evidence must not change execution success.
+        return None
 
 
 def _result_rows(value: Any) -> tuple[list[str], list[dict[str, Any]]]:
