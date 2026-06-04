@@ -993,6 +993,32 @@ class GenericCapabilityOperationsTest(unittest.TestCase):
         self.assertEqual("E", result.value["aci"])
         self.assertEqual(["D", "E"], [row["aci"] for row in result.value["candidate_table"]])
 
+    def test_best_fraud_aci_associated_costs_preserve_default_candidate_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rule_d = _fee_rule(1, "GlobalCard", ["D"], fixed_amount=0.10, rate=0)
+            rule_e = _fee_rule(2, "GlobalCard", ["E"], fixed_amount=0.05, rate=0)
+            rule_f = _fee_rule(3, "GlobalCard", ["F"], fixed_amount=0.01, rate=0)
+            (root / "fees.json").write_text(json.dumps([rule_d, rule_e, rule_f]))
+            (root / "merchant_data.json").write_text(
+                json.dumps([{"merchant": "SyntheticMerchant", "account_type": "A", "capture_delay": "manual", "merchant_category_code": 5411}])
+            )
+            (root / "merchant_category_codes.csv").write_text("mcc,description\n5411,Grocery Stores\n")
+            (root / "payments.csv").write_text(
+                "merchant,year,day_of_year,hour_of_day,minute_of_hour,eur_amount,is_credit,has_fraudulent_dispute,is_refused_by_adyen,aci,card_scheme,issuing_country,acquirer_country\n"
+                "SyntheticMerchant,2023,1,0,0,10.0,true,true,false,D,GlobalCard,NL,NL\n"
+            )
+            engine = DabstepFeeEngine(root)
+
+        aci, delta, candidates = engine.best_fraud_aci_associated_costs("SyntheticMerchant", year=2023, month=1)
+
+        self.assertEqual("E", aci)
+        self.assertAlmostEqual(-0.05, delta)
+        self.assertEqual(["D", "E"], sorted(candidates))
+        self.assertEqual("decrease", candidates["E"]["direction"])
+        self.assertIn("baseline_fraud_fee", candidates["E"])
+        self.assertIn("candidate_fraud_fee", candidates["E"])
+
     def test_aci_fee_extreme_uses_only_explicit_aci_rules(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

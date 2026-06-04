@@ -644,8 +644,26 @@ class DabstepFeeEngine:
     ) -> tuple[str, float, dict[str, float]]:
         """Return lower-cost alternative ACI for fraudulent ecommerce transactions."""
 
+        best_aci, best_delta, detailed = self.best_fraud_aci_associated_costs(
+            merchant,
+            year=year,
+            month=month,
+            allowed_acis=allowed_acis,
+        )
+        return best_aci, best_delta, {aci: float(row["associated_cost_delta"]) for aci, row in detailed.items()}
+
+    def best_fraud_aci_associated_costs(
+        self,
+        merchant: str,
+        *,
+        year: int,
+        month: int | None,
+        allowed_acis: tuple[str, ...] = ("D", "E"),
+    ) -> tuple[str, float, dict[str, dict[str, Any]]]:
+        """Return ACI what-if associated cost deltas for fraudulent transactions."""
+
         baseline = self.total_fees(merchant, year=year, month=month, only_fraudulent=True)
-        candidates: dict[str, float] = {}
+        candidates: dict[str, dict[str, Any]] = {}
         for aci in allowed_acis:
             if aci == "G":
                 continue
@@ -656,9 +674,19 @@ class DabstepFeeEngine:
                 aci_override_for_fraud=aci,
                 only_fraudulent=True,
             )
-            candidates[aci] = total - baseline
-        best_aci = min(candidates, key=candidates.get)
-        return best_aci, candidates[best_aci], candidates
+            delta = total - baseline
+            candidates[aci] = {
+                "aci": aci,
+                "fee": delta,
+                "associated_cost_delta": delta,
+                "baseline_fraud_fee": baseline,
+                "candidate_fraud_fee": total,
+                "direction": "decrease" if delta < 0 else "increase" if delta > 0 else "unchanged",
+            }
+        if not candidates:
+            raise ValueError("No ACI associated cost candidates available.")
+        best_aci = sorted(candidates, key=lambda key: (float(candidates[key]["associated_cost_delta"]), key))[0]
+        return best_aci, float(candidates[best_aci]["associated_cost_delta"]), candidates
 
     def cheapest_card_scheme_for_transaction_value(
         self,
