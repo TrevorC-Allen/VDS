@@ -27,6 +27,8 @@ from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMPlanResult, LLMStageResult, complete_stage_with_llm, plan_with_llm
 from data_agent_core.output.chart_renderer import attach_rendered_chart
 from data_agent_core.output.response_builder import build_response
+from data_agent_core.task_contract_builder import apply_referent_contract_from_guidelines
+from data_agent_core.task_execution_contracts import TaskExecutionContract
 from data_agent_core.verifier.result_comparator import compare_results
 from data_agent_core.verifier.result_normalizer import normalize_value
 from data_agent_core.verifier.rule_checker import verify_execution
@@ -118,6 +120,7 @@ class DataAnalysisRoleRuntime:
             guardrail_logic_form=guardrail_logic_form,
         )
         logic_form = _validated_logic_form(llm_plan.logic_form, guardrail_logic_form, self.context)
+        logic_form = apply_referent_contract_from_guidelines(logic_form, guidelines)
         tool_result = self.dispatcher.dispatch(
             ToolCall(
                 step_id=task.task_id + "_tool",
@@ -152,6 +155,8 @@ class DataAnalysisRoleRuntime:
             "logic_form": state.logic_form,
             "analysis_plan": state.analysis_plan,
         }
+        if isinstance(state.analysis_plan, dict) and state.analysis_plan.get("task_contract"):
+            output["task_contract"] = state.analysis_plan["task_contract"]
         return _agent_result(task, True, output, confidence=max(llm_intent.confidence, llm_plan.confidence))
 
     def run_pandas_executor(self, task: AgentTask, state: WorkflowState) -> AgentResult:
@@ -389,6 +394,11 @@ class DataAnalysisRoleRuntime:
         )
         response.insight = _insight_from_payload(state.insight)
         response.chart = _chart_from_payload(state.chart)
+        if state.correction_attempts and response.semantic_status == "passed":
+            if any(isinstance(item, dict) and item.get("rerun_triggered") for item in state.correction_attempts):
+                response.semantic_status = "corrected_passed"
+                if isinstance(response.debug, dict):
+                    response.debug["semantic_status"] = response.semantic_status
         state.final_response = response.to_dict()
         return response
 
@@ -585,6 +595,7 @@ def _analysis_plan_from_payload(payload: dict[str, Any]) -> AnalysisPlan:
         steps=list(payload.get("steps") or []),
         expected_result_shape=str(payload.get("expected_result_shape") or "scalar"),
         constraints=dict(payload.get("constraints") or {}),
+        task_contract=_task_contract_from_payload(payload.get("task_contract") or getattr(logic_form, "task_contract", None)),
     )
 
 
@@ -610,6 +621,7 @@ def _logic_form_from_payload(payload: dict[str, Any]) -> LogicForm:
         answer_target=payload.get("answer_target") or dict(payload.get("output_format") or {}).get("answer_target"),
         output_format=dict(payload.get("output_format") or {}),
         output_contract=dict(payload.get("output_contract") or {}),
+        task_contract=dict(payload.get("task_contract") or {}),
     )
 
 
@@ -638,6 +650,33 @@ def _verification_result_from_payload(payload: dict[str, Any]) -> VerificationRe
         notes=list(payload.get("notes") or []),
         semantic_verification_notes=list(payload.get("semantic_verification_notes") or []),
         correction_action=payload.get("correction_action"),
+        task_contract=payload.get("task_contract"),
+        contract_report=payload.get("contract_report"),
+        oracle_result=payload.get("oracle_result"),
+        semantic_status=str(payload.get("semantic_status") or "legacy_unverified"),
+    )
+
+
+def _task_contract_from_payload(payload: Any) -> TaskExecutionContract | None:
+    if isinstance(payload, TaskExecutionContract):
+        return payload
+    if not isinstance(payload, dict) or not payload:
+        return None
+    return TaskExecutionContract(
+        contract_id=str(payload.get("contract_id") or "contract_payload"),
+        task_family=str(payload.get("task_family") or "unknown"),  # type: ignore[arg-type]
+        required_n=payload.get("required_n"),
+        metric=payload.get("metric"),
+        dimension=payload.get("dimension"),
+        required_output_columns=list(payload.get("required_output_columns") or []),
+        required_answer_elements=list(payload.get("required_answer_elements") or []),
+        requires_previous_artifact=bool(payload.get("requires_previous_artifact")),
+        referent_artifact_id=payload.get("referent_artifact_id"),
+        referent_dimension=payload.get("referent_dimension"),
+        referent_values=list(payload.get("referent_values") or []),
+        referent_policy=str(payload.get("referent_policy") or "must_filter_to_previous_result_objects"),
+        verification_rules=dict(payload.get("verification_rules") or {}),
+        insufficiency_policy=str(payload.get("insufficiency_policy") or "fail_closed"),
     )
 
 
@@ -839,6 +878,8 @@ DIMENSION_REPAIR_ALIASES = {
 
 
 def _corrected_logic_form_payload(logic_payload: dict[str, Any], action: dict[str, Any]) -> dict[str, Any] | None:
+    if action.get("action") == "repair_referent_filter":
+        return _repair_referent_filter_logic_form(logic_payload, action)
     if action.get("action") == "repair_dimension_binding":
         return _repair_dimension_binding_logic_form(logic_payload, action)
     if action.get("action") != "replace_logic_form" or action.get("to_operation") != "rank_by_metric":
@@ -870,6 +911,43 @@ def _corrected_logic_form_payload(logic_payload: dict[str, Any], action: dict[st
     return corrected
 
 
+def _repair_referent_filter_logic_form(logic_payload: dict[str, Any], action: dict[str, Any]) -> dict[str, Any] | None:
+    dimension = str(action.get("referent_dimension") or "")
+    values = [value for value in action.get("referent_values") or [] if value not in (None, "")]
+    if not dimension or not values:
+        return None
+    corrected = dict(logic_payload)
+    params = dict(corrected.get("parameters") or {})
+    filters = dict(corrected.get("filters") or {})
+    filters[dimension] = values
+    corrected["filters"] = filters
+    params.update(
+        {
+            "requires_previous_artifact": True,
+            "referent_artifact_id": str(action.get("referent_artifact_id") or params.get("referent_artifact_id") or ""),
+            "referent_dimension": dimension,
+            "referent_values": values,
+            "referent_policy": "must_filter_to_previous_result_objects",
+        }
+    )
+    current_dimension = str(params.get("dimension") or corrected.get("group_by") or "")
+    if len(values) > 1 and current_dimension and current_dimension != dimension:
+        params.setdefault("series_dimension", dimension)
+    corrected["parameters"] = params
+    task_contract = dict(corrected.get("task_contract") or {})
+    task_contract.update(
+        {
+            "requires_previous_artifact": True,
+            "referent_artifact_id": params["referent_artifact_id"],
+            "referent_dimension": dimension,
+            "referent_values": values,
+            "referent_policy": "must_filter_to_previous_result_objects",
+        }
+    )
+    corrected["task_contract"] = task_contract
+    return corrected
+
+
 def _repair_dimension_binding_logic_form(logic_payload: dict[str, Any], action: dict[str, Any]) -> dict[str, Any] | None:
     if action.get("missing_dimension"):
         return None
@@ -882,6 +960,18 @@ def _repair_dimension_binding_logic_form(logic_payload: dict[str, Any], action: 
         return None
     actual_dimension = str(action.get("actual_dimension") or "")
     if actual_dimension and _same_dimension_field(actual_dimension, repaired_dimension):
+        return None
+
+    params = dict(logic_payload.get("parameters") or {})
+    candidate_filter = params.get("candidate_filter") if isinstance(params, dict) else None
+    candidate_dimension = str(candidate_filter.get("dimension") or "") if isinstance(candidate_filter, dict) else ""
+    current_dimension = str(params.get("dimension") or logic_payload.get("group_by") or actual_dimension or "")
+    if (
+        candidate_dimension
+        and current_dimension
+        and _same_dimension_field(candidate_dimension, repaired_dimension)
+        and not _same_dimension_field(current_dimension, repaired_dimension)
+    ):
         return None
 
     corrected = dict(logic_payload)

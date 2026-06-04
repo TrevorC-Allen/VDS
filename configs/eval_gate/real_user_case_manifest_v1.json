@@ -1,0 +1,3171 @@
+{
+  "name": "real_user_case_manifest_v1",
+  "version": 1,
+  "policy": {
+    "surface": "api_or_service_only",
+    "oracle_visibility": "offline_only_never_sent_to_agent",
+    "random_testing_role": "exploratory_fuzz_not_acceptance_evidence"
+  },
+  "datasets": {
+    "uk_retail": {
+      "files": [
+        "/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx"
+      ],
+      "table_names": [
+        "uk_retail"
+      ],
+      "domain": "retail"
+    },
+    "brazilian_ecommerce": {
+      "files": [
+        "/Users/trevorcui/Desktop/验证数据集/Brazilian E-Commerce Public Dataset/olist_customers_dataset.csv",
+        "/Users/trevorcui/Desktop/验证数据集/Brazilian E-Commerce Public Dataset/olist_order_items_dataset.csv",
+        "/Users/trevorcui/Desktop/验证数据集/Brazilian E-Commerce Public Dataset/olist_orders_dataset.csv",
+        "/Users/trevorcui/Desktop/验证数据集/Brazilian E-Commerce Public Dataset/olist_products_dataset.csv",
+        "/Users/trevorcui/Desktop/验证数据集/Brazilian E-Commerce Public Dataset/olist_order_payments_dataset.csv"
+      ],
+      "table_names": [
+        "customers",
+        "order_items",
+        "orders",
+        "products",
+        "payments"
+      ],
+      "domain": "ecommerce"
+    },
+    "nyc_taxi": {
+      "files": [
+        "/Users/trevorcui/Desktop/验证数据集/NYC Taxi/yellow_tripdata_2025-01.parquet",
+        "/Users/trevorcui/Desktop/验证数据集/NYC Taxi/yellow_tripdata_2026-01.parquet"
+      ],
+      "table_names": [
+        "taxi_2025_01",
+        "taxi_2026_01"
+      ],
+      "domain": "transportation"
+    },
+    "health_history": {
+      "files": [
+        "/Users/trevorcui/Desktop/验证数据集/Health历史数据_5.9/daily_metrics.csv",
+        "/Users/trevorcui/Desktop/验证数据集/Health历史数据_5.9/workouts.csv",
+        "/Users/trevorcui/Desktop/验证数据集/Health历史数据_5.9/monthly_metrics.csv"
+      ],
+      "table_names": [
+        "daily_metrics",
+        "workouts",
+        "monthly_metrics"
+      ],
+      "domain": "health"
+    },
+    "vds_sales": {
+      "files": [
+        "/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/数据/QueryGPT_销售数据_单表版.xlsx"
+      ],
+      "table_names": [
+        "vds_sales"
+      ],
+      "domain": "sales"
+    },
+    "vds_saas": {
+      "files": [
+        "/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/数据/QueryGPT_SaaS订阅数据_单表版.xlsx"
+      ],
+      "table_names": [
+        "vds_saas"
+      ],
+      "domain": "saas"
+    },
+    "microsoft_anonymized": {
+      "files": [
+        "/Users/trevorcui/Desktop/微软脱敏数据/ads_trd_dist_ord_target_emp_1m_df.csv",
+        "/Users/trevorcui/Desktop/微软脱敏数据/ads_trd_dist_ord_target_mgr_1m_df.csv",
+        "/Users/trevorcui/Desktop/微软脱敏数据/v_trd_dist_ord_dtl.csv",
+        "/Users/trevorcui/Desktop/微软脱敏数据/终端客户月度维表.csv"
+      ],
+      "table_names": [
+        "emp_targets",
+        "mgr_targets",
+        "order_detail",
+        "customer_month"
+      ],
+      "domain": "enterprise_sales"
+    }
+  },
+  "cases": [
+    {
+      "case_id": "uk_retail__overview_rows",
+      "capability_family": "overview",
+      "canonical_question": "这个零售数据有多少行和多少订单？",
+      "question_variants": [
+        "这个表大概多少行？",
+        "订单量是多少？",
+        "先告诉我数据规模",
+        "这个 retail 文件有多少记录？",
+        "上传后先看行数和订单数"
+      ],
+      "expected_contract": "上传后概览",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(*) AS row_count, count(DISTINCT InvoiceNo) AS invoice_count FROM {table_0}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "上传后概览",
+        "overview",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "uk_retail"
+    },
+    {
+      "case_id": "uk_retail__top_country_revenue",
+      "capability_family": "topn_single_table",
+      "canonical_question": "收入最高的国家是哪些？",
+      "question_variants": [
+        "哪个国家贡献最多销售额？",
+        "按国家看 Top5 收入",
+        "国家收入排行给我",
+        "哪个 market 卖得最好？",
+        "top country by revenue"
+      ],
+      "expected_contract": "TopN",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT Country, round(sum(Quantity * UnitPrice), 2) AS revenue FROM {table_0} GROUP BY Country ORDER BY revenue DESC LIMIT 5",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "TopN",
+        "topn_single_table",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "uk_retail"
+    },
+    {
+      "case_id": "uk_retail__monthly_revenue",
+      "capability_family": "trend",
+      "canonical_question": "按月份看销售额趋势。",
+      "question_variants": [
+        "换成月份看收入",
+        "销售额月度走势",
+        "每个月 revenue 是多少？",
+        "看一下月趋势",
+        "month by month sales"
+      ],
+      "expected_contract": "趋势",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT strftime(InvoiceDate, '%Y-%m') AS month, round(sum(Quantity * UnitPrice), 2) AS revenue FROM {table_0} GROUP BY month ORDER BY month LIMIT 12",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "趋势",
+        "trend",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "uk_retail"
+    },
+    {
+      "case_id": "uk_retail__top_product_quantity",
+      "capability_family": "topn_single_table",
+      "canonical_question": "卖出数量最多的商品是什么？",
+      "question_variants": [
+        "哪个 SKU 最热？",
+        "Top product by quantity",
+        "数量最多的商品排行",
+        "最畅销产品是什么",
+        "按销量列前十"
+      ],
+      "expected_contract": "TopN",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT StockCode, Description, sum(Quantity) AS quantity FROM {table_0} GROUP BY StockCode, Description ORDER BY quantity DESC LIMIT 10",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "TopN",
+        "topn_single_table",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "uk_retail"
+    },
+    {
+      "case_id": "uk_retail__cancelled_orders",
+      "capability_family": "quality",
+      "canonical_question": "有多少取消订单记录？",
+      "question_variants": [
+        "取消订单有多少？",
+        "InvoiceNo 以 C 开头的记录数",
+        "退单/取消情况",
+        "cancelled lines count",
+        "看一下取消单规模"
+      ],
+      "expected_contract": {
+        "contract_family": "data_quality",
+        "answer_type": "field_level_quality_summary",
+        "required_metrics": [
+          "cancelled_line_count"
+        ],
+        "required_field_level_quality": true,
+        "required_duplicate_check": true,
+        "required_outlier_check": true,
+        "requires_direct_answer_first": true,
+        "requires_artifact_summary": true,
+        "violation_codes_expected_absent": [
+          "quality_field_level_missing",
+          "quality_duplicate_rule_missing",
+          "quality_outlier_rules_missing",
+          "direct_answer_not_first"
+        ]
+      },
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(*) AS cancelled_line_count FROM {table_0} WHERE CAST(InvoiceNo AS VARCHAR) LIKE 'C%'",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "质量检查",
+        "quality",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "uk_retail"
+    },
+    {
+      "case_id": "uk_retail__negative_quantity",
+      "capability_family": "quality",
+      "canonical_question": "哪些记录数量为负，需要如何解释？",
+      "question_variants": [
+        "负数量有多少行？",
+        "Quantity 小于 0 的情况",
+        "这些负数是不是退货？",
+        "清洗前先看负值数量",
+        "negative quantity rows"
+      ],
+      "expected_contract": "清洗边界",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(*) AS negative_quantity_rows FROM {table_0} WHERE Quantity < 0",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "清洗边界",
+        "quality",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "uk_retail"
+    },
+    {
+      "case_id": "uk_retail__customer_concentration",
+      "capability_family": "share",
+      "canonical_question": "收入最高的客户是谁？",
+      "question_variants": [
+        "Top 客户有哪些？",
+        "客户收入排行",
+        "哪个 CustomerID 贡献最高？",
+        "top customers by revenue",
+        "这些高价值客户是谁"
+      ],
+      "expected_contract": "占比",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT CustomerID, round(sum(Quantity * UnitPrice), 2) AS revenue FROM {table_0} WHERE CustomerID IS NOT NULL GROUP BY CustomerID ORDER BY revenue DESC LIMIT 5",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "占比",
+        "share",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "uk_retail"
+    },
+    {
+      "case_id": "uk_retail__field_readiness",
+      "capability_family": "field_mapping",
+      "canonical_question": "这个数据适合按哪些字段分析？",
+      "question_variants": [
+        "字段怎么分维度指标？",
+        "能按国家和商品分析吗？",
+        "有哪些维度可用？",
+        "识别一下指标和维度",
+        "哪些字段适合做下钻"
+      ],
+      "expected_contract": "字段识别",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(DISTINCT Country) AS country_count, count(DISTINCT StockCode) AS sku_count FROM {table_0}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "字段识别",
+        "field_mapping",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "uk_retail"
+    },
+    {
+      "case_id": "brazilian_ecommerce__order_status",
+      "capability_family": "overview",
+      "canonical_question": "订单状态分布是什么？",
+      "question_variants": [
+        "各状态订单数",
+        "delivered/canceled 分别多少？",
+        "先看订单状态",
+        "订单履约状态分布",
+        "status breakdown"
+      ],
+      "expected_contract": "上传后概览",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT order_status, count(*) AS orders FROM {table_2} GROUP BY order_status ORDER BY orders DESC",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "上传后概览",
+        "overview",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "brazilian_ecommerce"
+    },
+    {
+      "case_id": "brazilian_ecommerce__top_state_orders",
+      "capability_family": "join",
+      "canonical_question": "哪个州订单最多？",
+      "question_variants": [
+        "按州看订单 Top10",
+        "哪个 state 需求最大？",
+        "客户州分布排行",
+        "state order ranking",
+        "订单最多的地区"
+      ],
+      "expected_contract": {
+        "contract_family": "topn",
+        "answer_type": "ranked_table",
+        "required_row_count": 10,
+        "min_row_count": 10,
+        "allow_insufficient_data_explanation": true,
+        "required_dimensions": [
+          "customer_state"
+        ],
+        "required_metrics": [
+          "orders"
+        ],
+        "required_sort": {
+          "metric": "orders",
+          "order": "desc"
+        },
+        "requires_direct_answer_first": true,
+        "requires_artifact_summary": true,
+        "violation_codes_expected_absent": [
+          "topn_result_rows_short",
+          "topn_missing_sort_basis",
+          "topn_missing_metric_value",
+          "direct_answer_not_first"
+        ]
+      },
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT c.customer_state, count(*) AS orders FROM {table_2} o JOIN {table_0} c ON o.customer_id = c.customer_id GROUP BY c.customer_state ORDER BY orders DESC LIMIT 10",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "TopN",
+        "join",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "brazilian_ecommerce"
+    },
+    {
+      "case_id": "brazilian_ecommerce__gmv",
+      "capability_family": "single_table_aggregation",
+      "canonical_question": "商品金额和运费总额是多少？",
+      "question_variants": [
+        "GMV 和 freight 各多少？",
+        "订单明细金额汇总",
+        "总销售额是多少",
+        "item price sum",
+        "运费规模"
+      ],
+      "expected_contract": "指标汇总",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT round(sum(price), 2) AS item_gmv, round(sum(freight_value), 2) AS freight FROM {table_1}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "指标汇总",
+        "single_table_aggregation",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "brazilian_ecommerce"
+    },
+    {
+      "case_id": "brazilian_ecommerce__top_category",
+      "capability_family": "join",
+      "canonical_question": "收入最高的商品类目是什么？",
+      "question_variants": [
+        "Top category by revenue",
+        "品类销售额排行",
+        "哪个类目最赚钱？",
+        "product category top10",
+        "按品类看销售额"
+      ],
+      "expected_contract": {
+        "contract_family": "topn",
+        "answer_type": "join_ranked_table",
+        "required_row_count": 10,
+        "min_row_count": 10,
+        "allow_insufficient_data_explanation": true,
+        "required_dimensions": [
+          "product_category_name"
+        ],
+        "required_metrics": [
+          "revenue"
+        ],
+        "required_sort": {
+          "by": [
+            "revenue"
+          ],
+          "order": "desc"
+        },
+        "required_join_keys": [
+          "product_id"
+        ],
+        "requires_direct_answer_first": true,
+        "requires_artifact_summary": true,
+        "violation_codes_expected_absent": [
+          "topn_result_rows_short",
+          "topn_missing_sort_basis",
+          "topn_missing_metric_value",
+          "direct_answer_not_first"
+        ]
+      },
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT p.product_category_name, round(sum(i.price), 2) AS revenue FROM {table_1} i JOIN {table_3} p ON i.product_id = p.product_id GROUP BY p.product_category_name ORDER BY revenue DESC LIMIT 10",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "多文件 join",
+        "join",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "brazilian_ecommerce"
+    },
+    {
+      "case_id": "brazilian_ecommerce__delivery_delay",
+      "capability_family": "quality",
+      "canonical_question": "有多少订单晚于预计送达？",
+      "question_variants": [
+        "延迟交付订单数",
+        "late delivery 有多少",
+        "哪些订单超过预计日期？",
+        "配送时效问题",
+        "late orders count"
+      ],
+      "expected_contract": "质量检查",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(*) AS late_orders FROM {table_2} WHERE order_delivered_customer_date > order_estimated_delivery_date",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "质量检查",
+        "quality",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "brazilian_ecommerce"
+    },
+    {
+      "case_id": "brazilian_ecommerce__delivery_days",
+      "capability_family": "trend",
+      "canonical_question": "平均配送天数是多少？",
+      "question_variants": [
+        "平均多久送到？",
+        "下单到签收几天",
+        "delivery days average",
+        "履约周期均值",
+        "送达时长"
+      ],
+      "expected_contract": "趋势/时长",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT round(avg(date_diff('day', order_purchase_timestamp::TIMESTAMP, order_delivered_customer_date::TIMESTAMP)), 2) AS avg_delivery_days FROM {table_2} WHERE order_delivered_customer_date IS NOT NULL",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "趋势/时长",
+        "trend",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "brazilian_ecommerce"
+    },
+    {
+      "case_id": "brazilian_ecommerce__payment_mix",
+      "capability_family": "share",
+      "canonical_question": "不同支付方式金额占比如何？",
+      "question_variants": [
+        "支付方式结构",
+        "信用卡和 boleto 哪个多？",
+        "payment mix",
+        "按 payment_type 汇总",
+        "支付金额排行"
+      ],
+      "expected_contract": "占比",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT payment_type, count(*) AS payments, round(sum(payment_value), 2) AS value FROM {table_4} GROUP BY payment_type ORDER BY value DESC",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "占比",
+        "share",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "brazilian_ecommerce"
+    },
+    {
+      "case_id": "brazilian_ecommerce__multi_file_keys",
+      "capability_family": "join",
+      "canonical_question": "这些文件可以用哪些 key 关联？",
+      "question_variants": [
+        "多文件怎么 join？",
+        "order_id product_id 能连哪些表？",
+        "关联键检查",
+        "join key readiness",
+        "多表关系怎么看"
+      ],
+      "expected_contract": {
+        "contract_family": "multi_file_overview",
+        "answer_type": "file_relationship_overview",
+        "required_all_files_covered": true,
+        "required_tables_covered": [
+          "customers",
+          "order_items",
+          "orders",
+          "products",
+          "payments"
+        ],
+        "required_join_keys": [
+          "customer_id",
+          "order_id",
+          "product_id",
+          "payment_id"
+        ],
+        "required_dimensions": [
+          "customers",
+          "order_items",
+          "orders",
+          "products",
+          "payments"
+        ],
+        "required_metrics": [
+          "order_ids_in_items",
+          "products_in_items"
+        ],
+        "requires_direct_answer_first": true,
+        "requires_artifact_summary": true,
+        "violation_codes_expected_absent": [
+          "multi_file_missing_file_coverage",
+          "multi_file_missing_core_fields",
+          "multi_file_missing_join_keys",
+          "multi_file_missing_analysis_directions",
+          "direct_answer_not_first"
+        ]
+      },
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(DISTINCT order_id) AS order_ids_in_items, count(DISTINCT product_id) AS products_in_items FROM {table_1}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "多文件 join",
+        "join",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "brazilian_ecommerce"
+    },
+    {
+      "case_id": "nyc_taxi__row_compare",
+      "capability_family": "overview",
+      "canonical_question": "2025 年 1 月和 2026 年 1 月各有多少行程？",
+      "question_variants": [
+        "两年一月行程量对比",
+        "2025 vs 2026 trip count",
+        "哪个月记录更多？",
+        "两份 taxi 文件规模",
+        "行程数对比"
+      ],
+      "expected_contract": "上传后概览",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT '2025-01' AS month, count(*) AS trips FROM {table_0} UNION ALL SELECT '2026-01', count(*) FROM {table_1}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "上传后概览",
+        "overview",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "nyc_taxi"
+    },
+    {
+      "case_id": "nyc_taxi__revenue_compare",
+      "capability_family": "growth",
+      "canonical_question": "两年 1 月 total_amount 对比如何？",
+      "question_variants": [
+        "总金额同比看一下",
+        "2026 比 2025 多多少？",
+        "total amount comparison",
+        "出租车收入对比",
+        "金额增长"
+      ],
+      "expected_contract": "增长",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT '2025-01' AS month, round(sum(total_amount), 2) AS total_amount FROM {table_0} UNION ALL SELECT '2026-01', round(sum(total_amount), 2) FROM {table_1}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "增长",
+        "growth",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "nyc_taxi"
+    },
+    {
+      "case_id": "nyc_taxi__top_pickup",
+      "capability_family": "topn_single_table",
+      "canonical_question": "2026 年最热门上车区域是哪里？",
+      "question_variants": [
+        "Top pickup zones",
+        "PULocationID 排行",
+        "哪个上车点最多？",
+        "2026 pickup top10",
+        "热门上车区域"
+      ],
+      "expected_contract": "TopN",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT PULocationID, count(*) AS trips FROM {table_1} GROUP BY PULocationID ORDER BY trips DESC LIMIT 10",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "TopN",
+        "topn_single_table",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "nyc_taxi"
+    },
+    {
+      "case_id": "nyc_taxi__payment_type",
+      "capability_family": "share",
+      "canonical_question": "2026 年支付方式分布是什么？",
+      "question_variants": [
+        "payment_type 结构",
+        "现金和刷卡占比",
+        "支付方式排行",
+        "按 payment type 汇总",
+        "payment mix"
+      ],
+      "expected_contract": "占比",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT payment_type, count(*) AS trips, round(sum(total_amount), 2) AS total_amount FROM {table_1} GROUP BY payment_type ORDER BY trips DESC",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "占比",
+        "share",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "nyc_taxi"
+    },
+    {
+      "case_id": "nyc_taxi__avg_tip",
+      "capability_family": "single_table_aggregation",
+      "canonical_question": "平均小费和平均总金额是多少？",
+      "question_variants": [
+        "avg tip 是多少",
+        "平均 total_amount",
+        "小费水平",
+        "每单平均金额",
+        "tip amount average"
+      ],
+      "expected_contract": "指标汇总",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT round(avg(tip_amount), 2) AS avg_tip, round(avg(total_amount), 2) AS avg_total FROM {table_1}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "指标汇总",
+        "single_table_aggregation",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "nyc_taxi"
+    },
+    {
+      "case_id": "nyc_taxi__long_trips",
+      "capability_family": "filtering",
+      "canonical_question": "20 英里以上长途行程有多少？",
+      "question_variants": [
+        "长距离行程数量",
+        "trip_distance >=20",
+        "long trips count",
+        "长途订单",
+        "筛选 20 miles 以上"
+      ],
+      "expected_contract": "过滤",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(*) AS long_trip_count FROM {table_1} WHERE trip_distance >= 20",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "过滤",
+        "filtering",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "nyc_taxi"
+    },
+    {
+      "case_id": "nyc_taxi__negative_amount",
+      "capability_family": "quality",
+      "canonical_question": "是否有 total_amount 为负的异常记录？",
+      "question_variants": [
+        "负金额记录数",
+        "total_amount < 0",
+        "异常金额检查",
+        "退款或冲正有多少",
+        "negative total rows"
+      ],
+      "expected_contract": "质量检查",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(*) AS negative_total_rows FROM {table_1} WHERE total_amount < 0",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "质量检查",
+        "quality",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "nyc_taxi"
+    },
+    {
+      "case_id": "nyc_taxi__airport_fee",
+      "capability_family": "field_mapping",
+      "canonical_question": "Airport_fee 字段反映了什么规模？",
+      "question_variants": [
+        "机场费有多少记录",
+        "Airport_fee 总额",
+        "机场相关费用",
+        "airport fee rows",
+        "这个字段怎么理解"
+      ],
+      "expected_contract": "字段识别",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(*) AS airport_fee_rows, round(sum(Airport_fee), 2) AS airport_fee_sum FROM {table_1} WHERE Airport_fee > 0",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "字段识别",
+        "field_mapping",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "nyc_taxi"
+    },
+    {
+      "case_id": "health_history__daily_range",
+      "capability_family": "overview",
+      "canonical_question": "健康日指标覆盖什么时间范围？",
+      "question_variants": [
+        "这些 health 数据从哪天到哪天？",
+        "日数据有多少天",
+        "时间范围",
+        "daily metrics range",
+        "覆盖周期"
+      ],
+      "expected_contract": "上传后概览",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT min(date) AS start_date, max(date) AS end_date, count(*) AS days FROM {table_0}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "上传后概览",
+        "overview",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "health_history"
+    },
+    {
+      "case_id": "health_history__steps_month",
+      "capability_family": "trend",
+      "canonical_question": "每月平均步数趋势如何？",
+      "question_variants": [
+        "月度步数走势",
+        "steps by month",
+        "哪个月步数高？",
+        "平均步数趋势",
+        "换成月份看"
+      ],
+      "expected_contract": "趋势",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT month, round(avg(steps), 2) AS avg_steps FROM {table_2} WHERE steps IS NOT NULL GROUP BY month ORDER BY month LIMIT 12",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "趋势",
+        "trend",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "health_history"
+    },
+    {
+      "case_id": "health_history__active_energy",
+      "capability_family": "single_table_aggregation",
+      "canonical_question": "平均每日活动能量是多少？",
+      "question_variants": [
+        "active energy 平均值",
+        "每天消耗多少活动热量",
+        "活动能量均值",
+        "avg active kcal",
+        "健康能量指标"
+      ],
+      "expected_contract": "指标汇总",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT round(avg(active_energy_kcal), 2) AS avg_active_energy FROM {table_0} WHERE active_energy_kcal IS NOT NULL",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "指标汇总",
+        "single_table_aggregation",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "health_history"
+    },
+    {
+      "case_id": "health_history__sleep_quality",
+      "capability_family": "field_mapping",
+      "canonical_question": "平均睡眠时长是多少？",
+      "question_variants": [
+        "睡眠数据怎么看？",
+        "asleep hours 平均",
+        "睡了多久",
+        "sleep average",
+        "睡眠概览"
+      ],
+      "expected_contract": "字段识别",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT round(avg(sleep_asleep_hours), 2) AS avg_sleep_asleep, round(avg(sleep_in_bed_hours), 2) AS avg_sleep_in_bed FROM {table_0} WHERE sleep_asleep_hours IS NOT NULL",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "字段识别",
+        "field_mapping",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "health_history"
+    },
+    {
+      "case_id": "health_history__workout_type",
+      "capability_family": "topn_single_table",
+      "canonical_question": "最多的运动类型是什么？",
+      "question_variants": [
+        "workout 类型排行",
+        "哪种运动最多",
+        "运动次数 Top",
+        "type by workouts",
+        "运动结构"
+      ],
+      "expected_contract": "TopN",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT type, count(*) AS workouts, round(sum(duration_min), 2) AS total_minutes FROM {table_1} GROUP BY type ORDER BY workouts DESC LIMIT 10",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "TopN",
+        "topn_single_table",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "health_history"
+    },
+    {
+      "case_id": "health_history__heart_rate",
+      "capability_family": "single_table_aggregation",
+      "canonical_question": "心率指标大概是什么水平？",
+      "question_variants": [
+        "平均心率",
+        "heart rate summary",
+        "最低最高心率",
+        "心率概览",
+        "hr 指标"
+      ],
+      "expected_contract": "指标汇总",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT round(avg(heart_rate_bpm_avg), 2) AS avg_hr, round(min(heart_rate_bpm_min), 2) AS min_hr, round(max(heart_rate_bpm_max), 2) AS max_hr FROM {table_0}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "指标汇总",
+        "single_table_aggregation",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "health_history"
+    },
+    {
+      "case_id": "health_history__missing_sleep",
+      "capability_family": "quality",
+      "canonical_question": "睡眠字段缺失了多少天？",
+      "question_variants": [
+        "睡眠缺失天数",
+        "sleep_asleep_hours 为空",
+        "数据质量检查",
+        "missing sleep",
+        "哪些天没睡眠数据"
+      ],
+      "expected_contract": "质量检查",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(*) AS missing_sleep_days FROM {table_0} WHERE sleep_asleep_hours IS NULL",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "质量检查",
+        "quality",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "health_history"
+    },
+    {
+      "case_id": "health_history__distance_workouts",
+      "capability_family": "filtering",
+      "canonical_question": "有距离记录的运动有多少，总距离多少？",
+      "question_variants": [
+        "有里程的 workouts",
+        "distance_km 汇总",
+        "运动距离总计",
+        "distance workouts",
+        "跑步骑行距离"
+      ],
+      "expected_contract": "过滤",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(*) AS distance_workouts, round(sum(distance_km), 2) AS total_distance FROM {table_1} WHERE distance_km > 0",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "过滤",
+        "filtering",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "health_history"
+    },
+    {
+      "case_id": "vds_sales__sales_overview",
+      "capability_family": "overview",
+      "canonical_question": "销售数据整体规模和金额是多少？",
+      "question_variants": [
+        "总销售额和利润",
+        "先看销售概览",
+        "这个销售表多少行",
+        "sales overview",
+        "整体营收"
+      ],
+      "expected_contract": "上传后概览",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(*) AS rows, round(sum(\"销售额\"), 2) AS sales, round(sum(\"利润\"), 2) AS profit FROM {table_0}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "上传后概览",
+        "overview",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_sales"
+    },
+    {
+      "case_id": "vds_sales__region_sales",
+      "capability_family": "topn_single_table",
+      "canonical_question": "哪个区域销售额最高？",
+      "question_variants": [
+        "区域销售排行",
+        "Top region by sales",
+        "按区域汇总销售额",
+        "哪个地区卖得最好",
+        "区域 TopN"
+      ],
+      "expected_contract": "TopN",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT \"区域\", round(sum(\"销售额\"), 2) AS sales FROM {table_0} GROUP BY \"区域\" ORDER BY sales DESC LIMIT 10",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "TopN",
+        "topn_single_table",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_sales"
+    },
+    {
+      "case_id": "vds_sales__city_profit",
+      "capability_family": "topn_single_table",
+      "canonical_question": "利润最高的城市是哪些？",
+      "question_variants": [
+        "城市利润排行",
+        "top city by profit",
+        "哪些城市最赚钱",
+        "按城市看利润",
+        "利润 Top 城市"
+      ],
+      "expected_contract": "TopN",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT \"城市\", round(sum(\"利润\"), 2) AS profit FROM {table_0} GROUP BY \"城市\" ORDER BY profit DESC LIMIT 10",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "TopN",
+        "topn_single_table",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_sales"
+    },
+    {
+      "case_id": "vds_sales__channel_sales",
+      "capability_family": "share",
+      "canonical_question": "不同来源渠道销售额如何？",
+      "question_variants": [
+        "渠道销售额占比",
+        "来源渠道排行",
+        "channel performance",
+        "哪个渠道贡献高",
+        "按渠道汇总"
+      ],
+      "expected_contract": "占比",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT \"来源渠道\", round(sum(\"销售额\"), 2) AS sales FROM {table_0} GROUP BY \"来源渠道\" ORDER BY sales DESC",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "占比",
+        "share",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_sales"
+    },
+    {
+      "case_id": "vds_sales__monthly_sales",
+      "capability_family": "trend",
+      "canonical_question": "按月份看销售额趋势。",
+      "question_variants": [
+        "月销售趋势",
+        "换成月份看",
+        "monthly sales",
+        "每月销售额",
+        "月份走势"
+      ],
+      "expected_contract": "趋势",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT \"月份\", round(sum(\"销售额\"), 2) AS sales FROM {table_0} GROUP BY \"月份\" ORDER BY \"月份\"",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "趋势",
+        "trend",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_sales"
+    },
+    {
+      "case_id": "vds_sales__discount_effect",
+      "capability_family": "filtering",
+      "canonical_question": "折扣率整体水平和销售额是什么关系？",
+      "question_variants": [
+        "平均折扣率",
+        "discount 情况",
+        "折扣和销售",
+        "折扣水平",
+        "折扣字段怎么看"
+      ],
+      "expected_contract": "过滤",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT round(avg(\"折扣率\"), 4) AS avg_discount, round(sum(\"销售额\"), 2) AS sales FROM {table_0}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "过滤",
+        "filtering",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_sales"
+    },
+    {
+      "case_id": "vds_sales__status_sales",
+      "capability_family": "field_mapping",
+      "canonical_question": "不同状态的记录分布是什么？",
+      "question_variants": [
+        "状态字段分布",
+        "完成和未完成多少",
+        "按状态看销售额",
+        "status breakdown",
+        "状态口径"
+      ],
+      "expected_contract": "字段识别",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT \"状态\", count(*) AS records, round(sum(\"销售额\"), 2) AS sales FROM {table_0} GROUP BY \"状态\" ORDER BY records DESC",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "字段识别",
+        "field_mapping",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_sales"
+    },
+    {
+      "case_id": "vds_sales__profit_margin",
+      "capability_family": "share",
+      "canonical_question": "整体利润率是多少？",
+      "question_variants": [
+        "毛利率/利润率",
+        "利润除以销售额",
+        "profit margin",
+        "整体赚钱效率",
+        "利润率口径"
+      ],
+      "expected_contract": "增长/占比",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT round(sum(\"利润\") / nullif(sum(\"销售额\"), 0), 4) AS profit_margin FROM {table_0}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "增长/占比",
+        "share",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_sales"
+    },
+    {
+      "case_id": "vds_saas__saas_overview",
+      "capability_family": "overview",
+      "canonical_question": "SaaS 订阅数据整体收入和毛利是多少？",
+      "question_variants": [
+        "SaaS 概览",
+        "订阅收入总额",
+        "这个表规模",
+        "revenue and gross profit",
+        "收入毛利汇总"
+      ],
+      "expected_contract": "上传后概览",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT count(*) AS rows, round(sum(\"订阅收入\"), 2) AS revenue, round(sum(\"毛利\"), 2) AS gross_profit FROM {table_0}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "上传后概览",
+        "overview",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_saas"
+    },
+    {
+      "case_id": "vds_saas__product_line",
+      "capability_family": "topn_single_table",
+      "canonical_question": "哪个产品线订阅收入最高？",
+      "question_variants": [
+        "产品线收入排行",
+        "top product line",
+        "按产品线汇总",
+        "哪个产品线最强",
+        "产品线 TopN"
+      ],
+      "expected_contract": "TopN",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT \"产品线\", round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"产品线\" ORDER BY revenue DESC LIMIT 10",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "TopN",
+        "topn_single_table",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_saas"
+    },
+    {
+      "case_id": "vds_saas__customer_type",
+      "capability_family": "share",
+      "canonical_question": "不同客户类型收入结构如何？",
+      "question_variants": [
+        "客户类型占比",
+        "企业客户和个人客户",
+        "customer type mix",
+        "按客户类型看收入",
+        "客户结构"
+      ],
+      "expected_contract": "占比",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT \"客户类型\", count(*) AS customers, round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"客户类型\" ORDER BY revenue DESC",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "占比",
+        "share",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_saas"
+    },
+    {
+      "case_id": "vds_saas__channel_revenue",
+      "capability_family": "topn_single_table",
+      "canonical_question": "获客渠道收入排行是什么？",
+      "question_variants": [
+        "渠道收入",
+        "获客渠道 top",
+        "channel revenue",
+        "哪个渠道带来收入",
+        "渠道结构"
+      ],
+      "expected_contract": "TopN",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT \"获客渠道\", round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"获客渠道\" ORDER BY revenue DESC",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "TopN",
+        "topn_single_table",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_saas"
+    },
+    {
+      "case_id": "vds_saas__monthly_revenue",
+      "capability_family": "trend",
+      "canonical_question": "按月份看订阅收入趋势。",
+      "question_variants": [
+        "月度订阅收入",
+        "换成月份看 revenue",
+        "monthly saas revenue",
+        "收入走势",
+        "月份趋势"
+      ],
+      "expected_contract": "趋势",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT \"月份\", round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"月份\" ORDER BY \"月份\"",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p0",
+      "tags": [
+        "趋势",
+        "trend",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_saas"
+    },
+    {
+      "case_id": "vds_saas__nps",
+      "capability_family": "field_mapping",
+      "canonical_question": "NPS 平均水平是多少？",
+      "question_variants": [
+        "平均 NPS",
+        "客户满意度",
+        "NPS score",
+        "评分水平",
+        "NPS 字段怎么看"
+      ],
+      "expected_contract": "字段识别",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT round(avg(\"NPS评分\"), 2) AS avg_nps FROM {table_0} WHERE \"NPS评分\" IS NOT NULL",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "字段识别",
+        "field_mapping",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_saas"
+    },
+    {
+      "case_id": "vds_saas__subscription_status",
+      "capability_family": "filtering",
+      "canonical_question": "不同订阅状态的收入和记录数是什么？",
+      "question_variants": [
+        "订阅状态分布",
+        "活跃和流失多少",
+        "subscription status",
+        "按状态看收入",
+        "状态口径"
+      ],
+      "expected_contract": "过滤",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT \"订阅状态\", count(*) AS records, round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"订阅状态\" ORDER BY records DESC",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "过滤",
+        "filtering",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_saas"
+    },
+    {
+      "case_id": "vds_saas__gross_margin",
+      "capability_family": "share",
+      "canonical_question": "整体毛利率是多少？",
+      "question_variants": [
+        "毛利率",
+        "毛利除以订阅收入",
+        "gross margin",
+        "SaaS 盈利效率",
+        "整体 margin"
+      ],
+      "expected_contract": "占比",
+      "oracle_type": "duckdb_sql",
+      "oracle_query_or_formula": "SELECT round(sum(\"毛利\") / nullif(sum(\"订阅收入\"), 0), 4) AS gross_margin FROM {table_0}",
+      "answer_requirements": {
+        "answerability": "answerable",
+        "must_use_oracle": true,
+        "required_terms": [],
+        "expected_numbers": []
+      },
+      "severity": "p1",
+      "tags": [
+        "占比",
+        "share",
+        "real_user_v1"
+      ],
+      "metadata": {
+        "expected_route": "real_user_analysis"
+      },
+      "dataset": "vds_saas"
+    }
+  ],
+  "conversations": [
+    {
+      "conversation_id": "uk_retail_flow_01",
+      "dataset": "uk_retail",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "这个零售数据有多少行和多少订单？",
+          "expected_contract": "上传后概览",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS row_count, count(DISTINCT InvoiceNo) AS invoice_count FROM {table_0}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "趋势",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT strftime(InvoiceDate, '%Y-%m') AS month, round(sum(Quantity * UnitPrice), 2) AS revenue FROM {table_0} GROUP BY month ORDER BY month LIMIT 12",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "质量检查",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS cancelled_line_count FROM {table_0} WHERE CAST(InvoiceNo AS VARCHAR) LIKE 'C%'",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "uk_retail_flow_02",
+      "dataset": "uk_retail",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "收入最高的国家是哪些？",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT Country, round(sum(Quantity * UnitPrice), 2) AS revenue FROM {table_0} GROUP BY Country ORDER BY revenue DESC LIMIT 5",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT StockCode, Description, sum(Quantity) AS quantity FROM {table_0} GROUP BY StockCode, Description ORDER BY quantity DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "清洗边界",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS negative_quantity_rows FROM {table_0} WHERE Quantity < 0",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "uk_retail_flow_03",
+      "dataset": "uk_retail",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "按月份看销售额趋势。",
+          "expected_contract": "趋势",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT strftime(InvoiceDate, '%Y-%m') AS month, round(sum(Quantity * UnitPrice), 2) AS revenue FROM {table_0} GROUP BY month ORDER BY month LIMIT 12",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "质量检查",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS cancelled_line_count FROM {table_0} WHERE CAST(InvoiceNo AS VARCHAR) LIKE 'C%'",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "占比",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT CustomerID, round(sum(Quantity * UnitPrice), 2) AS revenue FROM {table_0} WHERE CustomerID IS NOT NULL GROUP BY CustomerID ORDER BY revenue DESC LIMIT 5",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "uk_retail_flow_04",
+      "dataset": "uk_retail",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "卖出数量最多的商品是什么？",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT StockCode, Description, sum(Quantity) AS quantity FROM {table_0} GROUP BY StockCode, Description ORDER BY quantity DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "清洗边界",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS negative_quantity_rows FROM {table_0} WHERE Quantity < 0",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "字段识别",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(DISTINCT Country) AS country_count, count(DISTINCT StockCode) AS sku_count FROM {table_0}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "brazilian_ecommerce_flow_01",
+      "dataset": "brazilian_ecommerce",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "订单状态分布是什么？",
+          "expected_contract": "上传后概览",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT order_status, count(*) AS orders FROM {table_2} GROUP BY order_status ORDER BY orders DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "指标汇总",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(sum(price), 2) AS item_gmv, round(sum(freight_value), 2) AS freight FROM {table_1}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "质量检查",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS late_orders FROM {table_2} WHERE order_delivered_customer_date > order_estimated_delivery_date",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "brazilian_ecommerce_flow_02",
+      "dataset": "brazilian_ecommerce",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "哪个州订单最多？",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT c.customer_state, count(*) AS orders FROM {table_2} o JOIN {table_0} c ON o.customer_id = c.customer_id GROUP BY c.customer_state ORDER BY orders DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "多文件 join",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT p.product_category_name, round(sum(i.price), 2) AS revenue FROM {table_1} i JOIN {table_3} p ON i.product_id = p.product_id GROUP BY p.product_category_name ORDER BY revenue DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "趋势/时长",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(date_diff('day', order_purchase_timestamp::TIMESTAMP, order_delivered_customer_date::TIMESTAMP)), 2) AS avg_delivery_days FROM {table_2} WHERE order_delivered_customer_date IS NOT NULL",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "brazilian_ecommerce_flow_03",
+      "dataset": "brazilian_ecommerce",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "商品金额和运费总额是多少？",
+          "expected_contract": "指标汇总",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(sum(price), 2) AS item_gmv, round(sum(freight_value), 2) AS freight FROM {table_1}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "质量检查",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS late_orders FROM {table_2} WHERE order_delivered_customer_date > order_estimated_delivery_date",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "占比",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT payment_type, count(*) AS payments, round(sum(payment_value), 2) AS value FROM {table_4} GROUP BY payment_type ORDER BY value DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "brazilian_ecommerce_flow_04",
+      "dataset": "brazilian_ecommerce",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "收入最高的商品类目是什么？",
+          "expected_contract": "多文件 join",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT p.product_category_name, round(sum(i.price), 2) AS revenue FROM {table_1} i JOIN {table_3} p ON i.product_id = p.product_id GROUP BY p.product_category_name ORDER BY revenue DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "趋势/时长",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(date_diff('day', order_purchase_timestamp::TIMESTAMP, order_delivered_customer_date::TIMESTAMP)), 2) AS avg_delivery_days FROM {table_2} WHERE order_delivered_customer_date IS NOT NULL",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "多文件 join",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(DISTINCT order_id) AS order_ids_in_items, count(DISTINCT product_id) AS products_in_items FROM {table_1}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "nyc_taxi_flow_01",
+      "dataset": "nyc_taxi",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "2025 年 1 月和 2026 年 1 月各有多少行程？",
+          "expected_contract": "上传后概览",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT '2025-01' AS month, count(*) AS trips FROM {table_0} UNION ALL SELECT '2026-01', count(*) FROM {table_1}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT PULocationID, count(*) AS trips FROM {table_1} GROUP BY PULocationID ORDER BY trips DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "指标汇总",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(tip_amount), 2) AS avg_tip, round(avg(total_amount), 2) AS avg_total FROM {table_1}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "nyc_taxi_flow_02",
+      "dataset": "nyc_taxi",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "两年 1 月 total_amount 对比如何？",
+          "expected_contract": "增长",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT '2025-01' AS month, round(sum(total_amount), 2) AS total_amount FROM {table_0} UNION ALL SELECT '2026-01', round(sum(total_amount), 2) FROM {table_1}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "占比",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT payment_type, count(*) AS trips, round(sum(total_amount), 2) AS total_amount FROM {table_1} GROUP BY payment_type ORDER BY trips DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "过滤",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS long_trip_count FROM {table_1} WHERE trip_distance >= 20",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "nyc_taxi_flow_03",
+      "dataset": "nyc_taxi",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "2026 年最热门上车区域是哪里？",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT PULocationID, count(*) AS trips FROM {table_1} GROUP BY PULocationID ORDER BY trips DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "指标汇总",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(tip_amount), 2) AS avg_tip, round(avg(total_amount), 2) AS avg_total FROM {table_1}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "质量检查",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS negative_total_rows FROM {table_1} WHERE total_amount < 0",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "nyc_taxi_flow_04",
+      "dataset": "nyc_taxi",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "2026 年支付方式分布是什么？",
+          "expected_contract": "占比",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT payment_type, count(*) AS trips, round(sum(total_amount), 2) AS total_amount FROM {table_1} GROUP BY payment_type ORDER BY trips DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "过滤",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS long_trip_count FROM {table_1} WHERE trip_distance >= 20",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "字段识别",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS airport_fee_rows, round(sum(Airport_fee), 2) AS airport_fee_sum FROM {table_1} WHERE Airport_fee > 0",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "health_history_flow_01",
+      "dataset": "health_history",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "健康日指标覆盖什么时间范围？",
+          "expected_contract": "上传后概览",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT min(date) AS start_date, max(date) AS end_date, count(*) AS days FROM {table_0}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "指标汇总",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(active_energy_kcal), 2) AS avg_active_energy FROM {table_0} WHERE active_energy_kcal IS NOT NULL",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT type, count(*) AS workouts, round(sum(duration_min), 2) AS total_minutes FROM {table_1} GROUP BY type ORDER BY workouts DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "health_history_flow_02",
+      "dataset": "health_history",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "每月平均步数趋势如何？",
+          "expected_contract": "趋势",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT month, round(avg(steps), 2) AS avg_steps FROM {table_2} WHERE steps IS NOT NULL GROUP BY month ORDER BY month LIMIT 12",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "字段识别",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(sleep_asleep_hours), 2) AS avg_sleep_asleep, round(avg(sleep_in_bed_hours), 2) AS avg_sleep_in_bed FROM {table_0} WHERE sleep_asleep_hours IS NOT NULL",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "指标汇总",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(heart_rate_bpm_avg), 2) AS avg_hr, round(min(heart_rate_bpm_min), 2) AS min_hr, round(max(heart_rate_bpm_max), 2) AS max_hr FROM {table_0}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "health_history_flow_03",
+      "dataset": "health_history",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "平均每日活动能量是多少？",
+          "expected_contract": "指标汇总",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(active_energy_kcal), 2) AS avg_active_energy FROM {table_0} WHERE active_energy_kcal IS NOT NULL",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT type, count(*) AS workouts, round(sum(duration_min), 2) AS total_minutes FROM {table_1} GROUP BY type ORDER BY workouts DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "质量检查",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS missing_sleep_days FROM {table_0} WHERE sleep_asleep_hours IS NULL",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "health_history_flow_04",
+      "dataset": "health_history",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "平均睡眠时长是多少？",
+          "expected_contract": "字段识别",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(sleep_asleep_hours), 2) AS avg_sleep_asleep, round(avg(sleep_in_bed_hours), 2) AS avg_sleep_in_bed FROM {table_0} WHERE sleep_asleep_hours IS NOT NULL",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "指标汇总",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(heart_rate_bpm_avg), 2) AS avg_hr, round(min(heart_rate_bpm_min), 2) AS min_hr, round(max(heart_rate_bpm_max), 2) AS max_hr FROM {table_0}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "过滤",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS distance_workouts, round(sum(distance_km), 2) AS total_distance FROM {table_1} WHERE distance_km > 0",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "vds_sales_flow_01",
+      "dataset": "vds_sales",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "销售数据整体规模和金额是多少？",
+          "expected_contract": "上传后概览",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS rows, round(sum(\"销售额\"), 2) AS sales, round(sum(\"利润\"), 2) AS profit FROM {table_0}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"城市\", round(sum(\"利润\"), 2) AS profit FROM {table_0} GROUP BY \"城市\" ORDER BY profit DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "趋势",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"月份\", round(sum(\"销售额\"), 2) AS sales FROM {table_0} GROUP BY \"月份\" ORDER BY \"月份\"",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "vds_sales_flow_02",
+      "dataset": "vds_sales",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "哪个区域销售额最高？",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"区域\", round(sum(\"销售额\"), 2) AS sales FROM {table_0} GROUP BY \"区域\" ORDER BY sales DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "占比",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"来源渠道\", round(sum(\"销售额\"), 2) AS sales FROM {table_0} GROUP BY \"来源渠道\" ORDER BY sales DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "过滤",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(\"折扣率\"), 4) AS avg_discount, round(sum(\"销售额\"), 2) AS sales FROM {table_0}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "vds_sales_flow_03",
+      "dataset": "vds_sales",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "利润最高的城市是哪些？",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"城市\", round(sum(\"利润\"), 2) AS profit FROM {table_0} GROUP BY \"城市\" ORDER BY profit DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "趋势",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"月份\", round(sum(\"销售额\"), 2) AS sales FROM {table_0} GROUP BY \"月份\" ORDER BY \"月份\"",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "字段识别",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"状态\", count(*) AS records, round(sum(\"销售额\"), 2) AS sales FROM {table_0} GROUP BY \"状态\" ORDER BY records DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "vds_sales_flow_04",
+      "dataset": "vds_sales",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "不同来源渠道销售额如何？",
+          "expected_contract": "占比",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"来源渠道\", round(sum(\"销售额\"), 2) AS sales FROM {table_0} GROUP BY \"来源渠道\" ORDER BY sales DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "过滤",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(\"折扣率\"), 4) AS avg_discount, round(sum(\"销售额\"), 2) AS sales FROM {table_0}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "增长/占比",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(sum(\"利润\") / nullif(sum(\"销售额\"), 0), 4) AS profit_margin FROM {table_0}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "vds_saas_flow_01",
+      "dataset": "vds_saas",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "SaaS 订阅数据整体收入和毛利是多少？",
+          "expected_contract": "上传后概览",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT count(*) AS rows, round(sum(\"订阅收入\"), 2) AS revenue, round(sum(\"毛利\"), 2) AS gross_profit FROM {table_0}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "占比",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"客户类型\", count(*) AS customers, round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"客户类型\" ORDER BY revenue DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "趋势",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"月份\", round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"月份\" ORDER BY \"月份\"",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "vds_saas_flow_02",
+      "dataset": "vds_saas",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "哪个产品线订阅收入最高？",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"产品线\", round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"产品线\" ORDER BY revenue DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"获客渠道\", round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"获客渠道\" ORDER BY revenue DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "字段识别",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(\"NPS评分\"), 2) AS avg_nps FROM {table_0} WHERE \"NPS评分\" IS NOT NULL",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "vds_saas_flow_03",
+      "dataset": "vds_saas",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "不同客户类型收入结构如何？",
+          "expected_contract": "占比",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"客户类型\", count(*) AS customers, round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"客户类型\" ORDER BY revenue DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "趋势",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"月份\", round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"月份\" ORDER BY \"月份\"",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "过滤",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"订阅状态\", count(*) AS records, round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"订阅状态\" ORDER BY records DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "vds_saas_flow_04",
+      "dataset": "vds_saas",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "获客渠道收入排行是什么？",
+          "expected_contract": "TopN",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT \"获客渠道\", round(sum(\"订阅收入\"), 2) AS revenue FROM {table_0} GROUP BY \"获客渠道\" ORDER BY revenue DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "这个结果换一个相关维度继续看。",
+          "expected_contract": "字段识别",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(avg(\"NPS评分\"), 2) AS avg_nps FROM {table_0} WHERE \"NPS评分\" IS NOT NULL",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "刚才口径不够清楚，按源文件重新验算后给结论和边界。",
+          "expected_contract": "占比",
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT round(sum(\"毛利\") / nullif(sum(\"订阅收入\"), 0), 4) AS gross_margin FROM {table_0}",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true
+      }
+    },
+    {
+      "conversation_id": "brazilian_ecommerce_top_state_followup_contract",
+      "dataset": "brazilian_ecommerce",
+      "capability_family": "followup_context",
+      "severity": "p0",
+      "tags": [
+        "conversation",
+        "followup",
+        "topn",
+        "gap",
+        "real_user_v1"
+      ],
+      "turns": [
+        {
+          "turn_id": "turn_01",
+          "question": "按州看订单 Top10。",
+          "expected_contract": {
+            "contract_family": "topn",
+            "answer_type": "ranked_table",
+            "required_row_count": 10,
+            "min_row_count": 10,
+            "allow_insufficient_data_explanation": true,
+            "required_dimensions": [
+              "customer_state"
+            ],
+            "required_metrics": [
+              "orders"
+            ],
+            "required_sort": {
+              "metric": "orders",
+              "order": "desc"
+            },
+            "requires_direct_answer_first": true,
+            "requires_artifact_summary": true,
+            "violation_codes_expected_absent": [
+              "topn_result_rows_short",
+              "topn_missing_sort_basis",
+              "topn_missing_metric_value",
+              "direct_answer_not_first"
+            ]
+          },
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT c.customer_state, count(*) AS orders FROM {table_2} o JOIN {table_0} c ON o.customer_id = c.customer_id GROUP BY c.customer_state ORDER BY orders DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_02",
+          "question": "上面这些州分别是多少订单？",
+          "expected_contract": {
+            "contract_family": "followup_referent",
+            "answer_type": "referent_ranked_table",
+            "required_row_count": 10,
+            "min_row_count": 10,
+            "allow_insufficient_data_explanation": true,
+            "required_context_reference": "previous_top_objects",
+            "required_dimensions": [
+              "customer_state"
+            ],
+            "required_metrics": [
+              "orders"
+            ],
+            "required_sort": {
+              "metric": "orders",
+              "order": "desc"
+            },
+            "requires_direct_answer_first": true,
+            "requires_artifact_summary": true,
+            "violation_codes_expected_absent": [
+              "followup_missing_previous_top_set",
+              "followup_referent_not_inherited",
+              "topn_result_rows_short",
+              "direct_answer_not_first"
+            ]
+          },
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "SELECT c.customer_state, count(*) AS orders FROM {table_2} o JOIN {table_0} c ON o.customer_id = c.customer_id GROUP BY c.customer_state ORDER BY orders DESC LIMIT 10",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        },
+        {
+          "turn_id": "turn_03",
+          "question": "第一名和后面的差多少？",
+          "expected_contract": {
+            "contract_family": "gap",
+            "answer_type": "pairwise_gap_table",
+            "min_row_count": 2,
+            "allow_insufficient_data_explanation": true,
+            "required_gap_type": "pairwise",
+            "required_context_reference": "previous_top_objects",
+            "required_dimensions": [
+              "customer_state"
+            ],
+            "required_metrics": [
+              "orders",
+              "gap_to_leader"
+            ],
+            "required_sort": {
+              "metric": "orders",
+              "order": "desc"
+            },
+            "requires_direct_answer_first": true,
+            "requires_artifact_summary": true,
+            "violation_codes_expected_absent": [
+              "gap_pairwise_missing",
+              "gap_missing_previous_top_set",
+              "direct_answer_not_first"
+            ]
+          },
+          "oracle_type": "duckdb_sql",
+          "oracle_query_or_formula": "WITH ranked AS (SELECT c.customer_state, count(*) AS orders FROM {table_2} o JOIN {table_0} c ON o.customer_id = c.customer_id GROUP BY c.customer_state ORDER BY orders DESC LIMIT 10), leader AS (SELECT max(orders) AS leader_orders FROM ranked) SELECT ranked.customer_state, ranked.orders, leader.leader_orders - ranked.orders AS gap_to_leader FROM ranked CROSS JOIN leader ORDER BY ranked.orders DESC",
+          "answer_requirements": {
+            "answerability": "answerable",
+            "must_use_oracle": true,
+            "required_terms": [],
+            "expected_numbers": []
+          }
+        }
+      ],
+      "metadata": {
+        "expected_context_reuse": true,
+        "requires_same_conversation_id": true,
+        "expected_previous_top_objects_turn": "turn_01",
+        "expected_previous_top_set_turn": "turn_01"
+      }
+    }
+  ]
+}

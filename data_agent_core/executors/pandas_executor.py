@@ -29,6 +29,9 @@ def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult
         columns, rows = _result_rows(value)
         warnings = _join_warnings(plan.logic_form.parameters)
         debug = _join_debug(plan.logic_form.parameters)
+        quality_report = _quality_debug_report(plan, context)
+        if quality_report is not None:
+            debug["quality_report"] = quality_report
         return ExecutionResult(
             backend="pandas",
             success=True,
@@ -83,6 +86,8 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         return _aggregation_dataframe(_analysis_dataframe(context, params), filters, params)
     if op == "ranking":
         return _ranking_dataframe(_analysis_dataframe(context, params), params)
+    if op == "growth_ranking":
+        return _growth_ranking(_analysis_dataframe(context, params), filters, params)
     if op == "row_count":
         return _row_count(_analysis_dataframe(context, params), filters)
     if op == "distinct_count":
@@ -115,6 +120,8 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         return _worst_fraud_segment(_analysis_dataframe(context, params), filters, params)
     if op == "filtered_metric_ranking":
         return _filtered_metric_ranking(_analysis_dataframe(context, params), filters, params)
+    if op == "grouped_child_ranking":
+        return _grouped_child_ranking(_analysis_dataframe(context, params), filters, params)
     if op == "rank_by_metric":
         return _rank_by_metric(context["payments"] if "payments" in context else _table(context["tables"], params.get("table")), logic)
     if op == "field_values":
@@ -264,6 +271,40 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
     if op == "fee_volume_threshold":
         return engine.fee_volume_threshold()
     raise ValueError(f"Unsupported operation: {op}")
+
+
+QUALITY_REPORT_OPERATIONS = {
+    "aggregation",
+    "data_quality_report",
+    "quality_summary",
+    "cleaning_policy",
+    "anomaly_rules",
+    "outlier_count",
+    "null_check",
+    "numeric_quality",
+    "temporal_quality",
+}
+
+
+def _quality_debug_report(plan: AnalysisPlan, context: dict[str, Any]) -> dict[str, Any] | None:
+    operation = str(plan.logic_form.operation or "")
+    if operation not in QUALITY_REPORT_OPERATIONS and _contract_task_family(plan) not in {"overview", "data_quality"}:
+        return None
+    try:
+        return report_to_dict(build_data_quality_report(_tables_for_quality(context), generated_from="analysis_request"))
+    except Exception:  # noqa: BLE001 - quality debug evidence must not change execution success.
+        return None
+
+
+def _contract_task_family(plan: AnalysisPlan) -> str:
+    for contract in (getattr(plan, "task_contract", None), getattr(plan.logic_form, "task_contract", None)):
+        if isinstance(contract, dict):
+            family = str(contract.get("task_family") or "").strip()
+        else:
+            family = str(getattr(contract, "task_family", "") or "").strip()
+        if family:
+            return family
+    return ""
 
 
 def _result_rows(value: Any) -> tuple[list[str], list[dict[str, Any]]]:
@@ -547,24 +588,42 @@ def _join_warnings(params: dict[str, Any]) -> list[str]:
 
 
 def _execution_summary(operation: str, debug: dict[str, Any]) -> str:
+    quality_summary = _quality_execution_summary(debug)
     if "same_schema_union_summary" in debug:
         summary = debug["same_schema_union_summary"]
         return (
             f"Executed operation {operation} after concatenating "
             f"{len(summary.get('source_tables') or [])} same-schema source tables."
-        )
+        ) + quality_summary
     if "join_execution_summary" in debug:
         summary = debug["join_execution_summary"]
         if isinstance(summary.get("steps"), list) and summary.get("steps"):
             return (
                 f"Executed operation {operation} after materializing "
                 f"{len(summary.get('steps') or [])} trusted join step(s)."
-            )
+            ) + quality_summary
         return (
             f"Executed operation {operation} after joining "
             f"{summary.get('left_table')} to {summary.get('right_table')}."
-        )
-    return f"Executed operation {operation}."
+        ) + quality_summary
+    return f"Executed operation {operation}." + quality_summary
+
+
+def _quality_execution_summary(debug: dict[str, Any]) -> str:
+    quality = debug.get("quality_report") if isinstance(debug.get("quality_report"), dict) else {}
+    rows = quality.get("field_level_table") if isinstance(quality.get("field_level_table"), list) else []
+    fields = [str(row.get("字段") or row.get("field") or "").strip() for row in rows if isinstance(row, dict)]
+    fields = [field for field in fields if field][:5]
+    if not fields:
+        return ""
+    first = fields[0]
+    second = fields[1] if len(fields) > 1 else first
+    return (
+        " 字段级质量摘要："
+        + "、".join(fields)
+        + " 已检查缺失、重复和异常规则。分析方向："
+        + f"检查 {first} 是否缺失或重复，检查 {second} 是否存在异常值或格式异常。"
+    )
 
 
 def _detail_lookup(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -582,6 +641,7 @@ def _filtering(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any
 
 def _aggregation(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> Any:
     data = _table(tables, params.get("table"))
+    data = _apply_candidate_topn_filter(data, params)
     metric = params.get("metric")
     dimension = params.get("dimension")
     aggregation = str(params.get("aggregation") or "sum")
@@ -591,18 +651,46 @@ def _aggregation(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> Any
 
 
 def _aggregation_dataframe(data: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> Any:
+    source_data = data
     data = _apply_dataframe_filters(data, filters)
+    data = _apply_candidate_topn_filter(data, params, source_data=source_data)
     derived_metric = params.get("derived_metric")
+    metric_specs = _metric_specs(params.get("metric_specs"))
     if isinstance(derived_metric, dict) and derived_metric:
         dimension = params.get("dimension")
+        if metric_specs:
+            return _attach_group_share_if_requested(
+                _aggregate_metric_specs_with_derived(data, metric_specs, derived_metric, dimension),
+                params,
+            )
+        group_dimensions = _aggregation_group_dimensions(params)
+        if len(group_dimensions) > 1:
+            return _attach_group_share_if_requested(_aggregate_derived_ratio_grouped_multi(data, group_dimensions, derived_metric), params)
         if dimension:
-            return _aggregate_derived_ratio_grouped(data, str(dimension), derived_metric)
+            return _attach_group_share_if_requested(_aggregate_derived_ratio_grouped(data, str(dimension), derived_metric), params)
         return _aggregate_derived_ratio(data, derived_metric)
+    if metric_specs:
+        return _attach_group_share_if_requested(_aggregate_metric_specs(data, metric_specs, params.get("dimension")), params)
+    metrics = _metric_list(params.get("metrics"))
+    if len(metrics) > 1:
+        return _attach_group_share_if_requested(
+            _aggregate_multi_metrics(data, metrics, str(params.get("aggregation") or "sum"), params.get("dimension")),
+            params,
+        )
     metric = params.get("metric")
     dimension = params.get("dimension")
     aggregation = str(params.get("aggregation") or "sum")
     if dimension:
-        return _aggregate_grouped(data, str(dimension), None if metric is None else str(metric), aggregation)
+        group_dimensions = _aggregation_group_dimensions(params)
+        if len(group_dimensions) > 1:
+            return _attach_group_share_if_requested(
+                _aggregate_grouped_multi(data, group_dimensions, None if metric is None else str(metric), aggregation),
+                params,
+            )
+        return _attach_group_share_if_requested(
+            _aggregate_grouped(data, str(dimension), None if metric is None else str(metric), aggregation),
+            params,
+        )
     return _aggregate_series(data, None if metric is None else str(metric), aggregation)
 
 
@@ -612,6 +700,7 @@ def _ranking(tables: dict[str, pd.DataFrame], params: dict[str, Any]) -> list[di
 
 
 def _ranking_dataframe(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
+    data = _apply_candidate_topn_filter(data, params, source_data=data)
     dimension = params.get("dimension")
     if not dimension:
         raise ValueError("Ranking requires a dimension column.")
@@ -625,10 +714,116 @@ def _ranking_dataframe(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[
             None if params.get("metric") is None else str(params.get("metric")),
             str(params.get("aggregation") or "sum"),
         )
-    metric_column = next((key for key in rows[0] if key != str(dimension)), "value") if rows else "value"
+        rows = _attach_metric_spec_columns(rows, data, str(dimension), _metric_specs(params.get("metric_specs")))
+    metric_column = _ranking_metric_column(rows, params, str(dimension))
     reverse = str(params.get("sort_order") or "desc") == "desc"
     rows.sort(key=lambda row: row.get(metric_column), reverse=reverse)
-    return rows[: int(params.get("limit") or 1)]
+    return _slice_ranked_rows(rows, params)
+
+
+def _ranking_metric_column(rows: list[dict[str, Any]], params: dict[str, Any], dimension: str) -> str:
+    """Pick the primary ranking metric, not supplemental display columns."""
+
+    if not rows:
+        return "value"
+    preferred = str(params.get("metric") or "").strip()
+    if preferred and preferred in rows[0]:
+        return preferred
+    derived_metric = params.get("derived_metric")
+    if isinstance(derived_metric, dict):
+        derived_name = str(derived_metric.get("name") or "").strip()
+        if derived_name and derived_name in rows[0]:
+            return derived_name
+    aggregation = str(params.get("aggregation") or "").strip()
+    if aggregation in {"count", "nunique", "distinct_count"} and "count" in rows[0]:
+        return "count"
+    for key in rows[0]:
+        if key != dimension:
+            return str(key)
+    return "value"
+
+
+def _growth_ranking(data: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:
+    data = _apply_dataframe_filters(data, filters)
+    dimension = str(params.get("dimension") or "")
+    metric = str(params.get("metric") or "")
+    time_column = str(params.get("time_column") or "")
+    if dimension not in data.columns:
+        raise ValueError("growth_ranking requires a known dimension column.")
+    if metric not in data.columns:
+        raise ValueError("growth_ranking requires a known metric column.")
+    if time_column not in data.columns:
+        raise ValueError("growth_ranking requires a known time column.")
+
+    aggregation = str(params.get("aggregation") or "sum")
+    growth_mode = str(params.get("growth_mode") or "rate")
+    metric_name = f"{metric}_growth_rate" if growth_mode == "rate" else f"{metric}_growth_delta"
+    working = data[[dimension, time_column, metric]].copy()
+    working["_period"] = _period_labels(working[time_column])
+    working["_metric"] = pd.to_numeric(working[metric], errors="coerce")
+    working = working.dropna(subset=[dimension, "_period", "_metric"])
+    if working.empty:
+        return []
+
+    period_rows: list[dict[str, Any]] = []
+    for (entity, period), group in working.groupby([dimension, "_period"], dropna=True):
+        period_rows.append(
+            {
+                dimension: entity,
+                "_period": str(period),
+                "_metric": _aggregate_spec_series(group["_metric"], aggregation),
+            }
+        )
+    if not period_rows:
+        return []
+    period_frame = pd.DataFrame(period_rows).sort_values([dimension, "_period"])
+    rows: list[dict[str, Any]] = []
+    for entity, group in period_frame.groupby(dimension, dropna=True):
+        ordered = group.sort_values("_period")
+        if len(ordered) < 2:
+            continue
+        start = ordered.iloc[0]
+        end = ordered.iloc[-1]
+        start_value = float(start["_metric"] or 0.0)
+        end_value = float(end["_metric"] or 0.0)
+        delta = end_value - start_value
+        growth_rate = 0.0 if abs(start_value) < 1e-12 else delta / abs(start_value)
+        growth_value = growth_rate if growth_mode == "rate" else abs(delta) if growth_mode == "abs_delta" else delta
+        rows.append(
+            {
+                dimension: entity,
+                metric_name: growth_value,
+                "start_period": str(start["_period"]),
+                "end_period": str(end["_period"]),
+                "start_value": start_value,
+                "end_value": end_value,
+                "growth_delta": delta,
+                "growth_rate": growth_rate,
+            }
+        )
+    reverse = str(params.get("sort_order") or "desc") == "desc"
+    rows.sort(key=lambda row: row.get(metric_name), reverse=reverse)
+    return _slice_ranked_rows(rows, params)
+
+
+def _period_labels(series: pd.Series) -> pd.Series:
+    dt_values = pd.to_datetime(series, errors="coerce")
+    if dt_values.notna().any():
+        return dt_values.dt.strftime("%Y-%m")
+    numeric = pd.to_numeric(series, errors="coerce")
+    labels = pd.Series(index=series.index, dtype="object")
+    for index, value in numeric.items():
+        if pd.isna(value):
+            labels.at[index] = str(series.at[index]) if series.at[index] not in (None, "") else None
+            continue
+        integer = int(value)
+        if integer >= 10000:
+            labels.at[index] = f"{integer // 100:04d}-{integer % 100:02d}"
+        elif 1 <= integer <= 12:
+            labels.at[index] = f"{integer:02d}"
+        else:
+            labels.at[index] = str(integer)
+    return labels
 
 
 def _aggregate_derived_ratio_grouped(data: pd.DataFrame, dimension: str, derived_metric: dict[str, Any]) -> list[dict[str, Any]]:
@@ -650,7 +845,59 @@ def _aggregate_derived_ratio_grouped(data: pd.DataFrame, dimension: str, derived
     return grouped[[dimension, metric_name]].to_dict(orient="records")
 
 
-def _aggregate_derived_ratio(data: pd.DataFrame, derived_metric: dict[str, Any]) -> float:
+def _aggregate_derived_ratio_grouped_multi(data: pd.DataFrame, dimensions: list[str], derived_metric: dict[str, Any]) -> list[dict[str, Any]]:
+    numerator = str(derived_metric.get("numerator") or "")
+    denominator = str(derived_metric.get("denominator") or "")
+    metric_name = str(derived_metric.get("name") or "ratio")
+    missing_dimensions = [dimension for dimension in dimensions if dimension not in data.columns]
+    if missing_dimensions:
+        raise ValueError("Unknown dimension column(s): " + ", ".join(missing_dimensions))
+    if numerator not in data.columns or denominator not in data.columns:
+        raise ValueError("Derived ratio metric requires numerator and denominator columns.")
+    working = data[[*dimensions, numerator, denominator]].copy()
+    working[numerator] = pd.to_numeric(working[numerator], errors="coerce")
+    working[denominator] = pd.to_numeric(working[denominator], errors="coerce")
+    grouped = working.groupby(dimensions, dropna=True)[[numerator, denominator]].sum().reset_index()
+    grouped[metric_name] = grouped.apply(
+        lambda row: 0.0 if float(row[denominator] or 0) == 0 else float(row[numerator]) / float(row[denominator]),
+        axis=1,
+    )
+    return grouped[[*dimensions, metric_name]].to_dict(orient="records")
+
+
+def _aggregate_grouped_multi(data: pd.DataFrame, dimensions: list[str], metric: str | None, aggregation: str) -> list[dict[str, Any]]:
+    missing = [dimension for dimension in dimensions if dimension not in data.columns]
+    if missing:
+        raise ValueError("Unknown dimension column(s): " + ", ".join(missing))
+    if metric is not None and metric not in data.columns and metric != "__row_count__":
+        raise ValueError(f"Unknown metric column: {metric}")
+    if metric is None or metric == "__row_count__" or aggregation == "count":
+        grouped = data.groupby(dimensions, dropna=True).size().reset_index(name="count")
+        return grouped.to_dict(orient="records")
+    if aggregation in {"nunique", "distinct_count"}:
+        grouped = data.groupby(dimensions, dropna=True)[metric].nunique().reset_index(name="count")
+        return grouped.to_dict(orient="records")
+    working = data[[*dimensions, metric]].copy()
+    working[metric] = pd.to_numeric(working[metric], errors="coerce")
+    grouped = working.groupby(dimensions, dropna=True)[metric].agg(aggregation).reset_index()
+    return grouped.to_dict(orient="records")
+
+
+def _aggregation_group_dimensions(params: dict[str, Any]) -> list[str]:
+    dimensions: list[str] = []
+    for key in ("dimension", "series_dimension"):
+        value = str(params.get(key) or "").strip()
+        if value and value not in dimensions:
+            dimensions.append(value)
+    return dimensions
+
+
+def _aggregate_derived_ratio(data: pd.DataFrame, derived_metric: dict[str, Any]) -> dict[str, float]:
+    metric_name = str(derived_metric.get("name") or "ratio")
+    return {metric_name: _aggregate_derived_ratio_value(data, derived_metric)}
+
+
+def _aggregate_derived_ratio_value(data: pd.DataFrame, derived_metric: dict[str, Any]) -> float:
     numerator = str(derived_metric.get("numerator") or "")
     denominator = str(derived_metric.get("denominator") or "")
     if numerator not in data.columns or denominator not in data.columns:
@@ -660,11 +907,168 @@ def _aggregate_derived_ratio(data: pd.DataFrame, derived_metric: dict[str, Any])
     return 0.0 if denominator_sum == 0 else numerator_sum / denominator_sum
 
 
+def _metric_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    metrics: list[str] = []
+    for item in value:
+        metric = str(item or "").strip()
+        if metric and metric not in metrics:
+            metrics.append(metric)
+    return metrics
+
+
+def _metric_specs(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    specs: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("field") or "").strip()
+        field = str(item.get("field") or "").strip()
+        aggregation = str(item.get("aggregation") or "sum").strip()
+        if name and field:
+            specs.append({"name": name, "field": field, "aggregation": aggregation})
+    return specs
+
+
+def _aggregate_metric_specs(data: pd.DataFrame, specs: list[dict[str, str]], dimension: Any = None) -> dict[str, Any] | list[dict[str, Any]]:
+    missing = [spec["field"] for spec in specs if spec["field"] != "__row_count__" and spec["field"] not in data.columns]
+    if missing:
+        raise ValueError("Unknown metric spec field(s): " + ", ".join(missing))
+    if dimension:
+        dimension_name = str(dimension)
+        if dimension_name not in data.columns:
+            raise ValueError(f"Unknown dimension column: {dimension_name}")
+        grouped = data.groupby(dimension_name, dropna=True)
+        rows: list[dict[str, Any]] = []
+        for value, group in grouped:
+            row: dict[str, Any] = {dimension_name: value}
+            for spec in specs:
+                row[spec["name"]] = _aggregate_metric_spec_value(group, spec)
+            rows.append(row)
+        return rows
+    return {spec["name"]: _aggregate_metric_spec_value(data, spec) for spec in specs}
+
+
+def _aggregate_metric_spec_value(data: pd.DataFrame, spec: dict[str, str]) -> Any:
+    field = str(spec.get("field") or "")
+    if field == "__row_count__":
+        return int(len(data))
+    return _aggregate_spec_series(data[field], str(spec.get("aggregation") or "sum"))
+
+
+def _aggregate_metric_specs_with_derived(
+    data: pd.DataFrame,
+    specs: list[dict[str, str]],
+    derived_metric: dict[str, Any],
+    dimension: Any = None,
+) -> dict[str, Any] | list[dict[str, Any]]:
+    base = _aggregate_metric_specs(data, specs, dimension)
+    if dimension:
+        dimension_name = str(dimension)
+        derived_rows = _aggregate_derived_ratio_grouped(data, dimension_name, derived_metric)
+        derived_by_dimension = {row.get(dimension_name): row for row in derived_rows}
+        rows: list[dict[str, Any]] = []
+        for row in base if isinstance(base, list) else []:
+            merged = dict(row)
+            derived_row = derived_by_dimension.get(row.get(dimension_name), {})
+            for key, value in derived_row.items():
+                if key != dimension_name:
+                    merged[key] = value
+            rows.append(merged)
+        return rows
+    payload = dict(base) if isinstance(base, dict) else {}
+    payload[str(derived_metric.get("name") or "ratio")] = _aggregate_derived_ratio_value(data, derived_metric)
+    return payload
+
+
+def _attach_group_share_if_requested(result: Any, params: dict[str, Any]) -> Any:
+    if not params.get("share_of_total") or not isinstance(result, list) or not result:
+        return result
+    dimension = str(params.get("dimension") or "")
+    value_column = _share_value_column(result, params, dimension)
+    if not value_column:
+        return result
+    total = sum(float(pd.to_numeric(pd.Series([row.get(value_column)]), errors="coerce").fillna(0).iloc[0]) for row in result)
+    share_column = str(params.get("share_column") or f"{value_column}_share")
+    total_column = str(params.get("total_metric_column") or f"total_{value_column}")
+    rows: list[dict[str, Any]] = []
+    for row in result:
+        value = float(pd.to_numeric(pd.Series([row.get(value_column)]), errors="coerce").fillna(0).iloc[0])
+        enriched = dict(row)
+        enriched[total_column] = total
+        enriched[share_column] = 0.0 if total == 0.0 else value / total * 100
+        rows.append(enriched)
+    return rows
+
+
+def _share_value_column(rows: list[dict[str, Any]], params: dict[str, Any], dimension: str) -> str:
+    if not rows:
+        return ""
+    aggregation = str(params.get("aggregation") or "")
+    metric = params.get("share_metric") or params.get("metric")
+    if aggregation == "count" or metric in {None, "__row_count__", "row_count", "transaction_count"}:
+        if "count" in rows[0]:
+            return "count"
+    metric_name = str(metric or "").strip()
+    if metric_name and metric_name in rows[0]:
+        return metric_name
+    for key, value in rows[0].items():
+        if key == dimension or str(key).endswith("_share"):
+            continue
+        if pd.to_numeric(pd.Series([value]), errors="coerce").notna().iloc[0]:
+            return str(key)
+    return ""
+
+
+def _aggregate_spec_series(series: pd.Series, aggregation: str) -> Any:
+    if aggregation in {"nunique", "distinct_count"}:
+        return int(series.dropna().nunique())
+    if aggregation == "count":
+        return int(series.notna().sum())
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.dropna().empty:
+        return 0.0
+    if aggregation == "mean":
+        return float(numeric.mean())
+    if aggregation == "max":
+        return float(numeric.max())
+    if aggregation == "min":
+        return float(numeric.min())
+    return float(numeric.sum())
+
+
+def _aggregate_multi_metrics(data: pd.DataFrame, metrics: list[str], aggregation: str, dimension: Any = None) -> dict[str, Any] | list[dict[str, Any]]:
+    missing = [metric for metric in metrics if metric not in data.columns]
+    if missing:
+        raise ValueError("Unknown metric column(s): " + ", ".join(missing))
+    if dimension:
+        dimension_name = str(dimension)
+        if dimension_name not in data.columns:
+            raise ValueError(f"Unknown dimension column: {dimension_name}")
+        working = data[[dimension_name, *metrics]].copy()
+        for metric in metrics:
+            working[metric] = pd.to_numeric(working[metric], errors="coerce")
+        result = working.groupby(dimension_name, dropna=True)[metrics].agg(aggregation).reset_index()
+        return result.to_dict(orient="records")
+    row: dict[str, Any] = {}
+    for metric in metrics:
+        row[metric] = _aggregate_series(data, metric, aggregation)
+    return row
+
+
 def _aggregate_grouped(data: pd.DataFrame, dimension: str, metric: str | None, aggregation: str) -> list[dict[str, Any]]:
     if dimension not in data.columns:
         raise ValueError(f"Unknown dimension column: {dimension}")
     if aggregation == "count" or metric is None:
         result = data.groupby(dimension, dropna=True).size().reset_index(name="count")
+        return result.to_dict(orient="records")
+    if aggregation in {"nunique", "distinct_count"}:
+        if metric not in data.columns:
+            raise ValueError(f"Unknown metric column: {metric}")
+        result = data.groupby(dimension, dropna=True)[metric].nunique().reset_index(name="count")
         return result.to_dict(orient="records")
     if metric not in data.columns:
         raise ValueError(f"Unknown metric column: {metric}")
@@ -679,6 +1083,8 @@ def _aggregate_series(data: pd.DataFrame, metric: str | None, aggregation: str) 
         return int(len(data))
     if metric not in data.columns:
         raise ValueError(f"Unknown metric column: {metric}")
+    if aggregation in {"nunique", "distinct_count"}:
+        return int(data[metric].dropna().nunique())
     series = pd.to_numeric(data[metric], errors="coerce")
     if series.dropna().empty:
         return 0.0
@@ -895,7 +1301,7 @@ def _outlier_mask(data: pd.DataFrame, metric: str, params: dict[str, Any]) -> pd
     return (series < lower) | (series > upper)
 
 
-def _top_k_share(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> float:
+def _top_k_share(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> float | list[dict[str, Any]]:
     data = _apply_dataframe_filters(df, filters)
     if data.empty:
         return 0.0
@@ -915,19 +1321,45 @@ def _top_k_share(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, An
         ranking_grouped = (
             pd.to_numeric(data[ranking_metric_name], errors="coerce").fillna(0).groupby(data[dimension]).sum().sort_values(ascending=False)
         )
-    selected_groups = set(ranking_grouped.head(limit).index)
+    selected_ranking = ranking_grouped.head(limit)
+    selected_groups = set(selected_ranking.index)
     selected_rows = data[data[dimension].isin(selected_groups)]
+    structured_referent_share = bool(params.get("requires_previous_artifact") or params.get("referent_values"))
     if share_metric in {None, "__row_count__", "row_count", "transaction_count"}:
         denominator = float(len(data))
         numerator = float(len(selected_rows))
+        per_group_numerators = selected_rows.groupby(dimension, dropna=True).size().to_dict()
     else:
         share_metric_name = str(share_metric)
         if share_metric_name not in data.columns:
             raise ValueError("top_k_share requires a known share metric column.")
         denominator = float(pd.to_numeric(data[share_metric_name], errors="coerce").fillna(0).sum())
         numerator = float(pd.to_numeric(selected_rows[share_metric_name], errors="coerce").fillna(0).sum())
+        per_group_numerators = (
+            pd.to_numeric(selected_rows[share_metric_name], errors="coerce")
+            .fillna(0)
+            .groupby(selected_rows[dimension])
+            .sum()
+            .to_dict()
+        )
     if denominator == 0.0:
-        return 0.0
+        return [] if structured_referent_share else 0.0
+    if structured_referent_share:
+        metric_column = str(params.get("metric") or params.get("share_metric") or "metric_value")
+        total_column = str(params.get("total_metric_column") or f"total_{metric_column}")
+        share_column = str(params.get("share_column") or f"{metric_column}_share")
+        rows: list[dict[str, Any]] = []
+        for value in selected_ranking.index:
+            group_numerator = float(per_group_numerators.get(value, 0.0) or 0.0)
+            rows.append(
+                {
+                    dimension: value,
+                    metric_column: group_numerator,
+                    total_column: denominator,
+                    share_column: group_numerator / denominator * 100,
+                }
+            )
+        return rows
     return numerator / denominator * 100
 
 
@@ -1085,21 +1517,214 @@ def _worst_fraud_segment(df: pd.DataFrame, filters: dict[str, Any], params: dict
 
 def _filtered_metric_ranking(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:
     data = _apply_dataframe_filters(df, filters)
+    data = _apply_candidate_topn_filter(data, params, source_data=df)
     dimension = str(params.get("dimension") or "")
     if dimension not in data.columns:
         raise ValueError("filtered_metric_ranking requires a known dimension column.")
-    rows = _aggregate_grouped(
-        data,
-        dimension,
-        None if params.get("metric") is None else str(params.get("metric")),
-        str(params.get("aggregation") or "sum"),
-    )
+    derived_metric = params.get("derived_metric")
+    if isinstance(derived_metric, dict) and derived_metric:
+        rows = _aggregate_derived_ratio_grouped(data, dimension, derived_metric)
+    else:
+        rows = _aggregate_grouped(
+            data,
+            dimension,
+            None if params.get("metric") is None else str(params.get("metric")),
+            str(params.get("aggregation") or "sum"),
+        )
+        rows = _attach_metric_spec_columns(rows, data, dimension, _metric_specs(params.get("metric_specs")))
     if not rows:
         return rows
-    metric_column = next((key for key in rows[0] if key != dimension), "value")
+    metric_column = _ranking_metric_column(rows, params, dimension)
     reverse = str(params.get("sort_order") or "desc") == "desc"
     rows.sort(key=lambda row: row.get(metric_column), reverse=reverse)
+    return _slice_ranked_rows(rows, params)
+
+
+def _grouped_child_ranking(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:
+    data = _apply_dataframe_filters(df, filters)
+    data = _apply_candidate_topn_filter(data, params, source_data=df)
+    parent_dimension = str(params.get("parent_dimension") or "")
+    child_dimension = str(params.get("child_dimension") or params.get("dimension") or "")
+    if parent_dimension not in data.columns:
+        raise ValueError("grouped_child_ranking requires a known parent dimension column.")
+    if child_dimension not in data.columns:
+        raise ValueError("grouped_child_ranking requires a known child dimension column.")
+    derived_metric = params.get("derived_metric")
+    aggregation = str(params.get("aggregation") or "sum")
+    metric = params.get("metric")
+    metric_name = str(metric or "count")
+    grouped_keys = [parent_dimension, child_dimension]
+    if isinstance(derived_metric, dict) and derived_metric:
+        numerator = str(derived_metric.get("numerator") or "")
+        denominator = str(derived_metric.get("denominator") or "")
+        metric_name = str(derived_metric.get("name") or "ratio")
+        if numerator not in data.columns or denominator not in data.columns:
+            raise ValueError("grouped_child_ranking derived metric requires numerator and denominator columns.")
+        grouped = data.groupby(grouped_keys, dropna=True)[[numerator, denominator]].sum().reset_index()
+        grouped[metric_name] = grouped.apply(
+            lambda row: 0.0 if row[denominator] in (0, 0.0) else float(row[numerator]) / float(row[denominator]),
+            axis=1,
+        )
+        result = grouped[[parent_dimension, child_dimension, metric_name]]
+    elif aggregation == "count" or metric is None:
+        metric_name = "count"
+        result = data.groupby(grouped_keys, dropna=True).size().reset_index(name=metric_name)
+    elif aggregation in {"nunique", "distinct_count"}:
+        metric_name = "count"
+        metric_column = str(metric)
+        if metric_column not in data.columns:
+            raise ValueError("grouped_child_ranking requires a known metric column.")
+        result = data.groupby(grouped_keys, dropna=True)[metric_column].nunique().reset_index(name=metric_name)
+    else:
+        metric_column = str(metric)
+        if metric_column not in data.columns:
+            raise ValueError("grouped_child_ranking requires a known metric column.")
+        result = data.groupby(grouped_keys, dropna=True)[metric_column].agg(aggregation).reset_index(name=metric_column)
+        metric_name = metric_column
+    if result.empty:
+        return []
+    ascending = str(params.get("sort_order") or "desc") == "asc"
+    parent_order = _candidate_parent_order(df, params, parent_dimension)
+    parent_rank = {value: index for index, value in enumerate(parent_order)}
+    result["_parent_order"] = result[parent_dimension].map(lambda value: parent_rank.get(value, len(parent_rank)))
+    result["_child_order"] = result.groupby(parent_dimension)[metric_name].rank(method="first", ascending=ascending)
+    child_limit = int(params.get("child_limit") or params.get("limit") or 1)
+    result = result[result["_child_order"] <= child_limit]
+    result = result.sort_values(["_parent_order", parent_dimension, "_child_order"], kind="mergesort")
+    return result[[parent_dimension, child_dimension, metric_name]].to_dict(orient="records")
+
+
+def _slice_ranked_rows(rows: list[dict[str, Any]], params: dict[str, Any]) -> list[dict[str, Any]]:
+    target = params.get("rank_target")
+    if isinstance(target, dict) and target.get("value") not in (None, "", [], {}):
+        dimension = str(target.get("dimension") or params.get("dimension") or "")
+        target_value = str(target.get("value"))
+        for rank, row in enumerate(rows, start=1):
+            if dimension in row and str(row.get(dimension)) == target_value:
+                ranked = dict(row)
+                ranked["rank"] = rank
+                return [ranked]
+        return []
+    rank_position = int(params.get("rank_position") or 0)
+    if rank_position > 0:
+        return rows[rank_position - 1 : rank_position]
     return rows[: int(params.get("limit") or 1)]
+
+
+def _attach_metric_spec_columns(
+    rows: list[dict[str, Any]],
+    data: pd.DataFrame,
+    dimension: str,
+    specs: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    if not rows or not specs or dimension not in data.columns:
+        return rows
+    supplemental = _aggregate_metric_specs(data, specs, dimension)
+    if not isinstance(supplemental, list):
+        return rows
+    by_dimension = {row.get(dimension): row for row in supplemental if isinstance(row, dict)}
+    merged: list[dict[str, Any]] = []
+    for row in rows:
+        enriched = dict(row)
+        extra = by_dimension.get(row.get(dimension), {})
+        for spec in specs:
+            name = str(spec.get("name") or "").strip()
+            if name and name not in enriched and name in extra:
+                enriched[name] = extra[name]
+        merged.append(enriched)
+    return merged
+
+
+def _apply_candidate_topn_filter(data: pd.DataFrame, params: dict[str, Any], *, source_data: pd.DataFrame | None = None) -> pd.DataFrame:
+    candidate_filter = params.get("candidate_filter")
+    if not isinstance(candidate_filter, dict) or not candidate_filter:
+        return data
+    dimension = str(candidate_filter.get("dimension") or "")
+    if dimension not in data.columns:
+        raise ValueError("candidate_filter requires a known dimension column.")
+    candidate_filters = candidate_filter.get("filters")
+    candidate_data = source_data if source_data is not None and isinstance(candidate_filters, dict) and candidate_filters else data
+    if dimension not in candidate_data.columns:
+        raise ValueError("candidate_filter requires a known dimension column.")
+    if isinstance(candidate_filters, dict) and candidate_filters:
+        candidate_data = _apply_dataframe_filters(candidate_data, candidate_filters)
+    if str(candidate_filter.get("operation") or "") == "growth_ranking":
+        growth_rows = _growth_ranking(
+            candidate_data,
+            {},
+            {
+                "dimension": dimension,
+                "metric": candidate_filter.get("metric"),
+                "time_column": candidate_filter.get("time_column"),
+                "aggregation": candidate_filter.get("aggregation") or "sum",
+                "growth_mode": candidate_filter.get("growth_mode") or "rate",
+                "sort_order": candidate_filter.get("sort_order") or "desc",
+                "limit": candidate_filter.get("limit") or 1,
+            },
+        )
+        selected_values = [row.get(dimension) for row in growth_rows if isinstance(row, dict) and row.get(dimension) not in (None, "")]
+        return data[data[dimension].isin(selected_values)] if selected_values else data.iloc[0:0].copy()
+    derived_metric = candidate_filter.get("derived_metric")
+    metric = candidate_filter.get("metric")
+    metric_name = None if metric is None else str(metric)
+    if isinstance(derived_metric, dict) and derived_metric:
+        rows = _aggregate_derived_ratio_grouped(candidate_data, dimension, derived_metric)
+    else:
+        if metric_name and metric_name not in candidate_data.columns:
+            raise ValueError("candidate_filter requires a known metric column.")
+        aggregation = str(candidate_filter.get("aggregation") or "sum")
+        rows = _aggregate_grouped(candidate_data, dimension, metric_name, aggregation)
+    if not rows:
+        return data.iloc[0:0].copy()
+    metric_column = next((key for key in rows[0] if key != dimension), "value")
+    reverse = str(candidate_filter.get("sort_order") or "desc") == "desc"
+    rows.sort(key=lambda row: row.get(metric_column), reverse=reverse)
+    limit = int(candidate_filter.get("limit") or len(rows))
+    selected_values = [row.get(dimension) for row in rows[:limit]]
+    return data[data[dimension].isin(selected_values)]
+
+
+def _candidate_parent_order(source_data: pd.DataFrame, params: dict[str, Any], parent_dimension: str) -> list[Any]:
+    candidate_filter = params.get("candidate_filter")
+    if not isinstance(candidate_filter, dict) or not candidate_filter:
+        return []
+    if str(candidate_filter.get("dimension") or "") != parent_dimension:
+        return []
+    candidate_data = source_data
+    candidate_filters = candidate_filter.get("filters")
+    if isinstance(candidate_filters, dict) and candidate_filters:
+        candidate_data = _apply_dataframe_filters(candidate_data, candidate_filters)
+    if str(candidate_filter.get("operation") or "") == "growth_ranking":
+        growth_rows = _growth_ranking(
+            candidate_data,
+            {},
+            {
+                "dimension": parent_dimension,
+                "metric": candidate_filter.get("metric"),
+                "time_column": candidate_filter.get("time_column"),
+                "aggregation": candidate_filter.get("aggregation") or "sum",
+                "growth_mode": candidate_filter.get("growth_mode") or "rate",
+                "sort_order": candidate_filter.get("sort_order") or "desc",
+                "limit": candidate_filter.get("limit") or 1,
+            },
+        )
+        return [row.get(parent_dimension) for row in growth_rows if isinstance(row, dict) and row.get(parent_dimension) not in (None, "")]
+    derived_metric = candidate_filter.get("derived_metric")
+    metric = candidate_filter.get("metric")
+    metric_name = None if metric is None else str(metric)
+    if isinstance(derived_metric, dict) and derived_metric:
+        rows = _aggregate_derived_ratio_grouped(candidate_data, parent_dimension, derived_metric)
+    else:
+        if metric_name and metric_name not in candidate_data.columns:
+            return []
+        rows = _aggregate_grouped(candidate_data, parent_dimension, metric_name, str(candidate_filter.get("aggregation") or "sum"))
+    if not rows:
+        return []
+    metric_column = next((key for key in rows[0] if key != parent_dimension), "value")
+    reverse = str(candidate_filter.get("sort_order") or "desc") == "desc"
+    rows.sort(key=lambda row: row.get(metric_column), reverse=reverse)
+    limit = int(candidate_filter.get("limit") or len(rows))
+    return [row.get(parent_dimension) for row in rows[:limit] if row.get(parent_dimension) not in (None, "")]
 
 
 def _boolean_percentage(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> float:
@@ -1403,7 +2028,7 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
             continue
         if column not in data.columns:
             continue
-        if isinstance(expected, dict) and ("month" in expected or "year" in expected):
+        if isinstance(expected, dict) and ("month" in expected or "year" in expected or "month_range" in expected):
             data = _apply_date_part_filter(data, column, expected)
             continue
         if expected == "__NULL__":
@@ -1411,6 +2036,9 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
             continue
         if expected == "__NOT_NULL__":
             data = data[~_null_mask(data[column])]
+            continue
+        if isinstance(expected, dict) and "operator" in expected:
+            data = _apply_condition(data, str(column), str(expected.get("operator") or "="), expected.get("value"))
             continue
         if _is_day_of_year_range_filter(column, expected):
             start, end = expected

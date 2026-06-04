@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -15,6 +15,8 @@ from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import CAPABILITY_GAP, OUTPUT_CONTRACT_VALIDATION_FAILED
 from data_agent_core.output.execution_artifacts import build_execution_artifacts
 from data_agent_core.output.output_contract import canonicalize_final_answer
+from data_agent_core.output.text_answer_framework import apply_text_answer_framework
+from data_agent_core.result_artifacts import build_task_artifacts
 
 
 def build_response(
@@ -51,6 +53,8 @@ def build_response(
         display_result,
         output_format=plan.logic_form.output_format,
     )
+    if semantic_failure_answer is None:
+        answer = _referent_answer_prefix(verification) + answer
     not_applicable_attribution = classify_not_applicable(execution_result.value, plan)
     success = (
         execution_result.success
@@ -81,6 +85,37 @@ def build_response(
         "normalized_from": canonical_answer.normalized_from,
         "answer_type": canonical_answer.validation.answer_type,
     }
+    referent_prefix = _referent_answer_prefix(verification)
+    if referent_prefix:
+        debug_payload["referent_answer_prefix"] = referent_prefix
+    semantic_status = str(getattr(verification, "semantic_status", None) or "legacy_unverified")
+    contract_report = getattr(verification, "contract_report", None) if isinstance(getattr(verification, "contract_report", None), dict) else None
+    task_contract = getattr(verification, "task_contract", None) if isinstance(getattr(verification, "task_contract", None), dict) else None
+    oracle_result = getattr(verification, "oracle_result", None) if isinstance(getattr(verification, "oracle_result", None), dict) else None
+    contract_satisfied = contract_report.get("passed") if isinstance(contract_report, dict) else None
+    violations = list(contract_report.get("violations") or []) if isinstance(contract_report, dict) else []
+    contract_family = ""
+    if isinstance(task_contract, dict):
+        contract_family = str(task_contract.get("task_family") or "")
+    if not contract_family and isinstance(contract_report, dict):
+        contract_family = str(contract_report.get("task_family") or "")
+    trend_empty_answer = _trend_empty_answer(task_contract, plan, execution_result)
+    if semantic_failure_answer is None and trend_empty_answer:
+        answer = trend_empty_answer
+    insufficient_answer = _topn_insufficient_answer(task_contract, execution_result, semantic_status)
+    if insufficient_answer:
+        answer = insufficient_answer
+    debug_payload["semantic_status"] = semantic_status
+    debug_payload["task_contract"] = task_contract
+    debug_payload["contract_report"] = contract_report
+    debug_payload["oracle_result"] = oracle_result
+    result_artifacts = build_task_artifacts(
+        task_contract=task_contract or {},
+        rows=_artifact_rows(execution_result),
+        answer=str(answer or ""),
+    )
+    if result_artifacts:
+        debug_payload["result_artifacts"] = result_artifacts
     debug_payload["validation_driven_retry"] = {
         "output_contract_retryable": canonical_answer.validation.retryable,
         "output_contract_action": "none" if canonical_answer.validation.passed else "controlled_failure",
@@ -111,7 +146,12 @@ def build_response(
         )
     if not_applicable_attribution.get("category"):
         debug_payload["not_applicable_attribution"] = not_applicable_attribution
-    return FinalResponse(
+    response_quality_report = quality_report
+    if response_quality_report is None and plan.logic_form.operation == "data_quality_report" and isinstance(execution_result.value, dict):
+        response_quality_report = execution_result.value
+    if response_quality_report is None and isinstance(execution_result.debug, dict) and isinstance(execution_result.debug.get("quality_report"), dict):
+        response_quality_report = execution_result.debug.get("quality_report")
+    response = FinalResponse(
         response_version="v1",
         success=success,
         run_id=run_id,
@@ -125,17 +165,24 @@ def build_response(
         verification=_to_dict(verification),
         insight=InsightResult(summary=answer if success else ""),
         chart=ChartSpec(),
-        quality_report=quality_report,
+        quality_report=response_quality_report,
         reasoning_trace_view=reasoning_trace_view or [],
         execution_artifacts=build_execution_artifacts(
             plan=plan,
             execution_result=execution_result,
             verification_passed=success,
         ),
+        artifacts_manifest={"result_artifacts": result_artifacts} if result_artifacts else {},
+        semantic_status=semantic_status,
+        contract_satisfied=contract_satisfied,
+        contract_family=contract_family or None,
+        violations=violations,
+        oracle_result=oracle_result,
         warnings=warnings,
         errors=errors,
         debug=debug_payload,
     )
+    return _apply_structured_answer_framework(response)
 
 
 def format_answer(value: Any, output_format: dict[str, Any]) -> str:
@@ -144,9 +191,128 @@ def format_answer(value: Any, output_format: dict[str, Any]) -> str:
     return canonicalize_final_answer(value, output_format).answer
 
 
+def _artifact_rows(execution_result: ExecutionResult) -> list[dict[str, Any]]:
+    if execution_result.rows:
+        return [row for row in execution_result.rows if isinstance(row, dict)]
+    if isinstance(execution_result.value, list):
+        return [row for row in execution_result.value if isinstance(row, dict)]
+    if isinstance(execution_result.value, dict):
+        candidate_table = execution_result.value.get("candidate_table")
+        if isinstance(candidate_table, list):
+            return [row for row in candidate_table if isinstance(row, dict)]
+        rows = execution_result.value.get("rows")
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
+def _topn_insufficient_answer(task_contract: dict[str, Any] | None, execution_result: ExecutionResult, semantic_status: str) -> str:
+    if semantic_status not in {"passed_with_insufficient_data", "partial"} or not isinstance(task_contract, dict):
+        return ""
+    if str(task_contract.get("task_family") or "") != "topn":
+        return ""
+    required_n = _int_or_none(task_contract.get("required_n"))
+    dimension = str(task_contract.get("dimension") or "对象")
+    rows = _artifact_rows(execution_result)
+    if not required_n:
+        return ""
+    if not rows:
+        metric = str(task_contract.get("metric") or "指标")
+        dimension_label = _display_dimension_label(dimension)
+        dimension_text = _dimension_label_with_field(dimension_label, dimension)
+        metric_label = _display_metric_label(metric)
+        return f"当前结果没有返回可用于 Top {required_n} 的{dimension_text}排名；按当前筛选条件没有匹配的{metric_label}记录，因此无法列出前 {required_n} 个{dimension_text}。"
+    distinct_count = _int_or_none(execution_result.value.get("distinct_count")) if isinstance(execution_result.value, dict) else None
+    if distinct_count is None:
+        distinct_count = len({row.get(dimension) for row in rows if row.get(dimension) not in {None, ""}}) if dimension else len(rows)
+    if distinct_count >= required_n:
+        return ""
+    metric = str(task_contract.get("metric") or _first_numeric_column(rows, exclude={dimension}) or "指标")
+    dimension_label = _display_dimension_label(dimension)
+    dimension_text = _dimension_label_with_field(dimension_label, dimension)
+    metric_label = _display_metric_label(metric)
+    items = []
+    for row in rows[:distinct_count]:
+        label = row.get(dimension)
+        value = row.get(metric)
+        if label in {None, ""} or value in {None, ""}:
+            continue
+        items.append(f"{label} {_format_display_number(value)}")
+    suffix = "：" + "、".join(items) if items else ""
+    return f"按{dimension_text}统计{metric_label}，当前只有 {distinct_count} 个{dimension_text}，无法返回 Top {required_n}，因此返回 Top {distinct_count}{suffix}。"
+
+
+def _trend_empty_answer(task_contract: dict[str, Any] | None, plan: AnalysisPlan, execution_result: ExecutionResult) -> str:
+    if not isinstance(task_contract, dict) or str(task_contract.get("task_family") or "") != "trend":
+        return ""
+    if _artifact_rows(execution_result):
+        return ""
+    metric = str(task_contract.get("metric") or plan.logic_form.parameters.get("metric") or plan.logic_form.metric or "指标")
+    time_dimension = str(task_contract.get("time_dimension") or task_contract.get("dimension") or plan.logic_form.parameters.get("dimension") or "时间")
+    filters = plan.logic_form.filters or {}
+    scope_parts = []
+    for key, value in filters.items():
+        if value in (None, "", [], {}):
+            continue
+        scope_parts.append(f"{key}={value}")
+    scope = "，筛选范围：" + "；".join(scope_parts) if scope_parts else ""
+    return f"当前没有匹配的{time_dimension}趋势结果，无法判断{metric}趋势变化{scope}。"
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_numeric_column(rows: list[dict[str, Any]], *, exclude: set[str] | None = None) -> str | None:
+    excluded = {item for item in (exclude or set()) if item}
+    for row in rows:
+        for key, value in row.items():
+            if key in excluded:
+                continue
+            if _to_float(value) is not None:
+                return str(key)
+    return None
+
+
+def _display_dimension_label(value: str) -> str:
+    lowered = str(value or "").lower()
+    if "city" in lowered or "城市" in lowered:
+        return "城市"
+    if "customer" in lowered or "客户" in lowered:
+        return "客户"
+    return str(value or "对象")
+
+
+def _dimension_label_with_field(label: str, field: str) -> str:
+    raw_field = str(field or "").strip()
+    if not raw_field or raw_field == label:
+        return label
+    if raw_field.lower().endswith("_id") or "id" in raw_field.lower():
+        return f"{label}（{raw_field}）"
+    return label
+
+
+def _display_metric_label(value: str) -> str:
+    lowered = str(value or "").lower()
+    if "order_amount" in lowered:
+        return "订单金额"
+    if "amount" in lowered or "金额" in lowered:
+        return "金额"
+    return str(value or "指标")
+
+
 def _semantic_failure_answer(user_question: UserQuestion, plan: AnalysisPlan, verification: VerificationResult) -> str | None:
     if verification.passed:
         return None
+    contract_report = verification.contract_report if isinstance(verification.contract_report, dict) else {}
+    violation_codes = {str(item.get("code") or "") for item in contract_report.get("violations") or [] if isinstance(item, dict)}
+    if "REFERENT_ARTIFACT_MISSING" in violation_codes:
+        return "这个追问依赖上一轮结果对象，但当前对话里没有可引用的 Top/ranking 结果 artifact。请先说明要分析哪些对象，或先跑一轮 Top 排名。"
+    if "REFERENT_VALUES_MISSING" in violation_codes:
+        return "这个追问依赖上一轮结果对象，但上一轮 artifact 中没有可用对象集合。请明确要分析的对象范围。"
     action = verification.correction_action if isinstance(verification.correction_action, dict) else {}
     action_name = str(action.get("action") or "")
     if action_name not in {"clarify_join_key", "repair_table_selection_or_join", "repair_dimension_binding", "repair_metric_definition"}:
@@ -207,6 +373,27 @@ def _semantic_failure_answer(user_question: UserQuestion, plan: AnalysisPlan, ve
         if "利润率" in user_question.question or "margin" in user_question.question.lower():
             return "这个问题问的是利润率，必须按 profit / sales 这类分子/分母口径计算；当前计划没有可靠的派生指标口径，所以不能用销售额或利润额直接排名。"
     return None
+
+
+def _referent_answer_prefix(verification: VerificationResult) -> str:
+    task_contract = verification.task_contract if isinstance(verification.task_contract, dict) else {}
+    if not task_contract.get("requires_previous_artifact"):
+        return ""
+    if task_contract.get("auto_expand_topn_if_needed"):
+        return ""
+    if str(task_contract.get("task_family") or "") == "trend":
+        return ""
+    values = [str(value) for value in task_contract.get("referent_values") or [] if str(value)]
+    if not values:
+        return ""
+    label = _semantic_dimension_label(str(task_contract.get("referent_dimension") or ""))
+    if len(values) == 1:
+        if label:
+            return f"这里的 Top 对象来自上一轮结果，仅包含{values[0]}一个{label}；如果要比较多个对象，需要先把上一轮排名扩大为 TopN。"
+        return f"这里的 Top 对象来自上一轮结果，仅包含{values[0]}；如果要比较多个对象，需要先把上一轮排名扩大为 TopN。"
+    joined = "、".join(values[:10])
+    suffix = "等" if len(values) > 10 else ""
+    return f"本次分析对象来自上一轮 Top 结果，共 {len(values)} 个{label or '对象'}：{joined}{suffix}。"
 
 
 def _semantic_dimension_label(value: str) -> str:
@@ -311,32 +498,23 @@ def _overview_display_payload(question: str, plan: AnalysisPlan, execution_resul
     average = total / len(numeric_values)
     max_row = max((row for row in rows if _to_float(row.get(metric_column)) is not None), key=lambda row: _to_float(row.get(metric_column)) or 0)
     min_row = min((row for row in rows if _to_float(row.get(metric_column)) is not None), key=lambda row: _to_float(row.get(metric_column)) or 0)
-    overview_rows = [
-        {"指标": "记录数", "数值": str(len(rows))},
-        {"指标": f"{metric_column}合计", "数值": _format_display_number(total)},
-        {"指标": f"{metric_column}平均", "数值": _format_display_number(average)},
-        {"指标": f"{metric_column}最高", "数值": _describe_row_metric(max_row, metric_column, dimension_column, period_column)},
-        {"指标": f"{metric_column}最低", "数值": _describe_row_metric(min_row, metric_column, dimension_column, period_column)},
-    ]
-    if dimension_column:
-        top_dimension = _top_group(rows, dimension_column, metric_column)
-        if top_dimension is not None:
-            overview_rows.append({"指标": f"最高{dimension_column}", "数值": top_dimension})
+    overview_rows = _field_overview_rows(rows, source_columns, metric_column=metric_column, dimension_column=dimension_column, period_column=period_column)
     period_phrase = f"，覆盖 {len({str(row.get(period_column)) for row in rows if row.get(period_column) not in {None, ''}})} 个{period_column}" if period_column else ""
     dimension_phrase = f"，可继续按{dimension_column}下钻" if dimension_column else ""
     answer = (
-        f"整体来看，共有 {len(rows)} 条记录{period_phrase}。"
+        f"整体来看，共有 {len(rows)} 条记录、{len(source_columns)} 个字段{period_phrase}。"
         f"{metric_column}合计 {_format_display_number(total)}，平均 {_format_display_number(average)}；"
         f"最高值为 {_describe_row_metric(max_row, metric_column, dimension_column, period_column)}，"
         f"最低值为 {_describe_row_metric(min_row, metric_column, dimension_column, period_column)}"
-        f"{dimension_phrase}。"
+        f"{dimension_phrase}。字段清单和类型见下表。"
     )
     return {
         "answer": answer,
-        "columns": ["指标", "数值"],
+        "columns": ["字段", "类型", "角色", "样例"],
         "rows": overview_rows,
         "value": {
             "row_count": len(rows),
+            "column_count": len(source_columns),
             "metric_column": metric_column,
             "metric_total": total,
             "metric_average": average,
@@ -346,6 +524,38 @@ def _overview_display_payload(question: str, plan: AnalysisPlan, execution_resul
         "metric_column": metric_column,
         "dimension_column": dimension_column,
     }
+
+
+def _field_overview_rows(
+    rows: list[dict[str, Any]],
+    columns: list[str],
+    *,
+    metric_column: str,
+    dimension_column: str | None,
+    period_column: str | None,
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for column in columns:
+        role = "指标" if column == metric_column else "维度" if column == dimension_column else "时间" if column == period_column else "字段"
+        sample = next((row.get(column) for row in rows if row.get(column) not in {None, ""}), "")
+        output.append(
+            {
+                "字段": column,
+                "类型": _display_column_type(rows, column),
+                "角色": role,
+                "样例": sample,
+            }
+        )
+    return output
+
+
+def _display_column_type(rows: list[dict[str, Any]], column: str) -> str:
+    if _numeric_ratio(rows, column) >= 0.75:
+        return "number"
+    lowered = column.lower()
+    if any(token in lowered for token in ("date", "month", "time", "日期", "月份", "时间")):
+        return "date/time"
+    return "text"
 
 
 def _result_rows(execution_result: ExecutionResult) -> list[dict[str, Any]]:
@@ -616,6 +826,34 @@ def _format_grouped_amounts(rows: list[dict[str, Any]], decimals: int | None) ->
     group_key = next(key for key in rows[0] if key != "eur_amount")
     parts = [f"{row[group_key]}: {_format_number(float(row['eur_amount']), decimals)}" for row in rows]
     return "[" + ", ".join(parts) + "]"
+
+
+def _apply_structured_answer_framework(response: FinalResponse) -> FinalResponse:
+    """Attach the shared sectioned answer frame without changing result payloads."""
+
+    referent_prefix = ""
+    if isinstance(response.debug, dict):
+        referent_prefix = str(response.debug.get("referent_answer_prefix") or "")
+    try:
+        payload = apply_text_answer_framework(response.to_dict(), question=response.question)
+    except Exception:  # noqa: BLE001 - final response construction must stay stable.
+        return response
+    response.answer = payload.get("answer", response.answer)
+    if referent_prefix and not str(response.answer).startswith(referent_prefix):
+        response.answer = referent_prefix + str(response.answer)
+    response.debug = payload.get("debug", response.debug)
+    sections = payload.get("structured_answer_sections")
+    if isinstance(sections, dict):
+        response.structured_answer_sections = {
+            str(key): [str(item) for item in value if str(item or "").strip()]
+            for key, value in sections.items()
+            if isinstance(value, list)
+        }
+    insight_payload = payload.get("insight")
+    if isinstance(insight_payload, dict):
+        allowed = {field.name for field in fields(InsightResult)}
+        response.insight = InsightResult(**{key: value for key, value in insight_payload.items() if key in allowed})
+    return response
 
 
 def _to_dict(value: Any) -> Any:

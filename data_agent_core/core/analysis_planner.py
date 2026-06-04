@@ -7,6 +7,7 @@ from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm
 from data_agent_core.core.capability_registry import capability_for_operation
+from data_agent_core.task_execution_contracts import build_task_execution_contract
 
 
 COUNT_LIKE_BUSINESS_OPERATIONS = frozenset(
@@ -22,10 +23,12 @@ COUNT_LIKE_BUSINESS_OPERATIONS = frozenset(
 )
 
 
-def build_analysis_plan(logic_form: LogicForm) -> AnalysisPlan:
+def build_analysis_plan(logic_form: LogicForm, *, question: str = "") -> AnalysisPlan:
     """Build a backend-neutral AnalysisPlan from a LogicForm."""
 
     logic_form = complete_generalization_contract(logic_form)
+    task_contract = build_task_execution_contract(logic_form, question=question)
+    logic_form.task_contract = {} if task_contract is None else _contract_payload(task_contract)
     plan_seed = f"{logic_form.task_type}:{logic_form.operation}:{logic_form.filters}:{logic_form.parameters}"
     plan_id = "plan_" + hashlib.sha1(plan_seed.encode("utf-8")).hexdigest()[:12]
     return AnalysisPlan(
@@ -64,6 +67,7 @@ def build_analysis_plan(logic_form: LogicForm) -> AnalysisPlan:
                 "output_contract": bool(logic_form.output_contract),
             },
         },
+        task_contract=task_contract,
     )
 
 
@@ -73,12 +77,14 @@ def complete_generalization_contract(logic_form: LogicForm) -> LogicForm:
     params = logic_form.parameters
     capability = capability_for_operation(logic_form.operation)
     metric = logic_form.metric or params.get("metric")
+    metrics = _metric_list(params.get("metrics"))
     aggregation = _aggregation_for(logic_form, metric)
     group_field = logic_form.group_by or params.get("group_by") or params.get("dimension")
     entity_field = params.get("entity_field") or params.get("entity") or params.get("field")
     if not logic_form.metric_definition:
         logic_form.metric_definition = {
             "name": _metric_name(logic_form, metric),
+            **({"metrics": metrics} if len(metrics) > 1 else {}),
             "capability_family": capability.capability_family,
             "aggregation": aggregation,
             "business_definition": _metric_business_definition(logic_form, metric, aggregation),
@@ -126,6 +132,9 @@ def _aggregation_for(logic_form: LogicForm, metric: Any) -> str:
 
 
 def _metric_name(logic_form: LogicForm, metric: Any) -> str:
+    metrics = _metric_list(logic_form.parameters.get("metrics"))
+    if len(metrics) > 1:
+        return ", ".join(metrics)
     if metric:
         return str(metric)
     return {
@@ -140,6 +149,9 @@ def _metric_name(logic_form: LogicForm, metric: Any) -> str:
 
 
 def _metric_business_definition(logic_form: LogicForm, metric: Any, aggregation: str) -> str:
+    metrics = _metric_list(logic_form.parameters.get("metrics"))
+    if len(metrics) > 1:
+        return f"Aggregate multiple requested metrics ({', '.join(metrics)}) with {aggregation} after applying the plan filters."
     if logic_form.operation == "top_k_share":
         if aggregation == "count" or not metric:
             return "Share of rows represented by the top candidate groups after filters."
@@ -155,6 +167,9 @@ def _metric_business_definition(logic_form: LogicForm, metric: Any, aggregation:
 
 def _numerator(logic_form: LogicForm, metric: Any, aggregation: str) -> dict[str, Any]:
     params = logic_form.parameters
+    metrics = _metric_list(params.get("metrics"))
+    if len(metrics) > 1:
+        return {"aggregation": aggregation, "fields": metrics, "scope": "filtered_rows"}
     if logic_form.operation == "top_k_share":
         return {
             "aggregation": aggregation,
@@ -175,6 +190,17 @@ def _numerator(logic_form: LogicForm, metric: Any, aggregation: str) -> dict[str
     if metric:
         return {"aggregation": aggregation, "field": metric, "scope": "filtered_rows"}
     return {"scope": "not_required"}
+
+
+def _metric_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    metrics: list[str] = []
+    for item in value:
+        metric = str(item or "").strip()
+        if metric and metric not in metrics:
+            metrics.append(metric)
+    return metrics
 
 
 def _denominator(logic_form: LogicForm, metric: Any, aggregation: str, entity_field: Any) -> dict[str, Any]:
@@ -255,3 +281,11 @@ def _candidate_field(group_field: Any, params: dict[str, Any]) -> Any:
     if isinstance(group_field, list):
         return group_field[0] if group_field else None
     return group_field
+
+
+def _contract_payload(contract: Any) -> dict[str, Any]:
+    if hasattr(contract, "__dataclass_fields__"):
+        from dataclasses import asdict
+
+        return asdict(contract)
+    return dict(contract) if isinstance(contract, dict) else {}

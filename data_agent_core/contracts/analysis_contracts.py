@@ -41,6 +41,7 @@ class LogicForm:
     answer_target: str | None = None
     output_format: dict[str, Any] = field(default_factory=dict)
     output_contract: dict[str, Any] = field(default_factory=dict)
+    task_contract: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -52,3 +53,4 @@ class AnalysisPlan:
     steps: list[str] = field(default_factory=list)
     expected_result_shape: str = "scalar"
     constraints: dict[str, Any] = field(default_factory=dict)
+    task_contract: Any = None

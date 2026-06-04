@@ -194,6 +194,116 @@ class ChineseRetailCapabilitiesTest(unittest.TestCase):
         self.assertEqual(answer, "80.00")
         self.tables["v_trd_dist_ord_dtl"] = original
 
+    def test_product_sales_amount_month_without_year_uses_business_year(self) -> None:
+        original = self.tables["v_trd_dist_ord_dtl"]
+        self.tables["v_trd_dist_ord_dtl"] = pd.concat(
+            [
+                original,
+                pd.DataFrame(
+                    [
+                        {
+                            "sign_time": "2025-05-02",
+                            "sign_amt": 900.0,
+                            "sign_box_cnt": 9.0,
+                            "emp_name": "张三",
+                            "p_emp_name": "赵经理",
+                            "cust_code": "C1",
+                            "cust_name": "一号店",
+                            "ctg_name": "天然水",
+                            "cmdt_tag_name": "普通本品",
+                            "ord_type_name": "业代订单",
+                            "sku_code": "S9",
+                            "sku_name": "旧年天然水",
+                            "ord_status_name": "已签收",
+                        },
+                        {
+                            "sign_time": "2026-05-04",
+                            "sign_amt": 80.0,
+                            "sign_box_cnt": 1.0,
+                            "emp_name": "王五",
+                            "p_emp_name": "赵经理",
+                            "cust_code": "C3",
+                            "cust_name": "三号店",
+                            "ctg_name": "苏打天然水",
+                            "cmdt_tag_name": "普通本品",
+                            "ord_type_name": "业代订单",
+                            "sku_code": "S4",
+                            "sku_name": "苏打SKU",
+                            "ord_status_name": "已签收",
+                        },
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+
+        logic, result, answer = self._logic_result("天然水五月的销售金额", "答案只返回数字，保留2位小数。")
+
+        self.assertEqual("retail_distribution_sum", logic.operation)
+        self.assertEqual(202605, logic.parameters["ym"])
+        self.assertEqual("天然水", logic.parameters["product"])
+        self.assertEqual("100.01", answer)
+        self.tables["v_trd_dist_ord_dtl"] = original
+
+    def test_product_sales_amount_trend_uses_daily_rows_without_cross_table_join(self) -> None:
+        original = self.tables["v_trd_dist_ord_dtl"]
+        self.tables["v_trd_dist_ord_dtl"] = pd.concat(
+            [
+                original,
+                pd.DataFrame(
+                    [
+                        {
+                            "sign_time": "2026-05-04",
+                            "sign_amt": 80.0,
+                            "sign_box_cnt": 1.0,
+                            "emp_name": "王五",
+                            "p_emp_name": "赵经理",
+                            "cust_code": "C3",
+                            "cust_name": "三号店",
+                            "ctg_name": "天然水",
+                            "cmdt_tag_name": "普通本品",
+                            "ord_type_name": "业代订单",
+                            "sku_code": "S4",
+                            "sku_name": "天然水大瓶",
+                            "ord_status_name": "已签收",
+                        },
+                        {
+                            "sign_time": "2025-05-02",
+                            "sign_amt": 900.0,
+                            "sign_box_cnt": 9.0,
+                            "emp_name": "张三",
+                            "p_emp_name": "赵经理",
+                            "cust_code": "C1",
+                            "cust_name": "一号店",
+                            "ctg_name": "天然水",
+                            "cmdt_tag_name": "普通本品",
+                            "ord_type_name": "业代订单",
+                            "sku_code": "S9",
+                            "sku_name": "旧年天然水",
+                            "ord_status_name": "已签收",
+                        },
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+
+        logic, result, answer = self._logic_result("天然水五月的销售金额随时间的趋势是怎样的，生成曲线图")
+
+        self.assertEqual("retail_category_distribution_periodic_trend", logic.operation)
+        self.assertEqual(202605, logic.parameters["ym"])
+        self.assertEqual("day", logic.parameters["granularity"])
+        self.assertEqual(["日期", "分销金额"], result.columns)
+        self.assertEqual(
+            [
+                {"日期": "2026-05-02", "分销金额": 100.005},
+                {"日期": "2026-05-04", "分销金额": 80.0},
+            ],
+            result.rows,
+        )
+        self.assertIn("峰值日期为2026-05-02", answer)
+        self.tables["v_trd_dist_ord_dtl"] = original
+
     def test_distribution_sum_returns_zero_when_filtered_data_missing(self) -> None:
         original = self.tables["v_trd_dist_ord_dtl"]
         self.tables["v_trd_dist_ord_dtl"] = pd.concat(

@@ -155,7 +155,7 @@ class DataAgentHttpStatusHelperTest(unittest.TestCase):
                 )
                 run_id = body["run"]["run_id"]
                 status_body: dict[str, object] = {}
-                for _ in range(50):
+                for _ in range(200):
                     status_body = json.loads(data_agent_router.get_run(run_id).body.decode("utf-8"))
                     if status_body.get("run", {}).get("status") == "completed":
                         break

@@ -1654,6 +1654,22 @@ p {
   padding: 8px 0 4px;
 }
 
+.assistant-message .result-stack .block-header h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 21px;
+  font-weight: 680;
+  line-height: 1.24;
+  letter-spacing: 0.01em;
+}
+
+.assistant-message .result-stack .block-header p {
+  margin-top: 3px;
+  color: #6f747c;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .answer-box {
   margin: 2px 0 14px;
   padding: 0;
@@ -2012,8 +2028,8 @@ p {
 .artifact-card code {
   display: block;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  white-space: pre;
+  overflow-wrap: normal;
   word-break: normal;
 }
 
@@ -2260,7 +2276,7 @@ p {
   right: 0;
   z-index: 90;
   display: grid;
-  width: min(430px, calc(100vw - 280px));
+  width: min(560px, calc(100vw - 280px));
   height: 100vh;
   grid-template-rows: auto auto minmax(0, 1fr);
   border-left: 1px solid var(--line);
@@ -2301,7 +2317,7 @@ p {
   justify-content: space-between;
   gap: 16px;
   border-bottom: 1px solid #eef0f3;
-  padding: 16px 18px 12px;
+  padding: 18px 20px 13px;
 }
 
 .activity-drawer-header span {
@@ -2323,7 +2339,7 @@ p {
 .activity-drawer-summary {
   margin: 0;
   border-bottom: 1px solid #f1f2f4;
-  padding: 11px 18px;
+  padding: 12px 20px;
   color: #6b7280;
   font-size: 13px;
   line-height: 1.45;
@@ -2335,7 +2351,7 @@ p {
   gap: 0;
   min-height: 0;
   margin: 0;
-  padding: 14px 18px 26px;
+  padding: 16px 20px 28px;
   overflow: auto;
   overscroll-behavior: contain;
   list-style: none;
@@ -2562,11 +2578,30 @@ p {
 .activity-tool-row,
 .activity-artifact-card {
   display: grid;
-  gap: 6px;
+  min-width: 0;
+  gap: 8px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
-  padding: 8px;
+  padding: 10px;
   background: #fbfbfc;
+}
+
+.activity-artifact-card .artifact-card-header {
+  align-items: flex-start;
+}
+
+.activity-artifact-card .artifact-card-header strong {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.activity-artifact-card .artifact-card-header span {
+  flex: 0 0 auto;
+  border: 1px solid #d7dde7;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #fff;
+  color: #475569;
 }
 
 .activity-tool-row strong {
@@ -2583,7 +2618,7 @@ p {
 .activity-artifact-card pre {
   width: 100%;
   min-width: 0;
-  max-height: 260px;
+  max-height: 340px;
   margin: 0;
   overflow: auto;
   border: 1px solid #e5e7eb;
@@ -2598,9 +2633,10 @@ p {
 .activity-artifact-card code {
   display: block;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  white-space: pre;
+  overflow-wrap: normal;
   word-break: normal;
+  tab-size: 2;
 }
 
 .composer-shell {
@@ -4106,7 +4142,7 @@ select {
   }
 
   .activity-drawer {
-    width: min(100vw, 430px);
+    width: min(100vw, 560px);
   }
 
   .monitor-grid {

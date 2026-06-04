@@ -68,6 +68,10 @@ class DataQualityReport:
     issue_count: int = 0
     summary: str = ""
     issues: list[DataQualityIssue] = field(default_factory=list)
+    field_level_table: list[dict[str, Any]] = field(default_factory=list)
+    duplicate_rules: list[dict[str, Any]] = field(default_factory=list)
+    outlier_rules: list[dict[str, Any]] = field(default_factory=list)
+    type_parse_failure_rules: list[dict[str, Any]] = field(default_factory=list)
     generated_from: str = "dataframe_scan"
 
 
@@ -106,9 +110,15 @@ class FinalResponse:
     reasoning_trace_view: list[ReasoningTraceStep] | list[dict[str, Any]] = field(default_factory=list)
     process_view_v2: dict[str, Any] = field(default_factory=dict)
     overview_report: dict[str, Any] = field(default_factory=dict)
+    structured_answer_sections: dict[str, list[str]] = field(default_factory=dict)
     activity_trace_v2: list[dict[str, Any]] = field(default_factory=list)
     execution_artifacts: list[dict[str, Any]] = field(default_factory=list)
     artifacts_manifest: dict[str, Any] = field(default_factory=dict)
+    semantic_status: str = "legacy_unverified"
+    contract_satisfied: bool | None = None
+    contract_family: str | None = None
+    violations: list[dict[str, Any]] = field(default_factory=list)
+    oracle_result: dict[str, Any] | None = None
     warnings: list[str] = field(default_factory=list)
     errors: list[Any] = field(default_factory=list)
     debug: dict[str, Any] = field(default_factory=dict)
