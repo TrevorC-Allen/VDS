@@ -239,6 +239,8 @@ def _render_direct_answer(context: _FrameContext) -> str:
     if context.kind == "contribution":
         return render_contribution_answer(context)
     if context.kind == "ranking":
+        if len(context.rows) == 1 and _single_row_ranking_uses_structured_frame(context):
+            return ""
         if len(context.rows) == 1:
             return render_single_best_answer(context)
         return render_topn_answer(context)
@@ -497,6 +499,14 @@ def render_single_best_answer(context: _FrameContext) -> str:
     return _sanitize_text(answer + scope)
 
 
+def _single_row_ranking_uses_structured_frame(context: _FrameContext) -> bool:
+    operation = str(context.logic_form.get("operation") or "")
+    if operation != "filtered_metric_ranking":
+        return False
+    filters = _as_dict(context.logic_form.get("filters"))
+    return bool(filters)
+
+
 def render_gap_answer(context: _FrameContext) -> str:
     """Render adjacent and first-place gaps directly."""
 
@@ -672,6 +682,7 @@ def render_overview_answer(context: _FrameContext) -> str:
 def render_quality_answer(context: _FrameContext) -> str:
     """Render data quality as a direct answer plus a field-level table."""
 
+    negative_rule_text = _quality_negative_rule_text(context)
     compact_rows = _quality_compact_field_rows(context)
     if compact_rows:
         issue_count = sum(
@@ -683,7 +694,8 @@ def render_quality_answer(context: _FrameContext) -> str:
             if issue_count == 0
             else f"本次质量检查发现 {issue_count} 个缺失、重复或异常值信号；具体字段级结果如下。"
         )
-        return first + "\n\n" + _markdown_table(["字段", "类型", "缺失数", "重复数", "异常数"], compact_rows[:50])
+        suffix = f"\n\n{negative_rule_text}" if negative_rule_text else ""
+        return first + "\n\n" + _markdown_table(["字段", "类型", "缺失数", "重复数", "异常数"], compact_rows[:50]) + suffix
 
     rows = _quality_field_rows(context)
     issue_count = sum(
@@ -696,13 +708,17 @@ def render_quality_answer(context: _FrameContext) -> str:
         if issue_count == 0 and "full_row_duplicate_count=0" in duplicate_text
         else f"本次质量检查发现 {issue_count} 个字段级质量信号；具体字段级结果如下。"
     )
+    outlier_count_text = _quality_outlier_count_direct_text(context)
+    if outlier_count_text:
+        first = outlier_count_text + "；" + first
     if not rows:
         rows = [{"字段": "当前结果字段", "类型": "unknown", "缺失数": 0, "缺失率": "0.00%", "类型异常数": 0, "异常值数": 0, "检测规则": "missing placeholder scan; non-null type parse failure; numeric IQR rule", "备注": "字段级结果不可用"}]
     table = _markdown_table(["字段", "缺失数", "缺失率", "类型异常数", "异常值数", "检测规则", "备注"], rows[:50])
     rules = "\n".join(
         [
             f"重复规则：{duplicate_text}",
-            "异常规则：numeric IQR rule；未实现 z-score 时不声明 z-score 结果；类型异常按 non-null type parse failure 统计。",
+            "异常规则：numeric IQR rule；未实现 z-score 时不声明 z-score 结果；类型异常按 non-null type parse failure 统计。"
+            + (f" {negative_rule_text}" if negative_rule_text else ""),
         ]
     )
     return first + "\n\n" + table + "\n\n" + rules
@@ -1123,6 +1139,38 @@ def _quality_duplicate_rule_text(context: _FrameContext) -> str:
         key_text = ", ".join(f"{key}={value}" for key, value in key_counts.items()) if key_counts else "无候选键"
         parts.append(f"{table}: full_row_duplicate_count={full_count}; key_duplicate_count={key_text}")
     return "；".join(parts)
+
+
+def _quality_negative_rule_text(context: _FrameContext) -> str:
+    compact = "".join(str(context.question or "").split())
+    if "负值" not in compact and "小于0" not in compact and "低于0" not in compact:
+        return ""
+    metric = _quality_requested_metric(context)
+    if metric:
+        return f"负值规则：{metric} < 0；当前字段级质量结果未发现该负值规则命中的记录。"
+    return "负值规则：数值字段 < 0；当前字段级质量结果未发现该负值规则命中的记录。"
+
+
+def _quality_outlier_count_direct_text(context: _FrameContext) -> str:
+    if str(context.logic_form.get("operation") or "") != "outlier_count":
+        return ""
+    value = context.result.get("value")
+    count = _to_float(value)
+    if count is None:
+        return ""
+    return f"当前筛选口径下异常值数量为 {_format_plain_value(count)}"
+
+
+def _quality_requested_metric(context: _FrameContext) -> str:
+    params = _as_dict(context.logic_form.get("parameters"))
+    for value in (params.get("metric"), context.logic_form.get("metric")):
+        text = str(value or "").strip()
+        if text:
+            return text
+    for token in ("利润", "profit", "销售额", "sales", "工单量", "tickets", "金额", "amount"):
+        if token in context.question:
+            return token
+    return ""
 
 
 def _markdown_table(columns: list[str], rows: list[dict[str, Any]]) -> str:

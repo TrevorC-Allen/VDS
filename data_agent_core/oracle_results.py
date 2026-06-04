@@ -63,6 +63,10 @@ def build_oracle_result(
             return oracle_topn_followup_gap(expected_result, actual, answer=answer)
         if _is_ranking_followup_gap_expected(expected_result):
             return oracle_topn_followup_gap(expected_result, actual, answer=answer)
+        if _is_topn_rows_expected(expected_result):
+            return oracle_topn_rows(expected_result, actual)
+        if _looks_like_quality_oracle_expected(expected_result):
+            return oracle_quality_field_counts(expected_result, actual)
         return OracleResult(
             oracle_available=False,
             expected_result=expected_result,
@@ -77,6 +81,8 @@ def build_oracle_result(
         if isinstance(execution_result.value, Mapping):
             answer = str(execution_result.value.get("answer") or "")
         return oracle_topn_followup_gap(expected, actual, answer=answer)
+    if _is_topn_rows_expected(expected):
+        return oracle_topn_rows(expected, actual)
     if _is_contribution_share_expected(expected) or _is_contribution_share_contract(contract):
         return oracle_contribution_share(expected, actual, tolerance=_share_tolerance(contract))
     if _is_multi_table_join_ranking_expected(expected):
@@ -279,6 +285,57 @@ def _is_contribution_share_expected(value: Any) -> bool:
     return isinstance(value, Mapping) and str(value.get("task_family") or "") in {"contribution", "share", "contribution_followup", "topn_contribution"} and isinstance(value.get("items"), list)
 
 
+def _is_topn_rows_expected(value: Any) -> bool:
+    return isinstance(value, Mapping) and str(value.get("task_family") or "") == "topn_rows" and isinstance(value.get("rows"), list)
+
+
+def oracle_topn_rows(expected: Any, actual: Any) -> OracleResult:
+    """Build a shape-and-value oracle for ranking/topn rows when no fixture expected_result exists."""
+
+    expected_payload = expected if isinstance(expected, Mapping) else {}
+    dimension = str(expected_payload.get("dimension") or "")
+    metric = str(expected_payload.get("metric") or "")
+    expected_rows = _coerce_top_rows(expected_payload.get("rows"), dimension, metric)
+    actual_rows = _coerce_top_rows(actual, dimension, metric)
+    issue_codes: list[str] = []
+    if not actual_rows:
+        issue_codes.append("topn_actual_rows_missing")
+    if dimension and actual_rows and any(row.get(dimension) in (None, "") for row in actual_rows):
+        issue_codes.append("topn_dimension_value_missing")
+    if metric and actual_rows and any(row.get(metric) is None for row in actual_rows):
+        issue_codes.append("topn_metric_value_missing")
+    if expected_rows and actual_rows and len(actual_rows) != len(expected_rows):
+        issue_codes.append("topn_row_count_mismatch")
+    if expected_rows and actual_rows:
+        for expected_row, actual_row in zip(expected_rows, actual_rows):
+            if dimension and str(expected_row.get(dimension)) != str(actual_row.get(dimension)):
+                issue_codes.append("topn_dimension_value_mismatch")
+                break
+            if metric and not _numbers_close(expected_row.get(metric), actual_row.get(metric)):
+                issue_codes.append("topn_metric_value_mismatch")
+                break
+    if metric and actual_rows:
+        metric_values = [_oracle_float(row.get(metric)) for row in actual_rows]
+        metric_values = [value for value in metric_values if value is not None]
+        if len(metric_values) >= 2 and any(left < right for left, right in zip(metric_values, metric_values[1:])):
+            issue_codes.append("topn_sort_order_invalid")
+    issue_codes = sorted(set(issue_codes))
+    return OracleResult(
+        oracle_available=True,
+        expected_result=dict(expected_payload),
+        actual_result={
+            "task_family": "topn_rows",
+            "dimension": dimension,
+            "metric": metric,
+            "row_count": len(actual_rows),
+            "rows": actual_rows,
+        },
+        passed=not issue_codes,
+        diff_summary=None if not issue_codes else "TopN actual_result does not satisfy ranking row evidence.",
+        issue_codes=issue_codes,
+    )
+
+
 def _share_tolerance(contract: TaskExecutionContract | None) -> float:
     if contract is None:
         return 0.01
@@ -408,8 +465,9 @@ def _build_missing_expected_result_oracle_payload(
         "trend": "missing_expected_result_for_time_series_trend",
         "overview": "missing_expected_result_for_overview_schema",
         "multi_file_overview": "missing_expected_result_for_multi_file_overview_schema",
+        "data_quality": "missing_expected_result_for_quality_field_counts",
     }
-    required_family = family in {"topn", "gap", "trend", "overview", "multi_file_overview"}
+    required_family = family in {"topn", "gap", "trend", "overview", "multi_file_overview", "data_quality"}
     if not required_family:
         return None, None
 
@@ -419,6 +477,7 @@ def _build_missing_expected_result_oracle_payload(
         "trend": "trend_followup",
         "overview": "overview",
         "multi_file_overview": "multi_file_overview",
+        "data_quality": "data_quality",
     }
     operation_map = {
         "topn": "ranking",
@@ -426,6 +485,7 @@ def _build_missing_expected_result_oracle_payload(
         "trend": "aggregation",
         "overview": "dataset_overview",
         "multi_file_overview": "multi_table_dataset_overview",
+        "data_quality": "data_quality_report",
     }
     reason = metadata_reason_map[family]
     issue_metadata = {
@@ -434,6 +494,11 @@ def _build_missing_expected_result_oracle_payload(
         "operation": operation_map[family],
         "reason": reason,
     }
+    if family == "data_quality":
+        quality_payload = _coerce_quality_oracle_actual_payload(actual)
+        if quality_payload is not None:
+            return quality_payload, issue_metadata
+        return None, issue_metadata
     if family == "topn":
         dimension = str(contract.dimension or "").strip()
         metric = str(contract.metric or "").strip()
@@ -443,7 +508,17 @@ def _build_missing_expected_result_oracle_payload(
                 gap_payload = _build_topn_gap_expected_payload(actual=actual, dimension=dimension, metric=metric)
                 if gap_payload:
                     return gap_payload, issue_metadata
-            return {"_oracle_expected_result_missing": "topn", "row_count": len(rows)}, issue_metadata
+            return (
+                {
+                    "task_family": "topn_rows",
+                    "dimension": dimension,
+                    "metric": metric,
+                    "required_columns": [column for column in (dimension, metric) if column],
+                    "row_count": len(rows),
+                    "rows": rows,
+                },
+                issue_metadata,
+            )
         return None, issue_metadata
     if family == "gap":
         gap_payload = _coerce_gap_payload(actual, dimension=contract.dimension or "", metric=contract.metric or "")
@@ -2053,9 +2128,21 @@ def _actual_payload(execution_result: ExecutionResult) -> dict[str, Any] | list[
     if execution_result.rows:
         return execution_result.rows
     if isinstance(execution_result.value, (dict, list)):
+        if (
+            isinstance(execution_result.value, dict)
+            and isinstance(execution_result.debug, Mapping)
+            and isinstance(execution_result.debug.get("quality_report"), Mapping)
+        ):
+            payload = dict(execution_result.value)
+            payload.setdefault("quality_report", execution_result.debug.get("quality_report"))
+            return payload
         return execution_result.value
     if execution_result.value is None:
+        if isinstance(execution_result.debug, Mapping) and isinstance(execution_result.debug.get("quality_report"), Mapping):
+            return {"quality_report": execution_result.debug.get("quality_report")}
         return None
+    if isinstance(execution_result.debug, Mapping) and isinstance(execution_result.debug.get("quality_report"), Mapping):
+        return {"value": execution_result.value, "quality_report": execution_result.debug.get("quality_report")}
     return {"value": execution_result.value}
 
 
