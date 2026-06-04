@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -17,6 +18,7 @@ from data_agent_core.core.intent_parser import parse_generic_table_question
 from data_agent_core.executors.pandas_executor import execute_plan
 from data_agent_core.llm.client import MockLLMClient
 from data_agent_core.oracle_results import oracle_topn_followup_gap
+from data_agent_core.output.dataset_overview import build_dataset_overview_response
 from data_agent_core.output.response_builder import build_response
 from data_agent_core.task_contract_builder import apply_referent_contract
 from data_agent_core.verifier.rule_checker import verify_execution
@@ -236,6 +238,43 @@ class RealSalesMetadataFollowupRegressionTest(unittest.TestCase):
         self.assertIn("sign_amt_growth_rate", rows[0])
         self.assertNotEqual(["sign_time", "sign_amt"], third_response["result"]["columns"])
         self.assertIn("张三", third_response.get("answer") or "")
+
+    def test_overview_question_with_metadata_reference_table_is_distinguishable_and_not_recommended_for_business_join(self) -> None:
+        response = build_dataset_overview_response(
+            run_id="run_sales_overview_metadata",
+            dataset_id="ds_sales",
+            question="能分析什么？这几张表",
+            tables=_sales_tables(with_quantity=True),
+            profile=None,
+        )
+
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("overview", response.get("answer_type"))
+        overview = response["overview_report"] if isinstance(response.get("overview_report"), dict) else {}
+        self.assertEqual("multi_table", str(overview.get("overview_scope") or ""))
+
+        tables = overview.get("tables_summary")
+        self.assertIsInstance(tables, list)
+        self.assertEqual(2, len(tables))
+        table_map: dict[str, dict[str, Any]] = {}
+        for item in tables:
+            if isinstance(item, dict):
+                table_map[str(item.get("table") or "")] = item
+        self.assertIn(FACT_TABLE, table_map)
+        self.assertIn(METADATA_TABLE, table_map)
+        self.assertEqual("说明或元数据表", str(table_map[METADATA_TABLE].get("table_type") or ""))
+
+        join_keys = [str(item.get("text") or "") for item in overview.get("candidate_join_keys") or [] if isinstance(item, dict)]
+        for key_text in join_keys:
+            self.assertNotIn(METADATA_TABLE, key_text)
+
+        answer = str(response.get("answer") or "")
+        compact = "".join(answer.split())
+        self.assertIn(FACT_TABLE, answer)
+        self.assertIn(METADATA_TABLE, answer)
+        self.assertNotIn(f"关联{FACT_TABLE}与{METADATA_TABLE}", compact)
+        self.assertNotIn(f"关联{METADATA_TABLE}与{FACT_TABLE}", compact)
+        self.assertTrue(any(token in answer for token in ("qty", "city", "sign_amt")))
 
 
 def _execute_response(question: str, tables: dict[str, pd.DataFrame]) -> dict[str, object]:
