@@ -104,6 +104,8 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
     output_format = _dict(_get(logic_form, "output_format", {}))
     source_tables = list(_get(logic_form, "source_tables", []) or params.get("source_tables") or [])
     family = _task_family(operation=operation, task_type=task_type, question=question, source_tables=source_tables)
+    if bool(params.get("requires_gap_comparison")) and operation in {"aggregation", "trend", "time_series", "ranking", "filtered_metric_ranking"}:
+        family = "gap"
     explicit_dimension = _first_text(params.get("dimension"), params.get("group_by"), _get(logic_form, "group_by"), output_format.get("entity_field"))
     explicit_referent_dimension = _first_text(params.get("referent_dimension"))
     if (

@@ -1266,8 +1266,19 @@ def _generic_same_metric_adjacent_comparison_action(context: Mapping[str, Any], 
     if not action:
         return {}
     enriched = dict(action)
+    parameters = dict(enriched.get("parameters") or {})
+    time_column = str(parameters.get("dimension") or "")
+    metric = str(parameters.get("metric") or "")
+    if time_column:
+        parameters["time_column"] = time_column
+        parameters["time_dimension"] = time_column
+    parameters["requires_gap_comparison"] = True
+    enriched["parameters"] = parameters
     enriched["action_id"] = "same_metric_adjacent_comparison"
     enriched["label"] = "对比同一指标"
+    if time_column and metric:
+        filter_prefix = _combined_filter_question_prefix(context, compact)
+        enriched["question"] = f"{filter_prefix}按{_time_question_label(time_column)}对比相邻时间段的{_metric_question_label(metric)}差距。"
     return enriched
 
 

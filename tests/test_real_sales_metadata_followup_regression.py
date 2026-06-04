@@ -6,12 +6,14 @@ import unittest
 
 import pandas as pd
 
-from data_agent_core.contracts.analysis_contracts import UserQuestion
+from data_agent_core.contracts.analysis_contracts import LogicForm, UserQuestion
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.core.conversation_actions import build_analysis_context, plan_followup_actions
 from data_agent_core.core.intent_parser import parse_generic_table_question
 from data_agent_core.executors.pandas_executor import execute_plan
+from data_agent_core.oracle_results import oracle_topn_followup_gap
 from data_agent_core.output.response_builder import build_response
+from data_agent_core.task_contract_builder import apply_referent_contract
 from data_agent_core.verifier.rule_checker import verify_execution
 
 
@@ -72,6 +74,64 @@ class RealSalesMetadataFollowupRegressionTest(unittest.TestCase):
         self.assertNotIn(METADATA_TABLE, inherited.get("source_tables") or [])
         self.assertEqual({"city": "杭州市"}, inherited.get("filters"))
 
+    def test_city_top1_adjacent_time_comparison_followup_executes_with_gap_contract(self) -> None:
+        first_response = _execute_response("哪个城市订单金额最大", _sales_tables(with_quantity=True))
+        second_response = _execute_followup_response(
+            "对比相邻时间段或相关对象的同一指标",
+            first_response,
+            _sales_tables(with_quantity=True),
+        )
+
+        self.assertTrue(second_response["success"], second_response.get("errors"))
+        self.assertNotIn("缺过滤条件", str(second_response.get("answer") or ""))
+        self.assertEqual("gap", second_response.get("contract_family"))
+        self.assertEqual("sign_amt", second_response["verification"]["task_contract"]["metric"])
+        self.assertEqual("sign_time", second_response["verification"]["task_contract"]["dimension"])
+        self.assertEqual("sign_time", second_response["debug"]["task_contract"]["dimension"])
+        self.assertEqual("sign_time", second_response["logic_form"]["parameters"].get("time_column"))
+        self.assertEqual(FACT_TABLE, second_response["logic_form"]["parameters"].get("table"))
+        self.assertEqual([FACT_TABLE], second_response["logic_form"]["parameters"].get("source_tables"))
+        self.assertEqual({"city": "杭州市"}, second_response["logic_form"].get("filters"))
+
+        task_contract = second_response["verification"]["task_contract"]
+        self.assertEqual("city", task_contract.get("referent_dimension"))
+        self.assertEqual(["杭州市"], task_contract.get("referent_values"))
+        self.assertTrue(task_contract.get("requires_previous_artifact"))
+
+        rows = second_response["result"]["rows"]
+        self.assertEqual("2026-01-15", rows[0]["sign_time"])
+        self.assertAlmostEqual(50000.25, float(rows[0]["sign_amt"]), places=2)
+        self.assertEqual("2026-02-15", rows[1]["sign_time"])
+        self.assertAlmostEqual(86330.49, float(rows[1]["sign_amt"]), places=2)
+
+        gap_rows = second_response["debug"]["result_artifacts"].get("gap_rows") or []
+        self.assertEqual(2, len(gap_rows))
+        self.assertIn("adjacent_gap", gap_rows[1])
+        self.assertAlmostEqual(-36330.24, float(gap_rows[1]["adjacent_gap"]), places=2)
+        self.assertIn("差距", second_response.get("answer") or "")
+
+        expected_gap = {
+            "task_family": "ranking_followup_gap",
+            "top_objects": [
+                {"rank": 1, "value": "2026-01-15", "metric_value": 50000.25},
+                {"rank": 2, "value": "2026-02-15", "metric_value": 86330.49},
+            ],
+            "adjacent_gaps": [-36330.24],
+            "gap_to_leader": [0, -36330.24],
+        }
+        actual_gap = {
+            "task_family": "ranking_followup_gap",
+            "top_objects": [
+                {"rank": index + 1, "value": row["sign_time"], "metric_value": row["sign_amt"]}
+                for index, row in enumerate(rows)
+            ],
+            "adjacent_gaps": [gap_rows[1]["adjacent_gap"]],
+            "gap_to_leader": [row.get("gap_to_leader") for row in gap_rows],
+        }
+        oracle = oracle_topn_followup_gap(expected_gap, actual_gap, answer=str(second_response.get("answer") or ""))
+        self.assertTrue(oracle.oracle_available)
+        self.assertTrue(oracle.passed, oracle.issue_codes)
+
     def test_salesperson_growth_ranking_resolves_specific_candidates(self) -> None:
         logic = parse_generic_table_question("看一下这几个销售的表现，按照增长率排名", _sales_tables(with_quantity=True), "")
 
@@ -96,6 +156,42 @@ def _execute_response(question: str, tables: dict[str, pd.DataFrame]) -> dict[st
     verification = verify_execution(result, plan=plan, user_question=UserQuestion(dataset_id="ds_sales", question=question))
     return build_response(
         run_id="run_sales_regression",
+        user_question=UserQuestion(dataset_id="ds_sales", question=question),
+        plan=plan,
+        execution_result=result,
+        verification=verification,
+    ).to_dict()
+
+
+def _execute_followup_response(question: str, previous_response: dict[str, object], tables: dict[str, pd.DataFrame]) -> dict[str, object]:
+    context = build_analysis_context(previous_response, original_question="哪个城市订单金额最大")
+    actions = plan_followup_actions(question, context)
+    if len(actions) != 1:
+        raise AssertionError(f"expected one structured follow-up action, got {actions!r}")
+    action = actions[0]
+    params = dict(action.get("parameters") or {})
+    inherited = dict(action.get("inherited_parameters") or {})
+    logic = LogicForm(
+        task_type=str(action.get("operation") or "aggregation"),
+        operation=str(action.get("operation") or "aggregation"),
+        metric=str(params.get("metric") or ""),
+        group_by=str(params.get("dimension") or ""),
+        filters={},
+        parameters={
+            **inherited,
+            **params,
+            "table": inherited.get("table") or FACT_TABLE,
+            "source_tables": inherited.get("source_tables") or [FACT_TABLE],
+            "available_columns": inherited.get("available_columns") or list(tables[FACT_TABLE].columns),
+        },
+        output_format={"answer_type": "table"},
+    )
+    apply_referent_contract(logic, action.get("referent_contract") or {})
+    plan = build_analysis_plan(logic, question=str(action.get("question") or question))
+    result = execute_plan(plan, {"tables": tables, "primary_table": FACT_TABLE})
+    verification = verify_execution(result, plan=plan, user_question=UserQuestion(dataset_id="ds_sales", question=str(action.get("question") or question)))
+    return build_response(
+        run_id="run_sales_followup_regression",
         user_question=UserQuestion(dataset_id="ds_sales", question=question),
         plan=plan,
         execution_result=result,

@@ -192,6 +192,12 @@ def _classify_kind(question: str, response: dict[str, Any]) -> str:
         return "analysis"
     if _is_scalar_value_context(answer_type=answer_type, operation=operation):
         return "analysis"
+    task_contract = _as_dict(debug.get("task_contract") or verification.get("task_contract") or response.get("task_contract"))
+    contract_family = str(task_contract.get("task_family") or response.get("contract_family") or "").lower()
+    if contract_family == "gap":
+        return "gap"
+    if contract_family == "trend":
+        return "trend"
     if any(token in text for token in ("完成率", "目标", "实际", "达标", "target", "actual", "achievement")):
         return "target_actual"
     if any(token in text for token in ("差距", "相差", "差多少", "gap", "delta", "difference")):

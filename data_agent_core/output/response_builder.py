@@ -423,6 +423,10 @@ def _referent_answer_prefix(verification: VerificationResult) -> str:
         return ""
     if task_contract.get("auto_expand_topn_if_needed"):
         return ""
+    if str(task_contract.get("task_family") or "") == "gap" and _looks_like_time_dimension(
+        str(task_contract.get("time_dimension") or task_contract.get("dimension") or "")
+    ):
+        return ""
     values = [str(value) for value in task_contract.get("referent_values") or [] if str(value)]
     if not values:
         return ""
@@ -434,6 +438,11 @@ def _referent_answer_prefix(verification: VerificationResult) -> str:
     joined = "、".join(values[:10])
     suffix = "等" if len(values) > 10 else ""
     return f"本次分析对象来自上一轮 Top 结果，共 {len(values)} 个{label or '对象'}：{joined}{suffix}。"
+
+
+def _looks_like_time_dimension(value: str) -> bool:
+    lowered = str(value or "").lower()
+    return any(token in lowered for token in ("time", "date", "day", "month", "year", "日期", "时间", "月份", "年份"))
 
 
 def _semantic_dimension_label(value: str) -> str:
