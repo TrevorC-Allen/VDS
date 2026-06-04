@@ -3081,7 +3081,7 @@ function renderResult(result, options = {}) {
   const isOverviewShaped = Boolean(result.debug?.user_experience_shaping?.applied);
   el.resultMessage.classList.remove("thinking-only");
   el.resultTitle.textContent = isChat ? "VDS" : "分析结果";
-  el.answer.textContent = answerWithCorrectionSummary(result);
+  const renderedAnswerText = renderAnswer(result);
   el.resultStatus.textContent = isChat ? "已回复" : result.success ? "已完成" : "需要继续确认";
   renderRows(rows, columns, result);
   renderChart(isOverviewShaped ? null : result.chart, rows, columns, result.answer);
@@ -3096,7 +3096,7 @@ function renderResult(result, options = {}) {
   }
   setMessageTime(el.resultMessage, options.createdAt || result.responded_at || result.completed_at || result.conversation?.updated_at || result.created_at || new Date().toISOString());
   setThinkingElapsed(el.resultMessage, resolveThinkingElapsedMs(result, options.thinkingElapsedMs));
-  updateCopyReplyButton(el.resultMessage, result.answer || "");
+  updateCopyReplyButton(el.resultMessage, renderedAnswerText || result.answer || "");
   updateRunActionButtons(el.resultMessage, {
     result,
     run: runStatus,
@@ -3125,6 +3125,179 @@ function answerWithCorrectionSummary(result) {
   const summary = result.correction_context?.difference_summary;
   if (!summary) return answer;
   return `${answer}\n\n口径修正：${summary}`;
+}
+
+function renderAnswer(result) {
+  const answer = answerWithCorrectionSummary(result);
+  const sectionHtml = renderStructuredAnswerSections(result?.structured_answer_sections, answer);
+  el.answer.innerHTML = sectionHtml || renderMarkdownishAnswer(answer);
+  return el.answer.textContent || String(answer || "");
+}
+
+function renderStructuredAnswerSections(sections, fallbackAnswer = "") {
+  if (!sections || typeof sections !== "object" || Array.isArray(sections)) return "";
+  const order = [
+    "direct_answer",
+    "key_results",
+    "数据摘要（关键指标）",
+    "method",
+    "insights",
+    "分析洞察（发现了什么）",
+    "业务建议（可以采取什么行动）",
+    "caveats",
+    "口径与边界",
+    "next_questions",
+    "下一步可继续分析",
+  ];
+  const keys = [...order, ...Object.keys(sections).filter((key) => !order.includes(key))];
+  const parts = [];
+  keys.forEach((key) => {
+    const rawItems = Array.isArray(sections[key]) ? sections[key] : [];
+    const items = uniqueStrings(rawItems.map((item) => String(item || "").trim()).filter(Boolean));
+    if (!items.length) return;
+    if (key === "direct_answer") {
+      parts.push(`<p class="answer-lead">${escapeHtml(stripMarkdownHeading(items[0]))}</p>`);
+      return;
+    }
+    const title = answerSectionTitle(key);
+    const body = renderAnswerSectionItems(key, items);
+    if (title && body) {
+      parts.push(`<section class="answer-section"><h3 class="answer-section-title">${escapeHtml(title)}</h3>${body}</section>`);
+    }
+  });
+  if (!parts.length && fallbackAnswer) {
+    return renderMarkdownishAnswer(fallbackAnswer);
+  }
+  return parts.join("");
+}
+
+function answerSectionTitle(key) {
+  const labels = {
+    key_results: "关键结果",
+    method: "计算说明",
+    insights: "数据洞察",
+    caveats: "口径与边界",
+    next_questions: "下一步可问",
+    "数据摘要（关键指标）": "关键结果",
+    "分析洞察（发现了什么）": "数据洞察",
+    "业务建议（可以采取什么行动）": "建议",
+    "口径与边界": "口径与边界",
+    "下一步可继续分析": "下一步可问",
+  };
+  return labels[key] || String(key || "").replaceAll("_", " ");
+}
+
+function renderAnswerSectionItems(key, items) {
+  const cleaned = items.map((item) => stripMarkdownHeading(item)).filter(Boolean);
+  if (!cleaned.length) return "";
+  if (key === "next_questions" || key === "下一步可继续分析") {
+    return `<ol class="answer-question-list">${cleaned.map((item) => `<li>${escapeHtml(ensureQuestionMark(item))}</li>`).join("")}</ol>`;
+  }
+  if (cleaned.length === 1) {
+    return `<p>${escapeHtml(cleaned[0])}</p>`;
+  }
+  return `<ul>${cleaned.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+}
+
+function renderMarkdownishAnswer(text) {
+  const lines = String(text || "-").split(/\r?\n/);
+  const parts = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    if (isMarkdownTableStart(lines, index)) {
+      const table = collectMarkdownTable(lines, index);
+      parts.push(renderMarkdownTable(table.rows));
+      index = table.endIndex;
+      continue;
+    }
+    const heading = line.match(/^#{1,6}\s+(.+)$/);
+    if (heading) {
+      parts.push(`<h3 class="answer-section-title">${escapeHtml(heading[1].trim())}</h3>`);
+      continue;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      const items = [bullet[1].trim()];
+      while (index + 1 < lines.length) {
+        const next = lines[index + 1].trim().match(/^[-*]\s+(.+)$/);
+        if (!next) break;
+        items.push(next[1].trim());
+        index += 1;
+      }
+      parts.push(`<ul>${items.map((item) => `<li>${escapeHtml(stripMarkdownHeading(item))}</li>`).join("")}</ul>`);
+      continue;
+    }
+    const numbered = line.match(/^\d+[.)、]\s+(.+)$/);
+    if (numbered) {
+      const items = [numbered[1].trim()];
+      while (index + 1 < lines.length) {
+        const next = lines[index + 1].trim().match(/^\d+[.)、]\s+(.+)$/);
+        if (!next) break;
+        items.push(next[1].trim());
+        index += 1;
+      }
+      parts.push(`<ol>${items.map((item) => `<li>${escapeHtml(stripMarkdownHeading(item))}</li>`).join("")}</ol>`);
+      continue;
+    }
+    parts.push(`<p>${escapeHtml(stripMarkdownHeading(line))}</p>`);
+  }
+  return parts.join("") || "<p>-</p>";
+}
+
+function isMarkdownTableStart(lines, index) {
+  return isMarkdownTableRow(lines[index]) && isMarkdownTableSeparator(lines[index + 1]);
+}
+
+function collectMarkdownTable(lines, startIndex) {
+  const rows = [lines[startIndex]];
+  let index = startIndex + 2;
+  while (index < lines.length && isMarkdownTableRow(lines[index])) {
+    rows.push(lines[index]);
+    index += 1;
+  }
+  return { rows, endIndex: index - 1 };
+}
+
+function renderMarkdownTable(rows) {
+  const parsedRows = rows.map(splitMarkdownRow).filter((row) => row.length);
+  const [head, ...body] = parsedRows;
+  if (!head?.length) return "";
+  return `
+    <div class="answer-markdown-table">
+      <table>
+        <thead><tr>${head.map((cell) => `<th>${escapeHtml(cell)}</th>`).join("")}</tr></thead>
+        <tbody>${body.map((row) => `<tr>${head.map((_, index) => `<td>${escapeHtml(row[index] || "")}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function splitMarkdownRow(line) {
+  return String(line || "")
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim().replaceAll("\\|", "|"));
+}
+
+function isMarkdownTableRow(line) {
+  return /^\s*\|.+\|\s*$/.test(String(line || ""));
+}
+
+function isMarkdownTableSeparator(line) {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(String(line || ""));
+}
+
+function stripMarkdownHeading(value) {
+  return String(value || "").replace(/^#{1,6}\s+/, "").trim();
+}
+
+function ensureQuestionMark(value) {
+  const text = String(value || "").trim();
+  if (!text || /[?？。]$/.test(text)) return text;
+  return `${text}？`;
 }
 
 function renderRows(rows, columns, result = {}) {

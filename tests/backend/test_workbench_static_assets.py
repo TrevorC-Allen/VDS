@@ -418,6 +418,19 @@ class WorkbenchStaticAssetsTest(unittest.TestCase):
         self.assertIn("assistant-result-message", js)
         self.assertIn(".assistant-message.thinking-only .result-panel", css)
 
+    def test_workbench_renders_structured_answer_sections(self) -> None:
+        js = Path("frontend/app.js").read_text(encoding="utf-8")
+        css = Path("frontend/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("renderAnswer(result)", js)
+        self.assertIn("renderStructuredAnswerSections", js)
+        self.assertIn("structured_answer_sections", js)
+        self.assertIn("renderMarkdownishAnswer", js)
+        self.assertNotIn("el.answer.textContent = answerWithCorrectionSummary(result)", js)
+        self.assertIn("answer-section-title", css)
+        self.assertIn("answer-lead", css)
+        self.assertIn("answer-markdown-table", css)
+
     def test_workbench_enter_sends_and_shift_enter_keeps_newline(self) -> None:
         js = Path("frontend/app.js").read_text(encoding="utf-8")
 

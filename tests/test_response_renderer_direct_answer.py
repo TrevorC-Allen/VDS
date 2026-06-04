@@ -29,8 +29,13 @@ class ResponseRendererDirectAnswerTest(unittest.TestCase):
         )
 
         first = response["answer"].split("。", 1)[0]
-        self.assertIn("销售额最高的 3 个城市是：深圳（586）、上海（428）、北京（414）", first)
+        self.assertIn("销售额最高的 3 个城市是：深圳（销售额 586）、上海（销售额 428）、北京（销售额 414）", first)
         self.assertNotIn("数据摘要（关键指标）", response["answer"])
+        sections = response.get("structured_answer_sections") or {}
+        self.assertEqual(["销售额最高的 3 个城市是：深圳（销售额 586）、上海（销售额 428）、北京（销售额 414）。"], sections.get("direct_answer"))
+        self.assertIn("第 1 位 深圳（销售额=586）", " ".join(sections.get("key_results") or []))
+        self.assertIn("把 Top 项继续按时间或区域拆分", sections.get("next_questions") or [])
+        self.assertNotIn("###", response["answer"])
 
     def test_single_best_join_answer_first_sentence_gives_city_and_amount(self) -> None:
         response = apply_text_answer_framework(
@@ -159,6 +164,38 @@ class ResponseRendererDirectAnswerTest(unittest.TestCase):
 
         self.assertIn("暂时不能可靠回答", response["answer"])
         self.assertNotIn("销售额最高的城市是上海", response["answer"])
+
+    def test_insufficient_data_answer_sections_are_specific_not_boilerplate(self) -> None:
+        response = apply_text_answer_framework(
+            {
+                "success": True,
+                "answer_type": "table",
+                "answer": "按城市统计订单金额，当前只有 2 个城市，无法返回 Top 5，因此返回 Top 2。",
+                "logic_form": {
+                    "operation": "ranking",
+                    "parameters": {"metric": "订单金额", "dimension": "城市", "limit": 5},
+                    "task_contract": {
+                        "task_family": "topn",
+                        "metric": "订单金额",
+                        "dimension": "城市",
+                        "required_n": 5,
+                        "actual_distinct_count": 2,
+                    },
+                },
+                "semantic_status": "passed_with_insufficient_data",
+                "result": {
+                    "columns": ["城市", "订单金额"],
+                    "rows": [{"城市": "杭州", "订单金额": 136330.74}, {"城市": "上海", "订单金额": 98000}],
+                },
+            },
+            question="订单金额最高的 Top 5 城市是哪些？",
+        )
+
+        self.assertTrue(response["answer"].startswith("按城市统计订单金额，当前只有 2 个城市，无法返回 Top 5"))
+        self.assertNotIn("缺少指标口径、维表或映射关系", response["answer"])
+        sections = response.get("structured_answer_sections") or {}
+        caveats = " ".join(sections.get("caveats") or [])
+        self.assertIn("当前只有 2 个城市，无法满足 Top 5", caveats)
 
 
 if __name__ == "__main__":

@@ -1682,6 +1682,74 @@ p {
   word-break: break-word;
 }
 
+.answer-box p {
+  margin: 0 0 10px;
+}
+
+.answer-box ul,
+.answer-box ol {
+  margin: 6px 0 12px;
+  padding-left: 22px;
+}
+
+.answer-box li {
+  margin: 4px 0;
+}
+
+.answer-lead {
+  color: #0f172a;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.62;
+}
+
+.answer-section {
+  margin-top: 16px;
+}
+
+.answer-section-title {
+  margin: 0 0 7px;
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 720;
+  line-height: 1.35;
+}
+
+.answer-question-list {
+  margin-bottom: 0;
+}
+
+.answer-markdown-table {
+  max-width: 100%;
+  margin: 10px 0 14px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.answer-markdown-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  white-space: normal;
+}
+
+.answer-markdown-table th,
+.answer-markdown-table td {
+  border-top: 1px solid var(--line);
+  padding: 9px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.answer-markdown-table th {
+  border-top: 0;
+  background: #fafafa;
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .result-table {
   max-height: 300px;
   border: 1px solid var(--line);

@@ -34,7 +34,8 @@ class TopNGapTrendContractTest(unittest.TestCase):
         self.assertEqual(5, response["verification"]["task_contract"]["required_n"])
         self.assertEqual(4, len(response["result"]["rows"]))
         self.assertEqual(4, response["debug"]["result_artifacts"]["distinct_count"])
-        self.assertIn("数据集中只有 4 个不同城市", response["answer"])
+        self.assertIn("当前只有 4 个城市，无法返回 Top 5", response["answer"])
+        self.assertIn("上海 900、北京 800、深圳 700、广州 600", response["answer"])
         self.assertIn(response["semantic_status"], {"partial", "passed_with_insufficient_data"})
         self.assertNotEqual("failed", response["semantic_status"])
 

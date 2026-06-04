@@ -57,6 +57,9 @@ def apply_text_answer_framework(response: dict[str, Any], *, question: str) -> d
     answer = _sanitize_text(response.get("answer"))
     if "无法返回 Top" in answer and "当前只有" in answer:
         response["answer"] = answer
+        kind = _classify_kind(question, response)
+        context = _FrameContext(question=question, response=response, original_answer=answer, kind=kind)
+        response["structured_answer_sections"] = _compose_direct_answer_sections(context, answer)
         _mark_debug(response, applied=False, reason="preserve_topn_insufficient_direct_answer")
         return response
     if _looks_frameworked(answer):
@@ -69,6 +72,7 @@ def apply_text_answer_framework(response: dict[str, Any], *, question: str) -> d
     direct_answer = _render_direct_answer(context)
     if direct_answer:
         response["answer"] = direct_answer
+        response["structured_answer_sections"] = _compose_direct_answer_sections(context, direct_answer)
         insight = response.get("insight")
         if isinstance(insight, dict) and not str(insight.get("summary") or "").strip():
             insight["summary"] = _first_sentence(direct_answer, limit=180)
@@ -916,6 +920,90 @@ def _compose_structured_sections(context: _FrameContext) -> dict[str, list[str]]
         "口径与边界": boundaries[:5],
         "下一步可继续分析": _dedupe_points(next_questions, limit=3) or ["补充字段、时间范围或过滤条件后重新分析"],
     }
+
+
+def _compose_direct_answer_sections(context: _FrameContext, direct_answer: str) -> dict[str, list[str]]:
+    direct = _ensure_sentence(_first_sentence(direct_answer, limit=260))
+    key_results = _direct_key_results(context, direct_answer)
+    method = _direct_method_lines(context)
+    insights = _dedupe_points(_brief_conclusions(context), limit=2)
+    caveats = _direct_caveats(context, direct_answer)
+    next_questions = _next_questions(context)
+    return {
+        "direct_answer": [direct] if direct else [],
+        "key_results": key_results,
+        "method": method,
+        "insights": insights,
+        "caveats": caveats,
+        "next_questions": next_questions[:3],
+    }
+
+
+def _direct_key_results(context: _FrameContext, direct_answer: str) -> list[str]:
+    if context.kind == "ranking":
+        rows = _top_rows_text(context)
+        if rows:
+            return [rows]
+    if context.kind == "trend":
+        extrema = _extrema_text(context)
+        if extrema:
+            return [extrema]
+    if context.kind in {"quality", "overview"} and context.rows:
+        return [_top_rows_text(context) or _describe_row(context.rows[0], context.columns)]
+    first = _first_sentence(direct_answer, limit=220)
+    return [first] if first else []
+
+
+def _direct_method_lines(context: _FrameContext) -> list[str]:
+    if context.kind == "ranking":
+        metric = _preferred_metric_column(context.columns, context.rows) or str(_as_dict(context.logic_form.get("parameters")).get("metric") or "")
+        dimension = _preferred_label_column(context.columns, metric) or str(_as_dict(context.logic_form.get("parameters")).get("dimension") or context.logic_form.get("group_by") or "")
+        if metric and dimension:
+            return [f"按{dimension}聚合后，使用{metric}按{_ranking_direction(context)}排序"]
+    if context.kind == "trend":
+        metric = _preferred_metric_column(context.columns, context.rows)
+        period = _preferred_period_column(context.columns)
+        if metric and period:
+            return [f"按{period}排序后比较相邻周期的{metric}变化"]
+    evidence = _evidence_paragraph(context)
+    return [evidence] if evidence else []
+
+
+def _direct_caveats(context: _FrameContext, direct_answer: str) -> list[str]:
+    lines: list[str] = []
+    insufficient = _topn_insufficient_caveat(context, direct_answer)
+    if insufficient:
+        lines.append(insufficient)
+    lines.extend(_boundary_lines(context))
+    return _dedupe_points(lines, limit=5)
+
+
+def _topn_insufficient_caveat(context: _FrameContext, direct_answer: str) -> str:
+    task_contract = (
+        _as_dict(context.response.get("task_contract"))
+        or _as_dict(context.logic_form.get("task_contract"))
+        or _as_dict(_as_dict(context.response.get("debug")).get("task_contract"))
+    )
+    required_n = _to_int(task_contract.get("required_n"))
+    dimension = str(task_contract.get("dimension") or "").strip()
+    distinct_count = _to_int(task_contract.get("actual_distinct_count") or task_contract.get("distinct_count"))
+    if distinct_count is None:
+        match = re.search(r"当前只有\s*(\d+)\s*个([^，。]+).*?Top\s*(\d+)", direct_answer)
+        if match:
+            distinct_count = _to_int(match.group(1))
+            dimension = dimension or str(match.group(2)).strip()
+            required_n = required_n or _to_int(match.group(3))
+    if distinct_count is None or not required_n:
+        return ""
+    dimension_text = _display_dimension_label(dimension) if dimension else "对象"
+    return f"当前只有 {distinct_count} 个{dimension_text}，无法满足 Top {required_n}；已展示当前可计算的全部{dimension_text}"
+
+
+def _ensure_sentence(text: str) -> str:
+    value = _strip_sentence_punctuation(text)
+    if not value:
+        return ""
+    return value + ("？" if value.endswith(("?", "？")) else "。")
 
 
 def _render_structured_sections(sections: dict[str, list[str]]) -> str:
