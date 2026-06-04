@@ -219,8 +219,9 @@ def _topn_insufficient_answer(task_contract: dict[str, Any] | None, execution_re
     if not rows:
         metric = str(task_contract.get("metric") or "指标")
         dimension_label = _display_dimension_label(dimension)
+        dimension_text = _dimension_label_with_field(dimension_label, dimension)
         metric_label = _display_metric_label(metric)
-        return f"当前结果没有返回可用于 Top {required_n} 的{dimension_label}排名；按当前筛选条件没有匹配的{metric_label}记录，因此无法列出前 {required_n} 个{dimension_label}。"
+        return f"当前结果没有返回可用于 Top {required_n} 的{dimension_text}排名；按当前筛选条件没有匹配的{metric_label}记录，因此无法列出前 {required_n} 个{dimension_text}。"
     distinct_count = _int_or_none(execution_result.value.get("distinct_count")) if isinstance(execution_result.value, dict) else None
     if distinct_count is None:
         distinct_count = len({row.get(dimension) for row in rows if row.get(dimension) not in {None, ""}}) if dimension else len(rows)
@@ -228,6 +229,7 @@ def _topn_insufficient_answer(task_contract: dict[str, Any] | None, execution_re
         return ""
     metric = str(task_contract.get("metric") or _first_numeric_column(rows, exclude={dimension}) or "指标")
     dimension_label = _display_dimension_label(dimension)
+    dimension_text = _dimension_label_with_field(dimension_label, dimension)
     metric_label = _display_metric_label(metric)
     items = []
     for row in rows[:distinct_count]:
@@ -237,7 +239,7 @@ def _topn_insufficient_answer(task_contract: dict[str, Any] | None, execution_re
             continue
         items.append(f"{label} {_format_display_number(value)}")
     suffix = "：" + "、".join(items) if items else ""
-    return f"按{dimension_label}统计{metric_label}，当前只有 {distinct_count} 个{dimension_label}，无法返回 Top {required_n}，因此返回 Top {distinct_count}{suffix}。"
+    return f"按{dimension_text}统计{metric_label}，当前只有 {distinct_count} 个{dimension_text}，无法返回 Top {required_n}，因此返回 Top {distinct_count}{suffix}。"
 
 
 def _trend_empty_answer(task_contract: dict[str, Any] | None, plan: AnalysisPlan, execution_result: ExecutionResult) -> str:
@@ -282,6 +284,15 @@ def _display_dimension_label(value: str) -> str:
     if "customer" in lowered or "客户" in lowered:
         return "客户"
     return str(value or "对象")
+
+
+def _dimension_label_with_field(label: str, field: str) -> str:
+    raw_field = str(field or "").strip()
+    if not raw_field or raw_field == label:
+        return label
+    if raw_field.lower().endswith("_id") or "id" in raw_field.lower():
+        return f"{label}（{raw_field}）"
+    return label
 
 
 def _display_metric_label(value: str) -> str:
