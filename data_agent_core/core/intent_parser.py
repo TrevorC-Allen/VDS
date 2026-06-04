@@ -43,6 +43,7 @@ FIELD_ALIASES = {
     "customer": "email_address",
     "产品": "product",
     "商品": "product",
+    "sku": "sku",
     "品类": "category",
     "门店": "store",
     "店铺": "store",
@@ -69,6 +70,11 @@ FIELD_ALIASES = {
     "service_line": "service_line",
     "销售额": "sales",
     "销售金额": "sales",
+    "销量": "qty",
+    "销售量": "qty",
+    "销售数量": "qty",
+    "quantity": "qty",
+    "qty": "qty",
     "收入": "revenue",
     "利润": "profit",
     "毛利": "profit",
@@ -2270,7 +2276,54 @@ def _decimal_places(guidelines: str, default: int | None = None) -> int | None:
 def _select_primary_table(tables: dict[str, pd.DataFrame]) -> tuple[str, pd.DataFrame]:
     if not tables:
         raise ValueError("No parsed tables are available.")
-    return max(tables.items(), key=lambda item: (len(item[1]), len(item[1].columns)))
+    business_tables = _business_analysis_tables(tables)
+    return max(business_tables.items(), key=lambda item: (len(item[1]), len(item[1].columns)))
+
+
+METADATA_TABLE_NAME_TOKENS = (
+    "数据表结构",
+    "表说明",
+    "字段说明",
+    "schema",
+    "metadata",
+    "dictionary",
+    "columns",
+    "catalog",
+)
+
+
+def _business_analysis_tables(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Return tables eligible for fact/dimension analysis and analytical joins."""
+
+    business_tables = {
+        table_name: df
+        for table_name, df in tables.items()
+        if not _is_metadata_reference_table(table_name, df)
+    }
+    return business_tables or tables
+
+
+def _is_metadata_reference_table(table_name: str, df: pd.DataFrame | None = None) -> bool:
+    candidates = [str(table_name or "")]
+    if df is not None:
+        candidates.extend(
+            str(value or "")
+            for value in (
+                df.attrs.get("table_name"),
+                df.attrs.get("source_file"),
+                df.attrs.get("sheet"),
+            )
+        )
+    lowered = " ".join(candidates).lower()
+    return any(token.lower() in lowered for token in METADATA_TABLE_NAME_TOKENS)
+
+
+def _question_asks_schema_reference(question: str) -> bool:
+    lowered = str(question or "").lower()
+    compact = re.sub(r"\s+", "", str(question or ""))
+    return any(token in lowered for token in ("schema", "metadata", "dictionary", "catalog", "column", "field")) or any(
+        token in compact for token in ("字段", "表结构", "表说明", "字段说明", "元数据", "口径说明")
+    )
 
 
 def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dict[str, Any]:
@@ -2278,7 +2331,15 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
         raise ValueError("No parsed tables are available.")
     explicit_table_matches = _explicit_table_matches(question, tables)
     explicit_table = explicit_table_matches[0] if len(explicit_table_matches) == 1 else None
-    union_context = None if explicit_table else _same_schema_union_context(question, tables)
+    schema_reference_question = _question_asks_schema_reference(question)
+    if (
+        explicit_table
+        and _is_metadata_reference_table(explicit_table, tables.get(explicit_table))
+        and not schema_reference_question
+    ):
+        explicit_table = None
+    search_tables = tables if (explicit_table and schema_reference_question) else _business_analysis_tables(tables)
+    union_context = None if explicit_table else _same_schema_union_context(question, search_tables)
     if union_context is not None:
         return union_context
     if explicit_table:
@@ -2288,7 +2349,7 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
         dimension = _find_group_by_column(question, primary_df) or _find_dimension_column(question, primary_df, metric)
         target_concepts = _target_dimension_concepts(question)
         if target_concepts:
-            best_dimension_table, best_dimension = _best_dimension_column(question, tables, preferred_table=explicit_table, metric=metric)
+            best_dimension_table, best_dimension = _best_dimension_column(question, search_tables, preferred_table=explicit_table, metric=metric)
             if best_dimension and (
                 not dimension
                 or not _dimension_matches_any_concept(dimension, target_concepts)
@@ -2298,7 +2359,7 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
         target_tables: list[str] = []
         if dimension and dimension_table and dimension_table != explicit_table:
             target_tables.append(dimension_table)
-        filter_matches = _infer_filter_matches_across_tables(question, tables, exclude={metric, dimension}, preferred_table=explicit_table)
+        filter_matches = _infer_filter_matches_across_tables(question, search_tables, exclude={metric, dimension}, preferred_table=explicit_table)
         filters = {str(match["column"]): match["value"] for match in filter_matches}
         for match in filter_matches:
             filter_table = str(match["table"])
@@ -2307,7 +2368,7 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
         join_plan: dict[str, Any] = {}
         source_tables = [explicit_table]
         if target_tables and _should_attempt_generic_join(question):
-            join_plan = _infer_join_plan_for_targets(explicit_table, tables, target_tables)
+            join_plan = _infer_join_plan_for_targets(explicit_table, search_tables, target_tables)
             source_tables.extend(table_name for table_name in target_tables if table_name not in source_tables)
             if not join_plan.get("trusted"):
                 reason = str(join_plan.get("reason") or "")
@@ -2338,20 +2399,20 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
             "join_plan": join_plan,
             "explicit_table": explicit_table,
             "explicit_table_mentions": explicit_table_matches,
-            "available_columns": _available_columns_for_sources(tables, source_tables),
+            "available_columns": _available_columns_for_sources(search_tables, source_tables),
             "table_selection_reason": _table_selection_reason(question, explicit_table, metric, dimension, explicit_table, join_plan),
         }
-    metric_table, metric = _best_metric_column(question, tables)
-    primary_name = explicit_table or metric_table or _select_primary_table(tables)[0]
-    primary_df = tables[primary_name]
+    metric_table, metric = _best_metric_column(question, search_tables)
+    primary_name = explicit_table or metric_table or _select_primary_table(search_tables)[0]
+    primary_df = search_tables[primary_name]
     if metric is None and not _is_record_count_metric_question(question.lower()):
         metric = _find_metric_column(question, primary_df)
-    dimension_table, dimension = _best_dimension_column(question, tables, preferred_table=primary_name, metric=metric)
+    dimension_table, dimension = _best_dimension_column(question, search_tables, preferred_table=primary_name, metric=metric)
     requested_dimensions = _requested_dimension_concepts(question)
     missing_dimension_concepts = requested_dimensions if requested_dimensions and not dimension else []
-    filter_matches = _infer_filter_matches_across_tables(question, tables, exclude={metric, dimension}, preferred_table=primary_name)
+    filter_matches = _infer_filter_matches_across_tables(question, search_tables, exclude={metric, dimension}, preferred_table=primary_name)
     filters = {str(match["column"]): match["value"] for match in filter_matches}
-    candidate_dimension_target = _candidate_dimension_table(question, tables, preferred_table=primary_name)
+    candidate_dimension_target = _candidate_dimension_table(question, search_tables, preferred_table=primary_name)
     target_tables: list[str] = []
     if dimension and dimension_table and dimension_table != primary_name:
         target_tables.append(dimension_table)
@@ -2370,7 +2431,7 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
     join_plan: dict[str, Any] = {}
     source_tables = [primary_name]
     if target_tables:
-        join_plan = _infer_join_plan_for_targets(primary_name, tables, target_tables)
+        join_plan = _infer_join_plan_for_targets(primary_name, search_tables, target_tables)
         source_tables.extend(table_name for table_name in target_tables if table_name not in source_tables)
         if not join_plan.get("trusted"):
             reason = str(join_plan.get("reason") or "")
@@ -2394,7 +2455,7 @@ def _select_table_context(question: str, tables: dict[str, pd.DataFrame]) -> dic
         "join_plan": join_plan,
         "explicit_table": explicit_table,
         "explicit_table_mentions": explicit_table_matches,
-        "available_columns": _available_columns_for_sources(tables, source_tables),
+        "available_columns": _available_columns_for_sources(search_tables, source_tables),
         "table_selection_reason": _table_selection_reason(question, primary_name, metric, dimension, explicit_table, join_plan),
     }
 
@@ -2960,10 +3021,12 @@ SEMANTIC_COLUMN_ALIASES = {
     "city": ("city", "城市", "市"),
     "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "source", "origin", "来源", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
     "customer": ("customer", "cust", "client", "客户", "终端"),
+    "employee": ("employee", "emp", "emp_name", "salesperson", "sales_rep", "salesperson_name", "销售员", "销售人员", "销售代表", "业务员", "业代", "员工"),
     "segment": ("segment", "customer_segment", "cust_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分"),
     "service_line": ("service_line", "business_line", "service", "line", "服务线", "业务线", "服务", "业务"),
     "month": ("month", "month_id", "month_code", "stat_month", "ym", "year_month", "biz_month", "period", "month_period", "period_month", "年月", "月份", "月度", "业务月份", "统计月份", "期间"),
     "time": ("date", "day", "week", "period", "time", "sign_time", "create_time", "日期", "时间", "周期", "业务日期", "统计日期", "签收时间", "创建时间"),
+    "quantity": ("quantity", "qty", "sale_qty", "sales_qty", "ord_qty", "order_qty", "sales_volume", "volume", "数量", "销量", "销售量", "销售数量", "订单量", "件数"),
     "sales": (
         "sales",
         "sale",
@@ -2992,7 +3055,7 @@ SEMANTIC_COLUMN_ALIASES = {
     "tickets": ("tickets", "ticket", "工单量", "工单数", "票据数", "工单", "票据"),
 }
 
-DIMENSION_CONCEPTS = ("product", "category", "store", "city", "channel", "segment", "customer", "service_line", "month", "time")
+DIMENSION_CONCEPTS = ("product", "category", "store", "city", "channel", "segment", "customer", "employee", "service_line", "month", "time")
 
 
 def _requested_dimension_concepts(question: str) -> list[str]:
@@ -3017,6 +3080,7 @@ def _direct_target_dimension_concepts(question: str) -> list[str]:
         ("segment", ("哪个客户细分", "哪些客户细分", "哪个客户群体", "哪些客户群体", "哪个客户分段", "哪些客户分段", "哪个客户段", "哪些客户段", "哪个客群", "哪些客群", "客户分段排名", "客户段排名", "segment ranking", "which segment")),
         ("product", ("哪个产品", "哪种产品", "哪些产品", "产品是哪个", "产品是哪", "产品是什么", "产品有哪些", "产品是哪些", "产品排名", "which product", "product ranking")),
         ("customer", ("哪个客户", "哪些客户", "哪几个客户", "客户是哪个", "客户是哪", "客户是谁", "客户是什么", "客户有哪些", "客户是哪些", "客户排名", "前3个客户", "前三个客户", "前5个客户", "前五个客户", "which customer", "customer ranking")),
+        ("employee", ("这几个销售", "这几位销售", "销售的表现", "哪个销售", "哪些销售", "哪几个销售", "销售员", "销售人员", "销售代表", "业务员", "业代", "员工排名", "salesperson", "sales rep", "employee ranking")),
         ("service_line", ("哪个服务线", "哪些服务线", "哪条服务线", "各条服务线", "每条服务线", "服务线分布", "服务线是哪个", "服务线是哪", "服务线有哪些", "哪个业务线", "哪些业务线", "各条业务线", "每条业务线", "业务线分布", "业务线排名", "which service line", "business line ranking")),
         ("city", ("哪个城市", "哪些城市", "哪几个城市", "城市是哪个", "城市是哪", "城市有哪些", "城市是哪些", "城市排名", "前3个城市", "前三个城市", "前5个城市", "前五个城市", "which city", "city ranking")),
         ("category", ("哪个品类", "哪些品类", "哪几个品类", "品类是哪个", "品类是哪", "品类有哪些", "品类是哪些", "品类排名", "which category", "category ranking")),
@@ -3059,6 +3123,7 @@ def _target_dimension_concepts(question: str) -> list[str]:
         ("segment", ("客户细分", "客户群体", "客户分区", "客户分段", "客户段", "细分市场", "哪个客群", "哪些客群", "客群是什么", "客群是哪", "按客群", "客群排名", "segment")),
         ("product", ("哪个产品", "哪种产品", "哪些产品", "产品是哪个", "产品是哪", "产品是什么", "产品有哪些", "产品是哪些", "按产品", "产品排名", "which product", "by product")),
         ("customer", ("哪个客户", "哪些客户", "客户是哪个", "客户是哪", "客户是谁", "客户是什么", "客户有哪些", "客户是哪些", "按客户", "客户排名", "which customer", "by customer")),
+        ("employee", ("这几个销售", "这几位销售", "销售的表现", "哪个销售", "哪些销售", "哪几个销售", "按销售", "按销售员", "销售员", "销售人员", "销售代表", "业务员", "业代", "员工排名", "salesperson", "sales rep", "by employee")),
         ("service_line", ("各服务线", "每个服务线", "各条服务线", "每条服务线", "哪个服务线", "哪些服务线", "服务线分布", "服务线是哪个", "服务线是哪", "服务线有哪些", "按服务线", "服务线排名", "各业务线", "每个业务线", "各条业务线", "每条业务线", "哪个业务线", "哪些业务线", "业务线分布", "按业务线", "业务线排名", "which service line", "by service line", "business line")),
         ("city", ("各城市", "各个城市", "每个城市", "所有城市", "全部城市", "哪个城市", "哪些城市", "城市分布", "城市是哪个", "城市是哪", "城市有哪些", "城市是哪些", "这些城市", "这几个城市", "按城市", "城市排名", "which city", "by city")),
         ("category", ("哪个品类", "哪些品类", "品类是哪个", "品类是哪", "品类有哪些", "品类是哪些", "按品类", "品类排名", "which category", "by category")),
@@ -3183,6 +3248,11 @@ def _target_metric_concepts(question: str) -> list[str]:
     ):
         targets.append("profit")
         return targets
+    if any(token in target_clause for token in ("销量", "销售量", "销售数量", "订单量", "件数")) or any(
+        token in lowered for token in ("quantity", "qty", "sales volume", "units sold", "order quantity")
+    ):
+        targets.append("quantity")
+        return targets
     if any(token in target_clause for token in ("订单总金额", "订单总额", "订单金额", "订单额", "总金额", "总额", "收入", "营收", "销售额", "销售金额", "销售总额", "总销售额")) or any(
         token in lowered for token in ("amount", "revenue", "sales", "sale amount")
     ):
@@ -3198,7 +3268,7 @@ def _target_metric_concepts(question: str) -> list[str]:
 def _target_metric_concepts_all(question: str) -> list[str]:
     text = str(question or "")
     mentions: list[tuple[int, str]] = []
-    for concept in ("sales", "profit", "tickets"):
+    for concept in ("quantity", "sales", "profit", "tickets"):
         positions = [
             position
             for alias in SEMANTIC_COLUMN_ALIASES.get(concept, ())
@@ -4117,7 +4187,29 @@ def _find_metric_column(question: str, df: pd.DataFrame) -> str | None:
     sales_amount_metric = _find_sales_amount_metric_column(question, df, numeric_columns)
     if sales_amount_metric:
         return sales_amount_metric
-    metric_keywords = ("sales", "revenue", "amount", "fee", "cost", "price", "profit", "ticket", "工单", "票据", "销售", "金额", "收入", "费用", "利润")
+    metric_keywords = (
+        "quantity",
+        "qty",
+        "volume",
+        "sales",
+        "revenue",
+        "amount",
+        "fee",
+        "cost",
+        "price",
+        "profit",
+        "ticket",
+        "数量",
+        "销量",
+        "销售量",
+        "工单",
+        "票据",
+        "销售",
+        "金额",
+        "收入",
+        "费用",
+        "利润",
+    )
     for column in numeric_columns:
         if any(keyword in column.lower() for keyword in metric_keywords):
             return column
@@ -4756,6 +4848,10 @@ def _is_growth_ranking_question(question: str, lowered: str) -> bool:
     growth_tokens = (
         "增长最快",
         "增长最多",
+        "增长率排名",
+        "增长率排行",
+        "按增长率排名",
+        "按增长率排行",
         "增速最快",
         "增幅最大",
         "提升最快",
@@ -4772,6 +4868,8 @@ def _is_growth_ranking_question(question: str, lowered: str) -> bool:
         "波动最大",
         "波动最多",
     )
+    if any(token in compact for token in ("增长率", "增速", "增幅")) and any(token in compact for token in ("排名", "排行", "排序", "从高到低", "从低到高")):
+        return True
     return any(token in compact for token in growth_tokens) or any(
         token in lowered for token in ("fastest growth", "largest growth", "highest growth", "biggest increase", "largest increase", "fastest decline")
     )
