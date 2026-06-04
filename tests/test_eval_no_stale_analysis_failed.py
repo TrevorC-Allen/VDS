@@ -112,6 +112,19 @@ class NoStaleAnalysisFailedTest(unittest.TestCase):
 
         self.assertEqual([], rows)
 
+    def test_insufficient_data_semantic_pass_has_no_failure_rows(self) -> None:
+        turn = _fake_turn(index=1, semantic_status="passed_with_insufficient_data", oracle_passed=True)
+        result = {
+            "scenario_id": "regional_performance_agent",
+            "run_index": 1,
+            "issues": [],
+            "turns": [turn.__dict__],
+        }
+        rows = _failure_rows({"results": [result], "global_issues": []})
+
+        self.assertTrue(_is_turn_semantically_successful(turn))
+        self.assertEqual([], rows)
+
     def test_case_c_oracle_expected_or_actual_missing_still_fails(self) -> None:
         turn = _fake_turn(oracle_passed=None, oracle_issue_codes=["oracle_expected_result_missing"])
         response = {

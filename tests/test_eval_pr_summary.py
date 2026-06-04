@@ -376,6 +376,51 @@ class EvalPrSummaryTest(unittest.TestCase):
             self.assertEqual("EXPECTED_GAP_EVIDENCE_MISSING", report["top_violation_codes"][0]["code"])
             self.assertIn("expected_contract_failed_turns", markdown)
 
+    def test_random_input_insufficient_data_pass_is_not_failed_case(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            _write_json(
+                output_dir / "summary.json",
+                {
+                    "pass_rate": 1.0,
+                    "coverage": {
+                        "turn_count": 1,
+                        "transport_success_turns": 1,
+                        "semantic_contract_turns": 1,
+                        "semantic_passed_turns": 1,
+                        "semantic_failed_turns": 0,
+                        "legacy_unverified_turns": 0,
+                        "oracle_available_turns": 1,
+                        "oracle_passed_turns": 1,
+                        "oracle_failed_turns": 0,
+                    },
+                    "results": [
+                        {
+                            "scenario_id": "topn_insufficient_case",
+                            "scenario_family": "typical",
+                            "turns": [
+                                {
+                                    "index": 1,
+                                    "question": "按城市看金额排名前 5。",
+                                    "semantic_status": "passed_with_insufficient_data",
+                                    "contract_satisfied": True,
+                                    "oracle_available": True,
+                                    "oracle_passed": True,
+                                    "capability_family": "multi_table_join_ranking",
+                                    "scenario_family": "typical",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+
+            report = build_pr_eval_summary(output_dir)
+
+            self.assertTrue(report["gate_result"]["gate_passed"])
+            self.assertEqual([], report["failed_cases"])
+            self.assertEqual(1.0, report["family_summary"]["families"][0]["semantic_pass_rate"])
+
     def test_multi_seed_input_is_supported(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)

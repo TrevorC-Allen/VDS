@@ -124,6 +124,42 @@ class EvalSemanticContractSummaryTest(unittest.TestCase):
         self.assertIsInstance(top_codes, list)
         self.assertEqual([{"code": "TOPN_RESULT_ROWS_SHORT", "count": 1}], top_codes)
 
+    def test_insufficient_data_status_counts_as_semantic_passed(self) -> None:
+        result = ScenarioResult(
+            scenario_id="topn_insufficient",
+            capability_family="ranking",
+            run_index=1,
+            passed=True,
+            simulator_source="mock",
+            turns=[
+                TurnEvidence(
+                    index=1,
+                    question="按城市看销售额排名前 5。",
+                    expected_kind="analysis",
+                    capability_family="ranking",
+                    required_operation="ranking",
+                    success=True,
+                    answer_type="table",
+                    operation="ranking",
+                    conversation_id="conv-insufficient",
+                    state_name="analysis_ready",
+                    semantic_status="passed_with_insufficient_data",
+                    contract_satisfied=True,
+                    contract_family="topn",
+                    contract_checked=True,
+                    oracle_available=True,
+                    oracle_passed=True,
+                    contract_violation_codes=[],
+                )
+            ],
+            issues=[],
+        )
+        coverage = _coverage_summary([result])
+
+        self.assertEqual(1, coverage["semantic_passed_turns"])
+        self.assertEqual(0, coverage["semantic_failed_turns"])
+        self.assertEqual(1.0, coverage["family_summary"]["families"][0]["semantic_pass_rate"])
+
     def test_report_output_includes_semantic_contract_summary_fields(self) -> None:
         report = {
             "passed": False,

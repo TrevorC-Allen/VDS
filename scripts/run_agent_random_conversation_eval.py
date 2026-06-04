@@ -1970,7 +1970,13 @@ def _is_turn_semantically_successful(turn_record: TurnEvidence | dict[str, Any])
     semantic_status = str(semantic_status).strip().lower() if semantic_status is not None else ""
     if semantic_status in {"failed", "needs_clarification"}:
         return False
-    if semantic_status and semantic_status not in {"passed", "corrected_passed", "legacy_unverified"}:
+    if semantic_status and semantic_status not in {
+        "passed",
+        "corrected_passed",
+        "legacy_unverified",
+        "passed_with_insufficient_data",
+        "partial",
+    }:
         return False
 
     contract_satisfied = getattr(turn_record, "contract_satisfied", None)
@@ -4055,7 +4061,12 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
                 contract_checked_turns += 1
             if turn.contract_satisfied is True:
                 contract_satisfied_turns += 1
-            if turn.semantic_status in {"passed", "corrected_passed"}:
+            if turn.semantic_status in {
+                "passed",
+                "corrected_passed",
+                "passed_with_insufficient_data",
+                "partial",
+            }:
                 semantic_passed_turns += 1
                 family_metrics["semantic_passed_turns"] += 1
             if turn.semantic_status == "failed":

@@ -444,7 +444,17 @@ def _build_real_user_eval_summary(payload: MappingLike, comparison_rows: list[di
     semantic_checked = sum(
         1
         for row in comparison_rows
-        if str(_safe_text(row.get("semantic_status"))).lower() in {"passed", "corrected_passed", "failed", "needs_clarification", "legacy_unverified", "not_available"}
+        if str(_safe_text(row.get("semantic_status"))).lower()
+        in {
+            "passed",
+            "corrected_passed",
+            "passed_with_insufficient_data",
+            "partial",
+            "failed",
+            "needs_clarification",
+            "legacy_unverified",
+            "not_available",
+        }
     )
     semantic_passed = sum(1 for row in comparison_rows if _is_semantic_passed(row))
     semantic_failed = sum(1 for row in comparison_rows if _is_semantic_failed(row))
@@ -616,7 +626,7 @@ def _aggregate_family_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         semantic_status = _safe_text(row.get("semantic_status") or row.get("semantic_gate_status"))
         if semantic_status:
             entry["semantic_checked_turns"] += 1
-            if semantic_status in {"passed", "corrected_passed"}:
+            if _is_semantic_passed(row):
                 entry["semantic_passed_turns"] += 1
         if row.get("contract_satisfied") is True:
             entry["contract_satisfied_turns"] += 1
@@ -981,7 +991,7 @@ def _is_random_turn_failed(row: MappingLike) -> bool:
     if row.get("llm_judge_failed") is True:
         return True
     status = _safe_text(row.get("semantic_status") or row.get("semantic_gate_status") or "")
-    return status not in {"passed", "corrected_passed"}
+    return status not in {"passed", "corrected_passed", "passed_with_insufficient_data", "partial"}
 
 
 def _is_real_user_failed(row: MappingLike) -> bool:
@@ -1005,7 +1015,12 @@ def _is_real_user_failed(row: MappingLike) -> bool:
 
 
 def _is_semantic_passed(row: MappingLike) -> bool:
-    return _safe_text(row.get("semantic_status") or row.get("semantic_gate_status")) in {"passed", "corrected_passed"}
+    return _safe_text(row.get("semantic_status") or row.get("semantic_gate_status")) in {
+        "passed",
+        "corrected_passed",
+        "passed_with_insufficient_data",
+        "partial",
+    }
 
 
 def _is_semantic_failed(row: MappingLike) -> bool:
