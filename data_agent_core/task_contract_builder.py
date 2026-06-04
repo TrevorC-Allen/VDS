@@ -38,6 +38,7 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
     inherited = _mapping(contract.get("inherited_parameters"))
     action_parameters = _mapping(contract.get("action_parameters"))
     auto_expand = bool(contract.get("auto_expand_topn_if_needed") or action_parameters.get("auto_expand_topn_if_needed"))
+    requires_gap_comparison = bool(contract.get("requires_gap_comparison") or action_parameters.get("requires_gap_comparison"))
     for key in ("table", "join_plan", "table_selection_reason", "available_columns", "source_tables"):
         value = inherited.get(key)
         if value not in (None, "", [], {}):
@@ -78,6 +79,22 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
             output_format = dict(getattr(logic_form, "output_format", {}) or {})
             output_format["answer_type"] = "table"
             setattr(logic_form, "output_format", output_format)
+        if requires_gap_comparison:
+            for key in ("metric", "dimension", "aggregation", "sort_order", "time_column", "time_dimension"):
+                value = action_parameters.get(key) or inherited.get(key)
+                if value not in (None, "", [], {}):
+                    params[key] = value
+            params["requires_gap_comparison"] = True
+            if str(getattr(logic_form, "operation", "") or "") == "filtering":
+                setattr(logic_form, "operation", "aggregation")
+                setattr(logic_form, "task_type", "aggregation")
+            if params.get("metric"):
+                setattr(logic_form, "metric", str(params.get("metric") or ""))
+            if params.get("dimension"):
+                setattr(logic_form, "group_by", str(params.get("dimension") or ""))
+            output_format = dict(getattr(logic_form, "output_format", {}) or {})
+            output_format["answer_type"] = "table"
+            setattr(logic_form, "output_format", output_format)
     setattr(logic_form, "filters", filters)
     candidate_set = dict(getattr(logic_form, "candidate_set", {}) or {})
     candidate_set.update(
@@ -92,7 +109,7 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
     setattr(logic_form, "candidate_set", candidate_set)
     params.update(
         {
-            **{key: value for key, value in action_parameters.items() if key in {"metric", "dimension", "metrics", "aggregation", "time_column", "time_dimension", "candidate_filter", "limit", "top_n", "sort_order"} and value not in (None, "", [], {})},
+            **{key: value for key, value in action_parameters.items() if key in {"metric", "dimension", "metrics", "aggregation", "time_column", "time_dimension", "candidate_filter", "limit", "top_n", "sort_order", "requires_gap_comparison"} and value not in (None, "", [], {})},
             "requires_previous_artifact": True,
             "referent_artifact_id": str(contract.get("referent_artifact_id") or ""),
             "referent_dimension": dimension,
@@ -108,7 +125,9 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
         params["capability_family"] = "drilldown_followup"
         params["merged_filters"] = dict(filters)
     current_dimension = str(params.get("dimension") or getattr(logic_form, "group_by", None) or "")
-    if current_dimension and current_dimension != dimension:
+    time_like_dimension = any(token in current_dimension.lower() for token in ("time", "date", "day", "month", "year"))
+    single_referent_time_gap = requires_gap_comparison and len(values) == 1 and time_like_dimension
+    if current_dimension and current_dimension != dimension and not single_referent_time_gap:
         params.setdefault("series_dimension", dimension)
     setattr(logic_form, "parameters", params)
     source_tables = params.get("source_tables")
@@ -141,6 +160,7 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
                 if auto_expand
                 else {}
             ),
+            **({"requires_gap_comparison": True} if requires_gap_comparison else {}),
         }
     )
     setattr(logic_form, "task_contract", task_contract)

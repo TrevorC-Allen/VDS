@@ -79,6 +79,46 @@ class ResponseRendererDirectAnswerTest(unittest.TestCase):
 
         self.assertTrue(response["answer"].startswith("Top 3 城市中，深圳比上海高 158，上海比北京高 14；北京比第一名深圳低 172。"))
 
+    def test_time_gap_answer_uses_adjacent_time_language_not_topn_ranking(self) -> None:
+        task_contract = {
+            "task_family": "gap",
+            "metric": "sign_amt",
+            "dimension": "sign_time",
+            "referent_dimension": "city",
+            "referent_values": ["杭州市"],
+            "requires_previous_artifact": True,
+        }
+        response = apply_text_answer_framework(
+            {
+                "success": True,
+                "answer_type": "table",
+                "answer": "",
+                "contract_family": "gap",
+                "logic_form": {
+                    "operation": "aggregation",
+                    "parameters": {"metric": "sign_amt", "dimension": "sign_time", "time_column": "sign_time"},
+                    "task_contract": task_contract,
+                },
+                "verification": {"task_contract": task_contract, "semantic_status": "passed"},
+                "debug": {"task_contract": task_contract},
+                "result": {
+                    "columns": ["sign_time", "sign_amt"],
+                    "rows": [
+                        {"sign_time": "2026-01-10", "sign_amt": 36330.24},
+                        {"sign_time": "2026-01-25", "sign_amt": 50000.25},
+                        {"sign_time": "2026-02-15", "sign_amt": 50000.25},
+                    ],
+                },
+            },
+            question="对比相邻时间段或相关对象的同一指标",
+        )
+
+        first = response["answer"].split("。", 1)[0]
+        self.assertIn("杭州市的 sign_amt 相邻时间段差距为", first)
+        self.assertIn("2026-01-10 到 2026-01-25 增加 13,670.01", first)
+        self.assertNotIn("Top", first)
+        self.assertNotIn("第一名", first)
+
     def test_trend_uses_sequence_not_first_last_only(self) -> None:
         self.assertIn("先升后降", describe_trend({"2026-01": 396, "2026-02": 550, "2026-03": 482}))
         response = apply_text_answer_framework(

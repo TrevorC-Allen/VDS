@@ -567,6 +567,9 @@ def render_gap_answer(context: _FrameContext) -> str:
 
     metric = _preferred_metric_column(context.columns, context.rows)
     label = _preferred_label_column(context.columns, metric)
+    time_gap_answer = _render_time_gap_answer(context, metric=metric)
+    if time_gap_answer:
+        return time_gap_answer
     if len(context.rows) < 2:
         dimension_label = _display_dimension_label(label or "对象")
         count = len({row.get(label) for row in context.rows if label and row.get(label) not in {None, ""}}) if label else len(context.rows)
@@ -602,6 +605,50 @@ def render_gap_answer(context: _FrameContext) -> str:
     if not adjacent:
         return ""
     return f"Top {len(ranked)} {dimension_label}中，" + "，".join(adjacent) + tail + "。以上为相邻排名与第一名的差距。"
+
+
+def _render_time_gap_answer(context: _FrameContext, *, metric: str | None) -> str:
+    task_contract = (
+        _as_dict(context.logic_form.get("task_contract"))
+        or _as_dict(_as_dict(context.response.get("verification")).get("task_contract"))
+        or _as_dict(_as_dict(context.response.get("debug")).get("task_contract"))
+    )
+    params = _as_dict(context.logic_form.get("parameters"))
+    period = str(
+        task_contract.get("time_dimension")
+        or task_contract.get("dimension")
+        or params.get("time_column")
+        or params.get("time_dimension")
+        or params.get("dimension")
+        or ""
+    ).strip()
+    if not metric or not period or period not in context.columns or not _looks_like_time_column(period):
+        return ""
+    pairs: list[tuple[str, float, Any]] = []
+    for row in context.rows:
+        label = str(row.get(period) or "").strip()
+        value = _to_float(row.get(metric))
+        if label and value is not None:
+            pairs.append((label, value, row.get(metric)))
+    if len(pairs) < 2:
+        return ""
+    parts = []
+    for previous, current in zip(pairs, pairs[1:]):
+        previous_label, previous_value, _ = previous
+        current_label, current_value, _ = current
+        diff = current_value - previous_value
+        if math.isclose(diff, 0.0, rel_tol=1e-9, abs_tol=1e-9):
+            movement = "持平"
+        else:
+            movement = ("增加 " if diff > 0 else "减少 ") + _format_plain_value(abs(diff))
+        parts.append(f"{previous_label} 到 {current_label} {movement}")
+    if not parts:
+        return ""
+    referent_values = [str(value) for value in task_contract.get("referent_values") or params.get("referent_values") or [] if str(value)]
+    subject = f"{referent_values[0]}的 " if len(referent_values) == 1 else ""
+    period_label = _display_period_label(period)
+    period_text = "时间段" if period_label == "时间" else period_label
+    return f"{subject}{metric} 相邻{period_text}差距为：" + "，".join(parts) + "。"
 
 
 def render_trend_answer(context: _FrameContext) -> str:
@@ -2712,6 +2759,11 @@ def _preferred_period_column(columns: list[str]) -> str | None:
             if token.lower() in column.lower():
                 return column
     return None
+
+
+def _looks_like_time_column(column: str) -> bool:
+    lowered = str(column or "").lower()
+    return any(token in lowered for token in ("时间", "日期", "月份", "年月", "年份", "time", "date", "day", "month", "period", "year"))
 
 
 def _multi_series_value_columns(columns: list[str], rows: list[dict[str, Any]], period_column: str | None) -> list[str]:
