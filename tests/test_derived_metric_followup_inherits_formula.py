@@ -184,6 +184,57 @@ class DerivedMetricFollowupFormulaTest(unittest.TestCase):
         self.assertIn("derived_metric_numerator_missing", codes)
         self.assertIn("derived_metric_denominator_missing", codes)
 
+    def test_gap_followup_oracle_preserves_derived_metric_formula_metadata(self) -> None:
+        contract = TaskExecutionContract(
+            contract_id="contract_derived_metric_gap_followup",
+            task_family="topn",
+            metric="profit_margin",
+            derived_metric_name="profit_margin",
+            metric_formula="profit / revenue",
+            numerator_column="profit",
+            denominator_column="revenue",
+            dimension="city",
+            requires_previous_artifact=True,
+            referent_dimension="city",
+            referent_values=["北京", "深圳", "上海"],
+            verification_rules={
+                "expected_result": None,
+                "operation": "filtered_metric_ranking",
+                "capability_family": "derived_metric_followup",
+                "requires_derived_metric_formula": True,
+                "metric_formula": "profit / revenue",
+                "numerator_column": "profit",
+                "denominator_column": "revenue",
+            },
+        )
+
+        result = build_oracle_result(
+            contract,
+            ExecutionResult(
+                backend="unit-test",
+                success=True,
+                columns=["city", "profit_margin"],
+                rows=[
+                    {"city": "北京", "profit_margin": 0.6},
+                    {"city": "深圳", "profit_margin": 0.45},
+                    {"city": "上海", "profit_margin": 0.4},
+                ],
+                value={"answer": "北京与深圳利润率差距 0.15，深圳与上海差距 0.05。"},
+            ),
+        )
+
+        expected = result.expected_result or {}
+        self.assertTrue(result.oracle_available)
+        self.assertTrue(result.passed)
+        self.assertEqual("ranking_followup_gap", expected.get("task_family"))
+        self.assertEqual("profit_margin", expected.get("derived_metric_name"))
+        self.assertEqual("profit / revenue", expected.get("metric_formula"))
+        self.assertEqual("profit", expected.get("numerator_column"))
+        self.assertEqual("revenue", expected.get("denominator_column"))
+        self.assertEqual(["北京", "深圳", "上海"], [row["city"] for row in expected.get("top_rows") or []])
+        self.assertEqual([0.15, 0.05], expected.get("adjacent_gaps"))
+        self.assertNotIn("oracle_expected_result_missing", result.issue_codes)
+
     def test_oracle_rejects_wrong_derived_metric_aggregation_sort_filter_and_metadata(self) -> None:
         contract = TaskExecutionContract(
             contract_id="contract_derived_metric_drilldown",

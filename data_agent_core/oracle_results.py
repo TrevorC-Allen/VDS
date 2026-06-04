@@ -697,10 +697,15 @@ def _build_missing_expected_result_oracle_payload(
     if family == "topn":
         dimension = str(contract.dimension or "").strip()
         metric = str(contract.metric or "").strip()
-        rows = _coerce_top_rows(actual, dimension, metric)
+        rows = _coerce_top_rows(_topn_rows_from_actual(actual, dimension=dimension, metric=metric), dimension, metric)
         if rows:
             if _is_topn_gap_followup_contract(contract=contract, answer=answer):
-                gap_payload = _build_topn_gap_expected_payload(actual=actual, dimension=dimension, metric=metric)
+                gap_payload = _build_topn_gap_expected_payload(
+                    actual=actual,
+                    dimension=dimension,
+                    metric=metric,
+                    derived_metadata=_derived_metric_metadata_from_contract(contract),
+                )
                 if gap_payload:
                     return gap_payload, issue_metadata
             return (
@@ -711,6 +716,7 @@ def _build_missing_expected_result_oracle_payload(
                     "required_columns": [column for column in (dimension, metric) if column],
                     "row_count": len(rows),
                     "rows": rows,
+                    **_derived_metric_metadata_from_contract(contract),
                 },
                 issue_metadata,
             )
@@ -782,8 +788,26 @@ def _is_topn_gap_followup_contract(contract: TaskExecutionContract, answer: str)
     )
 
 
+def _topn_rows_from_actual(actual: dict[str, Any] | list[Any] | None, *, dimension: str, metric: str) -> list[Mapping[str, Any]]:
+    rows = _extract_tabular_rows(actual)
+    if not rows:
+        return []
+    if not isinstance(actual, Mapping):
+        return rows
+    if any(key in actual for key in ("rows", "data", "series", "time_series", "result", "actual_result")):
+        return rows
+    columns = _available_row_columns(rows)
+    if _column_present_in_names(dimension, columns) or _column_present_in_names(metric, columns):
+        return rows
+    return []
+
+
 def _build_topn_gap_expected_payload(
-    *, actual: dict[str, Any] | list[Any] | None, dimension: str, metric: str
+    *,
+    actual: dict[str, Any] | list[Any] | None,
+    dimension: str,
+    metric: str,
+    derived_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Normalize bare top rows into ranking-gap expected payload."""
 
@@ -814,6 +838,7 @@ def _build_topn_gap_expected_payload(
         for index, top in enumerate(canonical_top_objects)
     ]
     object_count = len(canonical_top_objects)
+    metadata = {key: str(value) for key, value in dict(derived_metadata or {}).items() if str(value or "").strip()}
     if object_count <= 1:
         return {
             "task_family": "ranking_followup_gap",
@@ -824,6 +849,7 @@ def _build_topn_gap_expected_payload(
             "dimension": normalized_dimension,
             "metric": normalized_metric,
             "top_rows": top_rows,
+            **metadata,
         }
 
     metric_values = [_oracle_float(top.get("metric_value")) for top in canonical_top_objects]
@@ -854,6 +880,20 @@ def _build_topn_gap_expected_payload(
             {"rank": _parse_rank(top.get("rank"), index + 1), "value": top.get("value"), "metric_value": top.get("metric_value")}
             for index, top in enumerate(canonical_top_objects)
         ],
+        **metadata,
+    }
+
+
+def _derived_metric_metadata_from_contract(contract: TaskExecutionContract) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in {
+            "derived_metric_name": str(contract.derived_metric_name or contract.verification_rules.get("derived_metric_name") or "").strip(),
+            "metric_formula": str(contract.metric_formula or contract.verification_rules.get("metric_formula") or "").strip(),
+            "numerator_column": str(contract.numerator_column or contract.verification_rules.get("numerator_column") or "").strip(),
+            "denominator_column": str(contract.denominator_column or contract.verification_rules.get("denominator_column") or "").strip(),
+        }.items()
+        if value
     }
 
 
@@ -2406,6 +2446,10 @@ def oracle_topn_followup_gap(expected: Any, actual: Any, *, answer: str = "") ->
             "top_rows",
             "top_objects",
             "object_dimension",
+            "derived_metric_name",
+            "metric_formula",
+            "numerator_column",
+            "denominator_column",
         ):
             if key in expected:
                 if key == "top_objects":
