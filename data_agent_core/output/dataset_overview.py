@@ -801,16 +801,17 @@ def _analysis_directions_for_fields(metrics: list[str], dimensions: list[str], t
 
 
 def _multi_table_analysis_directions(tables: list[dict[str, Any]]) -> list[str]:
+    analysis_tables = [table for table in tables if not _is_metadata_reference_table(table)]
+    if not analysis_tables:
+        analysis_tables = tables
     all_metrics: list[str] = []
     all_dimensions: list[str] = []
     all_times: list[str] = []
-    table_metric: dict[str, list[str]] = {}
-    for table in tables:
+    for table in analysis_tables:
         table_name = str(table.get("table") or "")
         metrics = [str(item) for item in table.get("metric_candidates") or []]
         dimensions = [str(item) for item in table.get("dimension_candidates") or []]
         times = [str(item) for item in table.get("time_columns") or []]
-        table_metric[table_name] = metrics
         for source, target in ((metrics, all_metrics), (dimensions, all_dimensions), (times, all_times)):
             for item in source:
                 if item not in target:
@@ -823,18 +824,19 @@ def _multi_table_analysis_directions(tables: list[dict[str, Any]]) -> list[str]:
         directions.append(f"按 {all_dimensions[0]} 分组汇总 {metric_text}")
     if len(all_dimensions) >= 2:
         directions.append(f"按 {all_dimensions[0]} 和 {all_dimensions[1]} 对比 {metric_text}")
-    if len(tables) >= 2:
-        first = str(tables[0].get("table") or "事实表")
-        second = str(tables[1].get("table") or "维表")
+    if len(analysis_tables) >= 2:
+        first = str(analysis_tables[0].get("table") or "事实表")
+        second = str(analysis_tables[1].get("table") or "维表")
         directions.append(f"关联 {first} 与 {second} 后，用 {metric_text} 结合 {', '.join(all_dimensions[:2]) or '维度字段'} 做跨表分析")
     return directions or ["先选事实表、指标字段和关联键，再做跨表汇总分析"]
 
 
 def _candidate_join_keys(tables: list[dict[str, Any]]) -> list[dict[str, str]]:
+    candidate_tables = [table for table in tables if not _is_metadata_reference_table(table)]
     candidates: list[dict[str, str]] = []
-    for left_index, left in enumerate(tables):
+    for left_index, left in enumerate(candidate_tables):
         left_fields = {str(field.get("field")) for field in left.get("field_meanings") or [] if isinstance(field, dict)}
-        for right in tables[left_index + 1 :]:
+        for right in candidate_tables[left_index + 1 :]:
             right_fields = {str(field.get("field")) for field in right.get("field_meanings") or [] if isinstance(field, dict)}
             for field in sorted(left_fields & right_fields):
                 if _looks_like_id_field(field) or _looks_like_time_field(field):
@@ -1130,6 +1132,17 @@ def _multi_table_relationship_text(tables: list[dict[str, Any]]) -> str:
     if any(token in haystack for token in ("order", "payment", "customer", "product", "seller", "订单", "支付", "客户", "商品")):
         return "这些表更像订单、支付、客户、商品或卖家等主题表，需要先确定订单或客户主键再关联。"
     return "需要先确认哪张是事实表、哪些是维表或补充说明，再决定对比或 join。"
+
+
+def _is_metadata_reference_table(summary: dict[str, Any]) -> bool:
+    table_type = str(summary.get("table_type") or "").strip()
+    if table_type == "说明或元数据表":
+        return True
+    source_file = str(summary.get("source_file") or "").lower()
+    table_name = str(summary.get("table") or "").lower()
+    metadata_tokens = ("说明", "元数据", "metadata", "readme", "manual", "口径", "规则", "表结构", "数据结构", "glossary", "dictionary")
+    haystack = f"{source_file} {table_name}".lower()
+    return any(token in haystack for token in metadata_tokens)
 
 
 def _multi_table_suggestion_text(tables: list[dict[str, Any]]) -> str:

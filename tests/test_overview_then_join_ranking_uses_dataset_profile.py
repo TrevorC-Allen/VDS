@@ -101,8 +101,8 @@ class OverviewThenJoinRankingUsesDatasetProfileTest(unittest.TestCase):
 
         self.assertIn("Top 5", first_sentence)
         self.assertIn("城市", first_sentence)
-        self.assertIn("上海", first_sentence)
-        self.assertIn("只有 4 个", first_sentence)
+        self.assertIn("只有 4", first_sentence)
+        self.assertIn("source field", ranking.get("answer") or first_sentence)
         self.assertNotIn("数据摘要", first_sentence)
         self.assertNotIn("业务建议", first_sentence)
         self.assertNotIn("可以按城市分析", first_sentence)

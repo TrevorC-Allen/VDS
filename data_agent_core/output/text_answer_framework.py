@@ -1176,6 +1176,9 @@ def _overview_field_rows(context: _FrameContext) -> list[dict[str, Any]]:
 
 def _render_multi_table_contract_overview(report: dict[str, Any]) -> str:
     tables = [item for item in report.get("tables_summary") or [] if isinstance(item, dict)]
+    analysis_tables = [item for item in tables if not _is_metadata_reference_table(item)]
+    if not analysis_tables:
+        analysis_tables = tables
     lines = [
         f"这批上传文件包含 {int(report.get('table_count') or len(tables))} 张表，共 {_format_plain_value(report.get('total_row_count') or 0)} 行、{_format_plain_value(report.get('total_column_count') or 0)} 个字段；需要先按表理解字段，再确认关联键后做跨表分析。",
         "关键字段已按表列出如下。",
@@ -1208,7 +1211,7 @@ def _render_multi_table_contract_overview(report: dict[str, Any]) -> str:
     join_keys = report.get("candidate_join_keys") if isinstance(report.get("candidate_join_keys"), list) else []
     join_text = "；".join(str(_as_dict(item).get("text") or "") for item in join_keys if _as_dict(item).get("text")) or "未识别到稳定的同名 ID / 编码 / 日期类候选关联键"
     lines.extend(["", "候选关联键：", f"- {join_text}", "", "可分析方向："])
-    lines.extend(f"- {item}" for item in _multi_table_overview_directions(tables))
+    lines.extend(f"- {item}" for item in _multi_table_overview_directions(analysis_tables))
     total_quality = sum(int(_to_float(table.get("quality_issue_count") or 0) or 0) for table in tables)
     quality_text = "各表缺失 / 重复 / 异常当前统计未发现非 0 问题；仍需逐表查看字段级结果。" if total_quality == 0 else f"当前共识别 {total_quality} 类质量信号，需逐表确认。"
     lines.extend(
@@ -1238,10 +1241,13 @@ def _overview_analysis_directions(report: dict[str, Any]) -> list[str]:
 
 
 def _multi_table_overview_directions(tables: list[dict[str, Any]]) -> list[str]:
+    analysis_tables = [table for table in tables if not _is_metadata_reference_table(table)]
+    if not analysis_tables:
+        analysis_tables = tables
     metrics: list[str] = []
     dimensions: list[str] = []
     times: list[str] = []
-    for table in tables:
+    for table in analysis_tables:
         for source, target in (
             (table.get("metric_candidates") or [], metrics),
             (table.get("dimension_candidates") or [], dimensions),
@@ -1257,9 +1263,34 @@ def _multi_table_overview_directions(tables: list[dict[str, Any]]) -> list[str]:
         directions.append(f"按 {times[0]} 看 {metric_text} 趋势")
     for dimension in dimensions[:2]:
         directions.append(f"按 {dimension} 分组汇总 {metric_text}")
-    if len(tables) >= 2:
-        directions.append(f"关联 {tables[0].get('table')} 与 {tables[1].get('table')} 后，结合 {', '.join(dimensions[:2]) or '维度字段'} 分析 {metric_text}")
+    if len(analysis_tables) >= 2:
+        directions.append(
+            f"关联 {analysis_tables[0].get('table')} 与 {analysis_tables[1].get('table')} 后，结合 {', '.join(dimensions[:2]) or '维度字段'} 分析 {metric_text}"
+        )
     return directions or ["先选事实表、指标字段和关联键，再做跨表汇总分析"]
+
+
+def _is_metadata_reference_table(summary: dict[str, Any]) -> bool:
+    table_type = str(summary.get("table_type") or "").strip()
+    if table_type == "说明或元数据表":
+        return True
+    source_file = str(summary.get("source_file") or "").lower()
+    table_name = str(summary.get("table") or "").lower()
+    metadata_tokens = (
+        "说明",
+        "元数据",
+        "metadata",
+        "readme",
+        "manual",
+        "口径",
+        "规则",
+        "表结构",
+        "数据结构",
+        "glossary",
+        "dictionary",
+    )
+    haystack = f"{source_file} {table_name}"
+    return any(token in haystack for token in metadata_tokens)
 
 
 def _quality_field_rows(context: _FrameContext) -> list[dict[str, Any]]:
