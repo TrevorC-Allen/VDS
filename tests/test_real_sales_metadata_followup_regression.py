@@ -165,6 +165,66 @@ class RealSalesMetadataFollowupRegressionTest(unittest.TestCase):
         self.assertTrue(oracle.oracle_available)
         self.assertTrue(oracle.passed, oracle.issue_codes)
 
+    def test_service_city_top1_adjacent_time_comparison_followup_uses_gap_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = _write_sales_fact_csv(root)
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="sales_fact.csv")
+            dataset_id = str(upload["dataset_id"])
+
+            first_response = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="哪个城市订单金额最大？",
+                execution_mode="dual",
+            )
+            conversation_id = str(first_response["conversation_id"])
+            second_response = service.respond_to_message(
+                dataset_id=dataset_id,
+                conversation_id=conversation_id,
+                question="对比相邻时间段或相关对象的同一指标",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(first_response["success"], first_response.get("errors"))
+        self.assertEqual("ranking", first_response["logic_form"]["operation"])
+        self.assertEqual("杭州市", first_response["result"]["rows"][0]["city"])
+
+        self.assertTrue(second_response["success"], second_response.get("errors"))
+        self.assertTrue(second_response.get("followup_context", {}).get("is_followup"), second_response.get("followup_context"))
+        self.assertNotEqual("filtering", second_response["logic_form"]["operation"])
+        self.assertEqual("gap", second_response.get("contract_family"))
+        self.assertNotIn("缺过滤条件", str(second_response.get("answer") or ""))
+        self.assertNotIn("Top 3 城市中", str(second_response.get("answer") or ""))
+
+        logic = second_response["logic_form"]
+        params = logic["parameters"]
+        self.assertEqual("sign_amt", params.get("metric"))
+        self.assertEqual("sign_time", params.get("dimension"))
+        self.assertEqual("sign_time", params.get("time_column"))
+        self.assertEqual("sales_fact", params.get("table"))
+        self.assertEqual(["sales_fact"], params.get("source_tables"))
+        self.assertEqual({"city": "杭州市"}, logic.get("filters"))
+
+        task_contract = second_response["verification"]["task_contract"]
+        self.assertEqual("gap", task_contract.get("task_family"))
+        self.assertEqual("sign_amt", task_contract.get("metric"))
+        self.assertEqual("sign_time", task_contract.get("dimension"))
+        self.assertEqual("city", task_contract.get("referent_dimension"))
+        self.assertEqual(["杭州市"], task_contract.get("referent_values"))
+        self.assertTrue(task_contract.get("requires_previous_artifact"))
+
+        rows = second_response["result"]["rows"]
+        self.assertEqual(["sign_time", "sign_amt"], second_response["result"]["columns"])
+        self.assertEqual("2026-01-15", rows[0]["sign_time"])
+        self.assertAlmostEqual(50000.25, float(rows[0]["sign_amt"]), places=2)
+        self.assertEqual("2026-02-15", rows[1]["sign_time"])
+        self.assertAlmostEqual(86330.49, float(rows[1]["sign_amt"]), places=2)
+
+        gap_rows = second_response["debug"]["result_artifacts"].get("gap_rows") or []
+        self.assertEqual(2, len(gap_rows))
+        self.assertAlmostEqual(-36330.24, float(gap_rows[1]["adjacent_gap"]), places=2)
+
     def test_salesperson_growth_ranking_resolves_specific_candidates(self) -> None:
         logic = parse_generic_table_question("看一下这几个销售的表现，按照增长率排名", _sales_tables(with_quantity=True), "")
 
