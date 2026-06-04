@@ -2,15 +2,17 @@
 
 ## 项目主目标
 
-本项目的核心目标是从头构建一个可评测、可复现、可扩展的数据分析 Agent 内核。
+本项目的核心目标是从头构建一个可评测、可复现、可扩展的数据分析 Agent 内核，面向真实用户上传的 CSV / Excel / 多文件数据分析场景。
 
-系统需要支持用户上传 CSV / Excel 文件，Agent 自动解析文件结构和字段含义，根据用户自然语言问题生成分析计划，并通过 Pandas / NumPy 和 SQL / DuckDB 两条执行路径完成数据分析。
+用户上传真实数据后，可以用自然语言连续提问；系统需要理解数据结构、字段语义、业务口径、指标、维度、过滤条件、关联关系和上一轮上下文，并通过确定性执行器计算，返回直接答案、表格、图表、洞察、口径说明、可读过程和可继续追问方向。
 
-执行结果需要经过自查、自纠和一致性校验。确认结果可信后，再生成解释、建议和可视化图表配置，最终通过后端 API 返回给前端展示。
+执行结果需要经过自查、自纠和一致性校验。确认结果可信后，再生成解释、建议和可视化图表配置，最终通过后端 API 返回给前端展示。VDS 不是 benchmark solver、不是随机评测玩具，也不是为了通过某个 eval 的补丁集合；Benchmark、random eval、LLM judge 和 `comparison_scored.*` 只是评估手段，不是产品目标。
 
 ## 当前阶段目标
 
-当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环。Phase 11 已启动会话隔离和历史续聊持久化首个落点，当前具备本地 JSON conversation store、`conversation_id`、历史载入和重命名持久化；真实登录、权限和多租户隔离仍未实现。Phase 12 已作为 Phase 11 之后的正式 Workbench 体验收敛阶段落地首轮实现，把 general 表单概览、结构化 Insight、代码展示和 GPT-like 活动流做成后端稳定契约。Phase 13 已完成首个 GPT-like Project 工作区落点，把 chats、共享文件、项目说明和项目内 memory 纳入同一 project-only 上下文边界；Project 入口必须高度对齐 ChatGPT Project：进入 Project 后左侧全局导航、项目列表和最近历史仍可见，右侧主区域呈现项目主页和项目内上下文。Phase 14 已启动 P0 core hardening 首轮实现，优先补真实文件理解、显式公式口径绑定、图表语义绑定和多轮口径纠错重跑；前端只展示后端结构化结果，不承载解析、公式、join、排序或聚合。
+当前 Phase 6 基线已完成，Phase 7 系列完成多 Agent、泛化验证、输出契约和 submission 风险治理基线；Phase 8 / Phase 9 已作为正式新阶段推进。Phase 8 已完成核心算法回看与多文件/多表泛化闭环，Phase 9 已在 Phase 8 通过后交付后端契约驱动的前端 workbench，Phase 10 已完成结果可视化、洞察建议、数据质量扫描和安全过程可视化首版闭环。Phase 11 已启动会话隔离和历史续聊持久化首个落点，当前具备本地 JSON conversation store、`conversation_id`、历史载入和重命名持久化；真实登录、权限和多租户隔离仍未实现。Phase 12 已作为 Phase 11 之后的正式 Workbench 体验收敛阶段落地首轮实现，把 general 表单概览、结构化 Insight、代码展示和 GPT-like 活动流做成后端稳定契约。Phase 13 已完成首个 GPT-like Project 工作区落点，把 chats、共享文件、项目说明和项目内 memory 纳入同一 project-only 上下文边界；Project 入口必须高度对齐 ChatGPT Project：进入 Project 后左侧全局导航、项目列表和最近历史仍可见，右侧主区域呈现项目主页和项目内上下文。Phase 14 已启动 P0 core hardening 首轮实现，优先补真实文件理解、显式公式口径绑定、图表语义绑定、多轮口径纠错重跑和真实用户答案语义契约；前端只展示后端结构化结果，不承载解析、公式、join、排序或聚合。
+
+当前最高优先级已经从“测试能过”转向“真实语义契约稳定成立”：`success=true`、空 errors、random eval pass、benchmark pass_rate、漂亮模板或 overview 都不能替代用户实际看到的答案正确、上下文继承正确、字段口径可复核和展示可读。
 
 1. 已搭建 data_agent_core 核心算法目录
 2. 已搭建 data_agent_core/contracts 数据契约目录
@@ -136,6 +138,9 @@
 56. Phase 12 首轮代码已落地：general / overview 问法命中 `overview_report`，主回答按表整体情况、字段含义、主要分布、风险/状态字段、可继续提问和边界组织；Insight 建议带 observation / evidence / recommended action；响应新增安全 `execution_artifacts` 代码卡片；`process_view_v2` 的 dataset overview 活动流包含读取表画像、识别表类型和执行概览代码；图表规划避免把 ID / reference / bin / year / hour / minute / day_of_year 当作指标；Workbench 主界面去除高级选项并支持数据文件与说明/规则文件一起上传后自动绑定。
 57. Phase 13 首轮代码已落地：新增 `backend/storage/project_store.py` 本地 JSON Project Store；DataAgentService 和 router 暴露 Project CRUD、project source upload、project memory CRUD，并让 `/message`、conversation create/list/record 支持可选 `project_id`；Workbench 新增 GPT-like Project sidebar 列表和主区域 Project home，当前 Project 下上传文件会写入 project sources，发送消息会带 project_id。左侧最近历史是全局历史，不得按 project 过滤；项目内 conversations / sources / memories 只能在右侧 Project home 中按当前 `project_id` 展示。当前仍是本地匿名 Project，不代表真实登录、多人协作或多租户权限已完成。
 58. Activity Trace v2 已落地：后端从 RunTrace、tool call trace、Pandas / SQL result 和 `execution_artifacts` 生成安全 `activity_trace_v2`，并通过最终 API payload 与 SSE `activity_trace_delta` 供 Workbench 渲染；前端新增 ChatGPT-like 右侧活动抽屉，展示 Planner、Pandas、SQL、Verifier、artifact 和校验摘要，但不展示 raw CoT、raw prompt、reasoning tokens、API key、task_id、标准答案、proxy 或 scorer。
+59. 随机连续追问评测、oracle / contract / semantic check、multi-seed report / summary 可以作为真实用户问题发现和回归证据，但只能证明评估覆盖增加，不能单独证明产品体验合格。
+60. 最近真实数据问题已转为 Phase 14 语义红线：SKU 销量最高不能误规划到 metadata 表 join；城市订单金额最大必须保留城市维度和金额指标，不能只剩 scalar answer；follow-up 必须继承上一轮城市 / 订单金额 / 表 / 指标上下文；销售增长率必须 grounding 到销售字段、指标字段和时间字段，不能只输出泛化缺口模板。
+61. 最近回复体验问题已转为输出红线：正常结果不得暴露 raw markdown 标记如 `###`；标题和正文必须有视觉层级；回答内容必须结构化、去重复、可理解，不能把所有内容堆成一段 markdown。
 
 ## 架构原则
 
@@ -226,6 +231,11 @@ Microsoft Agent Framework 是多 Agent 编排的候选承载框架，但不是�
 19. 在 API、debug、trace 或前端展示完整 Chain of Thought、raw reasoning tokens、raw prompt、API key 或 hidden benchmark answer
 20. 用 `success=true`、空 errors、模板化回答或漂亮 overview 掩盖指标、维度、join、派生口径等语义错算
 21. 让已修复的多文件路由、join、图表聚合、overview、清洗边界、Project 或 GPT-like 回答能力下降；已修能力不得下降 / non-regression 是硬门槛
+22. 把 random eval、benchmark、LLM judge 或 pass_rate 当作产品目标本身
+23. 因为配置里存在 DeepSeek / LLM provider 就默认宣称真实分析链路已调用目标模型
+24. 用低可信 join、metadata 表 join 或规则文件混表来硬算业务答案
+25. 用模板化 insufficient-data 文案替代字段级 grounding、候选字段说明和安全默认口径
+26. 不做用户登录、权限系统、多租户隔离、复杂后端业务系统、数据库持久化复杂设计的口径不得被 Project / conversation / local store v1 弱化
 
 ## 核心工作流
 
@@ -259,6 +269,67 @@ LLM + 规则：Chart Planner
 2. Pandas / SQL / DuckDB 执行、结果标准化、规则校验和 Benchmark 评分必须由代码完成。
 3. Correction Planner 只能给出修正方向，真实修正仍由受控代码路径执行。
 4. Trace 只记录 structured analysis plan、reasoning summary、execution trace、verification notes，不记录完整 Chain of Thought。
+
+## 真实用户答案语义契约
+
+用户可见答案必须满足以下契约，任何 planner、executor、verifier、response builder 或 frontend 渲染改动都不能削弱这些要求：
+
+1. 有答案时，第一屏必须先给直接答案；不能先输出长过程、泛化解释或模板化 caveat。
+2. TopN 问题必须返回 N 个对象，或者明确说明 distinct 值不足。
+3. “哪个 X 最大 / 最高 / 最多”这类 groupby / ranking 问题必须保留 dimension + metric，不能压成只有 scalar `answer`。
+4. “差距 / 对比 / 相差多少”必须直接计算 pairwise gap 或 adjacent gap，并说明比较对象、指标和单位。
+5. follow-up 必须继承上一轮上下文，包括 source table、metric、dimension、filter、top objects、time range、operation 和已确认业务口径。
+6. 多文件 overview 必须列出所有相关表、字段、可能 join key 和分析方向，不能漏表，也不能把规则文件和业务事实表混成无语义 file list。
+7. 数据质量问题必须给字段级 / 规则级证据，例如缺失率、重复行、异常值、类型问题、不可解析日期和受影响字段。
+8. 不能用模板化话术掩盖语义错算；不能把执行成功等同于回答正确。
+9. LLM 不能绕过 executor、normalizer、verifier、correction planner 和 response builder 直接编最终答案。
+
+## 回复格式与可读性红线
+
+正常结果卡片必须把结构化 response section 渲染成用户可读体验，而不是直接把 markdown 字符串丢给前端。
+
+1. 正常结果中不能暴露 raw markdown 标记，例如 `###`。
+2. 标题必须和正文有明显视觉层级，不能同字号、同权重混在一起。
+3. 回答结构应稳定为：直接答案、关键结果 / 表格 / 图表、计算依据 / 字段口径、数据洞察、口径与边界、可继续追问。
+4. 不要把所有内容塞成一坨 markdown 文本；已有结构化 response section 时优先结构化渲染，不靠前端字符串替换兜底。
+5. 失败 / insufficient-data 回复必须具体、短、可行动；必须指出缺哪个字段、有哪些候选字段、可以采用什么安全默认口径。
+6. 不允许反复输出“缺少指标口径、维表或映射关系”这类泛化模板。
+7. 业务建议必须基于当前数据结果，不能生成空泛建议。
+
+## 真实业务 schema grounding 红线
+
+业务问题必须 grounding 到真实业务字段和可分析表，而不是把 metadata 或字段说明表当作业务事实。
+
+1. 名称包含 `数据表结构`、`表说明`、`字段说明`、`schema`、`metadata`、`dictionary`、`catalog`、`columns` 的表，默认视为 metadata / schema description / data dictionary。
+2. 除非用户明确问“字段是什么意思 / 表结构是什么 / 数据字典是什么”，这些 metadata 表不得作为普通业务事实表或维表参与业务 join。
+3. SKU / 商品优先 grounding 到 `sku`、`sku_name`、`sku_factor`、`goods_code`、`item_code`。
+4. 销售 / 业务员优先 grounding 到 `emp_name`、`sales_name`、`seller`。
+5. 城市优先 grounding 到 `city`、`city_name`、`receiver_city`。
+6. 订单金额优先 grounding 到 `sign_amt`、`order_amt`、`amount`。
+7. 销量优先 grounding 到 `qty`、`quantity`、`sale_qty`、`ord_qty`。
+8. 时间优先 grounding 到 `order_date`、`create_time`、`biz_date`。
+9. 如果没有明确销量字段但有金额字段，必须说明“只能按金额排名”或询问用户确认，不能伪造销量。
+10. 不要用低可信 join 硬算答案；如果本来应该单表计算，也不能让 join blocker 掩盖上游规划错误。
+
+## LLM / DeepSeek 调用路径诊断
+
+不能仅因为配置里有 DeepSeek / LLM provider，就假设实际分析链路调用了它。
+
+1. 涉及 LLM 语义理解、planner、answer builder、judge 或 provider 行为的任务，必须能诊断实际调用路径。
+2. 诊断必须区分 deterministic executor 计算路径、LLM planner 路径、answer rendering 路径、fallback / mock / local heuristic 路径。
+3. 不能出现隐藏 fallback 导致系统看似成功，但绕过预期 LLM provider。
+4. 相关测试 / 诊断必须说明是否真的触发 DeepSeek API 或目标模型路径。
+5. Provider adapter 只处理协议差异和 tool call 映射；不能 fork 内部工具契约，不能把核心业务逻辑写进 adapter。
+
+## 测试与验收纪律
+
+1. 单测通过不等于产品验收完成。
+2. Random eval 通过不等于真实数据可用。
+3. 每次修复用户可见行为，必须有 focused regression test、before / after 示例、API 级验证，必要时补 UI 可见验证。
+4. 对于真实用户暴露的问题，必须沉淀成 regression test。
+5. 不允许只刷 seed，不允许只针对当前 task_id、字段值、题面或 benchmark slice 写补丁。
+6. GPT-like / frozen reference 对比仍然是用户可见质量的重要验收方式。
+7. 每次正式测试必须有 `docs/test-runs/*.md` 或等价测试记录；如果只改文档，不能声称代码测试通过，只能记录文档检查。
 
 ## Phase 5 受控 Tool Calling
 
@@ -1194,3 +1265,9 @@ Phase 9 禁止：
 32. Phase 13 不允许把 Project 当成左侧历史过滤器；进入 Project 后必须保持左侧全局导航、Project 列表和最近历史可见，项目内聊天 / 来源列表只能在主区域 Project home 中呈现。
 33. Phase 13 不允许用与 ChatGPT Project 明显不相似的排版、入口命名或回答结构冒充 GPT-like；Project UX 和项目内回答必须对照 ChatGPT 截图、冻结参考或标准 GPT answer，差距大时打回重写。
 34. 每次测试必须写文档；任何被用于验收结论的测试都必须留下 `docs/test-runs/*.md` 证据，不能只存在于终端输出、对话说明、截图或 CHANGELOG_AI.md。
+35. 用户可见答案必须满足真实用户答案语义契约；`success=true`、空 errors、单测通过、random eval 通过或 benchmark pass_rate 上升都不能单独证明语义正确。
+36. TopN、ranking、gap、trend、follow-up、多文件 overview、数据质量问题必须保留必要的 dimension、metric、filter、time range、source table 和字段级证据。
+37. 不能把 metadata / schema / dictionary / catalog / columns 类文件作为业务事实表参与普通分析 join，除非用户明确询问字段含义或表结构。
+38. 不能把 DeepSeek / LLM provider 配置存在等同于实际调用；涉及 provider 的结论必须区分 deterministic executor、LLM planner、answer rendering、fallback / mock / local heuristic 路径。
+39. 正常用户结果中不能暴露 raw markdown 标记如 `###`；标题、正文、表格、图表、洞察和边界必须通过结构化 response section 或等价稳定契约呈现。
+40. 真实用户暴露的问题必须沉淀 focused regression；只刷 seed、只修当前题面、只按当前字段值或当前 benchmark slice 提分，都按伪泛化处理。
