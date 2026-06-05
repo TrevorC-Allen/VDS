@@ -32,6 +32,39 @@ git worktree list
 
 未说明前，不要直接改代码。
 
+## 任务启动强制规则
+
+每次新任务开始前，agent 必须重新读取并确认项目上下文（本文件优先），包括：
+
+- `AGENTS.md`
+- 如果存在，则读取 `MAIN_GOAL.md`、`CHANGELOG_AI.md`
+- 如果存在，则读取 `RTK.md` 或 `~/.codex/RTK.md`
+- 本轮用户指令中的约束、范围、禁止项和验收要求
+
+不能仅在回复中声称“已读”，必须在回复开头输出“已读取上下文摘要”，并且内容至少覆盖：
+
+- 当前分支
+- 已读取文件
+- 当前 git 状态
+- 本轮用户目标
+- 允许修改范围
+- 禁止修改范围
+- 预计修改文件
+- 冲突风险判断
+- 是否可以开始修改
+
+如果未完成读取与摘要，禁止修改任何文件。
+
+如果发现目标文件存在他人未解决的 dirty/staged 改动，必须先停止并报告冲突点，不得覆盖、回滚或清理文件。
+
+每次修改前必须先声明“预计修改文件”；实际修改后必须汇报“实际修改文件”。
+
+禁止 reset / restore / checkout / clean，除非用户明确授权。
+
+禁止顺手重构、格式化、清理无关文件。
+
+如果用户本轮指令与项目文档冲突，以用户本轮明确指令为准，但必须先明确报告冲突点与处理顺序。
+
 ## 治理文件读取提示
 
 每次运行、修改或测试前，如果根据项目规则读取 `MAIN_GOAL.md`、`CHANGELOG_AI.md`、`BRANCH_RULES.md`、`AGENTS.md`、`README` 或其他治理 / 红线文件内容，必须先用单独醒目的中文提示告知用户。
@@ -45,6 +78,23 @@ git worktree list
 
 不要把治理文件读取动作隐藏在普通进度说明里。
 
+## 模型 / 推理推荐输出规则
+
+当用户要求生成 VDS / Codex / Spark / Agent 任务 prompt、修复 prompt、审计 prompt、hotfix prompt、阶段推进 prompt 时，必须先在 prompt 正文外输出“模型 / 推理推荐”。
+
+推荐必须包含：
+
+- 富裕 token 版推荐
+- 节约 token 版推荐
+- 每个版本的建议模型 / 执行者 / 推理强度
+- 简短推荐原因
+
+限制条件：
+
+- prompt 正文必须保持干净，可直接复制粘贴使用。
+- prompt 正文里不得出现模型选择、推理强度、token 预算建议或推荐原因。
+- “模型 / 推理推荐”只能出现 prompt 外部，不得混入 prompt 正文。
+
 ## 任务边界规则
 
 - 只做用户本轮明确要求的任务。
@@ -57,6 +107,7 @@ git worktree list
 - 如果发现当前任务可能会和另一个 Codex 实例冲突，先说明冲突点。
 - 不要假设 dirty 文件都是自己造成的；归属不清楚时先报告，不要覆盖、删除、回滚或格式化。
 - 修改前后都要检查 `git status --short` 和 `git diff --stat`。
+- 如果任务涉及高风险文件或高冲突文件，需额外执行与冲突方位相关的冲突风险判断并提前上报。
 
 ## 共享敏感文件
 
@@ -165,3 +216,25 @@ git worktree list
 ```
 
 - 合并时如果出现冲突，不要盲目覆盖，先说明冲突文件和冲突原因。
+
+## 多 agent / worktree / 文件锁规则
+
+worktree 只用于隔离工作区，不代表允许并行修改同一文件。
+
+同一时间，同一个高冲突文件只能由一个 agent 修改。
+
+如果预计修改文件与其他进行中任务重叠，必须停止并报告，不得继续修改。
+
+高冲突文件包括但不限于：
+
+- `data_agent_core/core/conversation_actions.py`
+- `data_agent_core/core/intent_parser.py`
+- `data_agent_core/oracle_results.py`
+- `data_agent_core/output/response_builder.py`
+- `data_agent_core/output/text_answer_framework.py`
+- `frontend/app.js`
+- `frontend/styles.css`
+
+hotfix 可优先于主计划推进。
+
+但如果 hotfix 命中高冲突文件，必须由当前占用该文件的 agent 处理，不能再开启并行 agent 修改同文件。
