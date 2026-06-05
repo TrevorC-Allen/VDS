@@ -3018,7 +3018,8 @@ SEMANTIC_COLUMN_ALIASES = {
         "分类",
     ),
     "store": ("store", "shop", "branch", "门店", "店铺", "门店名称"),
-    "city": ("city", "城市", "市"),
+    "city": ("city", "city_name", "cityname", "city_nm", "citynm", "城市", "城市名称", "地市", "市"),
+    "region": ("region", "region_name", "area", "area_name", "province", "province_name", "地区", "地区名称", "区域", "区域名称", "大区", "省份"),
     "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "source", "origin", "来源", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
     "customer": ("customer", "cust", "client", "客户", "终端"),
     "employee": ("employee", "emp", "emp_name", "salesperson", "sales_rep", "salesperson_name", "销售员", "销售人员", "销售代表", "业务员", "业代", "员工"),
@@ -3053,9 +3054,24 @@ SEMANTIC_COLUMN_ALIASES = {
     ),
     "profit": ("profit", "gross_profit", "grossprofit", "利润", "毛利"),
     "tickets": ("tickets", "ticket", "工单量", "工单数", "票据数", "工单", "票据"),
+    "capacity": ("capacity", "spec", "spec_desc", "sku_spec", "package_spec", "规格", "容量", "包装规格", "净含量"),
 }
 
-DIMENSION_CONCEPTS = ("product", "category", "store", "city", "channel", "segment", "customer", "employee", "service_line", "month", "time")
+DIMENSION_CONCEPTS = (
+    "product",
+    "category",
+    "capacity",
+    "store",
+    "city",
+    "region",
+    "channel",
+    "segment",
+    "customer",
+    "employee",
+    "service_line",
+    "month",
+    "time",
+)
 
 
 def _requested_dimension_concepts(question: str) -> list[str]:
@@ -3082,7 +3098,9 @@ def _direct_target_dimension_concepts(question: str) -> list[str]:
         ("customer", ("哪个客户", "哪些客户", "哪几个客户", "客户是哪个", "客户是哪", "客户是谁", "客户是什么", "客户有哪些", "客户是哪些", "客户排名", "前3个客户", "前三个客户", "前5个客户", "前五个客户", "which customer", "customer ranking")),
         ("employee", ("这几个销售", "这几位销售", "销售的表现", "哪个销售", "哪些销售", "哪几个销售", "销售员", "销售人员", "销售代表", "业务员", "业代", "员工排名", "salesperson", "sales rep", "employee ranking")),
         ("service_line", ("哪个服务线", "哪些服务线", "哪条服务线", "各条服务线", "每条服务线", "服务线分布", "服务线是哪个", "服务线是哪", "服务线有哪些", "哪个业务线", "哪些业务线", "各条业务线", "每条业务线", "业务线分布", "业务线排名", "which service line", "business line ranking")),
-        ("city", ("哪个城市", "哪些城市", "哪几个城市", "城市是哪个", "城市是哪", "城市有哪些", "城市是哪些", "城市排名", "前3个城市", "前三个城市", "前5个城市", "前五个城市", "which city", "city ranking")),
+        ("city", ("什么城市", "哪个城市", "哪些城市", "哪几个城市", "哪座城市", "城市是哪个", "城市是哪", "城市有哪些", "城市是哪些", "城市排名", "前3个城市", "前三个城市", "前5个城市", "前五个城市", "which city", "city ranking")),
+        ("region", ("什么区域", "什么地区", "哪个区域", "哪个地区", "哪些区域", "哪些地区", "哪几个区域", "哪几个地区", "区域排名", "地区排名", "which region", "which area", "region ranking", "area ranking")),
+        ("capacity", ("什么容量", "哪个容量", "哪些容量", "哪种容量", "什么规格", "哪个规格", "哪些规格", "哪种规格", "容量排名", "规格排名", "which capacity", "which spec", "capacity ranking", "spec ranking")),
         ("category", ("哪个品类", "哪些品类", "哪几个品类", "品类是哪个", "品类是哪", "品类有哪些", "品类是哪些", "品类排名", "which category", "category ranking")),
         ("month", ("哪个月份", "哪个季度", "哪些月份", "哪些季度", "月度趋势", "季度趋势", "变化趋势", "which month", "monthly trend")),
     )
@@ -3125,7 +3143,9 @@ def _target_dimension_concepts(question: str) -> list[str]:
         ("customer", ("哪个客户", "哪些客户", "客户是哪个", "客户是哪", "客户是谁", "客户是什么", "客户有哪些", "客户是哪些", "按客户", "客户排名", "which customer", "by customer")),
         ("employee", ("这几个销售", "这几位销售", "销售的表现", "哪个销售", "哪些销售", "哪几个销售", "按销售", "按销售员", "销售员", "销售人员", "销售代表", "业务员", "业代", "员工排名", "salesperson", "sales rep", "by employee")),
         ("service_line", ("各服务线", "每个服务线", "各条服务线", "每条服务线", "哪个服务线", "哪些服务线", "服务线分布", "服务线是哪个", "服务线是哪", "服务线有哪些", "按服务线", "服务线排名", "各业务线", "每个业务线", "各条业务线", "每条业务线", "哪个业务线", "哪些业务线", "业务线分布", "按业务线", "业务线排名", "which service line", "by service line", "business line")),
-        ("city", ("各城市", "各个城市", "每个城市", "所有城市", "全部城市", "哪个城市", "哪些城市", "城市分布", "城市是哪个", "城市是哪", "城市有哪些", "城市是哪些", "这些城市", "这几个城市", "按城市", "城市排名", "which city", "by city")),
+        ("city", ("各城市", "各个城市", "每个城市", "所有城市", "全部城市", "什么城市", "哪个城市", "哪些城市", "哪座城市", "城市分布", "城市是哪个", "城市是哪", "城市有哪些", "城市是哪些", "这些城市", "这几个城市", "按城市", "城市排名", "which city", "by city")),
+        ("region", ("各区域", "各个区域", "每个区域", "所有区域", "全部区域", "各地区", "各个地区", "每个地区", "什么区域", "什么地区", "哪个区域", "哪个地区", "哪些区域", "哪些地区", "按区域", "按地区", "区域排名", "地区排名", "which region", "which area", "by region", "by area")),
+        ("capacity", ("各容量", "各个容量", "每个容量", "什么容量", "哪个容量", "哪些容量", "哪种容量", "按容量", "容量排名", "各规格", "各个规格", "每个规格", "什么规格", "哪个规格", "哪些规格", "哪种规格", "按规格", "规格排名", "which capacity", "which spec", "by capacity", "by spec")),
         ("category", ("哪个品类", "哪些品类", "品类是哪个", "品类是哪", "品类有哪些", "品类是哪些", "按品类", "品类排名", "which category", "by category")),
         (
             "month",

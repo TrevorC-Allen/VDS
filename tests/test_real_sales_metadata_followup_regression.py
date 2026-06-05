@@ -125,6 +125,88 @@ class RealSalesMetadataFollowupRegressionTest(unittest.TestCase):
         self.assertAlmostEqual(136330.74, float(artifact.get("top_objects", [{}])[0].get("metric_value")), places=2)
         self.assertNotIn(METADATA_TABLE, artifact.get("source_tables") or [])
 
+    def test_city_sales_question_prefers_city_name_over_capacity_and_preserves_capacity_ranking(self) -> None:
+        tables = {"sales_fact": _city_capacity_sales_table()}
+
+        for question in ("什么城市销售额最高", "哪个城市销售额最高"):
+            with self.subTest(question=question):
+                response = _execute_response_with_fact_table(question, tables, fact_table="sales_fact")
+
+                self.assertTrue(response["success"], response.get("errors"))
+                self.assertEqual("ranking", response["logic_form"]["operation"])
+                params = response["logic_form"]["parameters"]
+                self.assertEqual("city_name", params.get("dimension"))
+                self.assertEqual("sign_amt", params.get("metric"))
+                self.assertEqual("sales_fact", params.get("table"))
+                self.assertEqual(["sales_fact"], params.get("source_tables"))
+                self.assertNotEqual("capacity", params.get("dimension"))
+                self.assertEqual(["city_name", "sign_amt"], response["result"]["columns"])
+                self.assertEqual("杭州市", response["result"]["rows"][0]["city_name"])
+
+                answer = str(response.get("answer") or "")
+                self.assertIn("杭州市", answer)
+                self.assertNotIn("500mL", answer)
+                self.assertNotIn("容量", answer)
+                self.assertNotEqual("clarification", response.get("answer_type"))
+
+        capacity_response = _execute_response_with_fact_table("哪个容量销售额最高", tables, fact_table="sales_fact")
+
+        self.assertTrue(capacity_response["success"], capacity_response.get("errors"))
+        capacity_params = capacity_response["logic_form"]["parameters"]
+        self.assertEqual("capacity", capacity_params.get("dimension"))
+        self.assertEqual("sign_amt", capacity_params.get("metric"))
+        self.assertNotEqual("city_name", capacity_params.get("dimension"))
+        self.assertEqual(["capacity", "sign_amt"], capacity_response["result"]["columns"])
+        self.assertEqual("1L", capacity_response["result"]["rows"][0]["capacity"])
+        self.assertIn("1L", str(capacity_response.get("answer") or ""))
+        self.assertNotIn("城市是1L", str(capacity_response.get("answer") or ""))
+
+    def test_service_city_sales_question_prefers_city_name_over_capacity(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = _write_city_capacity_sales_csv(root)
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="sales_fact.csv")
+            dataset_id = str(upload["dataset_id"])
+
+            city_what = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="什么城市销售额最高",
+                execution_mode="dual",
+            )
+            city_which = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="哪个城市销售额最高",
+                execution_mode="dual",
+            )
+            capacity = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="哪个容量销售额最高",
+                execution_mode="dual",
+            )
+
+        for response in (city_what, city_which):
+            self.assertTrue(response["success"], response.get("errors"))
+            params = response["logic_form"]["parameters"]
+            self.assertEqual("city_name", params.get("dimension"))
+            self.assertEqual("sign_amt", params.get("metric"))
+            self.assertEqual("sales_fact", params.get("table"))
+            self.assertEqual(["sales_fact"], params.get("source_tables"))
+            self.assertNotEqual("capacity", params.get("dimension"))
+            self.assertEqual(["city_name", "sign_amt"], response["result"]["columns"])
+            self.assertEqual("杭州市", response["result"]["rows"][0]["city_name"])
+            self.assertNotIn("500mL", str(response.get("answer") or ""))
+            self.assertNotEqual("clarification", response.get("answer_type"))
+
+        self.assertTrue(capacity["success"], capacity.get("errors"))
+        capacity_params = capacity["logic_form"]["parameters"]
+        self.assertEqual("capacity", capacity_params.get("dimension"))
+        self.assertEqual("sign_amt", capacity_params.get("metric"))
+        self.assertEqual(["capacity", "sign_amt"], capacity["result"]["columns"])
+        self.assertEqual("1L", capacity["result"]["rows"][0]["capacity"])
+        self.assertIn("1L", str(capacity.get("answer") or ""))
+        self.assertNotIn("城市是1L", str(capacity.get("answer") or ""))
+
     def test_generic_adjacent_comparison_followup_inherits_previous_city_metric_and_table(self) -> None:
         first_response = _execute_response("哪个城市订单金额最大", _sales_tables(with_quantity=True))
         context = build_analysis_context(first_response, original_question="哪个城市订单金额最大")
@@ -375,9 +457,13 @@ class RealSalesMetadataFollowupRegressionTest(unittest.TestCase):
 
 
 def _execute_response(question: str, tables: dict[str, pd.DataFrame]) -> dict[str, object]:
+    return _execute_response_with_fact_table(question, tables, fact_table=FACT_TABLE)
+
+
+def _execute_response_with_fact_table(question: str, tables: dict[str, pd.DataFrame], *, fact_table: str) -> dict[str, object]:
     logic = parse_generic_table_question(question, tables, "")
     plan = build_analysis_plan(logic, question=question)
-    result = execute_plan(plan, {"tables": tables, "primary_table": FACT_TABLE})
+    result = execute_plan(plan, {"tables": tables, "primary_table": fact_table})
     verification = verify_execution(result, plan=plan, user_question=UserQuestion(dataset_id="ds_sales", question=question))
     return build_response(
         run_id="run_sales_regression",
@@ -442,6 +528,23 @@ def _sales_tables(*, with_quantity: bool) -> dict[str, pd.DataFrame]:
         FACT_TABLE: pd.DataFrame(fact_rows),
         METADATA_TABLE: pd.DataFrame(metadata_rows),
     }
+
+
+def _city_capacity_sales_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"city_name": "杭州市", "capacity": "500mL", "sign_amt": 120000.00, "sign_time": "2026-01-15"},
+            {"city_name": "上海市", "capacity": "500mL", "sign_amt": 80000.00, "sign_time": "2026-01-16"},
+            {"city_name": "杭州市", "capacity": "1L", "sign_amt": 220000.00, "sign_time": "2026-02-15"},
+            {"city_name": "上海市", "capacity": "1L", "sign_amt": 200000.00, "sign_time": "2026-02-16"},
+        ]
+    )
+
+
+def _write_city_capacity_sales_csv(root: Path) -> Path:
+    path = root / "sales_fact.csv"
+    _city_capacity_sales_table().to_csv(path, index=False)
+    return path
 
 
 def _write_sales_fact_csv(root: Path) -> Path:
