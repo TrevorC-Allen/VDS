@@ -265,6 +265,7 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
                     "share_column": _first_text(params.get("share_column"), f"{metric}_share" if metric else "share"),
                     "share_metric": _first_text(params.get("share_metric"), metric),
                     "combined_share_only": _asks_combined_share(question)
+                    or _is_combined_share_operation(operation)
                     or (
                         operation == "top_k_share"
                         and str(output_format.get("answer_type") or "") in {"percentage", "number"}
@@ -514,9 +515,12 @@ def _required_columns(
         required_metric = "count"
     if family in {"contribution", "share", "contribution_followup"}:
         if (
+            _is_combined_share_operation(operation)
+            or (
             str(output_format.get("answer_type") or "") in {"percentage", "number"}
             and not params.get("requires_previous_artifact")
             and not params.get("referent_values")
+            )
         ):
             return columns
         total_column = _first_text(params.get("total_metric_column"), f"total_{metric}" if metric else "")
@@ -553,6 +557,10 @@ def _required_answer_elements(family: TaskFamily) -> list[str]:
     if family == "followup_referent":
         return ["referent_binding"]
     return []
+
+
+def _is_combined_share_operation(operation: str) -> bool:
+    return str(operation or "") in {"vds_period_growth_count_share", "vds_period_threshold_count_share"}
 
 
 def _family_verification_rules(family: TaskFamily) -> dict[str, Any]:
@@ -1063,7 +1071,23 @@ def _column_present(column: str, available_columns: set[str]) -> bool:
     if _normalize_display_column_name(column) in normalized_available:
         return True
     aliases = DISPLAY_COLUMN_ALIASES.get(str(column), ())
-    return any(_normalize_display_column_name(alias) in normalized_available for alias in aliases)
+    if any(_normalize_display_column_name(alias) in normalized_available for alias in aliases):
+        return True
+    if _looks_like_metric_column(column) and normalized_available & {"current_value", "metric_value", "value", "amount", "count", "score"}:
+        return True
+    return False
+
+
+def _looks_like_metric_column(column: str) -> bool:
+    lowered = str(column or "").strip().lower()
+    return bool(
+        lowered
+        and (
+            lowered.endswith("_row")
+            or lowered.endswith("_value")
+            or any(token in lowered for token in ("metric", "amount", "amt", "sales", "revenue", "profit", "rate", "ratio", "count", "qty", "quantity", "score"))
+        )
+    )
 
 
 def _row_value(row: dict[str, Any], column: str) -> Any:

@@ -24,6 +24,12 @@ from data_agent_core.core.capability_registry import coverage_summary_for_logic_
 from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
 from data_agent_core.core.intent_parser import parse_generic_table_question, parse_question
 from data_agent_core.core.planner_guardrails import available_columns_by_table_from_context, validate_logic_form_with_guardrails
+from data_agent_core.core.semantic_contract import (
+    build_canonical_semantic_contract,
+    build_lightweight_schema_semantic_profile,
+    semantic_contract_payload,
+    verify_semantic_contract_coverage,
+)
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMPlanResult, LLMStageResult, complete_stage_with_llm, plan_with_llm
 from data_agent_core.output.chart_renderer import attach_rendered_chart
@@ -122,14 +128,30 @@ class DataAnalysisRoleRuntime:
         )
         logic_form = _validated_logic_form(llm_plan.logic_form, guardrail_logic_form, self.context)
         logic_form = apply_referent_contract_from_guidelines(logic_form, guidelines)
+        schema_semantics = build_lightweight_schema_semantic_profile(self.context, self.dataset_profile)
+        semantic_contract = build_canonical_semantic_contract(
+            question=question,
+            route="multi_agent",
+            selected_logic_form=logic_form,
+            deterministic_logic_form=guardrail_logic_form,
+            llm_logic_form=llm_plan.logic_form,
+            llm_intent=llm_intent.raw,
+            llm_plan=llm_plan.raw,
+            schema_profile=schema_semantics,
+            column_mapping=column_mapping,
+        )
+        state.semantic_contract = semantic_contract.to_dict()
         tool_result = self.dispatcher.dispatch(
             ToolCall(
                 step_id=task.task_id + "_tool",
                 tool_name="build_analysis_plan",
                 arguments={
                     "dataset_id": self.dataset_id,
+                    "question": question,
                     "intent": _json_ready(logic_form),
                     "column_mapping": column_mapping,
+                    "schema_profile": schema_semantics,
+                    "semantic_contract": state.semantic_contract,
                 },
                 requested_by=AgentRole.PLANNER,
             )
@@ -138,10 +160,12 @@ class DataAnalysisRoleRuntime:
         if tool_result.success:
             state.logic_form = tool_result.output_payload["logic_form"]
             state.analysis_plan = tool_result.output_payload["analysis_plan"]
+            state.semantic_contract = tool_result.output_payload.get("semantic_contract") or state.semantic_contract
         else:
-            plan = build_analysis_plan(logic_form)
-            state.logic_form = _json_ready(logic_form)
+            plan = build_analysis_plan(logic_form, question=question, semantic_contract=semantic_contract)
+            state.logic_form = _json_ready(plan.logic_form)
             state.analysis_plan = _json_ready(plan)
+            state.semantic_contract = semantic_contract.to_dict()
         output = {
             "intent_parser": _stage_summary(llm_intent),
             "column_mapping": {"rule_mapping": column_mapping, "llm_summary": _stage_summary(llm_column_mapping)},
@@ -152,9 +176,12 @@ class DataAnalysisRoleRuntime:
                 "llm_operation": llm_plan.logic_form.operation,
                 "selected_operation": logic_form.operation,
                 "guardrail_applied": llm_plan.logic_form.operation != logic_form.operation,
+                "semantic_contract_version": state.semantic_contract.get("contract_version") if isinstance(state.semantic_contract, dict) else None,
+                "semantic_capability_family": state.semantic_contract.get("capability_family") if isinstance(state.semantic_contract, dict) else None,
             },
             "logic_form": state.logic_form,
             "analysis_plan": state.analysis_plan,
+            "semantic_contract": state.semantic_contract,
         }
         if isinstance(state.analysis_plan, dict) and state.analysis_plan.get("task_contract"):
             output["task_contract"] = state.analysis_plan["task_contract"]
@@ -179,9 +206,26 @@ class DataAnalysisRoleRuntime:
         """Apply a structured correction action and rebuild the analysis plan."""
 
         logic_form = _logic_form_from_payload(corrected_logic_form)
-        plan = build_analysis_plan(logic_form)
-        state.logic_form = _json_ready(logic_form)
+        semantic_context = {
+            "route": "multi_agent_correction",
+            "schema_profile": state.schema_profile,
+            "previous_semantic_contract": state.semantic_contract,
+        }
+        if state.schema_profile is None or not state.semantic_contract:
+            state.warnings.append("correction_context_partial")
+        plan = build_analysis_plan(
+            logic_form,
+            question=state.question,
+            semantic_context=semantic_context,
+        )
+        plan.constraints["correction_context"] = {
+            "previous_semantic_contract_present": bool(state.semantic_contract),
+            "schema_profile_present": state.schema_profile is not None,
+            "partial": state.schema_profile is None or not state.semantic_contract,
+        }
+        state.logic_form = _json_ready(plan.logic_form)
         state.analysis_plan = _json_ready(plan)
+        state.semantic_contract = semantic_contract_payload(plan.semantic_contract)
         state.pandas_result = None
         state.sql_result = None
         state.verification = None
@@ -236,6 +280,7 @@ class DataAnalysisRoleRuntime:
             context_summary=self.context_summary(),
             payload={
                 "analysis_plan": state.analysis_plan,
+                "semantic_contract": state.semantic_contract,
                 "pandas_result_summary": _execution_summary(state.pandas_result),
                 "sql_result_summary": _execution_summary(state.sql_result),
                 "rule_verification": state.verification,
@@ -398,6 +443,12 @@ class DataAnalysisRoleRuntime:
                 "table_selection_reason": plan.logic_form.table_selection_reason,
                 "join_plan": plan.logic_form.join_plan,
                 "join_execution_summary": pandas_result.debug.get("join_execution_summary") if isinstance(pandas_result.debug, dict) else None,
+                "semantic_contract": semantic_contract_payload(plan.semantic_contract or state.semantic_contract),
+                "semantic_contract_coverage": verify_semantic_contract_coverage(
+                    plan.semantic_contract or state.semantic_contract,
+                    plan.logic_form,
+                    pandas_result,
+                ),
                 "capability": coverage_summary_for_logic_form(
                     state.logic_form or {},
                     available_columns=_available_columns_for_logic_form(self.context, state.logic_form),
@@ -613,6 +664,8 @@ def _analysis_plan_from_payload(payload: dict[str, Any]) -> AnalysisPlan:
         expected_result_shape=str(payload.get("expected_result_shape") or "scalar"),
         constraints=dict(payload.get("constraints") or {}),
         task_contract=_task_contract_from_payload(payload.get("task_contract") or getattr(logic_form, "task_contract", None)),
+        semantic_contract=dict(payload.get("semantic_contract") or getattr(logic_form, "semantic_contract", {}) or {}),
+        execution_spec=dict(payload.get("execution_spec") or {}),
     )
 
 
@@ -639,6 +692,7 @@ def _logic_form_from_payload(payload: dict[str, Any]) -> LogicForm:
         output_format=dict(payload.get("output_format") or {}),
         output_contract=dict(payload.get("output_contract") or {}),
         task_contract=dict(payload.get("task_contract") or {}),
+        semantic_contract=dict(payload.get("semantic_contract") or {}),
     )
 
 
@@ -654,6 +708,8 @@ def _execution_result_from_payload(payload: dict[str, Any]) -> ExecutionResult:
         warnings=list(payload.get("warnings") or []),
         errors=list(payload.get("errors") or []),
         debug=dict(payload.get("debug") or {}),
+        execution_trace=dict(payload.get("execution_trace") or dict(payload.get("debug") or {}).get("execution_trace") or {}),
+        expected_trace=dict(payload.get("expected_trace") or dict(payload.get("debug") or {}).get("expected_trace") or {}),
     )
 
 
@@ -666,6 +722,7 @@ def _verification_result_from_payload(payload: dict[str, Any]) -> VerificationRe
         issues=list(payload.get("issues") or []),
         notes=list(payload.get("notes") or []),
         semantic_verification_notes=list(payload.get("semantic_verification_notes") or []),
+        semantic_issues=[dict(item) for item in payload.get("semantic_issues") or [] if isinstance(item, dict)],
         correction_action=payload.get("correction_action"),
         task_contract=payload.get("task_contract"),
         contract_report=payload.get("contract_report"),

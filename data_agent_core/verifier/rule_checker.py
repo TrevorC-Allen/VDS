@@ -11,6 +11,7 @@ from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.contracts.verification_contracts import ComparisonResult, VerificationResult
 from data_agent_core.core.analysis_planner import complete_generalization_contract
 from data_agent_core.core.capability_registry import capability_for_operation
+from data_agent_core.core.semantic_contract import semantic_contract_payload, verify_semantic_contract_coverage
 from data_agent_core.oracle_results import build_oracle_result
 from data_agent_core.task_execution_contracts import (
     TaskExecutionContract,
@@ -31,6 +32,7 @@ def verify_execution(
 
     issues: list[str] = []
     semantic_notes: list[str] = []
+    semantic_issues: list[dict[str, Any]] = []
     correction_action: dict[str, object] | None = None
     if not primary.success:
         issues.append("Primary execution path failed.")
@@ -43,6 +45,20 @@ def verify_execution(
     contract_report = None
     oracle_result = build_oracle_result(task_contract, primary)
     semantic_status = "legacy_unverified"
+    if plan is None or user_question is None:
+        legacy_issue = {
+            "type": "legacy_unverified",
+            "code": "legacy_unverified",
+            "severity": "warning",
+            "message": "Verification was called without analysis_plan or user_question; semantic coverage was not checked.",
+            "correction_action": "legacy_unverified",
+        }
+        semantic_passed = False
+        semantic_status = "warning"
+        semantic_issues.append(legacy_issue)
+        semantic_notes.append(legacy_issue["message"])
+        correction_action = {"action": "legacy_unverified", "issue_type": "legacy_unverified", "reason": legacy_issue["message"]}
+        issues.append("Canonical semantic contract coverage was not checked.")
     if task_contract is not None:
         contract_report = verify_task_execution_contract(task_contract, primary)
         semantic_status = semantic_status_from_report(contract=task_contract, report=contract_report)
@@ -54,6 +70,32 @@ def verify_execution(
             correction_action = correction_action or _referent_correction_action(task_contract, contract_report)
     if plan is not None and user_question is not None:
         complete_generalization_contract(plan.logic_form)
+        coverage_payload = semantic_contract_payload(
+            getattr(plan, "semantic_contract", None) or getattr(plan.logic_form, "semantic_contract", None)
+        )
+        if coverage_payload:
+            coverage = verify_semantic_contract_coverage(coverage_payload, plan.logic_form, primary)
+            semantic_notes.extend(str(note) for note in coverage.get("notes") or [])
+            coverage_issues = [item for item in coverage.get("issues") or [] if isinstance(item, dict)]
+            semantic_issues.extend(coverage_issues)
+            if coverage_issues:
+                semantic_notes.extend(
+                    f"{item.get('code')}: {item.get('message') or item.get('severity') or ''}".strip()
+                    for item in coverage_issues
+                )
+            coverage_status = str(coverage.get("status") or ("passed" if coverage.get("passed", True) else "failed"))
+            if coverage.get("correction_action") and correction_action is None:
+                correction_action = coverage.get("correction_action")
+            if coverage_status == "passed" and semantic_status == "legacy_unverified":
+                semantic_status = "passed"
+            elif coverage_status == "warning" and semantic_status in {"legacy_unverified", "passed"}:
+                semantic_status = "warning"
+                semantic_passed = False
+                issues.append("Canonical semantic contract coverage warning.")
+            if not coverage.get("passed", True):
+                semantic_passed = False
+                issues.append("Canonical semantic contract coverage failed.")
+                semantic_status = "failed"
         generalization_passed, generalization_notes, generalization_action = _verify_semantic_contract(plan, user_question, primary)
         semantic_notes.extend(generalization_notes)
         if generalization_action is not None:
@@ -61,6 +103,7 @@ def verify_execution(
         if not generalization_passed:
             semantic_passed = False
             issues.append("Semantic metric definition does not match the user question.")
+            semantic_status = "failed"
     if contract_report is not None and not contract_report.passed and _needs_clarification(contract_report):
         semantic_status = "needs_clarification"
     passed = not issues
@@ -72,6 +115,7 @@ def verify_execution(
         issues=issues,
         notes=["Verifier checked execution success, optional backend consistency, and semantic metric contract."],
         semantic_verification_notes=semantic_notes,
+        semantic_issues=semantic_issues,
         correction_action=correction_action,
         task_contract=_json_ready(task_contract) if task_contract is not None else None,
         contract_report=_json_ready(contract_report) if contract_report is not None else None,
@@ -143,6 +187,7 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
                 expected_result_shape=plan.expected_result_shape,
                 constraints=plan.constraints,
                 task_contract=logic_contract,
+                semantic_contract=dict(getattr(plan, "semantic_contract", {}) or {}),
             ),
             user_question,
         )

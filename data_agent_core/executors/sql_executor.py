@@ -11,7 +11,12 @@ import time
 from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan
-from data_agent_core.contracts.execution_contracts import ExecutionResult
+from data_agent_core.contracts.execution_contracts import (
+    ExecutionResult,
+    build_actual_execution_trace,
+    empty_actual_execution_trace,
+    prepare_execution_plan_for_backend,
+)
 from data_agent_core.core.capability_registry import SQL_NATIVE_OPERATIONS
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import SQL_EXECUTION_ERROR
@@ -24,19 +29,35 @@ def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult
     """Execute SQL-compatible operations using sqlite fallback."""
 
     start = time.perf_counter()
+    effective_plan = plan
+    expected_trace: dict[str, Any] = {}
+    execution_trace: dict[str, Any] = {}
     try:
-        value = _execute_value(plan, context)
+        effective_plan, expected_trace, trace_warnings = prepare_execution_plan_for_backend(plan, source="sql_executor")
+        value = _execute_value(effective_plan, context)
+        execution_trace = _actual_trace_for_plan(effective_plan, trace_warnings=trace_warnings)
         columns, rows = _result_rows(value)
+        debug = {
+            "execution_spec": dict(getattr(plan, "execution_spec", {}) or {}),
+            "expected_trace": expected_trace,
+            "execution_trace": execution_trace,
+        }
         return ExecutionResult(
             backend="sqlite",
             success=True,
             columns=columns,
             rows=rows,
             value=value,
-            summary=f"Executed SQL-compatible operation {plan.logic_form.operation}.",
+            summary=f"Executed SQL-compatible operation {effective_plan.logic_form.operation}.",
             latency_ms=(time.perf_counter() - start) * 1000,
+            warnings=trace_warnings,
+            debug=debug,
+            execution_trace=execution_trace,
+            expected_trace=expected_trace,
         )
     except Exception as exc:  # noqa: BLE001
+        trace_status = "unsupported" if str(effective_plan.logic_form.operation or "") not in SQL_NATIVE_OPERATIONS else "partial"
+        execution_trace = _actual_trace_for_plan(effective_plan, trace_status=trace_status)
         return ExecutionResult(
             backend="sqlite",
             success=False,
@@ -50,6 +71,13 @@ def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult
                     suggested_fix="Use the Pandas path for non-SQL rule-engine operations or inspect SQL translation.",
                 )
             ],
+            debug={
+                "execution_spec": dict(getattr(plan, "execution_spec", {}) or {}),
+                "expected_trace": expected_trace,
+                "execution_trace": execution_trace,
+            },
+            execution_trace=execution_trace,
+            expected_trace=expected_trace,
         )
 
 
@@ -105,6 +133,57 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
     finally:
         conn.close()
     raise ValueError(f"Unsupported operation: {op}")
+
+
+def _actual_trace_for_plan(
+    plan: AnalysisPlan,
+    *,
+    trace_status: str = "complete",
+    trace_warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    logic = plan.logic_form
+    op = str(logic.operation or "")
+    params = dict(logic.parameters or {})
+    if op not in SQL_NATIVE_OPERATIONS:
+        return empty_actual_execution_trace(operation=op, source="sql_executor", trace_status="unsupported")
+    groupby_ops = {
+        "top_count",
+        "group_average",
+        "aggregation",
+        "trend",
+        "time_series",
+        "ranking",
+        "growth_ranking",
+        "filtered_metric_ranking",
+        "grouped_child_ranking",
+        "rank_by_metric",
+        "top_k_share",
+    }
+    ranking_ops = {"ranking", "growth_ranking", "filtered_metric_ranking", "grouped_child_ranking", "rank_by_metric", "top_k_share"}
+    aggregation_ops = SQL_NATIVE_OPERATIONS - {"field_values", "not_applicable"}
+    comparison_ops = {"growth_ranking"}
+    trace = build_actual_execution_trace(
+        plan,
+        source="sql_executor",
+        operation=op,
+        trace_status=trace_status,
+        include_metrics=op in aggregation_ops or op in ranking_ops,
+        include_aggregation=op in aggregation_ops,
+        include_formula=op in aggregation_ops or op in ranking_ops,
+        include_groupby=op in groupby_ops and bool(params.get("dimension") or params.get("group_by") or getattr(logic, "group_by", None)),
+        include_filters=op not in {"field_values", "not_applicable"},
+        include_comparison=op in comparison_ops or bool(params.get("comparison") or params.get("requires_gap_comparison")),
+        include_time=op in {"trend", "time_series", "growth_ranking"} or bool(params.get("time_column") or params.get("time_bucket")),
+        include_ranking=op in ranking_ops,
+        trace_warnings=trace_warnings,
+    )
+    if op == "row_count":
+        trace["aggregation"] = "count"
+    if op == "distinct_count":
+        trace["aggregation"] = params.get("aggregation") or "nunique"
+    if op == "growth_ranking" and not trace.get("comparison_type"):
+        trace["comparison_type"] = "time_adjacent_diff"
+    return trace
 
 
 def _result_rows(value: Any) -> tuple[list[str], list[dict[str, Any]]]:

@@ -439,6 +439,7 @@ def _monitor_state_summary(state: WorkflowState) -> dict[str, Any]:
         "table_selection_reason": logic_form.get("table_selection_reason"),
         "join_summary": _compact_join_plan(logic_form.get("join_plan")),
         "has_analysis_plan": bool(state.analysis_plan),
+        "has_semantic_contract": bool(state.semantic_contract),
         "pandas": _compact_execution_state(pandas_result),
         "sql": _compact_execution_state(sql_result),
         "verification": {
@@ -502,6 +503,15 @@ def _compact_output_payload(payload: Any) -> dict[str, Any]:
                 for step in steps[:4]
                 if isinstance(step, dict)
             ],
+        }
+    semantic_contract = payload.get("semantic_contract") if isinstance(payload.get("semantic_contract"), dict) else None
+    if semantic_contract:
+        output["semantic_contract"] = {
+            "task_type": semantic_contract.get("task_type"),
+            "capability_family": semantic_contract.get("capability_family"),
+            "metric_count": len(semantic_contract.get("metrics") or []),
+            "dimension_count": len(semantic_contract.get("dimensions") or []),
+            "filter_count": len(semantic_contract.get("filters") or []),
         }
     if isinstance(payload.get("tables"), list):
         output["tables"] = [
@@ -662,6 +672,7 @@ def _build_trace(
         join_plan=None if not isinstance(state.logic_form, dict) else state.logic_form.get("join_plan"),
         join_execution_summary=_join_execution_summary(state.pandas_result),
         output_contract=None if not isinstance(state.logic_form, dict) else state.logic_form.get("output_contract"),
+        semantic_contract=state.semantic_contract,
         analysis_plan=state.analysis_plan,
         pandas_result_summary=_execution_summary(state.pandas_result),
         sql_result_summary=_execution_summary(state.sql_result),

@@ -29,6 +29,7 @@ class RunTrace:
     join_plan: Any = None
     join_execution_summary: Any = None
     output_contract: Any = None
+    semantic_contract: Any = None
     analysis_plan: Any = None
     pandas_result_summary: Any = None
     sql_result_summary: Any = None

@@ -28,6 +28,7 @@ class VerificationResult:
     issues: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     semantic_verification_notes: list[str] = field(default_factory=list)
+    semantic_issues: list[dict[str, Any]] = field(default_factory=list)
     correction_action: dict[str, Any] | None = None
     task_contract: dict[str, Any] | None = None
     contract_report: dict[str, Any] | None = None

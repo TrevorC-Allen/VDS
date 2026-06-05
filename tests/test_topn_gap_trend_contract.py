@@ -3,13 +3,30 @@ from __future__ import annotations
 import unittest
 
 from data_agent_core.contracts.analysis_contracts import LogicForm, UserQuestion
-from data_agent_core.contracts.execution_contracts import ExecutionResult
+from data_agent_core.contracts.execution_contracts import ExecutionResult, build_actual_execution_trace, prepare_execution_plan_for_backend
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.output.response_builder import build_response
 from data_agent_core.verifier.rule_checker import verify_execution
 
 
 class TopNGapTrendContractTest(unittest.TestCase):
+    def _trace_for_plan(self, plan: object, **overrides: object) -> dict[str, object]:
+        effective_plan = prepare_execution_plan_for_backend(plan, source="pandas_executor")[0]
+        trace = build_actual_execution_trace(
+            effective_plan,
+            source="pandas_executor",
+            include_metrics=True,
+            include_aggregation=True,
+            include_formula=True,
+            include_groupby=True,
+            include_filters=True,
+            include_comparison=True,
+            include_time=True,
+            include_ranking=True,
+        )
+        trace.update(overrides)
+        return trace
+
     def test_topn_insufficient_data_is_explicit_partial_success(self) -> None:
         question = "按城市看销售额排名前 5。"
         plan = build_analysis_plan(_ranking_logic(limit=5), question=question)
@@ -19,7 +36,7 @@ class TopNGapTrendContractTest(unittest.TestCase):
             {"城市": "深圳", "销售额": 700},
             {"城市": "广州", "销售额": 600},
         ]
-        result = ExecutionResult(backend="pandas", success=True, columns=["城市", "销售额"], rows=rows, value=rows)
+        result = ExecutionResult(backend="pandas", success=True, columns=["城市", "销售额"], rows=rows, value=rows, execution_trace=self._trace_for_plan(plan))
 
         verification = verify_execution(result, plan=plan, user_question=UserQuestion(dataset_id="ds", question=question))
         response = build_response(
@@ -47,7 +64,7 @@ class TopNGapTrendContractTest(unittest.TestCase):
             {"城市": "北京", "销售额": 800},
             {"城市": "深圳", "销售额": 700},
         ]
-        result = ExecutionResult(backend="pandas", success=True, columns=["城市", "销售额"], rows=rows, value=rows)
+        result = ExecutionResult(backend="pandas", success=True, columns=["城市", "销售额"], rows=rows, value=rows, execution_trace=self._trace_for_plan(plan))
 
         verification = verify_execution(result, plan=plan, user_question=UserQuestion(dataset_id="ds", question=question))
         response = build_response(
@@ -76,6 +93,7 @@ class TopNGapTrendContractTest(unittest.TestCase):
             columns=["城市", "销售额"],
             rows=rows,
             value={"answer": "第一名与第二名销售额差距为 100；第二名与第三名差距为 100。", "candidate_table": rows},
+            execution_trace=self._trace_for_plan(plan, comparison_type="category_comparison"),
         )
 
         verification = verify_execution(result, plan=plan, user_question=UserQuestion(dataset_id="ds", question=question))
@@ -117,6 +135,7 @@ class TopNGapTrendContractTest(unittest.TestCase):
             columns=["月份", "销售额"],
             rows=rows,
             value={"answer": "销售额先升后降，2月峰值后回落。", "candidate_table": rows},
+            execution_trace=self._trace_for_plan(plan),
         )
         bad_result = ExecutionResult(
             backend="pandas",
@@ -124,6 +143,7 @@ class TopNGapTrendContractTest(unittest.TestCase):
             columns=["月份", "销售额"],
             rows=rows,
             value={"answer": "销售额整体上升。", "candidate_table": rows},
+            execution_trace=self._trace_for_plan(plan),
         )
 
         verification = verify_execution(result, plan=plan, user_question=UserQuestion(dataset_id="ds", question=question))

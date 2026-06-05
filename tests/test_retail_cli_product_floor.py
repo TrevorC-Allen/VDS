@@ -14,6 +14,13 @@ from data_agent_core.llm.client import MockLLMClient
 
 
 SELECTED_FAMILY_ID = "F4"
+UNSUPPORTED_PRODUCT_FLOOR_VARIANTS = {
+    ("F2", "国家维度的 Quantity 贡献"),
+    ("F6", "最近半年做一个 RFM 客户分群"),
+    ("F6", "RFM segmentation for the last 6 months"),
+    ("F6", "帮我做客户 RFM，至少分四类"),
+    ("F7", "CustomerID 缺失会影响什么？"),
+}
 
 RETAIL_INTENT_FAMILIES: list[dict[str, Any]] = [
     {
@@ -305,13 +312,21 @@ def test_f4_retail_monthly_trend_paraphrases_use_invoice_month_bucket(
 @pytest.mark.parametrize(
     ("family_id", "question"),
     [
-        (family_id, question)
+        pytest.param(
+            family_id,
+            question,
+            marks=pytest.mark.xfail(
+                reason="Product Floor baseline manifest records unsupported family gaps for later stages.",
+                strict=False,
+            ),
+        )
+        if (family_id, question) in UNSUPPORTED_PRODUCT_FLOOR_VARIANTS
+        else pytest.param(family_id, question)
         for family_id, questions in AUTOMATED_QUERY_VARIANTS.items()
         if family_id != SELECTED_FAMILY_ID
         for question in questions
     ],
 )
-@pytest.mark.xfail(reason="Product Floor baseline manifest records non-selected family gaps for later stages.", strict=False)
 def test_non_selected_retail_product_floor_families_are_in_baseline_manifest(
     retail_service_context: tuple[DataAgentService, str],
     family_id: str,

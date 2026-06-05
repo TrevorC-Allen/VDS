@@ -7,6 +7,13 @@ from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm
 from data_agent_core.core.capability_registry import capability_for_operation
+from data_agent_core.core.semantic_contract import (
+    CanonicalSemanticContract,
+    apply_semantic_contract_to_logic_form,
+    build_canonical_semantic_contract,
+    build_execution_spec_from_semantic_contract,
+    semantic_contract_payload,
+)
 from data_agent_core.task_execution_contracts import build_task_execution_contract
 
 
@@ -23,13 +30,42 @@ COUNT_LIKE_BUSINESS_OPERATIONS = frozenset(
 )
 
 
-def build_analysis_plan(logic_form: LogicForm, *, question: str = "") -> AnalysisPlan:
+def build_analysis_plan(
+    logic_form: LogicForm,
+    *,
+    question: str = "",
+    semantic_contract: CanonicalSemanticContract | dict[str, Any] | None = None,
+    semantic_context: dict[str, Any] | None = None,
+) -> AnalysisPlan:
     """Build a backend-neutral AnalysisPlan from a LogicForm."""
 
     logic_form = complete_generalization_contract(logic_form)
+    semantic_context = semantic_context or {}
+    if semantic_contract is None:
+        semantic_contract = build_canonical_semantic_contract(
+            question=question,
+            route=str(semantic_context.get("route") or "analysis"),
+            selected_logic_form=logic_form,
+            deterministic_logic_form=semantic_context.get("deterministic_logic_form"),
+            llm_logic_form=semantic_context.get("llm_logic_form"),
+            llm_intent=semantic_context.get("llm_intent"),
+            llm_plan=semantic_context.get("llm_plan"),
+            schema_profile=semantic_context.get("schema_profile"),
+            column_mapping=semantic_context.get("column_mapping"),
+        )
+    semantic_payload = semantic_contract_payload(semantic_contract)
+    logic_form = apply_semantic_contract_to_logic_form(logic_form, semantic_payload)
+    logic_form = complete_generalization_contract(logic_form)
+    logic_form.semantic_contract = semantic_payload
+    execution_spec = build_execution_spec_from_semantic_contract(semantic_payload, logic_form)
     task_contract = build_task_execution_contract(logic_form, question=question)
     logic_form.task_contract = {} if task_contract is None else _contract_payload(task_contract)
-    plan_seed = f"{logic_form.task_type}:{logic_form.operation}:{logic_form.filters}:{logic_form.parameters}"
+    capability_family = (
+        semantic_payload.get("capability_family")
+        or logic_form.output_contract.get("capability_family")
+        or capability_for_operation(logic_form.operation).capability_family
+    )
+    plan_seed = f"{logic_form.task_type}:{logic_form.operation}:{logic_form.filters}:{logic_form.parameters}:{semantic_payload}"
     plan_id = "plan_" + hashlib.sha1(plan_seed.encode("utf-8")).hexdigest()[:12]
     return AnalysisPlan(
         plan_id=plan_id,
@@ -52,7 +88,7 @@ def build_analysis_plan(logic_form: LogicForm, *, question: str = "") -> Analysi
             "framework_neutral": True,
             "no_benchmark_answer_access": True,
             "generalization_contract": {
-                "capability_family": capability_for_operation(logic_form.operation).capability_family,
+                "capability_family": capability_family,
                 "metric_definition": bool(logic_form.metric_definition),
                 "numerator": bool(logic_form.numerator),
                 "denominator": bool(logic_form.denominator),
@@ -65,9 +101,13 @@ def build_analysis_plan(logic_form: LogicForm, *, question: str = "") -> Analysi
                 "table_selection_reason": logic_form.table_selection_reason,
                 "has_join_plan": bool(logic_form.join_plan),
                 "output_contract": bool(logic_form.output_contract),
+                "semantic_contract": bool(semantic_payload),
+                "execution_spec": bool(execution_spec),
             },
         },
         task_contract=task_contract,
+        semantic_contract=semantic_payload,
+        execution_spec=execution_spec,
     )
 
 

@@ -8,28 +8,60 @@ from typing import Any
 import pandas as pd
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan
-from data_agent_core.contracts.execution_contracts import ExecutionResult
+from data_agent_core.contracts.execution_contracts import (
+    ExecutionResult,
+    build_actual_execution_trace,
+    empty_actual_execution_trace,
+    prepare_execution_plan_for_backend,
+)
 from data_agent_core.core.dabstep_fee_engine import DabstepFeeEngine
 from data_agent_core.core.data_quality import build_data_quality_report, report_to_dict
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import PANDAS_EXECUTION_ERROR
 from data_agent_core.executors.chinese_retail_executor import execute_chinese_retail_operation, is_chinese_retail_operation
-from data_agent_core.executors.vds_bi_executor import execute_vds_bi_operation, is_vds_bi_operation
+from data_agent_core.executors.vds_bi_executor import PERIOD_COLUMN, execute_vds_bi_operation, is_vds_bi_operation
 
 
 NO_MATCHING_RECORDS = "没有匹配记录"
+
+FEE_ENGINE_TRACE_OPERATIONS = {
+    "average_fee_for_filters",
+    "fee_ids_for_filters",
+    "applicable_fee_ids",
+    "total_fees",
+    "fee_rate_delta",
+    "card_scheme_steering",
+    "cheapest_card_scheme_for_transaction",
+    "fee_restriction_affected_merchants",
+    "mcc_change_delta",
+    "best_fraud_aci_choice",
+    "aci_fee_extreme",
+    "fee_extreme_by_dimension",
+    "fee_factor_direction",
+    "fee_volume_threshold",
+}
 
 
 def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult:
     """Execute an AnalysisPlan without reinterpreting the original question."""
 
     start = time.perf_counter()
+    effective_plan = plan
+    expected_trace: dict[str, Any] = {}
+    execution_trace: dict[str, Any] = {}
     try:
-        value = _execute_value(plan, context)
+        effective_plan, expected_trace, trace_warnings = prepare_execution_plan_for_backend(plan, source="pandas_executor")
+        value = _execute_value(effective_plan, context)
+        execution_trace = _actual_trace_for_plan(effective_plan, context=context, trace_warnings=trace_warnings)
         columns, rows = _result_rows(value)
-        warnings = _join_warnings(plan.logic_form.parameters)
-        debug = _join_debug(plan.logic_form.parameters)
-        quality_report = _quality_debug_report(plan, context)
+        warnings = _join_warnings(effective_plan.logic_form.parameters)
+        if trace_warnings:
+            warnings.extend(trace_warnings)
+        debug = _join_debug(effective_plan.logic_form.parameters)
+        debug["execution_spec"] = dict(getattr(plan, "execution_spec", {}) or {})
+        debug["expected_trace"] = expected_trace
+        debug["execution_trace"] = execution_trace
+        quality_report = _quality_debug_report(effective_plan, context)
         if quality_report is not None:
             debug["quality_report"] = quality_report
         return ExecutionResult(
@@ -38,12 +70,15 @@ def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult
             columns=columns,
             rows=rows,
             value=value,
-            summary=_execution_summary(plan.logic_form.operation, debug),
+            summary=_execution_summary(effective_plan.logic_form.operation, debug),
             latency_ms=(time.perf_counter() - start) * 1000,
             warnings=warnings,
             debug=debug,
+            execution_trace=execution_trace,
+            expected_trace=expected_trace,
         )
     except Exception as exc:  # noqa: BLE001 - keep failures structured
+        execution_trace = _actual_trace_for_plan(effective_plan, context=context, trace_status="partial")
         return ExecutionResult(
             backend="pandas",
             success=False,
@@ -57,6 +92,13 @@ def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult
                     suggested_fix="Inspect the logic form, context files, and field mappings.",
                 )
             ],
+            debug={
+                "execution_spec": dict(getattr(plan, "execution_spec", {}) or {}),
+                "expected_trace": expected_trace,
+                "execution_trace": execution_trace,
+            },
+            execution_trace=execution_trace,
+            expected_trace=expected_trace,
         )
 
 
@@ -79,9 +121,9 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
     if op == "schema_field_lookup":
         return _schema_field_lookup(_analysis_dataframe(context, params), params)
     if op == "detail_lookup":
-        return _detail_lookup(_analysis_dataframe(context, params), params)
+        return _detail_lookup(_analysis_dataframe(context, params), filters, params)
     if op == "filtering":
-        return _filtering(_analysis_dataframe(context, params), params)
+        return _filtering(_analysis_dataframe(context, params), filters, params)
     if op in {"aggregation", "trend", "time_series"}:
         return _aggregation_dataframe(_analysis_dataframe(context, params), filters, params)
     if op == "ranking":
@@ -271,6 +313,307 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
     if op == "fee_volume_threshold":
         return engine.fee_volume_threshold()
     raise ValueError(f"Unsupported operation: {op}")
+
+
+def _actual_trace_for_plan(
+    plan: AnalysisPlan,
+    *,
+    context: dict[str, Any] | None = None,
+    trace_status: str = "complete",
+    trace_warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    logic = plan.logic_form
+    op = str(logic.operation or "")
+    params = dict(logic.parameters or {})
+    if op in FEE_ENGINE_TRACE_OPERATIONS:
+        return _fee_engine_actual_trace(plan, trace_status=trace_status, trace_warnings=trace_warnings)
+    if is_vds_bi_operation(op):
+        return _vds_bi_actual_trace(plan, trace_status=trace_status, trace_warnings=trace_warnings)
+    if op == "data_quality_report":
+        return _data_quality_actual_trace(plan, context=context, trace_status=trace_status, trace_warnings=trace_warnings)
+    dataframe_ops = {
+        "detail_lookup",
+        "filtering",
+        "aggregation",
+        "trend",
+        "time_series",
+        "ranking",
+        "growth_ranking",
+        "row_count",
+        "distinct_count",
+        "metric_per_distinct_entity",
+        "repeat_entity_percentage",
+        "repeat_entity_count",
+        "outlier_count",
+        "top_outlier_group",
+        "null_check",
+        "top_k_share",
+        "quantile_percentage",
+        "outlier_target_percentage",
+        "outlier_rate_comparison",
+        "correlation_threshold",
+        "worst_fraud_segment",
+        "filtered_metric_ranking",
+        "grouped_child_ranking",
+        "top_count",
+        "group_average",
+        "fraud_rate_comparison",
+        "fraud_rate_filtered",
+        "fraud_rate_fluctuation",
+        "boolean_percentage",
+        "boolean_count_ratio",
+    }
+    if op not in dataframe_ops and not is_chinese_retail_operation(op):
+        return empty_actual_execution_trace(operation=op, source="pandas_executor", trace_status="unsupported")
+    groupby_ops = {
+        "aggregation",
+        "trend",
+        "time_series",
+        "ranking",
+        "growth_ranking",
+        "metric_per_distinct_entity",
+        "top_outlier_group",
+        "top_k_share",
+        "worst_fraud_segment",
+        "filtered_metric_ranking",
+        "grouped_child_ranking",
+        "top_count",
+        "group_average",
+        "fraud_rate_comparison",
+        "fraud_rate_fluctuation",
+    }
+    ranking_ops = {"ranking", "growth_ranking", "top_k_share", "filtered_metric_ranking", "grouped_child_ranking"}
+    aggregation_ops = dataframe_ops - {"detail_lookup", "filtering", "duplicate_check"}
+    comparison_ops = {"growth_ranking", "outlier_rate_comparison", "fraud_rate_comparison"}
+    actual_filters = _actual_dataframe_filter_trace(plan, context) if op in dataframe_ops else []
+    if op == "filtering":
+        actual_filters.extend(_condition_trace_filters(params, _actual_dataframe_for_trace(plan, context)))
+    trace = build_actual_execution_trace(
+        plan,
+        source="pandas_executor",
+        operation=op,
+        trace_status=trace_status,
+        include_metrics=op in aggregation_ops or op in ranking_ops,
+        include_aggregation=op in aggregation_ops,
+        include_formula=op in aggregation_ops or op in ranking_ops,
+        include_groupby=op in groupby_ops and bool(params.get("dimension") or params.get("group_by") or getattr(logic, "group_by", None)),
+        include_filters=False,
+        include_comparison=op in comparison_ops or bool(params.get("comparison") or params.get("requires_gap_comparison")),
+        include_time=op in {"trend", "time_series", "growth_ranking"} or bool(params.get("time_column") or params.get("time_bucket")),
+        include_ranking=op in ranking_ops,
+        extra_filters=actual_filters,
+        trace_warnings=trace_warnings,
+    )
+    if op == "row_count":
+        trace["aggregation"] = "count"
+    if op == "distinct_count":
+        trace["aggregation"] = params.get("aggregation") or "nunique"
+    if op == "growth_ranking" and not trace.get("comparison_type"):
+        trace["comparison_type"] = "time_adjacent_diff"
+    return trace
+
+
+def _fee_engine_actual_trace(
+    plan: AnalysisPlan,
+    *,
+    trace_status: str,
+    trace_warnings: list[str] | None,
+) -> dict[str, Any]:
+    logic = plan.logic_form
+    params = dict(logic.parameters or {})
+    filters = dict(logic.filters or {})
+    op = str(logic.operation or "")
+    trace = build_actual_execution_trace(
+        plan,
+        source="pandas_executor",
+        operation=op,
+        trace_status=trace_status,
+        include_filters=True,
+        include_time=bool(params.get("time_column") or params.get("source_time_field") or filters.get("year") is not None or filters.get("month") is not None),
+        include_ranking=bool(params.get("sort_order") or params.get("limit") is not None),
+        trace_warnings=trace_warnings,
+    )
+    if not trace.get("time_column"):
+        if filters.get("year") is not None:
+            trace["time_column"] = "year"
+        elif filters.get("month") is not None:
+            trace["time_column"] = "month"
+    if not trace.get("time_grain") and filters.get("month") is not None:
+        trace["time_grain"] = "month"
+    return trace
+
+
+def _vds_bi_actual_trace(
+    plan: AnalysisPlan,
+    *,
+    trace_status: str,
+    trace_warnings: list[str] | None,
+) -> dict[str, Any]:
+    logic = plan.logic_form
+    params = dict(logic.parameters or {})
+    op = str(logic.operation or "")
+    trace = build_actual_execution_trace(
+        plan,
+        source="pandas_executor",
+        operation=op,
+        trace_status=trace_status,
+        include_metrics=bool(params.get("metric") or getattr(logic, "metric", None)),
+        include_aggregation=bool(params.get("aggregation")),
+        include_formula=bool(getattr(logic, "metric_definition", None) or params.get("derived_metric")),
+        include_groupby=bool(params.get("group_by") or params.get("entity") or params.get("dimension") or getattr(logic, "group_by", None)),
+        include_filters=False,
+        include_comparison=op
+        in {
+            "vds_period_rank_change",
+            "vds_period_delta_top",
+            "vds_period_growth_count_share",
+            "vds_period_threshold_count",
+            "vds_period_rate_top",
+            "vds_period_group_comparison",
+            "vds_current_rank_with_period_change",
+            "vds_status_impact_top",
+        },
+        include_time=bool(params.get("current_period") or params.get("previous_period")),
+        include_ranking=bool(params.get("limit") is not None or params.get("sort_order") or "top" in op or "rank" in op),
+        extra_filters=_vds_bi_value_filter_trace(params),
+        trace_warnings=trace_warnings,
+    )
+    if params.get("current_period") or params.get("previous_period"):
+        trace["time_column"] = trace.get("time_column") or PERIOD_COLUMN
+        trace["time_grain"] = trace.get("time_grain") or "period"
+    if trace.get("comparison_type") is None and op in {
+        "vds_period_rank_change",
+        "vds_period_delta_top",
+        "vds_period_growth_count_share",
+        "vds_period_threshold_count",
+        "vds_period_rate_top",
+        "vds_period_group_comparison",
+        "vds_current_rank_with_period_change",
+        "vds_status_impact_top",
+    }:
+        trace["comparison_type"] = "time_adjacent_diff"
+    return trace
+
+
+def _vds_bi_value_filter_trace(params: dict[str, Any]) -> list[dict[str, Any]]:
+    filters: list[dict[str, Any]] = []
+    raw_filters = params.get("value_filters")
+    if isinstance(raw_filters, dict):
+        for column, values in raw_filters.items():
+            if values in (None, "", [], (), set()):
+                continue
+            value_list = list(values) if isinstance(values, (list, tuple, set)) else [values]
+            filters.append({"column": str(column), "operator": "in" if len(value_list) > 1 else "eq", "values": value_list})
+    filter_column = str(params.get("filter_column") or "").strip()
+    if filter_column and params.get("filter_value") not in (None, ""):
+        filters.append({"column": filter_column, "operator": "eq", "values": [params.get("filter_value")]})
+    return filters
+
+
+def _data_quality_actual_trace(
+    plan: AnalysisPlan,
+    *,
+    context: dict[str, Any] | None,
+    trace_status: str,
+    trace_warnings: list[str] | None,
+) -> dict[str, Any]:
+    logic = plan.logic_form
+    params = dict(logic.parameters or {})
+    trace = build_actual_execution_trace(
+        plan,
+        source="pandas_executor",
+        operation=str(logic.operation or ""),
+        trace_status=trace_status,
+        trace_warnings=trace_warnings,
+    )
+    time_column = str(params.get("time_column") or "").strip()
+    if time_column and _quality_trace_has_column(context, time_column):
+        trace["time_column"] = time_column
+        trace["time_grain"] = params.get("time_grain") or params.get("time_bucket")
+    return trace
+
+
+def _quality_trace_has_column(context: dict[str, Any] | None, column: str) -> bool:
+    if context is None or not column:
+        return False
+    try:
+        tables = _tables_for_quality(context)
+    except Exception:  # noqa: BLE001 - trace evidence should stay best-effort.
+        return False
+    return any(column in getattr(table, "columns", []) for table in tables.values())
+
+
+def _actual_dataframe_for_trace(plan: AnalysisPlan, context: dict[str, Any] | None) -> pd.DataFrame | None:
+    if context is None:
+        return None
+    try:
+        return _analysis_dataframe(context, dict(plan.logic_form.parameters or {}))
+    except Exception:  # noqa: BLE001 - trace evidence must not create a second execution failure.
+        return None
+
+
+def _actual_dataframe_filter_trace(plan: AnalysisPlan, context: dict[str, Any] | None) -> list[dict[str, Any]]:
+    data = _actual_dataframe_for_trace(plan, context)
+    if data is None:
+        return []
+    output: list[dict[str, Any]] = []
+    for column, expected in dict(plan.logic_form.filters or {}).items():
+        if expected is None:
+            continue
+        column_text = str(column)
+        if column_text == "month_range" and "month" not in data.columns and {"year", "day_of_year"}.issubset(data.columns):
+            start, end = expected
+            output.append({"column": column_text, "operator": "between", "values": [start, end]})
+            continue
+        if column_text == "month" and "month" not in data.columns and {"year", "day_of_year"}.issubset(data.columns):
+            output.append({"column": column_text, "operator": "eq", "values": [expected]})
+            continue
+        actual_column = _resolve_filter_column(data, column_text)
+        if actual_column not in data.columns:
+            continue
+        output.extend(_filter_trace_entries_for_value(str(actual_column), expected))
+    return output
+
+
+def _filter_trace_entries_for_value(column: str, expected: Any) -> list[dict[str, Any]]:
+    if expected == "__NULL__":
+        return [{"column": column, "operator": "is_null", "values": [None]}]
+    if expected == "__NOT_NULL__":
+        return [{"column": column, "operator": "is_not_null", "values": [None]}]
+    if isinstance(expected, dict) and "operator" in expected:
+        return [{"column": column, "operator": str(expected.get("operator") or "="), "values": [expected.get("value")]}]
+    if _is_day_of_year_range_filter(column, expected):
+        start, end = expected
+        return [{"column": column, "operator": "between", "values": [start, end]}]
+    if isinstance(expected, dict) and ("min" in expected or "max" in expected):
+        values = [expected.get("min"), expected.get("max")]
+        return [{"column": column, "operator": "range", "values": values}]
+    if isinstance(expected, dict) and ("month" in expected or "year" in expected or "month_range" in expected):
+        values = [value for key in ("year", "month", "month_range") for value in ([expected.get(key)] if expected.get(key) is not None else [])]
+        return [{"column": column, "operator": "date_part", "values": values}]
+    if isinstance(expected, (list, tuple, set)):
+        return [{"column": column, "operator": "in", "values": list(expected)}]
+    return [{"column": column, "operator": "eq", "values": [expected]}]
+
+
+def _condition_trace_filters(params: dict[str, Any], data: pd.DataFrame | None = None) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for condition in params.get("conditions") or []:
+        if not isinstance(condition, dict):
+            continue
+        column = str(condition.get("column") or "").strip()
+        if not column:
+            continue
+        if data is not None and column not in data.columns:
+            continue
+        output.append(
+            {
+                "column": column,
+                "operator": str(condition.get("operator") or "="),
+                "values": [condition.get("value")],
+            }
+        )
+    return output
 
 
 QUALITY_REPORT_OPERATIONS = {
@@ -626,11 +969,13 @@ def _quality_execution_summary(debug: dict[str, Any]) -> str:
     )
 
 
-def _detail_lookup(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
+def _detail_lookup(data: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:
+    data = _apply_dataframe_filters(data, filters)
     return data.head(int(params.get("limit") or 20)).to_dict(orient="records")
 
 
-def _filtering(data: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
+def _filtering(data: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:
+    data = _apply_dataframe_filters(data, filters)
     for condition in params.get("conditions") or []:
         column = condition.get("column")
         if column not in data.columns:

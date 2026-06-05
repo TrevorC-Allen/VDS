@@ -19,6 +19,11 @@ from data_agent_core.core.data_quality import build_data_quality_report, report_
 from data_agent_core.core.file_parser import load_dabstep_context
 from data_agent_core.core.intent_parser import parse_generic_table_question, parse_question
 from data_agent_core.core.planner_guardrails import available_columns_by_table_from_context, validate_logic_form_with_guardrails
+from data_agent_core.core.semantic_contract import (
+    build_canonical_semantic_contract,
+    build_lightweight_schema_semantic_profile,
+    semantic_contract_payload,
+)
 from data_agent_core.executors import pandas_executor, sql_executor
 from data_agent_core.llm.client import LLMClient, load_llm_client_from_env
 from data_agent_core.llm.planner import LLMPlanResult, LLMStageResult, complete_stage_with_llm, plan_with_llm
@@ -95,7 +100,20 @@ class DataAnalysisAgent:
         )
         logic_form = self._validated_logic_form(llm_plan.logic_form, guardrail_logic_form)
         logic_form = apply_referent_contract_from_guidelines(logic_form, guidelines)
-        plan = build_analysis_plan(logic_form, question=question)
+        schema_semantics = build_lightweight_schema_semantic_profile(self.context, self.dataset_profile if hasattr(self, "dataset_profile") else None)
+        semantic_contract = build_canonical_semantic_contract(
+            question=question,
+            route="single_agent",
+            selected_logic_form=logic_form,
+            deterministic_logic_form=guardrail_logic_form,
+            llm_logic_form=llm_plan.logic_form,
+            llm_intent=llm_intent.raw,
+            llm_plan=llm_plan.raw,
+            schema_profile=schema_semantics,
+            column_mapping=column_mapping,
+        )
+        plan = build_analysis_plan(logic_form, question=question, semantic_contract=semantic_contract)
+        logic_form = plan.logic_form
         pandas_result = pandas_executor.execute_plan(plan, self.context)
         not_applicable_attribution = classify_not_applicable(pandas_result.value, plan)
         sql_result = None
@@ -180,6 +198,7 @@ class DataAnalysisAgent:
                 "single_agent_chain": SINGLE_AGENT_CHAIN,
                 "llm_stage_summaries": stage_summaries,
                 "column_mapping": column_mapping,
+                "semantic_contract": semantic_contract_payload(plan.semantic_contract),
             },
             quality_report=quality_report,
         )
@@ -216,6 +235,7 @@ class DataAnalysisAgent:
             join_execution_summary=pandas_result.debug.get("join_execution_summary") if isinstance(pandas_result.debug, dict) else None,
             output_contract=logic_form.output_contract,
             analysis_plan={"plan_id": plan.plan_id, "steps": plan.steps},
+            semantic_contract=semantic_contract_payload(plan.semantic_contract),
             llm_plan_summary={
                 "llm_operation": llm_plan.logic_form.operation,
                 "selected_operation": logic_form.operation,
@@ -686,7 +706,20 @@ class UploadedDatasetAgent(DataAnalysisAgent):
         )
         logic_form = self._validated_logic_form(llm_plan.logic_form, guardrail_logic_form)
         logic_form = apply_referent_contract_from_guidelines(logic_form, guidelines)
-        plan = build_analysis_plan(logic_form, question=question)
+        schema_semantics = build_lightweight_schema_semantic_profile(self.context, None)
+        semantic_contract = build_canonical_semantic_contract(
+            question=question,
+            route="single_agent_generic",
+            selected_logic_form=logic_form,
+            deterministic_logic_form=guardrail_logic_form,
+            llm_logic_form=llm_plan.logic_form,
+            llm_intent=llm_intent.raw,
+            llm_plan=llm_plan.raw,
+            schema_profile=schema_semantics,
+            column_mapping=column_mapping,
+        )
+        plan = build_analysis_plan(logic_form, question=question, semantic_contract=semantic_contract)
+        logic_form = plan.logic_form
         pandas_result = pandas_executor.execute_plan(plan, self.context)
         not_applicable_attribution = classify_not_applicable(pandas_result.value, plan)
         sql_result = None
@@ -770,6 +803,7 @@ class UploadedDatasetAgent(DataAnalysisAgent):
                 "single_agent_chain": SINGLE_AGENT_CHAIN,
                 "llm_stage_summaries": stage_summaries,
                 "column_mapping": column_mapping,
+                "semantic_contract": semantic_contract_payload(plan.semantic_contract),
             },
             quality_report=quality_report,
         )
@@ -803,6 +837,7 @@ class UploadedDatasetAgent(DataAnalysisAgent):
             join_execution_summary=pandas_result.debug.get("join_execution_summary") if isinstance(pandas_result.debug, dict) else None,
             output_contract=logic_form.output_contract,
             analysis_plan={"plan_id": plan.plan_id, "steps": plan.steps},
+            semantic_contract=semantic_contract_payload(plan.semantic_contract),
             llm_plan_summary={
                 "llm_operation": llm_plan.logic_form.operation,
                 "selected_operation": logic_form.operation,

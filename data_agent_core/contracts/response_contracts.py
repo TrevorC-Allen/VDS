@@ -115,6 +115,7 @@ class FinalResponse:
     execution_artifacts: list[dict[str, Any]] = field(default_factory=list)
     artifacts_manifest: dict[str, Any] = field(default_factory=dict)
     semantic_status: str = "legacy_unverified"
+    semantic_success: bool = True
     contract_satisfied: bool | None = None
     contract_family: str | None = None
     violations: list[dict[str, Any]] = field(default_factory=list)
