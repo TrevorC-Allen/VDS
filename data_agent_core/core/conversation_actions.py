@@ -508,6 +508,7 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
     parameters = dict(enriched.get("parameters") or {})
     inherited = dict(enriched.get("inherited_parameters") or {})
     ranking_context = dict(resolution.get("ranking_context") or {})
+    gap_comparison = _asks_gap_comparison(compact)
     auto_expand = _should_auto_expand_gap_followup(compact=compact, values=values, ranking_context=ranking_context)
     if ranking_context:
         inherited.update({key: value for key, value in ranking_context.items() if key in {"table", "join_plan", "table_selection_reason", "source_tables"} and value not in (None, "", [], {})})
@@ -523,11 +524,15 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
         if _compact_mentions_derived_metric(compact, derived_metadata):
             parameters["metric"] = derived_metadata["derived_metric_name"]
     filters = dict(inherited.get("filters") or {})
-    same_dimension_grouping = str(parameters.get("dimension") or "") == dimension and str(enriched.get("operation") or "") in {
-        "aggregation",
-        "ranking",
-        "filtered_metric_ranking",
-    }
+    same_dimension_grouping = (
+        not gap_comparison
+        and str(parameters.get("dimension") or "") == dimension
+        and str(enriched.get("operation") or "") in {
+            "aggregation",
+            "ranking",
+            "filtered_metric_ranking",
+        }
+    )
     if auto_expand:
         filters.pop(dimension, None)
     elif same_dimension_grouping:
@@ -557,7 +562,7 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
     else:
         filters[dimension] = values[0] if len(values) == 1 else values
     inherited["filters"] = filters
-    minimum_required_objects = 2 if auto_expand else None
+    minimum_required_objects = 2 if (auto_expand or gap_comparison) else None
     preferred_top_n = 3 if auto_expand else None
     parameters.update(
         {
@@ -580,6 +585,7 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
                 if auto_expand
                 else {}
             ),
+            **({"requires_gap_comparison": True, "minimum_required_objects": minimum_required_objects} if gap_comparison else {}),
         }
     )
     if resolution.get("metric") and not parameters.get("metric"):
@@ -645,6 +651,7 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
             if auto_expand
             else {}
         ),
+        **({"requires_gap_comparison": True, "minimum_required_objects": minimum_required_objects} if gap_comparison else {}),
     }
     enriched["referent_resolution_trace"] = dict(resolution)
     return enriched

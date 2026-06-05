@@ -207,6 +207,73 @@ class RealSalesMetadataFollowupRegressionTest(unittest.TestCase):
         self.assertIn("1L", str(capacity.get("answer") or ""))
         self.assertNotIn("城市是1L", str(capacity.get("answer") or ""))
 
+    def test_top_result_gap_followup_action_binds_previous_top_set(self) -> None:
+        first_response = _execute_response_with_fact_table(
+            "按 cust_name 汇总 sign_amt，返回 Top3。",
+            {"sales_fact": _focus_set_sales_table()},
+            fact_table="sales_fact",
+        )
+        context = build_analysis_context(first_response, original_question="按 cust_name 汇总 sign_amt，返回 Top3。")
+
+        actions = plan_followup_actions("比较 Top 结果之间的 sign_amt 差距有多大？", context)
+
+        self.assertEqual(1, len(actions))
+        contract = actions[0].get("referent_contract") or {}
+        params = contract.get("action_parameters") or {}
+        self.assertEqual("cust_name", contract.get("referent_dimension"))
+        self.assertEqual(["Delta", "Alpha", "Beta"], contract.get("referent_values"))
+        self.assertEqual("sign_amt", params.get("metric"))
+        self.assertTrue(contract.get("requires_gap_comparison"))
+        self.assertEqual("must_filter_to_previous_result_objects", contract.get("referent_policy"))
+
+    def test_service_top_result_gap_followup_uses_previous_top_set_gap_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = _write_focus_set_sales_csv(root)
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_dataset(csv_path, original_filename="sales_fact.csv")
+            dataset_id = str(upload["dataset_id"])
+
+            first_response = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="按 cust_name 汇总 sign_amt，返回 Top3。",
+                execution_mode="dual",
+            )
+            second_response = service.respond_to_message(
+                dataset_id=dataset_id,
+                conversation_id=str(first_response.get("conversation_id") or ""),
+                question="比较 Top 结果之间的 sign_amt 差距有多大？",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(first_response["success"], first_response.get("errors"))
+        self.assertEqual(["Delta", "Alpha", "Beta"], [row["cust_name"] for row in first_response["result"]["rows"]])
+
+        self.assertTrue(second_response["success"], second_response.get("errors"))
+        self.assertEqual("gap", second_response.get("contract_family"))
+        self.assertEqual("gap", second_response["verification"]["task_contract"]["task_family"])
+        self.assertEqual("sign_amt", second_response["verification"]["task_contract"]["metric"])
+        self.assertEqual("cust_name", second_response["verification"]["task_contract"]["dimension"])
+        self.assertEqual("cust_name", second_response["verification"]["task_contract"]["referent_dimension"])
+        self.assertEqual(["Delta", "Alpha", "Beta"], second_response["verification"]["task_contract"]["referent_values"])
+
+        rows = second_response["result"]["rows"]
+        self.assertEqual(["Delta", "Alpha", "Beta"], [row["cust_name"] for row in rows])
+        self.assertNotIn("Gamma", [row["cust_name"] for row in rows])
+
+        gap_rows = second_response["debug"]["result_artifacts"].get("gap_rows") or []
+        self.assertEqual(["Delta", "Alpha", "Beta"], [row["cust_name"] for row in gap_rows])
+        self.assertAlmostEqual(1100.0, float(gap_rows[1]["adjacent_gap"]), places=2)
+        self.assertAlmostEqual(200.0, float(gap_rows[2]["adjacent_gap"]), places=2)
+        self.assertAlmostEqual(1300.0, float(gap_rows[2]["gap_to_leader"]), places=2)
+
+        answer = str(second_response.get("answer") or "")
+        self.assertIn("差距", answer)
+        self.assertIn("Delta", answer)
+        self.assertIn("Alpha", answer)
+        self.assertIn("Beta", answer)
+        self.assertNotIn("Gamma", answer)
+
     def test_generic_adjacent_comparison_followup_inherits_previous_city_metric_and_table(self) -> None:
         first_response = _execute_response("哪个城市订单金额最大", _sales_tables(with_quantity=True))
         context = build_analysis_context(first_response, original_question="哪个城市订单金额最大")
@@ -544,6 +611,23 @@ def _city_capacity_sales_table() -> pd.DataFrame:
 def _write_city_capacity_sales_csv(root: Path) -> Path:
     path = root / "sales_fact.csv"
     _city_capacity_sales_table().to_csv(path, index=False)
+    return path
+
+
+def _focus_set_sales_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"cust_name": "Alpha", "sign_amt": 1000.0, "sign_time": "2026-01-01"},
+            {"cust_name": "Beta", "sign_amt": 800.0, "sign_time": "2026-01-01"},
+            {"cust_name": "Gamma", "sign_amt": 500.0, "sign_time": "2026-01-01"},
+            {"cust_name": "Delta", "sign_amt": 2100.0, "sign_time": "2026-01-01"},
+        ]
+    )
+
+
+def _write_focus_set_sales_csv(root: Path) -> Path:
+    path = root / "sales_fact.csv"
+    _focus_set_sales_table().to_csv(path, index=False)
     return path
 
 
