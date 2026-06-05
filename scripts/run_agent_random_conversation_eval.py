@@ -3526,6 +3526,9 @@ def _expected_dimension_from_question(question: str) -> str:
         return ""
     if _is_focus_set_scalar_total_question(compact) or _is_scalar_total_over_time_question(compact):
         return ""
+    explicit_field = _explicit_uploaded_field_dimension_from_question(compact, lowered)
+    if explicit_field:
+        return explicit_field
     if any(token in compact for token in ("趋势", "月度趋势", "季度趋势", "如何变化", "怎么变化", "怎样变化", "变化趋势")) or any(
         token in lowered for token in ("trend", "month by month")
     ):
@@ -3616,6 +3619,19 @@ def _expected_dimension_from_question(question: str) -> str:
         return "month"
     if any(token in compact for token in ("按区域", "哪个区域", "按地区", "哪个地区")) or any(token in lowered for token in ("by region", "which region")):
         return "region"
+    return ""
+
+
+def _explicit_uploaded_field_dimension_from_question(compact: str, lowered: str) -> str:
+    patterns = (
+        r"按([A-Za-z_][A-Za-z0-9_]*)看",
+        r"按([A-Za-z_][A-Za-z0-9_]*)(?:分组|分|汇总|聚合)",
+        r"\bby\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, compact if pattern.startswith("按") else lowered)
+        if match:
+            return match.group(1)
     return ""
 
 

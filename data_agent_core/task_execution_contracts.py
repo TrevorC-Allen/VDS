@@ -898,8 +898,9 @@ def _verify_overview_contract(contract: TaskExecutionContract, result: Execution
             violations.append(_violation("OVERVIEW_FIELD_TYPE_MISSING", "Overview answer did not include field types for all fields.", {"fields": missing_type}))
     if contract.verification_rules.get("must_include_join_keys"):
         join_keys = report.get("candidate_join_keys") if isinstance(report, dict) else []
-        join_text = str(join_keys) + " " + answer_text
-        if not join_keys or "->" not in join_text:
+        if not isinstance(join_keys, list):
+            join_keys = []
+        if join_keys and "->" not in str(join_keys) + " " + answer_text:
             violations.append(_violation("OVERVIEW_JOIN_KEY_MISSING", "Multi-file overview did not include candidate join keys.", {}))
     if contract.verification_rules.get("must_include_analysis_directions"):
         field_names = [str(field.get("field") or field.get("name") or "") for table in tables for field in table["fields"]]

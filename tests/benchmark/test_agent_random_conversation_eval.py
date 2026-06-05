@@ -3248,6 +3248,11 @@ class AgentRandomConversationEvalTest(unittest.TestCase):
         self.assertEqual("product", _expected_dimension_from_question("在增长最快的城市中，哪个产品销售额最高？"))
         self.assertEqual("service_line", _expected_dimension_from_question("利润率最高的城市，其各服务线的利润率排名如何？"))
 
+    def test_expected_dimension_preserves_explicit_uploaded_time_field_for_trend(self) -> None:
+        self.assertEqual("sign_time", _expected_dimension_from_question("按sign_time看这个指标的趋势。"))
+        self.assertEqual(["sign_time"], _expected_dimensions_from_question("按sign_time看这个指标的趋势。"))
+        self.assertEqual("month", _expected_dimension_from_question("按月看这个指标趋势。"))
+
     def test_expected_dimensions_accept_compound_distribution_targets(self) -> None:
         self.assertEqual(
             ["segment", "city"],
