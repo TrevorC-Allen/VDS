@@ -1599,7 +1599,9 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
     table_name, df = table_context["table_name"], table_context["df"]
     record_count_requested = _is_record_count_metric_question(lowered)
     metric_question = _metric_target_question(question)
-    derived_metric = None if record_count_requested else _derived_ratio_metric(metric_question, df, guidelines=guidelines)
+    derived_metric = None if record_count_requested else (
+        _derived_retail_sales_metric(question, df) or _derived_ratio_metric(metric_question, df, guidelines=guidelines)
+    )
     metric = None if record_count_requested else (
         str(derived_metric["name"]) if derived_metric else _find_metric_column(metric_question, df) or table_context.get("metric")
     )
@@ -4085,6 +4087,50 @@ def _semantic_alias_in_question(alias: str, question: str) -> bool:
     return bool(re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(alias.lower())}(?![A-Za-z0-9_.-])", lowered))
 
 
+def _derived_retail_sales_metric(question: str, df: pd.DataFrame) -> dict[str, str] | None:
+    if not _asks_retail_sales_amount_metric(question):
+        return None
+    quantity = _find_semantic_column(df, "quantity")
+    unit_price = _find_retail_unit_price_column(df)
+    if not quantity or not unit_price or quantity == unit_price:
+        return None
+    return {
+        "name": "Sales",
+        "numerator": quantity,
+        "denominator": unit_price,
+        "formula": f"{quantity} * {unit_price}",
+        "operator": "multiply",
+        "aggregation": "sum_product",
+    }
+
+
+def _asks_retail_sales_amount_metric(question: str) -> bool:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    lowered = str(question or "").lower()
+    explicit_multiply = bool(re.search(r"quantity\s*(?:\\*|x|times|乘以?|\\bby\\b)\\s*unit\\s*price|quantity\s*(?:\\*|x|times|乘以?|\\bby\\b)\\s*unitprice", lowered)) or (
+        "Quantity" in question and "UnitPrice" in question and any(token in compact for token in ("乘", "*", "销售额", "金额", "收入"))
+    )
+    if explicit_multiply:
+        return True
+    if any(token in compact for token in ("销售额", "销售金额", "销售总额", "收入", "营收", "金额", "订单金额", "订单总金额", "订单总额", "订单额", "总金额")):
+        return True
+    if any(token in lowered for token in ("revenue", "sales by", "sales ranking", "sales top", "top countries by sales", "rank countries by sales")):
+        return True
+    return False
+
+
+def _find_retail_unit_price_column(df: pd.DataFrame) -> str | None:
+    for column in df.columns:
+        normalized = _normalize_column_token(str(column))
+        if normalized in {"unitprice", "unit_price", "price", "单价"}:
+            return str(column)
+    for column in df.columns:
+        normalized = _normalize_column_token(str(column))
+        if "unit" in normalized and "price" in normalized:
+            return str(column)
+    return None
+
+
 def _derived_ratio_metric(question: str, df: pd.DataFrame, *, guidelines: str = "") -> dict[str, str] | None:
     explicit = _explicit_ratio_metric(question, df, guidelines=guidelines)
     if explicit is not None:
@@ -4410,6 +4456,8 @@ def _metric_specs_for_aggregation_question(
 
 def _raw_metrics_requested_with_derived(question: str, df: pd.DataFrame, derived_metric: dict[str, Any] | None) -> list[str]:
     if not isinstance(derived_metric, dict) or not derived_metric:
+        return []
+    if str(derived_metric.get("operator") or "").strip().lower() in {"multiply", "product", "product_sum"}:
         return []
     candidate_phrase = _candidate_topn_phrase(question)
     if candidate_phrase is not None and candidate_phrase[3]:

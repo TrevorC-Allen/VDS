@@ -8407,6 +8407,90 @@ YYYY-MM-DD HH:MM TZ
 
 否。本轮是即时 UI 修正，未改变公开产品契约；已同步 CHANGELOG_AI。
 
+## 2026-06-05 Retail 单 CSV Product Floor F3：Sales/Revenue by Country
+
+### 本次目标
+
+只收口 Retail 单表 F3 `Sales/Revenue by Country`，让“销售额 / revenue / sales / 金额 / 收入 / 订单金额”类问法在 Online Retail 中识别为派生指标 `Sales = Quantity * UnitPrice`，并按 `Country` 聚合或排名。未处理 F2/F4/F5/F6/F7、Microsoft、前端或无关 benchmark。
+
+### 修改文件
+
+- `tests/test_retail_cli_product_floor.py`
+- `data_agent_core/core/intent_parser.py`
+- `data_agent_core/executors/pandas_executor.py`
+- `data_agent_core/executors/sql_executor.py`
+- `data_agent_core/task_execution_contracts.py`
+- `data_agent_core/verifier/rule_checker.py`
+- `CHANGELOG_AI.md`
+
+### 修改内容
+
+- 将 F3 的 10 个代表问法加入 automated regression，并断言 `Country` 维度、`Sales` 派生指标、`Quantity * UnitPrice` 公式、聚合结果列和无 raw rows / 缺字段误报。
+- Retail intent parser 在表内同时存在 Quantity 和 UnitPrice 时，将销售额、收入、revenue、sales、金额、订单金额等表达映射为 `Sales = Quantity * UnitPrice`，不把 UnitPrice 或 Quantity 单独当销售额。
+- Pandas executor 和 SQL executor 均支持 product derived metric 的按组聚合，使用 `sum(Quantity * UnitPrice)` 保持双后端一致。
+- task contract 仅对按维度聚合的 product derived metric 增加 aggregation contract，避免扩大到普通 scalar / ratio aggregation。
+- verifier 在旧 plan contract 缺少派生公式时，从 logic form task contract 继承同 metric / dimension 的 derived metadata，保证 verification/debug contract 保留公式口径。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_retail_cli_product_floor.py -k f3 --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_retail_cli_product_floor.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_real_sales_metadata_followup_regression.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_derived_metric_followup_inherits_formula.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/benchmark/test_agent_random_conversation_eval.py --tb=short`
+- `git diff --check`
+- CLI/service replay：`/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx`，结果保存到 `/tmp/vds_retail_f3_revenue_country_20260605`。
+
+### 测试结果
+
+- F3 focused：10 passed，2 xfailed。
+- Retail Product Floor：16 passed，6 xfailed，14 xpassed。
+- real sales metadata follow-up：15 passed，2 subtests passed。
+- derived metric follow-up formula：9 passed，6 subtests passed。
+- random conversation eval 文件：156 passed。
+- `git diff --check` 通过。
+- CLI/service replay 5 个代表问法均通过：`dimension=Country`，`metric=Sales`，formula 为 `Quantity * UnitPrice`，结果列为 `Country, Sales`，未出现 UnitPrice-only / Quantity-only / 缺字段误报。
+
+### 遗留问题
+
+- F2/F4/F5/F6/F7 仍保持现有 manifest / baseline 状态，本轮未修。
+
+### 是否影响主流程
+
+是。影响 Retail 单 CSV CLI 核心算法中销售额派生指标识别、Pandas / SQL 执行和语义 contract 输出；范围限定在 derived product metric。
+
+### 是否涉及 Benchmark
+
+仅运行用户指定的单个 random conversation eval 测试文件作为非回归检查；未跑大 benchmark。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+否。
+
+### 是否修改核心数据契约
+
+是。补充了 product derived metric 的执行和 contract 元数据保留：`Sales = Quantity * UnitPrice`。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮是核心算法和 regression 修复，未改变 README 对外说明；已同步 CHANGELOG_AI。
+
 ## 2026-05-28 13:16 CST - Phase 12 correctness / overview hardening
 
 ### 本次目标

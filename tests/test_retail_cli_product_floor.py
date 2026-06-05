@@ -13,7 +13,7 @@ from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.llm.client import MockLLMClient
 
 
-SELECTED_FAMILY_ID = "F1"
+SELECTED_FAMILY_ID = "F3"
 
 RETAIL_INTENT_FAMILIES: list[dict[str, Any]] = [
     {
@@ -215,8 +215,15 @@ AUTOMATED_QUERY_VARIANTS: dict[str, list[str]] = {
     ],
     "F3": [
         "哪个国家销售额最高？",
+        "按 Country 看销售额排名",
         "Top countries by revenue",
         "用 Quantity 乘 UnitPrice 算销售额，按国家排名",
+        "哪些国家贡献的金额最多？",
+        "国家收入排行榜",
+        "sales by country",
+        "revenue ranking by country",
+        "按国家汇总订单金额",
+        "Country 维度销售额 TopN",
     ],
     "F4": [
         "按月看 Quantity 趋势",
@@ -262,6 +269,18 @@ def test_f1_country_quantity_topn_paraphrases_share_semantic_contract(
     response = service.respond_to_message(dataset_id=dataset_id, question=question, execution_mode="dual")
 
     _assert_country_quantity_topn_contract(response)
+
+
+@pytest.mark.parametrize("question", AUTOMATED_QUERY_VARIANTS["F3"])
+def test_f3_retail_revenue_by_country_paraphrases_use_derived_sales_contract(
+    retail_service_context: tuple[DataAgentService, str],
+    question: str,
+) -> None:
+    service, dataset_id = retail_service_context
+
+    response = service.respond_to_message(dataset_id=dataset_id, question=question, execution_mode="dual")
+
+    _assert_sales_by_country_contract(response)
 
 
 @pytest.mark.parametrize(
@@ -344,11 +363,35 @@ def _assert_sales_by_country_contract(response: dict[str, Any]) -> None:
     serialized = str(response)
 
     assert response.get("success") is True, response.get("errors")
+    answer_blob = str(response.get("answer") or "")
+    formula = (
+        task_contract.get("metric_formula")
+        or params.get("metric_formula")
+        or (params.get("derived_metric") or {}).get("formula")
+        or ""
+    )
+
+    assert response.get("success") is True, response.get("errors")
+    assert response.get("semantic_status") == "passed"
+    assert logic.get("operation") in {"ranking", "filtered_metric_ranking", "aggregation"}
     assert params.get("dimension") == "Country"
+    assert task_contract.get("dimension") == "Country"
     assert "Country" in columns
     assert params.get("metric") in {"Sales", "sales", "Revenue", "revenue"}
+    assert task_contract.get("metric") in {"Sales", "sales", "Revenue", "revenue"}
+    assert params.get("metric") not in {"UnitPrice", "Quantity"}
+    assert columns == ["Country", params.get("metric")]
+    assert "Quantity" in formula and "UnitPrice" in formula and "*" in formula
     assert task_contract.get("metric_formula") == "Quantity * UnitPrice"
-    assert "UnitPrice" not in columns or "Quantity" in serialized
+    assert params.get("table") == "online_retail"
+    assert params.get("source_tables") == ["online_retail"]
+    assert result.get("rows")
+    assert {"InvoiceNo", "StockCode", "Description", "InvoiceDate", "CustomerID"}.isdisjoint(columns)
+    assert "UnitPrice最高" not in answer_blob
+    assert "Quantity最高" not in answer_blob
+    assert "缺少" not in answer_blob
+    assert "missing" not in answer_blob.lower()
+    assert "Quantity" in serialized and "UnitPrice" in serialized
 
 
 def _assert_rfm_contract(response: dict[str, Any]) -> None:

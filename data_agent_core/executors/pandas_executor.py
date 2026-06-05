@@ -834,10 +834,14 @@ def _aggregate_derived_ratio_grouped(data: pd.DataFrame, dimension: str, derived
     if dimension not in data.columns:
         raise ValueError(f"Unknown dimension column: {dimension}")
     if numerator not in data.columns or denominator not in data.columns:
-        raise ValueError("Derived ratio metric requires numerator and denominator columns.")
+        raise ValueError("Derived metric requires numerator and denominator columns.")
     working = data[[dimension, numerator, denominator]].copy()
     working[numerator] = pd.to_numeric(working[numerator], errors="coerce")
     working[denominator] = pd.to_numeric(working[denominator], errors="coerce")
+    if _derived_metric_is_product(derived_metric):
+        working[metric_name] = working[numerator].fillna(0) * working[denominator].fillna(0)
+        grouped = working.groupby(dimension, dropna=True)[metric_name].sum().reset_index()
+        return grouped[[dimension, metric_name]].to_dict(orient="records")
     grouped = working.groupby(dimension, dropna=True)[[numerator, denominator]].sum().reset_index()
     grouped[metric_name] = grouped.apply(
         lambda row: 0.0 if float(row[denominator] or 0) == 0 else float(row[numerator]) / float(row[denominator]),
@@ -854,10 +858,14 @@ def _aggregate_derived_ratio_grouped_multi(data: pd.DataFrame, dimensions: list[
     if missing_dimensions:
         raise ValueError("Unknown dimension column(s): " + ", ".join(missing_dimensions))
     if numerator not in data.columns or denominator not in data.columns:
-        raise ValueError("Derived ratio metric requires numerator and denominator columns.")
+        raise ValueError("Derived metric requires numerator and denominator columns.")
     working = data[[*dimensions, numerator, denominator]].copy()
     working[numerator] = pd.to_numeric(working[numerator], errors="coerce")
     working[denominator] = pd.to_numeric(working[denominator], errors="coerce")
+    if _derived_metric_is_product(derived_metric):
+        working[metric_name] = working[numerator].fillna(0) * working[denominator].fillna(0)
+        grouped = working.groupby(dimensions, dropna=True)[metric_name].sum().reset_index()
+        return grouped[[*dimensions, metric_name]].to_dict(orient="records")
     grouped = working.groupby(dimensions, dropna=True)[[numerator, denominator]].sum().reset_index()
     grouped[metric_name] = grouped.apply(
         lambda row: 0.0 if float(row[denominator] or 0) == 0 else float(row[numerator]) / float(row[denominator]),
@@ -902,10 +910,20 @@ def _aggregate_derived_ratio_value(data: pd.DataFrame, derived_metric: dict[str,
     numerator = str(derived_metric.get("numerator") or "")
     denominator = str(derived_metric.get("denominator") or "")
     if numerator not in data.columns or denominator not in data.columns:
-        raise ValueError("Derived ratio metric requires numerator and denominator columns.")
-    numerator_sum = float(pd.to_numeric(data[numerator], errors="coerce").sum())
-    denominator_sum = float(pd.to_numeric(data[denominator], errors="coerce").sum())
+        raise ValueError("Derived metric requires numerator and denominator columns.")
+    numerator_series = pd.to_numeric(data[numerator], errors="coerce")
+    denominator_series = pd.to_numeric(data[denominator], errors="coerce")
+    if _derived_metric_is_product(derived_metric):
+        return float((numerator_series.fillna(0) * denominator_series.fillna(0)).sum())
+    numerator_sum = float(numerator_series.sum())
+    denominator_sum = float(denominator_series.sum())
     return 0.0 if denominator_sum == 0 else numerator_sum / denominator_sum
+
+
+def _derived_metric_is_product(derived_metric: dict[str, Any]) -> bool:
+    operator = str(derived_metric.get("operator") or derived_metric.get("aggregation") or "").strip().lower()
+    formula = str(derived_metric.get("formula") or "")
+    return operator in {"multiply", "product", "product_sum", "sum_product"} or "*" in formula
 
 
 def _metric_list(value: Any) -> list[str]:
