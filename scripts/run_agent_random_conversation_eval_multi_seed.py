@@ -30,6 +30,15 @@ SUMMARY_FIELDS = [
     "oracle_pass_rate",
     "contract_satisfied_rate",
     "legacy_unverified_rate",
+    "expected_contract_coverage_status",
+    "expected_contract_available_turns",
+    "expected_contract_checked_turns",
+    "expected_contract_satisfied_turns",
+    "expected_contract_passed_turns",
+    "expected_contract_failed_turns",
+    "expected_contract_missing_evidence_turns",
+    "expected_contract_not_instrumented_turns",
+    "expected_contract_coverage_risk_turns",
     "total_turns",
     "transport_success_turns",
     "semantic_contract_turns",
@@ -153,6 +162,15 @@ def _collect_seed_summary(
             "oracle_pass_rate": "not_available",
             "contract_satisfied_rate": "not_available",
             "legacy_unverified_rate": "not_available",
+            "expected_contract_coverage_status": "not_available",
+            "expected_contract_available_turns": 0,
+            "expected_contract_checked_turns": 0,
+            "expected_contract_satisfied_turns": 0,
+            "expected_contract_passed_turns": 0,
+            "expected_contract_failed_turns": 0,
+            "expected_contract_missing_evidence_turns": 0,
+            "expected_contract_not_instrumented_turns": 0,
+            "expected_contract_coverage_risk_turns": 0,
             "total_turns": 0,
             "transport_success_turns": 0,
             "semantic_contract_turns": 0,
@@ -193,6 +211,34 @@ def _collect_seed_summary(
         "oracle_pass_rate": gate_result.get("oracle_pass_rate", "not_available"),
         "contract_satisfied_rate": gate_result.get("contract_satisfied_rate", "not_available"),
         "legacy_unverified_rate": gate_result.get("legacy_unverified_rate", "not_available"),
+        "expected_contract_coverage_status": gate_result.get(
+            "expected_contract_coverage_status",
+            coverage.get("expected_contract_coverage_status", "not_available"),
+        ),
+        "expected_contract_available_turns": _to_int(
+            coverage.get("expected_contract_available_turns", gate_result.get("expected_contract_available_turns"))
+        ),
+        "expected_contract_checked_turns": _to_int(
+            coverage.get("expected_contract_checked_turns", gate_result.get("expected_contract_checked_turns"))
+        ),
+        "expected_contract_satisfied_turns": _to_int(
+            coverage.get("expected_contract_satisfied_turns", coverage.get("expected_contract_passed_turns"))
+        ),
+        "expected_contract_passed_turns": _to_int(
+            coverage.get("expected_contract_passed_turns", gate_result.get("expected_contract_passed_turns"))
+        ),
+        "expected_contract_failed_turns": _to_int(
+            coverage.get("expected_contract_failed_turns", gate_result.get("expected_contract_failed_turns"))
+        ),
+        "expected_contract_missing_evidence_turns": _to_int(
+            coverage.get("expected_contract_missing_evidence_turns", gate_result.get("expected_contract_missing_evidence_turns"))
+        ),
+        "expected_contract_not_instrumented_turns": _to_int(
+            coverage.get("expected_contract_not_instrumented_turns", gate_result.get("expected_contract_not_instrumented_turns"))
+        ),
+        "expected_contract_coverage_risk_turns": _to_int(
+            coverage.get("expected_contract_coverage_risk_turns", gate_result.get("expected_contract_coverage_risk_turns"))
+        ),
         "total_turns": _to_int(coverage.get("turn_count")),
         "transport_success_turns": _to_int(coverage.get("transport_success_turns", coverage.get("turn_count"))),
         "semantic_contract_turns": _to_int(coverage.get("semantic_contract_turns")),
@@ -370,6 +416,10 @@ def aggregate_multi_seed_family_metrics(rows: list[dict[str, Any]], *, gate_resu
                     "oracle_passed_turns": 0,
                     "expected_contract_checked_turns": 0,
                     "expected_contract_passed_turns": 0,
+                    "expected_contract_failed_turns": 0,
+                    "expected_contract_missing_evidence_turns": 0,
+                    "expected_contract_not_instrumented_turns": 0,
+                    "expected_contract_coverage_risk_turns": 0,
                 },
             )
             values["conversation_count"] += _to_int(item.get("conversation_count"))
@@ -380,6 +430,10 @@ def aggregate_multi_seed_family_metrics(rows: list[dict[str, Any]], *, gate_resu
             values["oracle_passed_turns"] += _to_int(item.get("oracle_passed_turns"))
             values["expected_contract_checked_turns"] += _to_int(item.get("expected_contract_checked_turns"))
             values["expected_contract_passed_turns"] += _to_int(item.get("expected_contract_passed_turns"))
+            values["expected_contract_failed_turns"] += _to_int(item.get("expected_contract_failed_turns"))
+            values["expected_contract_missing_evidence_turns"] += _to_int(item.get("expected_contract_missing_evidence_turns"))
+            values["expected_contract_not_instrumented_turns"] += _to_int(item.get("expected_contract_not_instrumented_turns"))
+            values["expected_contract_coverage_risk_turns"] += _to_int(item.get("expected_contract_coverage_risk_turns"))
             counts = family_violation_counts.setdefault(family, Counter())
             for violation in item.get("top_violation_codes") or []:
                 if isinstance(violation, dict) and violation.get("code"):
@@ -407,6 +461,15 @@ def aggregate_multi_seed_family_metrics(rows: list[dict[str, Any]], *, gate_resu
         family: _rate(values.get("expected_contract_passed_turns"), values.get("expected_contract_checked_turns"))
         for family, values in sorted(family_values.items())
     }
+    per_family_expected_contract_coverage_status = {
+        family: _expected_contract_coverage_status(
+            total_turns=values.get("semantic_contract_turns", 0) or values.get("conversation_count", 0),
+            checked_turns=values.get("expected_contract_checked_turns", 0),
+            missing_evidence_turns=values.get("expected_contract_missing_evidence_turns", 0),
+            not_instrumented_turns=values.get("expected_contract_not_instrumented_turns", 0),
+        )
+        for family, values in sorted(family_values.items())
+    }
     return {
         "families_run": sorted(families_run),
         "family_coverage": (gate_result or {}).get("family_coverage", {}),
@@ -414,6 +477,7 @@ def aggregate_multi_seed_family_metrics(rows: list[dict[str, Any]], *, gate_resu
         "per_family_semantic_pass_rate": per_family_semantic_pass_rate,
         "per_family_oracle_pass_rate": per_family_oracle_pass_rate,
         "per_family_expected_contract_pass_rate": per_family_expected_contract_pass_rate,
+        "per_family_expected_contract_coverage_status": per_family_expected_contract_coverage_status,
         "top_violation_codes_by_family": {
             family: [{"code": code, "count": count} for code, count in counts.most_common(10)]
             for family, counts in sorted(family_violation_counts.items())
@@ -426,6 +490,24 @@ def _rate(numerator: Any, denominator: Any) -> float | str:
     if denominator_int <= 0:
         return "not_available"
     return _to_int(numerator) / denominator_int
+
+
+def _expected_contract_coverage_status(
+    *,
+    total_turns: int,
+    checked_turns: int,
+    missing_evidence_turns: int,
+    not_instrumented_turns: int,
+) -> str:
+    if checked_turns > 0 and (missing_evidence_turns > 0 or not_instrumented_turns > 0):
+        return "partial"
+    if checked_turns > 0:
+        return "available"
+    if missing_evidence_turns > 0:
+        return "missing"
+    if not_instrumented_turns > 0 or total_turns > 0:
+        return "not_instrumented"
+    return "not_available"
 
 
 def aggregate_multi_seed_gate(rows: list[dict[str, Any]], *, gate_config: EvalGateConfig | None = None) -> dict[str, Any]:
@@ -450,6 +532,13 @@ def aggregate_multi_seed_gate(rows: list[dict[str, Any]], *, gate_config: EvalGa
             oracle_failed_turns=sum(_to_int(row.get("oracle_failed")) for row in rows),
             contract_satisfied_turns=sum(_to_int(row.get("contract_satisfied_turns")) for row in rows),
             legacy_unverified_turns=sum(_to_int(row.get("legacy_unverified_turns")) for row in rows),
+            expected_contract_available_turns=sum(_to_int(row.get("expected_contract_available_turns")) for row in rows),
+            expected_contract_checked_turns=sum(_to_int(row.get("expected_contract_checked_turns")) for row in rows),
+            expected_contract_passed_turns=sum(_to_int(row.get("expected_contract_passed_turns")) for row in rows),
+            expected_contract_failed_turns=sum(_to_int(row.get("expected_contract_failed_turns")) for row in rows),
+            expected_contract_missing_evidence_turns=sum(_to_int(row.get("expected_contract_missing_evidence_turns")) for row in rows),
+            expected_contract_not_instrumented_turns=sum(_to_int(row.get("expected_contract_not_instrumented_turns")) for row in rows),
+            expected_contract_coverage_risk_turns=sum(_to_int(row.get("expected_contract_coverage_risk_turns")) for row in rows),
             covered_families=tuple(sorted(covered_families)),
             top_violation_codes=tuple({"code": code, "count": count} for code, count in violation_counts.most_common(12)),
         ),
@@ -530,6 +619,7 @@ def main() -> None:
     parser.add_argument("--max-legacy-unverified-rate", type=float, default=0.2)
     parser.add_argument("--scenario-family", action="append", default=[], help="Scenario family to pass to each seed run. Repeat or use all.")
     parser.add_argument("--required-family", action="append", default=[], help="Required scenario family coverage for aggregate gate.")
+    parser.add_argument("--print-summary", action="store_true", help="Compatibility flag; summaries are always printed.")
     args = parser.parse_args()
     try:
         seeds = build_seeds(args)

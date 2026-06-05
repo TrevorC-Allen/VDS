@@ -4029,9 +4029,14 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
                     "expected_contract_checked_turns": 0,
                     "expected_contract_passed_turns": 0,
                     "expected_contract_failed_turns": 0,
+                    "expected_contract_missing_evidence_turns": 0,
+                    "expected_contract_not_instrumented_turns": 0,
+                    "expected_contract_coverage_risk_turns": 0,
                 },
             )
             family_metrics["turn_count"] += 1
+            family_metrics["expected_contract_not_instrumented_turns"] += 1
+            family_metrics["expected_contract_coverage_risk_turns"] += 1
             if turn.success:
                 transport_success_turns += 1
             if turn.capability_family:
@@ -4150,6 +4155,16 @@ def _coverage_summary(results: list[ScenarioResult]) -> dict[str, Any]:
         "needs_clarification_turns": needs_clarification_turns,
         "llm_judge_failed_turns": llm_judge_failed_turns,
         "legacy_unverified_turns": legacy_unverified_turns,
+        "expected_contract_coverage_status": "not_instrumented" if total_turns else "not_available",
+        "expected_contract_available_turns": 0,
+        "expected_contract_checked_turns": 0,
+        "expected_contract_satisfied_turns": 0,
+        "expected_contract_passed_turns": 0,
+        "expected_contract_failed_turns": 0,
+        "expected_contract_missing_evidence_turns": 0,
+        "expected_contract_not_instrumented_turns": total_turns,
+        "expected_contract_coverage_risk_turns": total_turns,
+        "expected_contract_issue_codes": [],
         "top_violation_codes": [
             {"code": code, "count": count}
             for code, count in sorted(all_violation_counts.items(), key=lambda item: (-item[1], item[0]))[:10]
@@ -4215,8 +4230,20 @@ def _family_summary_from_counts(
                 "oracle_failed_turns": int(metrics.get("oracle_failed_turns", 0)),
                 "oracle_pass_rate": _coverage_rate(metrics.get("oracle_passed_turns", 0), metrics.get("oracle_available_turns", 0)),
                 "expected_contract_checked_turns": int(metrics.get("expected_contract_checked_turns", 0)),
+                "expected_contract_satisfied_turns": int(metrics.get("expected_contract_passed_turns", 0)),
                 "expected_contract_passed_turns": int(metrics.get("expected_contract_passed_turns", 0)),
                 "expected_contract_failed_turns": int(metrics.get("expected_contract_failed_turns", 0)),
+                "expected_contract_missing_evidence_turns": int(metrics.get("expected_contract_missing_evidence_turns", 0)),
+                "expected_contract_available_turns": int(metrics.get("expected_contract_checked_turns", 0))
+                + int(metrics.get("expected_contract_missing_evidence_turns", 0)),
+                "expected_contract_not_instrumented_turns": int(metrics.get("expected_contract_not_instrumented_turns", 0)),
+                "expected_contract_coverage_risk_turns": int(metrics.get("expected_contract_coverage_risk_turns", 0)),
+                "expected_contract_coverage_status": _expected_contract_coverage_status(
+                    turn_count=int(metrics.get("turn_count", 0)),
+                    checked_turns=int(metrics.get("expected_contract_checked_turns", 0)),
+                    missing_evidence_turns=int(metrics.get("expected_contract_missing_evidence_turns", 0)),
+                    not_instrumented_turns=int(metrics.get("expected_contract_not_instrumented_turns", 0)),
+                ),
                 "expected_contract_pass_rate": _coverage_rate(
                     metrics.get("expected_contract_passed_turns", 0),
                     metrics.get("expected_contract_checked_turns", 0),
@@ -4239,6 +4266,24 @@ def _coverage_rate(numerator: Any, denominator: Any) -> float | str:
     except (TypeError, ValueError):
         numerator_int = 0
     return numerator_int / denominator_int
+
+
+def _expected_contract_coverage_status(
+    *,
+    turn_count: int,
+    checked_turns: int,
+    missing_evidence_turns: int,
+    not_instrumented_turns: int,
+) -> str:
+    if checked_turns > 0 and (missing_evidence_turns > 0 or not_instrumented_turns > 0):
+        return "partial"
+    if checked_turns > 0:
+        return "available"
+    if missing_evidence_turns > 0:
+        return "missing"
+    if not_instrumented_turns > 0 or turn_count > 0:
+        return "not_instrumented"
+    return "not_available"
 
 
 def _sample_scenarios(scenarios: list[ConversationScenario], count: int, rng: random.Random) -> list[ConversationScenario]:

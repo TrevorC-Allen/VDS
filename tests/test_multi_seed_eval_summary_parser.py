@@ -44,6 +44,14 @@ class MultiSeedEvalSummaryParserTest(unittest.TestCase):
                             "oracle_failed_turns": 3,
                             "oracle_expected_result_missing_turns": 1,
                             "oracle_actual_result_missing_turns": 2,
+                            "expected_contract_coverage_status": "not_instrumented",
+                            "expected_contract_available_turns": 0,
+                            "expected_contract_checked_turns": 0,
+                            "expected_contract_passed_turns": 0,
+                            "expected_contract_failed_turns": 0,
+                            "expected_contract_missing_evidence_turns": 0,
+                            "expected_contract_not_instrumented_turns": 6,
+                            "expected_contract_coverage_risk_turns": 6,
                             "top_contract_violation_codes": [
                                 {"code": "TOPN_RESULT_ROWS_SHORT", "count": 3},
                                 {"code": "TABLE_DIMENSION_MISSING", "count": 1},
@@ -60,8 +68,11 @@ class MultiSeedEvalSummaryParserTest(unittest.TestCase):
                                         "semantic_passed_turns": 5,
                                         "oracle_available_turns": 5,
                                         "oracle_passed_turns": 2,
+                                        "expected_contract_coverage_status": "not_instrumented",
                                         "expected_contract_checked_turns": 0,
                                         "expected_contract_passed_turns": 0,
+                                        "expected_contract_not_instrumented_turns": 6,
+                                        "expected_contract_coverage_risk_turns": 6,
                                         "top_violation_codes": [{"code": "TOPN_RESULT_ROWS_SHORT", "count": 3}],
                                     }
                                 ],
@@ -95,6 +106,14 @@ class MultiSeedEvalSummaryParserTest(unittest.TestCase):
         self.assertEqual(1, row["oracle_expected_missing"])
         self.assertEqual(2, row["oracle_actual_missing"])
         self.assertEqual(0, row["llm_judge_failed_turns"])
+        self.assertEqual("not_instrumented", row["expected_contract_coverage_status"])
+        self.assertEqual(0, row["expected_contract_available_turns"])
+        self.assertEqual(0, row["expected_contract_checked_turns"])
+        self.assertEqual(0, row["expected_contract_passed_turns"])
+        self.assertEqual(0, row["expected_contract_failed_turns"])
+        self.assertEqual(0, row["expected_contract_missing_evidence_turns"])
+        self.assertEqual(6, row["expected_contract_not_instrumented_turns"])
+        self.assertEqual(6, row["expected_contract_coverage_risk_turns"])
         self.assertEqual(
             [{"code": "TOPN_RESULT_ROWS_SHORT", "count": 3}, {"code": "TABLE_DIMENSION_MISSING", "count": 1}],
             row["top_violation_codes"],
@@ -107,9 +126,16 @@ class MultiSeedEvalSummaryParserTest(unittest.TestCase):
         aggregate_gate = aggregate_multi_seed_gate([row])
         self.assertFalse(aggregate_gate["gate_passed"])
         self.assertIn("semantic_failed_turns_above_threshold:1>0", aggregate_gate["gate_failed_reasons"])
+        self.assertEqual("not_instrumented", aggregate_gate["expected_contract_coverage_status"])
+        self.assertEqual(6, aggregate_gate["expected_contract_not_instrumented_turns"])
+        self.assertEqual(6, aggregate_gate["expected_contract_coverage_risk_turns"])
         family_metrics = aggregate_multi_seed_family_metrics([row], gate_result=aggregate_gate)
         self.assertEqual(["single_file_overview_topn_gap"], family_metrics["families_run"])
         self.assertEqual(1.0, family_metrics["per_family_pass_rate"]["single_file_overview_topn_gap"])
+        self.assertEqual(
+            "not_instrumented",
+            family_metrics["per_family_expected_contract_coverage_status"]["single_file_overview_topn_gap"],
+        )
         self.assertEqual("TOPN_RESULT_ROWS_SHORT", family_metrics["top_violation_codes_by_family"]["single_file_overview_topn_gap"][0]["code"])
 
     def test_collect_seed_summary_fallbacks_when_top_codes_and_aliases_missing(self) -> None:

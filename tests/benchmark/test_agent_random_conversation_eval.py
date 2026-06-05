@@ -629,6 +629,12 @@ class AgentRandomConversationEvalTest(unittest.TestCase):
         self.assertIn("family_level_expected_contract_pass_rate", report)
         self.assertIn("top_violation_codes_by_family", report)
         self.assertEqual(["data_quality_diagnosis"], report["coverage"]["scenario_families"])
+        self.assertEqual("not_instrumented", report["coverage"]["expected_contract_coverage_status"])
+        self.assertEqual(report["coverage"]["turn_count"], report["coverage"]["expected_contract_not_instrumented_turns"])
+        self.assertEqual(report["coverage"]["turn_count"], report["coverage"]["expected_contract_coverage_risk_turns"])
+        markdown = _report_markdown(report)
+        self.assertIn("Expected contract coverage status: not_instrumented", markdown)
+        self.assertIn("Expected contract not instrumented turns:", markdown)
 
     def test_multi_file_builtin_scenario_covers_join_and_followup(self) -> None:
         scenario = next(item for item in builtin_scenarios() if item.scenario_id == "multi_file_customer_revenue_agent")

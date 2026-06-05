@@ -35,6 +35,10 @@ class EvalGateMetrics:
     expected_contract_passed_turns: int = 0
     expected_contract_failed_turns: int = 0
     expected_contract_missing_evidence_turns: int = 0
+    expected_contract_available_turns: int = 0
+    expected_contract_not_instrumented_turns: int = 0
+    expected_contract_coverage_risk_turns: int = 0
+    expected_contract_coverage_status: str = ""
     covered_families: tuple[str, ...] = ()
     top_violation_codes: tuple[dict[str, Any], ...] = ()
     expected_contract_issue_codes: tuple[dict[str, Any], ...] = ()
@@ -55,6 +59,23 @@ def build_eval_gate_result(metrics: EvalGateMetrics, config: EvalGateConfig | No
     contract_satisfied_rate = _rate(metrics.contract_satisfied_turns, semantic_denominator)
     legacy_unverified_rate = _rate(metrics.legacy_unverified_turns, total_turns)
     expected_contract_pass_rate = _rate(metrics.expected_contract_passed_turns, metrics.expected_contract_checked_turns)
+    expected_contract_available_turns = int(
+        metrics.expected_contract_available_turns
+        or int(metrics.expected_contract_checked_turns or 0)
+        + int(metrics.expected_contract_missing_evidence_turns or 0)
+    )
+    expected_contract_not_instrumented_turns = int(metrics.expected_contract_not_instrumented_turns or 0)
+    expected_contract_coverage_risk_turns = int(
+        metrics.expected_contract_coverage_risk_turns
+        or expected_contract_not_instrumented_turns
+        + int(metrics.expected_contract_missing_evidence_turns or 0)
+    )
+    expected_contract_coverage_status = str(metrics.expected_contract_coverage_status or "").strip() or _expected_contract_coverage_status(
+        total_turns=total_turns,
+        checked_turns=int(metrics.expected_contract_checked_turns or 0),
+        missing_evidence_turns=int(metrics.expected_contract_missing_evidence_turns or 0),
+        not_instrumented_turns=expected_contract_not_instrumented_turns,
+    )
 
     failed_reasons: list[str] = []
     if total_turns <= 0:
@@ -93,6 +114,10 @@ def build_eval_gate_result(metrics: EvalGateMetrics, config: EvalGateConfig | No
         "expected_contract_passed_turns": int(metrics.expected_contract_passed_turns or 0),
         "expected_contract_failed_turns": int(metrics.expected_contract_failed_turns or 0),
         "expected_contract_missing_evidence_turns": int(metrics.expected_contract_missing_evidence_turns or 0),
+        "expected_contract_available_turns": expected_contract_available_turns,
+        "expected_contract_not_instrumented_turns": expected_contract_not_instrumented_turns,
+        "expected_contract_coverage_risk_turns": expected_contract_coverage_risk_turns,
+        "expected_contract_coverage_status": expected_contract_coverage_status,
         "expected_contract_issue_codes": list(metrics.expected_contract_issue_codes),
         "family_coverage": family_coverage,
         "top_violation_codes": list(metrics.top_violation_codes),
@@ -126,6 +151,10 @@ def metrics_from_coverage(
         expected_contract_passed_turns=_to_int(coverage.get("expected_contract_passed_turns")),
         expected_contract_failed_turns=_to_int(coverage.get("expected_contract_failed_turns")),
         expected_contract_missing_evidence_turns=_to_int(coverage.get("expected_contract_missing_evidence_turns")),
+        expected_contract_available_turns=_to_int(coverage.get("expected_contract_available_turns")),
+        expected_contract_not_instrumented_turns=_to_int(coverage.get("expected_contract_not_instrumented_turns")),
+        expected_contract_coverage_risk_turns=_to_int(coverage.get("expected_contract_coverage_risk_turns")),
+        expected_contract_coverage_status=str(coverage.get("expected_contract_coverage_status") or ""),
         covered_families=tuple(
             str(item)
             for item in coverage.get(
@@ -156,6 +185,10 @@ def metrics_from_real_user_summary(summary: Mapping[str, Any], *, required_famil
         expected_contract_passed_turns=_to_int(summary.get("expected_contract_passed_turns")),
         expected_contract_failed_turns=_to_int(summary.get("expected_contract_failed_turns")),
         expected_contract_missing_evidence_turns=_to_int(summary.get("expected_contract_missing_evidence_turns")),
+        expected_contract_available_turns=_to_int(summary.get("expected_contract_available_turns")),
+        expected_contract_not_instrumented_turns=_to_int(summary.get("expected_contract_not_instrumented_turns")),
+        expected_contract_coverage_risk_turns=_to_int(summary.get("expected_contract_coverage_risk_turns")),
+        expected_contract_coverage_status=str(summary.get("expected_contract_coverage_status") or ""),
         covered_families=tuple(str(item) for item in _real_user_families(summary)),
         top_violation_codes=tuple(_normalize_top_violation_codes(summary.get("top_violation_codes", []))),
         expected_contract_issue_codes=tuple(_normalize_top_violation_codes(summary.get("expected_contract_issue_codes", []))),
@@ -177,6 +210,10 @@ def eval_gate_markdown(gate_result: Mapping[str, Any], *, title: str = "Eval Gat
         f"- Expected contract checked: {gate_result.get('expected_contract_checked_turns', 0)}",
         f"- Expected contract failed: {gate_result.get('expected_contract_failed_turns', 0)}",
         f"- Expected contract missing evidence: {gate_result.get('expected_contract_missing_evidence_turns', 0)}",
+        f"- Expected contract coverage status: {gate_result.get('expected_contract_coverage_status') or 'not_available'}",
+        f"- Expected contract available turns: {gate_result.get('expected_contract_available_turns', 0)}",
+        f"- Expected contract not instrumented turns: {gate_result.get('expected_contract_not_instrumented_turns', 0)}",
+        f"- Expected contract coverage risk turns: {gate_result.get('expected_contract_coverage_risk_turns', 0)}",
     ]
     family_coverage = gate_result.get("family_coverage") if isinstance(gate_result.get("family_coverage"), Mapping) else {}
     lines.append(f"- Family coverage: {', '.join(family_coverage.get('covered') or []) or '-'}")
@@ -203,6 +240,24 @@ def _rate(numerator: Any, denominator: Any) -> float | str:
     if denominator_int <= 0:
         return "not_available"
     return _to_int(numerator) / denominator_int
+
+
+def _expected_contract_coverage_status(
+    *,
+    total_turns: int,
+    checked_turns: int,
+    missing_evidence_turns: int,
+    not_instrumented_turns: int,
+) -> str:
+    if checked_turns > 0 and (missing_evidence_turns > 0 or not_instrumented_turns > 0):
+        return "partial"
+    if checked_turns > 0:
+        return "available"
+    if missing_evidence_turns > 0:
+        return "missing"
+    if not_instrumented_turns > 0 or total_turns > 0:
+        return "not_instrumented"
+    return "not_available"
 
 
 def _family_coverage(covered: Sequence[str], required: Sequence[str]) -> dict[str, Any]:
