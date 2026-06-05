@@ -505,7 +505,29 @@ DIMENSION_CONCEPT_ALIASES = {
         "分类",
     ),
     "store": ("store", "shop", "branch", "门店", "店铺"),
-    "city": ("city", "城市", "市"),
+    "city": ("city", "city_name", "cityname", "cust_city", "dist_city", "城市", "城市名称", "地市", "市"),
+    "region": (
+        "region",
+        "region_name",
+        "region_nm",
+        "reg",
+        "reg_name",
+        "reg_nm",
+        "area",
+        "area_name",
+        "area_nm",
+        "province",
+        "province_name",
+        "district",
+        "district_name",
+        "dis_name",
+        "地区",
+        "地区名称",
+        "区域",
+        "区域名称",
+        "大区",
+        "省份",
+    ),
     "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "source", "origin", "来源", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
     "segment": ("segment", "customer_segment", "cust_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分"),
     "service_line": ("service_line", "business_line", "service", "line", "服务线", "业务线", "服务", "业务"),
@@ -977,7 +999,40 @@ def _asks_profit_margin(question: str) -> bool:
 
 def _column_matches_concept(column: str, concept: str, aliases_by_concept: dict[str, tuple[str, ...]]) -> bool:
     normalized_column = _normalize_token(column)
-    return any(_normalize_token(alias) and _normalize_token(alias) in normalized_column for alias in aliases_by_concept.get(concept, ()))
+    concepts = [concept]
+    if concept == "city":
+        concepts.append("region")
+    for item in concepts:
+        for alias in aliases_by_concept.get(item, ()):
+            normalized_alias = _normalize_token(alias)
+            if not normalized_alias:
+                continue
+            if normalized_column == normalized_alias:
+                return True
+            if normalized_alias == "city":
+                if _latin_alias_tokens_match_column(column, alias):
+                    return True
+                continue
+            if any("\u4e00" <= char <= "\u9fff" for char in str(alias)) or normalized_alias != "市":
+                if normalized_alias in normalized_column:
+                    return True
+    return False
+
+
+def _latin_alias_tokens_match_column(column_name: str, alias: str) -> bool:
+    alias_tokens = _latin_identifier_tokens(alias)
+    column_tokens = _latin_identifier_tokens(column_name)
+    if not alias_tokens or not column_tokens:
+        return False
+    if len(alias_tokens) == 1:
+        return alias_tokens[0] in column_tokens
+    window_size = len(alias_tokens)
+    return any(column_tokens[index : index + window_size] == alias_tokens for index in range(0, len(column_tokens) - window_size + 1))
+
+
+def _latin_identifier_tokens(value: str) -> list[str]:
+    with_camel_boundaries = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(value or ""))
+    return [token.lower() for token in re.split(r"[^A-Za-z0-9]+", with_camel_boundaries) if token]
 
 
 def _alias_in_question(question: str, alias: str) -> bool:

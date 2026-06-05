@@ -28,6 +28,7 @@ def semantic_hints(name: str, series: pd.Series) -> list[str]:
     """Return lightweight semantic hints based on names and values."""
 
     lowered = name.lower()
+    tokens = _latin_identifier_tokens(name)
     hints: list[str] = []
     if "date" in lowered or "day" in lowered or "year" in lowered or "month" in lowered:
         hints.append("time")
@@ -35,15 +36,22 @@ def semantic_hints(name: str, series: pd.Series) -> list[str]:
         hints.append("metric")
     if "sales" in lowered or "revenue" in lowered or "销售" in lowered or "金额" in lowered:
         hints.append("metric")
-    if "country" in lowered:
+    if "country" in tokens:
         hints.append("country")
-    if "city" in lowered or "城市" in lowered:
+    if any(token in tokens for token in ("city", "region", "reg", "area", "province", "district", "country")) or any(
+        token in name for token in ("城市", "区域", "地区", "省份", "地市")
+    ):
         hints.append("location")
     if "id" in lowered or lowered.endswith("_reference"):
         hints.append("id")
     if series.nunique(dropna=True) <= max(20, len(series) * 0.05):
         hints.append("category")
     return sorted(set(hints))
+
+
+def _latin_identifier_tokens(value: str) -> set[str]:
+    with_camel_boundaries = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(value or ""))
+    return {token.lower() for token in re.split(r"[^A-Za-z0-9]+", with_camel_boundaries) if token}
 
 
 def _looks_datetime(series: pd.Series) -> bool:
