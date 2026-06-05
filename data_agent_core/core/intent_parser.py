@@ -2076,6 +2076,51 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         )
 
     if (
+        _question_requests_month_bucket(question)
+        and not _is_ranking_question(lowered)
+        and not _asks_result_ranking_question(question, lowered)
+        and not _is_growth_ranking_question(question, lowered)
+    ):
+        time_column = _find_time_column(df)
+        if time_column and metric and time_column not in set(filters):
+            aggregation = "count" if record_count_requested else _infer_aggregation(lowered, default="sum")
+            return make_logic_form(
+                task_type="trend",
+                operation="aggregation",
+                metric=metric,
+                group_by="month",
+                filters=filters,
+                metric_definition={
+                    "name": metric,
+                    "capability_family": "time_series",
+                    "aggregation": aggregation,
+                    "business_definition": f"Aggregate {metric} by month bucket derived from {time_column}.",
+                    **({"formula": derived_metric.get("formula")} if isinstance(derived_metric, dict) and derived_metric.get("formula") else {}),
+                },
+                numerator={"aggregation": aggregation, "field": metric, "scope": "filtered_rows"},
+                denominator={"scope": "not_required"},
+                entity_grain={"field": "month", "role": "time_bucket", "source_field": time_column, "grain": "month"},
+                parameters=_with_table_context({
+                    "table": table_name,
+                    "metric": metric,
+                    "dimension": "month",
+                    "time_column": time_column,
+                    "time_dimension": "month",
+                    "source_time_field": time_column,
+                    "time_bucket": "month",
+                    "aggregation": aggregation,
+                    "capability_family": "time_series",
+                    **({"derived_metric": derived_metric} if derived_metric else {}),
+                }, table_context),
+                output_format=output_format | {"answer_type": "table", "chart_type": "line"},
+                output_contract={
+                    "answer_type": "table",
+                    "expected_result_shape": "one row per month bucket",
+                    "capability_family": "time_series",
+                },
+            )
+
+    if (
         _is_growth_ranking_question(question, lowered)
         and not (isinstance(candidate_filter, dict) and candidate_filter.get("operation") == "growth_ranking" and candidate_filter.get("dimension") != dimension)
         and dimension
@@ -3286,6 +3331,14 @@ def _question_requests_time_series(question: str) -> bool:
         has_month_output_language
         or (has_month_range and (has_month_output_language or has_separate_language))
         or any(token in lowered for token in ("trend", "monthly", "month by month", "change over time"))
+    )
+
+
+def _question_requests_month_bucket(question: str) -> bool:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    lowered = str(question or "").lower()
+    return any(token in compact for token in ("按月", "月度", "每月", "每个月", "各月", "月份")) or any(
+        token in lowered for token in ("monthly", "by month", "month by month", "per month")
     )
 
 

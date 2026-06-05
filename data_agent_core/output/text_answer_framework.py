@@ -671,7 +671,7 @@ def render_trend_answer(context: _FrameContext) -> str:
     pairs = sorted(pairs, key=lambda item: item[0])
     trend = describe_trend([(label, value) for label, value, _ in pairs])
     sequence = _trend_sequence_text(pairs, metric)
-    return f"按{period}看，{metric}{trend}：{sequence}。" + _derived_metric_scope_sentence(context)
+    return f"按{period}看，{metric}趋势{trend}：{sequence}。" + _derived_metric_scope_sentence(context)
 
 
 def _render_multi_referent_trend_answer(context: _FrameContext, *, metric: str, period: str) -> str:
