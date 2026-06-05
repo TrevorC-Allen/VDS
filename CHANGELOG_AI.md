@@ -70,6 +70,83 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-06-05 11:49 CST
+
+### 本次目标
+
+建设 Retail 单 CSV / UK retail Product Floor 的 F1 同义问法簇回归，修复 Country + Quantity TopN 问法在自然中文和英文 paraphrase 下错误归一到 InvoiceDate 的问题；不修前端、Microsoft、多数据集泛化或大 benchmark，不 push。
+
+### 修改文件
+
+- data_agent_core/core/intent_parser.py
+- tests/test_retail_cli_product_floor.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `tests/test_retail_cli_product_floor.py`：新增 Retail Product Floor family manifest，覆盖 F1-F7 的 canonical intent、字段、metric、dimension、operation、上下文、query variants 和 forbidden behavior；F1 作为本轮硬断言 regression，F2-F7 以 baseline manifest / xfail 形式进入后续扩展清单。
+- `data_agent_core/core/intent_parser.py`：把 `country` / `国家` 纳入通用字段 alias、语义维度概念、直接目标维度和目标维度解析；补充“前几名”开放式 TopN 问法识别，保证 UK retail `Country + Quantity` ranking 不再落到 `InvoiceDate`。
+- `CHANGELOG_AI.md`：记录本轮真实修改和验证结果。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_retail_cli_product_floor.py -k f1 --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_retail_cli_product_floor.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_real_sales_metadata_followup_regression.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/benchmark/test_agent_random_conversation_eval.py --tb=short`
+- `git diff --check`
+- 使用真实 `/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx` 通过 `DataAgentService` 在单一 conversation 中重放 F1 5 个 paraphrase，响应保存到 `/tmp/vds_retail_query_suite_20260605`。
+
+### 测试结果
+
+- F1 focused regression 先红后绿：修复前 4 个 F1 paraphrase 失败，主要错误为 `dimension=InvoiceDate`；修复后 `5 passed`。
+- Product Floor suite 通过：`6 passed, 9 xfailed, 9 xpassed`。F2-F7 当前只作为后续 Product Floor baseline manifest，不在本轮强制修复。
+- `tests/test_real_sales_metadata_followup_regression.py` 通过：`15 passed, 2 subtests passed`。
+- `tests/benchmark/test_agent_random_conversation_eval.py` 通过：`156 passed`。
+- `git diff --check` 通过。
+- 真实 UK retail F1 service replay 全部通过：5/5 variants 均归一到 `operation=ranking`、`metric=Quantity`、`dimension=Country`、`source_table=Online Retail`、`result_columns=['Country', 'Quantity']`。
+
+### 遗留问题
+
+- F2 share/contribution、F3 derived Sales/Revenue by Country、F4 monthly trend、F5 Top3 countries monthly trend、F6 RFM segmentation、F7 data quality 仍作为 Product Floor 后续 family 分阶段硬化；本轮没有修复这些 family。
+- 本轮未运行大 benchmark、前端浏览器 smoke 或真实 LLM provider 回归。
+
+### 是否影响主流程
+
+是。影响通用上传表解析层的国家维度 grounding 和开放式 TopN 识别，使 Online Retail / UK retail 类单表 TopN 问法更稳定。
+
+### 是否涉及 Benchmark
+
+不涉及大 benchmark 或 benchmark runner。涉及 `tests/benchmark/test_agent_random_conversation_eval.py` 作为非回归检查。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+轻微正向影响。该修改位于通用 intent parser 的字段语义 grounding，保持后续多 Agent planner / executor 的结构化输入更稳定；未修改 Agent Framework adapter。
+
+### 是否修改核心数据契约
+
+否。未新增或修改 contracts schema、API payload 字段或 task contract 类型。
+
+### 是否修改 API 契约
+
+否。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮是 Product Floor regression 和 parser grounding 修复，不改变安装方式、API 契约、阶段完成状态或对外运行说明；README 不需要同步。
+
 2026-06-04 11:13 CST
 
 ### 本次目标
