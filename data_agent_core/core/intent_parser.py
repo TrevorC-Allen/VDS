@@ -48,6 +48,8 @@ FIELD_ALIASES = {
     "门店": "store",
     "店铺": "store",
     "城市": "city",
+    "国家": "country",
+    "country": "country",
     "区域": "region",
     "地区": "region",
     "region": "region",
@@ -3019,6 +3021,7 @@ SEMANTIC_COLUMN_ALIASES = {
     ),
     "store": ("store", "shop", "branch", "门店", "店铺", "门店名称"),
     "city": ("city", "city_name", "cityname", "city_nm", "citynm", "cust_city", "dist_city", "城市", "城市名称", "地市", "市"),
+    "country": ("country", "country_name", "countryname", "country_code", "countrycode", "国家", "国家名称", "国家代码"),
     "region": (
         "region",
         "region_name",
@@ -3084,6 +3087,7 @@ DIMENSION_CONCEPTS = (
     "capacity",
     "store",
     "city",
+    "country",
     "region",
     "channel",
     "segment",
@@ -3130,6 +3134,7 @@ def _direct_target_dimension_concepts(question: str) -> list[str]:
         ("employee", ("这几个销售", "这几位销售", "销售的表现", "哪个销售", "哪些销售", "哪几个销售", "销售员", "销售人员", "销售代表", "业务员", "业代", "员工排名", "salesperson", "sales rep", "employee ranking")),
         ("service_line", ("哪个服务线", "哪些服务线", "哪条服务线", "各条服务线", "每条服务线", "服务线分布", "服务线是哪个", "服务线是哪", "服务线有哪些", "哪个业务线", "哪些业务线", "各条业务线", "每条业务线", "业务线分布", "业务线排名", "which service line", "business line ranking")),
         ("city", ("什么城市", "哪个城市", "哪些城市", "哪几个城市", "哪座城市", "城市是哪个", "城市是哪", "城市有哪些", "城市是哪些", "城市排名", "前3个城市", "前三个城市", "前5个城市", "前五个城市", "which city", "city ranking")),
+        ("country", ("什么国家", "哪个国家", "哪些国家", "哪几个国家", "国家是哪个", "国家是哪", "国家有哪些", "国家是哪些", "国家排名", "国家排行榜", "which country", "top countries", "country ranking", "rank countries")),
         ("region", ("什么区域", "什么地区", "哪个区域", "哪个地区", "哪些区域", "哪些地区", "哪几个区域", "哪几个地区", "区域排名", "地区排名", "which region", "which area", "region ranking", "area ranking")),
         ("capacity", ("什么容量", "哪个容量", "哪些容量", "哪种容量", "什么规格", "哪个规格", "哪些规格", "哪种规格", "容量排名", "规格排名", "which capacity", "which spec", "capacity ranking", "spec ranking")),
         ("category", ("哪个品类", "哪些品类", "哪几个品类", "品类是哪个", "品类是哪", "品类有哪些", "品类是哪些", "品类排名", "which category", "category ranking")),
@@ -3146,6 +3151,7 @@ def _direct_target_dimension_concepts(question: str) -> list[str]:
             matches.append((min(positions), concept))
     quantity_targets = (
         ("city", r"哪(?:\d+|[一二两三四五六七八九十]+)?个城市"),
+        ("country", r"哪(?:\d+|[一二两三四五六七八九十]+)?个国家"),
         ("customer", r"哪(?:\d+|[一二两三四五六七八九十]+)?个客户"),
         ("product", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|种)?产品"),
         ("service_line", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|条)?(?:服务线|业务线)"),
@@ -3175,6 +3181,7 @@ def _target_dimension_concepts(question: str) -> list[str]:
         ("employee", ("这几个销售", "这几位销售", "销售的表现", "哪个销售", "哪些销售", "哪几个销售", "按销售", "按销售员", "销售员", "销售人员", "销售代表", "业务员", "业代", "员工排名", "salesperson", "sales rep", "by employee")),
         ("service_line", ("各服务线", "每个服务线", "各条服务线", "每条服务线", "哪个服务线", "哪些服务线", "服务线分布", "服务线是哪个", "服务线是哪", "服务线有哪些", "按服务线", "服务线排名", "各业务线", "每个业务线", "各条业务线", "每条业务线", "哪个业务线", "哪些业务线", "业务线分布", "按业务线", "业务线排名", "which service line", "by service line", "business line")),
         ("city", ("各城市", "各个城市", "每个城市", "所有城市", "全部城市", "什么城市", "哪个城市", "哪些城市", "哪座城市", "城市分布", "城市是哪个", "城市是哪", "城市有哪些", "城市是哪些", "这些城市", "这几个城市", "按城市", "城市排名", "which city", "by city")),
+        ("country", ("各国家", "各个国家", "每个国家", "所有国家", "全部国家", "什么国家", "哪个国家", "哪些国家", "国家分布", "国家是哪个", "国家是哪", "国家有哪些", "国家是哪些", "这些国家", "这几个国家", "按国家", "国家排名", "国家排行榜", "which country", "top countries", "rank countries", "by country")),
         ("region", ("各区域", "各个区域", "每个区域", "所有区域", "全部区域", "各地区", "各个地区", "每个地区", "什么区域", "什么地区", "哪个区域", "哪个地区", "哪些区域", "哪些地区", "按区域", "按地区", "区域排名", "地区排名", "which region", "which area", "by region", "by area")),
         ("capacity", ("各容量", "各个容量", "每个容量", "什么容量", "哪个容量", "哪些容量", "哪种容量", "按容量", "容量排名", "各规格", "各个规格", "每个规格", "什么规格", "哪个规格", "哪些规格", "哪种规格", "按规格", "规格排名", "which capacity", "which spec", "by capacity", "by spec")),
         ("category", ("哪个品类", "哪些品类", "品类是哪个", "品类是哪", "品类有哪些", "品类是哪些", "按品类", "品类排名", "which category", "by category")),
@@ -3210,6 +3217,7 @@ def _target_dimension_concepts(question: str) -> list[str]:
                 targets.append(concept)
     quantity_targets = (
         ("city", r"哪(?:\d+|[一二两三四五六七八九十]+)?个城市"),
+        ("country", r"哪(?:\d+|[一二两三四五六七八九十]+)?个国家"),
         ("customer", r"哪(?:\d+|[一二两三四五六七八九十]+)?个客户"),
         ("product", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|种)?产品"),
         ("service_line", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|条)?(?:服务线|业务线)"),
@@ -4902,10 +4910,13 @@ def _is_ranking_question(lowered: str) -> bool:
         lowered,
     )
     rank_position_question = re.search(r"(?:排|排名|排行|名次|位次)(?:在)?第?几", lowered)
-    return any(token in lowered for token in ("highest", "lowest", "top", "bottom", "max", "min", "best", "worst", "ranking", "rank", "sort", "order by", "最多", "最高", "最低", "最少", "最大", "最小", "最好", "最佳", "最优", "最差", "排名", "排行", "名次", "排序", "排列", "从高到低", "从低到高")) or bool(top_entity_pattern) or bool(
+    open_topn_question = re.search(r"前\s*几\s*(?:个|名|位)?", lowered)
+    return any(token in lowered for token in ("highest", "lowest", "top", "bottom", "max", "min", "best", "worst", "ranking", "rank", "sort", "order by", "最多", "最高", "最低", "最少", "最大", "最小", "最好", "最佳", "最优", "最差", "排名", "排行", "名次", "排序", "排列", "排行榜", "从高到低", "从低到高")) or bool(top_entity_pattern) or bool(
         ordinal_entity_pattern
     ) or bool(
         rank_position_question
+    ) or bool(
+        open_topn_question
     ) or bool(
         re.search(r"(?:第\s*(?:\d+|[一二两三四五六七八九十]+)\s*(?:高|低)|排名\s*第\s*(?:\d+|[一二两三四五六七八九十]+))", lowered)
     )
