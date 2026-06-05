@@ -4446,6 +4446,10 @@ def _looks_like_self_contained_analysis_request(question: str) -> bool:
             "这个客户",
             "该客户",
             "这些客户",
+            "这个容量",
+            "该容量",
+            "这些容量",
+            "这几个容量",
             "这个指标",
             "刚才排名",
             "排名第一",
@@ -4462,7 +4466,7 @@ def _looks_like_self_contained_analysis_request(question: str) -> bool:
     ):
         return False
     if re.search(
-        r"(?:这|这些)?(?:排名|排行)?前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:大)?的?(?:城市|客户|产品|品类|区域|地区|服务线|业务线|团队|客群|客户群|客户群体|月份)",
+        r"(?:这|这些)?(?:排名|排行)?前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:大)?的?(?:城市|客户|产品|品类|区域|地区|服务线|业务线|团队|客群|客户群|客户群体|月份|容量|规格)",
         compact,
     ):
         return False
@@ -4495,6 +4499,8 @@ def _looks_like_self_contained_analysis_request(question: str) -> bool:
             "月度",
             "区域",
             "地区",
+            "容量",
+            "规格",
             "服务线",
             "团队",
         )

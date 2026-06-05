@@ -3018,8 +3018,29 @@ SEMANTIC_COLUMN_ALIASES = {
         "分类",
     ),
     "store": ("store", "shop", "branch", "门店", "店铺", "门店名称"),
-    "city": ("city", "city_name", "cityname", "city_nm", "citynm", "城市", "城市名称", "地市", "市"),
-    "region": ("region", "region_name", "area", "area_name", "province", "province_name", "地区", "地区名称", "区域", "区域名称", "大区", "省份"),
+    "city": ("city", "city_name", "cityname", "city_nm", "citynm", "cust_city", "dist_city", "城市", "城市名称", "地市", "市"),
+    "region": (
+        "region",
+        "region_name",
+        "region_nm",
+        "reg",
+        "reg_name",
+        "reg_nm",
+        "area",
+        "area_name",
+        "area_nm",
+        "province",
+        "province_name",
+        "district",
+        "district_name",
+        "dis_name",
+        "地区",
+        "地区名称",
+        "区域",
+        "区域名称",
+        "大区",
+        "省份",
+    ),
     "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "source", "origin", "来源", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
     "customer": ("customer", "cust", "client", "客户", "终端"),
     "employee": ("employee", "emp", "emp_name", "salesperson", "sales_rep", "salesperson_name", "销售员", "销售人员", "销售代表", "业务员", "业代", "员工"),
@@ -3083,6 +3104,16 @@ def _requested_dimension_concepts(question: str) -> list[str]:
     if _question_requests_time_series(question) and "month" not in requested:
         requested.append("month")
     return requested
+
+
+def _expanded_target_dimension_concepts(concepts: list[str]) -> list[str]:
+    expanded: list[str] = []
+    for concept in concepts:
+        if concept not in expanded:
+            expanded.append(concept)
+        if concept == "city" and "region" not in expanded:
+            expanded.append("region")
+    return expanded
 
 
 def _direct_target_dimension_concepts(question: str) -> list[str]:
@@ -3830,18 +3861,41 @@ def _extract_leading_single_month_scope(question: str) -> int | None:
     return None
 
 
+def _latin_alias_tokens_match_column(column_name: str, alias: str) -> bool:
+    alias_tokens = _latin_identifier_tokens(alias)
+    column_tokens = _latin_identifier_tokens(column_name)
+    if not alias_tokens or not column_tokens:
+        return False
+    if len(alias_tokens) == 1:
+        return alias_tokens[0] in column_tokens
+    window_size = len(alias_tokens)
+    return any(column_tokens[index : index + window_size] == alias_tokens for index in range(0, len(column_tokens) - window_size + 1))
+
+
+def _latin_identifier_tokens(value: str) -> list[str]:
+    with_camel_boundaries = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(value or ""))
+    return [token.lower() for token in re.split(r"[^A-Za-z0-9]+", with_camel_boundaries) if token]
+
+
 def _semantic_concept_column_score(column_name: str, concept: str) -> int:
     aliases = SEMANTIC_COLUMN_ALIASES.get(concept) or ()
     normalized_column = _normalize_column_token(column_name)
     if not normalized_column:
         return 0
     best = 0
+    if normalized_column == _normalize_column_token(concept):
+        best = max(best, 130)
     for alias in aliases:
         normalized_alias = _normalize_column_token(alias)
         if not normalized_alias:
             continue
         if normalized_column == normalized_alias:
             best = max(best, 120)
+        elif normalized_alias == "city":
+            if _latin_alias_tokens_match_column(column_name, alias):
+                best = max(best, 100)
+        elif len(normalized_alias) == 1 and any("\u4e00" <= char <= "\u9fff" for char in normalized_alias):
+            continue
         elif normalized_alias in normalized_column:
             best = max(best, 100)
     return best
@@ -4108,10 +4162,8 @@ def _asks_profit_margin(question: str) -> bool:
 
 
 def _find_semantic_column(df: pd.DataFrame, concept: str) -> str | None:
-    aliases = SEMANTIC_COLUMN_ALIASES.get(concept) or ()
     for column in df.columns:
-        normalized = _normalize_column_token(str(column))
-        if any(_normalize_column_token(alias) and _normalize_column_token(alias) in normalized for alias in aliases):
+        if _semantic_concept_column_score(str(column), concept) > 0:
             return str(column)
     return None
 
@@ -4491,7 +4543,7 @@ def _best_target_dimension_column(
     preferred_table: str,
     metric: str | None,
 ) -> tuple[str, str] | None:
-    target_concepts = _target_dimension_concepts(question)
+    target_concepts = _expanded_target_dimension_concepts(_target_dimension_concepts(question))
     if not target_concepts:
         return None
     for concept in target_concepts:
@@ -4516,7 +4568,7 @@ def _find_target_dimension_column(
     exclude: set[str] | None = None,
     concepts: list[str] | None = None,
 ) -> str | None:
-    target_concepts = concepts or _target_dimension_concepts(question)
+    target_concepts = _expanded_target_dimension_concepts(concepts or _target_dimension_concepts(question))
     if not target_concepts:
         return None
     excluded = set(exclude or set())
@@ -5365,11 +5417,12 @@ def _find_target_dimension_name_in_columns(
 ) -> str | None:
     excluded = set(exclude or set())
     candidates: list[tuple[int, int, str]] = []
+    concepts = _expanded_target_dimension_concepts([concept])
     for index, column in enumerate(columns):
         name = str(column)
         if name == metric or name in excluded:
             continue
-        score = _semantic_concept_column_score(name, concept)
+        score = max(_semantic_concept_column_score(name, item) for item in concepts)
         if score <= 0:
             continue
         if _dimension_looks_like_join_identifier(name):

@@ -2652,6 +2652,7 @@ def _explicit_dimension_column(compact: str, available_columns: list[str]) -> st
         (("客户", "顾客"), ("customer", "cust", "client", "buyer", "客户", "顾客")),
         (("城市", "地区", "区域", "地域"), ("city", "region", "area", "province", "城市", "地区", "区域")),
         (("门店", "店铺", "门店"), ("store", "shop", "门店", "店铺")),
+        (("容量", "规格", "包装规格"), ("capacity", "volume", "size", "规格", "容量")),
         (("品类", "类别", "类目"), ("category", "ctg", "type", "品类", "类别")),
         (("月份", "月度", "按月", "各月", "每月", "每个月"), ("month", "月份", "月度")),
         (("团队", "小组", "部门"), ("team", "group", "department", "团队", "小组", "部门")),
@@ -2679,6 +2680,7 @@ def _explicit_grouped_dimension_column(compact: str, available_columns: list[str
         ),
         (("各客户", "每个客户", "按客户", "各顾客", "每个顾客", "按顾客"), ("customer", "cust", "client", "buyer", "客户", "顾客")),
         (("各产品", "每个产品", "按产品", "各商品", "每个商品", "按商品"), ("product", "sku", "item", "goods", "产品", "商品")),
+        (("各容量", "每个容量", "按容量", "各规格", "每个规格", "按规格"), ("capacity", "volume", "size", "规格", "容量")),
         (("各品类", "每个品类", "按品类", "各类别", "每个类别", "按类别"), ("category", "ctg", "type", "品类", "类别")),
         (("各月", "每月", "每个月", "按月", "按月份"), ("month", "月份", "月度")),
     ]
@@ -2701,6 +2703,7 @@ def _explicit_rank_target_dimension_column(compact: str, available_columns: list
         ("product", ("产品", "商品", "sku", "SKU"), ("product", "sku", "item", "goods", "产品", "商品")),
         ("category", ("品类", "类别", "类目"), ("category", "ctg", "type", "品类", "类别")),
         ("store", ("门店", "店铺"), ("store", "shop", "门店", "店铺")),
+        ("capacity", ("容量", "规格", "包装规格"), ("capacity", "volume", "size", "规格", "容量")),
     ]
     rank_signals = ("最高", "最低", "最多", "最少", "最大", "最小", "最集中", "集中", "排名", "排行", "Top", "top", "前")
     candidates: list[tuple[int, str, tuple[str, ...]]] = []
@@ -2785,6 +2788,7 @@ def _explicit_dimension_concept(compact: str) -> str:
         (("城市", "地区", "区域", "地域"), "city"),
         (("客户", "顾客"), "customer"),
         (("产品", "商品", "sku", "SKU"), "product"),
+        (("容量", "规格", "包装规格"), "capacity"),
         (("品类", "类别", "类目"), "category"),
         (("月份", "月度", "按月", "各月", "每月", "每个月"), "month"),
         (("团队", "小组", "部门"), "team"),

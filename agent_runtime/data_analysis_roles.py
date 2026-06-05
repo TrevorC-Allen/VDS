@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+import re
 from typing import Any
 
 from agent_runtime.agent_result import AgentResult
@@ -885,7 +886,29 @@ DIMENSION_REPAIR_ALIASES = {
         "分类",
     ),
     "store": ("store", "shop", "branch", "门店", "店铺", "门店名称"),
-    "city": ("city", "城市", "市"),
+    "city": ("city", "city_name", "cityname", "cust_city", "dist_city", "城市", "城市名称", "地市", "市"),
+    "region": (
+        "region",
+        "region_name",
+        "region_nm",
+        "reg",
+        "reg_name",
+        "reg_nm",
+        "area",
+        "area_name",
+        "area_nm",
+        "province",
+        "province_name",
+        "district",
+        "district_name",
+        "dis_name",
+        "地区",
+        "地区名称",
+        "区域",
+        "区域名称",
+        "大区",
+        "省份",
+    ),
     "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "source", "origin", "来源", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
     "customer": ("customer", "cust", "client", "客户", "终端"),
     "month": ("month", "month_id", "month_code", "stat_month", "ym", "year_month", "biz_month", "period", "month_period", "period_month", "年月", "月份", "月度", "业务月份", "统计月份", "期间"),
@@ -1041,10 +1064,11 @@ def _dimension_repair_candidates(logic_payload: dict[str, Any], action: dict[str
 
 def _best_dimension_repair_candidate(requested_concepts: list[str], candidates: list[str]) -> str | None:
     best: tuple[int, int, str] | None = None
+    concepts = _expanded_dimension_repair_concepts(requested_concepts)
     for index, candidate in enumerate(candidates):
         scores = [
             _dimension_concept_score(candidate, concept)
-            for concept in requested_concepts
+            for concept in concepts
             if _dimension_concept_score(candidate, concept) > 0
         ]
         if not scores:
@@ -1055,6 +1079,16 @@ def _best_dimension_repair_candidate(requested_concepts: list[str], candidates: 
         if best is None or (score, -index) > (best[0], -best[1]):
             best = (score, index, candidate)
     return best[2] if best is not None else None
+
+
+def _expanded_dimension_repair_concepts(concepts: list[str]) -> list[str]:
+    expanded: list[str] = []
+    for concept in concepts:
+        if concept not in expanded:
+            expanded.append(concept)
+        if concept == "city" and "region" not in expanded:
+            expanded.append("region")
+    return expanded
 
 
 def _dimension_concept_score(column_name: str, concept: str) -> int:
@@ -1069,9 +1103,28 @@ def _dimension_concept_score(column_name: str, concept: str) -> int:
             continue
         if normalized_column == normalized_alias:
             best = max(best, 120)
+        elif normalized_alias == "city":
+            if _latin_alias_tokens_match_column(column_name, alias):
+                best = max(best, 100)
         elif normalized_alias in normalized_column:
             best = max(best, 100)
     return best
+
+
+def _latin_alias_tokens_match_column(column_name: str, alias: str) -> bool:
+    alias_tokens = _latin_identifier_tokens(alias)
+    column_tokens = _latin_identifier_tokens(column_name)
+    if not alias_tokens or not column_tokens:
+        return False
+    if len(alias_tokens) == 1:
+        return alias_tokens[0] in column_tokens
+    window_size = len(alias_tokens)
+    return any(column_tokens[index : index + window_size] == alias_tokens for index in range(0, len(column_tokens) - window_size + 1))
+
+
+def _latin_identifier_tokens(value: str) -> list[str]:
+    with_camel_boundaries = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(value or ""))
+    return [token.lower() for token in re.split(r"[^A-Za-z0-9]+", with_camel_boundaries) if token]
 
 
 def _same_dimension_field(left: str, right: str) -> bool:

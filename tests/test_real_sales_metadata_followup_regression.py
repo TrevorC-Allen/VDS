@@ -207,6 +207,71 @@ class RealSalesMetadataFollowupRegressionTest(unittest.TestCase):
         self.assertIn("1L", str(capacity.get("answer") or ""))
         self.assertNotIn("城市是1L", str(capacity.get("answer") or ""))
 
+    def test_service_city_sales_after_overview_uses_region_field_not_capacity_without_city_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fact_path = _write_region_capacity_sales_csv(root)
+            monthly_path = _write_monthly_customer_table_with_market_level(root)
+            metadata_path = _write_sales_metadata_csv(root)
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_datasets(
+                [fact_path, monthly_path, metadata_path],
+                original_filenames=["v_trd_dist_ord_dtl.csv", "终端客户月度维表.csv", "数据表结构&表说明.csv"],
+            )
+            dataset_id = str(upload["dataset_id"])
+
+            overview = service.respond_to_message(
+                dataset_id=dataset_id,
+                question="先做数据概览",
+                execution_mode="dual",
+            )
+            conversation_id = str(overview["conversation_id"])
+            table_view = service.respond_to_message(
+                dataset_id=dataset_id,
+                conversation_id=conversation_id,
+                question="看一下这个表，v_trd_dist_ord_dtl.csv",
+                execution_mode="dual",
+            )
+            city = service.respond_to_message(
+                dataset_id=dataset_id,
+                conversation_id=conversation_id,
+                question="哪个城市销售额最大",
+                execution_mode="dual",
+            )
+            capacity = service.respond_to_message(
+                dataset_id=dataset_id,
+                conversation_id=conversation_id,
+                question="哪个容量销售额最高",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(overview["success"], overview.get("errors"))
+        self.assertTrue(table_view["success"], table_view.get("errors"))
+        self.assertTrue(city["success"], city.get("errors"))
+        self.assertEqual("ranking", city["logic_form"]["operation"])
+
+        params = city["logic_form"]["parameters"]
+        self.assertEqual("v_trd_dist_ord_dtl", params.get("table"))
+        self.assertEqual(["v_trd_dist_ord_dtl"], params.get("source_tables"))
+        self.assertEqual("reg_name", params.get("dimension"))
+        self.assertIn(params.get("metric"), {"ord_amt", "sign_amt"})
+        self.assertNotEqual("capacity", params.get("dimension"))
+        self.assertEqual(["reg_name", params.get("metric")], city["result"]["columns"])
+        self.assertEqual("区域B", city["result"]["rows"][0]["reg_name"])
+
+        city_answer = str(city.get("answer") or "")
+        self.assertIn("区域B", city_answer)
+        self.assertNotIn("500mL", city_answer)
+        self.assertNotIn("1L", city_answer)
+        self.assertNotIn("容量是500mL", city_answer)
+
+        self.assertTrue(capacity["success"], capacity.get("errors"))
+        capacity_params = capacity["logic_form"]["parameters"]
+        self.assertEqual("capacity", capacity_params.get("dimension"))
+        self.assertIn(capacity_params.get("metric"), {"ord_amt", "sign_amt"})
+        self.assertEqual(["capacity", capacity_params.get("metric")], capacity["result"]["columns"])
+        self.assertEqual("500mL", capacity["result"]["rows"][0]["capacity"])
+
     def test_top_result_gap_followup_action_binds_previous_top_set(self) -> None:
         first_response = _execute_response_with_fact_table(
             "按 cust_name 汇总 sign_amt，返回 Top3。",
@@ -611,6 +676,45 @@ def _city_capacity_sales_table() -> pd.DataFrame:
 def _write_city_capacity_sales_csv(root: Path) -> Path:
     path = root / "sales_fact.csv"
     _city_capacity_sales_table().to_csv(path, index=False)
+    return path
+
+
+def _region_capacity_sales_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"dist_ord_item_id": "A1", "spec_desc": "1*24*500mL", "capacity": "500mL", "reg_name": "区域A", "ord_amt": 1000.0, "sign_amt": 900.0, "sign_time": "2026-01-15"},
+            {"dist_ord_item_id": "A2", "spec_desc": "1*12*1L", "capacity": "1L", "reg_name": "区域B", "ord_amt": 2000.0, "sign_amt": 1800.0, "sign_time": "2026-01-16"},
+            {"dist_ord_item_id": "A3", "spec_desc": "1*24*500mL", "capacity": "500mL", "reg_name": "区域B", "ord_amt": 5000.0, "sign_amt": 4500.0, "sign_time": "2026-02-15"},
+        ]
+    )
+
+
+def _write_region_capacity_sales_csv(root: Path) -> Path:
+    path = root / "v_trd_dist_ord_dtl.csv"
+    _region_capacity_sales_table().to_csv(path, index=False)
+    return path
+
+
+def _write_monthly_customer_table_with_market_level(root: Path) -> Path:
+    path = root / "终端客户月度维表.csv"
+    pd.DataFrame(
+        [
+            {"终端客户编码": "C001", "市场层级": "核心市场", "区域": "区域A"},
+            {"终端客户编码": "C002", "市场层级": "成长市场", "区域": "区域B"},
+        ]
+    ).to_csv(path, index=False)
+    return path
+
+
+def _write_sales_metadata_csv(root: Path) -> Path:
+    path = root / "数据表结构&表说明.csv"
+    pd.DataFrame(
+        [
+            {"table_name": FACT_TABLE, "field_name": "reg_name", "field_desc": "区域名称"},
+            {"table_name": FACT_TABLE, "field_name": "capacity", "field_desc": "包装容量"},
+            {"table_name": FACT_TABLE, "field_name": "ord_amt", "field_desc": "订单金额"},
+        ]
+    ).to_csv(path, index=False)
     return path
 
 
