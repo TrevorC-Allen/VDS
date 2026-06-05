@@ -574,6 +574,33 @@ def _coerce_contribution_payload(value: Any, *, expected: Mapping[str, Any] | No
     }
 
 
+def _expected_contribution_payload_from_actual(contract: TaskExecutionContract, actual: Any) -> dict[str, Any] | None:
+    actual_payload = _coerce_contribution_payload(actual)
+    if actual_payload is None:
+        return None
+    actual_items = [item for item in actual_payload.get("items") or [] if isinstance(item, Mapping)]
+    actual_by_value = {str(item.get("value")): item for item in actual_items if item.get("value") not in (None, "")}
+    referent_values = [str(value) for value in contract.referent_values or [] if value not in (None, "")]
+    values = referent_values or [str(item.get("value")) for item in actual_items if item.get("value") not in (None, "")]
+    if not values:
+        return None
+    items: list[dict[str, Any]] = []
+    for value in values:
+        actual_item = actual_by_value.get(value) or {}
+        item: dict[str, Any] = {"value": value}
+        for key in ("metric_value", "total_metric_value", "share"):
+            if actual_item.get(key) is not None:
+                item[key] = actual_item.get(key)
+        items.append(item)
+    return {
+        "task_family": "contribution_followup" if contract.requires_previous_artifact else "contribution",
+        "dimension": str(contract.referent_dimension or contract.dimension or actual_payload.get("dimension") or ""),
+        "metric": str(contract.metric or actual_payload.get("metric") or ""),
+        "total_metric_value": actual_payload.get("total_metric_value"),
+        "items": items,
+    }
+
+
 def _coerce_contribution_item(item: Mapping[str, Any], *, expected: Mapping[str, Any]) -> dict[str, Any]:
     dimension = str(expected.get("dimension") or "")
     metric = str(expected.get("metric") or "")
@@ -682,6 +709,9 @@ def _build_missing_expected_result_oracle_payload(
         return None, issue_metadata
     if family in {"contribution", "share", "contribution_followup"}:
         if not contract.verification_rules.get("combined_share_only"):
+            contribution_payload = _expected_contribution_payload_from_actual(contract, actual)
+            if contribution_payload is not None:
+                return contribution_payload, issue_metadata
             return None, issue_metadata
         share = _combined_share_value(actual)
         if share is None:

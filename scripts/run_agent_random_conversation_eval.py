@@ -1209,6 +1209,11 @@ def _random_question_for_capability(scenario: ConversationScenario, plan: TurnPl
             f"比较 Top {dimension}之间的差距。",
             f"前 {top_n} 名{dimension}之间差距有多大？",
         ],
+        "share_followup": [
+            f"这些 Top {dimension}的{metric}分别占总{metric}多少？",
+            f"Top {top_n} {dimension}的{metric}贡献占比是多少？",
+            f"刚才这些 Top {dimension}各自的{metric}份额是多少？",
+        ],
         "derived_metric_followup": [
             f"{derived_metric}也重新看一下。",
             f"按{dimension}看{derived_metric}排名前 {top_n}。",
