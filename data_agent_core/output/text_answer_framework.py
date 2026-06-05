@@ -1134,7 +1134,9 @@ def _ranking_direction(context: _FrameContext) -> str:
 def _display_dimension_label(column: str | None) -> str:
     text = str(column or "对象").strip()
     lowered = text.lower()
-    if any(token in text for token in ("城市", "city")) or "city" in lowered:
+    if any(token in text for token in ("容量", "规格")) or any(token in lowered for token in ("capacity", "spec")):
+        return "容量"
+    if any(token in text for token in ("城市", "地市")) or any(token in lowered for token in ("city_name", "citynm")) or lowered == "city":
         return "城市"
     if any(token in text for token in ("客户", "customer")) or "customer" in lowered:
         return "客户"
