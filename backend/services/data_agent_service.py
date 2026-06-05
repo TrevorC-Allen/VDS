@@ -4030,6 +4030,12 @@ def _references_analysis_focus_set(question: str, context: dict[str, Any]) -> bo
             token in compact
             for token in (
                 f"这些{label}",
+                f"这些Top{label}",
+                f"这些top{label}",
+                f"这些TOP{label}",
+                f"Top{label}",
+                f"top{label}",
+                f"TOP{label}",
                 f"这几个{label}",
                 f"上述{label}",
                 f"这3个{label}",

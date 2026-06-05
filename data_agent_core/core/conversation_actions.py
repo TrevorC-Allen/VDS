@@ -1470,7 +1470,7 @@ def _generic_ranked_entity_share_action(context: Mapping[str, Any], compact: str
     metric = _first_text(_explicit_metric_column(compact, available), scope.get("metric"), params.get("metric"), logic.get("metric"), _explicit_metric_concept(compact), "核心指标")
     if not dimension or not metric:
         return {}
-    limit = _extract_limit_from_compact(compact, default=1)
+    limit = _ranked_entity_share_limit(compact=compact, context=context, dimension=dimension)
     label = _dimension_question_label(dimension)
     metric_label = _metric_question_label(metric)
     share_column = f"{metric}_share" if metric and metric != "核心指标" else "share"
@@ -1485,6 +1485,24 @@ def _generic_ranked_entity_share_action(context: Mapping[str, Any], compact: str
     )
     action["capability_family"] = "share_followup"
     return action
+
+
+def _ranked_entity_share_limit(*, compact: str, context: Mapping[str, Any], dimension: str) -> int:
+    explicit_limit = _extract_limit_from_compact(compact, default=0)
+    if explicit_limit:
+        return explicit_limit
+    references_set = any(token in compact for token in ("这些", "它们", "上述", "分别", "各自", "每个", "各个", "Top对象", "top对象"))
+    if references_set:
+        for focus_set in _context_focus_sets(context):
+            if str(focus_set.get("dimension") or "") != dimension:
+                continue
+            values = focus_set.get("values")
+            if isinstance(values, list) and values:
+                return len(values)
+            limit = _positive_int(focus_set.get("limit"))
+            if limit:
+                return limit
+    return 1
 
 
 def _asks_extreme_review(compact: str) -> bool:

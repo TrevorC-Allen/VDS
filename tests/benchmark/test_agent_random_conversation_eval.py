@@ -943,6 +943,29 @@ class AgentRandomConversationEvalTest(unittest.TestCase):
             for token in OLD_DEMO_QUESTION_TOKENS:
                 self.assertNotIn(token, joined)
 
+    def test_share_followup_generation_preserves_share_intent(self) -> None:
+        share_tokens = ("占比", "占总", "贡献", "份额", "比例")
+        scenarios = [
+            item
+            for item in scenario_family_scenarios()
+            if item.scenario_family in {"single_file_overview_topn_gap", "group_comparison_share"}
+        ]
+
+        self.assertEqual(
+            ["single_file_overview_topn_gap", "group_comparison_share"],
+            [item.scenario_family for item in scenarios],
+        )
+        for scenario in scenarios:
+            turns = simulate_user_turns(scenario, seed=20260604, max_followups=4)
+            share_turns = [turn for turn in turns if turn.capability_family == "share_followup"]
+
+            self.assertEqual(1, len(share_turns), scenario.scenario_family)
+            self.assertEqual("top_k_share", share_turns[0].required_operation)
+            self.assertTrue(
+                any(token in share_turns[0].question for token in share_tokens),
+                (scenario.scenario_family, share_turns[0].question),
+            )
+
     def test_llm_simulator_prompt_uses_capability_plan_not_seed_question_templates(self) -> None:
         scenario = next(item for item in builtin_scenarios() if item.scenario_id == "service_region_agent")
         client = CapturingUserSimulatorClient()
@@ -2125,6 +2148,36 @@ class AgentRandomConversationEvalTest(unittest.TestCase):
         self.assertEqual("customer_id", response["logic_form"]["parameters"]["dimension"])
         self.assertEqual("amount", response["logic_form"]["parameters"]["metric"])
         self.assertEqual(1, response["logic_form"]["parameters"]["limit"])
+
+    def test_ranked_set_share_followup_after_gap_uses_top_k_share(self) -> None:
+        scenario = next(item for item in scenario_family_scenarios() if item.scenario_family == "group_comparison_share")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            file_paths = _scenario_file_paths(scenario, root)
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+            upload = service.upload_datasets(file_paths, original_filenames=[path.name for path in file_paths])
+            first = service.respond_to_message(
+                dataset_id=str(upload["dataset_id"]),
+                question="按服务线分组看销售额表现。",
+                execution_mode="dual",
+            )
+            service.respond_to_message(
+                conversation_id=str(first["conversation_id"]),
+                question="前 3 名城市之间差距有多大？",
+                execution_mode="dual",
+            )
+            response = service.respond_to_message(
+                conversation_id=str(first["conversation_id"]),
+                question="这些 Top 城市的销售额分别占总销售额多少？",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(response["success"], response.get("verification"))
+        self.assertEqual("top_k_share", response["logic_form"]["operation"])
+        self.assertEqual("city", response["logic_form"]["parameters"]["dimension"])
+        self.assertEqual("sales", response["logic_form"]["parameters"]["metric"])
+        self.assertEqual(["深圳", "上海", "北京"], response["logic_form"]["parameters"]["referent_values"])
 
     def test_ranked_set_metric_display_uses_aggregation_not_reranking(self) -> None:
         scenario = next(item for item in builtin_scenarios() if item.scenario_id == "regional_performance_agent")
