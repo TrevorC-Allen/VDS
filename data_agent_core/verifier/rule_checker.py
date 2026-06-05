@@ -89,6 +89,7 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
     if isinstance(contract, TaskExecutionContract):
         contract = _clear_overview_referent_requirements(contract)
         contract = _inherit_combined_share_flag(contract, question_contract)
+        contract = _inherit_derived_metric_payload(contract, getattr(plan.logic_form, "task_contract", None))
         if _question_contract_is_more_specific(contract, question_contract):
             return question_contract
         return contract
@@ -128,6 +129,7 @@ def _task_contract_from_plan(plan: AnalysisPlan | None, user_question: UserQuest
         )
         payload_contract = _clear_overview_referent_requirements(payload_contract)
         payload_contract = _inherit_combined_share_flag(payload_contract, question_contract)
+        payload_contract = _inherit_derived_metric_payload(payload_contract, getattr(plan.logic_form, "task_contract", None))
         if _question_contract_is_more_specific(payload_contract, question_contract):
             return question_contract
         return payload_contract
@@ -209,6 +211,13 @@ def _question_contract_is_more_specific(
         return True
     if current.task_family == "topn" and current.required_n is None and question_contract.required_n is not None:
         return True
+    if (
+        not current.metric_formula
+        and question_contract.metric_formula
+        and current.metric == question_contract.metric
+        and current.dimension == question_contract.dimension
+    ):
+        return True
     if not current.required_output_columns and question_contract.required_output_columns:
         return True
     if current.task_family == "topn" and question_contract.join_scope and not current.join_scope:
@@ -226,6 +235,43 @@ def _inherit_combined_share_flag(
         return current
     if question_contract.verification_rules.get("combined_share_only"):
         current.verification_rules["combined_share_only"] = True
+    return current
+
+
+def _inherit_derived_metric_payload(current: TaskExecutionContract | None, payload: Any) -> TaskExecutionContract | None:
+    if current is None or not isinstance(payload, dict):
+        return current
+    if current.metric_formula or not payload.get("metric_formula"):
+        return current
+    payload_metric = str(payload.get("metric") or "")
+    payload_dimension = str(payload.get("dimension") or "")
+    if payload_metric and current.metric and payload_metric != str(current.metric):
+        return current
+    if payload_dimension and current.dimension and payload_dimension != str(current.dimension):
+        return current
+    current.derived_metric_name = payload.get("derived_metric_name") or current.derived_metric_name
+    current.metric_formula = payload.get("metric_formula") or current.metric_formula
+    current.numerator_column = payload.get("numerator_column") or current.numerator_column
+    current.denominator_column = payload.get("denominator_column") or current.denominator_column
+    for element in ("derived_metric_name", "metric_formula", "numerator_column", "denominator_column"):
+        if element not in current.required_answer_elements:
+            current.required_answer_elements.append(element)
+    current.verification_rules.update(
+        {
+            key: value
+            for key, value in {
+                "derived_metric_name": current.derived_metric_name,
+                "metric_formula": current.metric_formula,
+                "numerator_column": current.numerator_column,
+                "denominator_column": current.denominator_column,
+                "requires_derived_metric_formula": True,
+                "requires_numerator_column": True,
+                "requires_denominator_column": True,
+                "requires_inherited_formula_on_followup": True,
+            }.items()
+            if value
+        }
+    )
     return current
 
 

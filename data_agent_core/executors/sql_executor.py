@@ -317,7 +317,7 @@ def _metric_spec_aggregation_with_derived_sql(
     values = list(values or [])
     expressions = [_metric_spec_sql_expression(spec) for spec in specs]
     derived_name = str(derived_metric.get("name") or "ratio")
-    expressions.append(f"{_derived_ratio_sql_expression(derived_metric)} AS {_quote_identifier(derived_name)}")
+    expressions.append(f"{_derived_metric_sql_expression(derived_metric)} AS {_quote_identifier(derived_name)}")
     if dimension:
         dimension_name = str(dimension)
         q_dimension = _quote_identifier(dimension_name)
@@ -827,7 +827,7 @@ def _filtered_metric_ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -
     if isinstance(derived_metric, dict) and derived_metric:
         metric_name = str(derived_metric.get("name") or "ratio")
         rows = conn.execute(
-            f"SELECT {_quote_identifier(dimension)}, {_derived_ratio_sql_expression(derived_metric)} AS value "
+            f"SELECT {_quote_identifier(dimension)}, {_derived_metric_sql_expression(derived_metric)} AS value "
             f"FROM analysis_table{where_sql} GROUP BY {_quote_identifier(dimension)} ORDER BY value {sort_order} LIMIT ?",
             values + [limit],
         ).fetchall()
@@ -873,7 +873,7 @@ def _grouped_child_ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> 
     where_sql, values = _with_candidate_topn_filter_sql(where_sql, values, params)
     if isinstance(derived_metric, dict) and derived_metric:
         metric_name = str(derived_metric.get("name") or "ratio")
-        metric_expr = _derived_ratio_sql_expression(derived_metric)
+        metric_expr = _derived_metric_sql_expression(derived_metric)
     elif aggregation == "count" or metric is None:
         metric_name = "count"
         metric_expr = "COUNT(*)"
@@ -1034,7 +1034,7 @@ LIMIT ?
     sort_order = "ASC" if str(candidate_filter.get("sort_order") or "desc") == "asc" else "DESC"
     limit = int(candidate_filter.get("limit") or 1)
     if isinstance(derived_metric, dict) and derived_metric:
-        candidate_expr = _derived_ratio_sql_expression(derived_metric)
+        candidate_expr = _derived_metric_sql_expression(derived_metric)
     elif aggregation == "count" or metric is None:
         candidate_expr = "COUNT(*)"
     elif aggregation in {"nunique", "distinct_count"}:
@@ -1153,7 +1153,7 @@ def _grouped_derived_ratio_sql(
     metric_name = str(derived_metric.get("name") or "ratio")
     q_dimension = _quote_identifier(dimension)
     rows = conn.execute(
-        f"SELECT {q_dimension}, {_derived_ratio_sql_expression(derived_metric)} AS value "
+        f"SELECT {q_dimension}, {_derived_metric_sql_expression(derived_metric)} AS value "
         f"FROM analysis_table{where_sql} GROUP BY {q_dimension}",
         values,
     ).fetchall()
@@ -1170,22 +1170,30 @@ def _derived_ratio_sql(
     values = values or []
     metric_name = str(derived_metric.get("name") or "ratio")
     value = conn.execute(
-        f"SELECT {_derived_ratio_sql_expression(derived_metric)} FROM analysis_table{where_sql}",
+        f"SELECT {_derived_metric_sql_expression(derived_metric)} FROM analysis_table{where_sql}",
         values,
     ).fetchone()[0]
     return {metric_name: float(value or 0.0)}
 
 
-def _derived_ratio_sql_expression(derived_metric: dict[str, Any]) -> str:
+def _derived_metric_sql_expression(derived_metric: dict[str, Any]) -> str:
     numerator = str(derived_metric.get("numerator") or "")
     denominator = str(derived_metric.get("denominator") or "")
     if not numerator or not denominator:
-        raise ValueError("Derived ratio metric requires numerator and denominator columns.")
+        raise ValueError("Derived metric requires numerator and denominator columns.")
     q_numerator = _quote_identifier(numerator)
     q_denominator = _quote_identifier(denominator)
+    if _derived_metric_is_product(derived_metric):
+        return f"COALESCE(SUM(CAST({q_numerator} AS REAL) * CAST({q_denominator} AS REAL)), 0)"
     denominator_sum = f"COALESCE(SUM(CAST({q_denominator} AS REAL)), 0)"
     numerator_sum = f"COALESCE(SUM(CAST({q_numerator} AS REAL)), 0)"
     return f"CASE WHEN {denominator_sum} = 0 THEN 0.0 ELSE {numerator_sum} / {denominator_sum} END"
+
+
+def _derived_metric_is_product(derived_metric: dict[str, Any]) -> bool:
+    operator = str(derived_metric.get("operator") or derived_metric.get("aggregation") or "").strip().lower()
+    formula = str(derived_metric.get("formula") or "")
+    return operator in {"multiply", "product", "product_sum", "sum_product"} or "*" in formula
 
 
 def _sql_agg_func(aggregation: str) -> str:

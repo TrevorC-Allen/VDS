@@ -14,6 +14,7 @@ TaskFamily = Literal[
     "topn",
     "gap",
     "trend",
+    "aggregation",
     "contribution",
     "share",
     "contribution_followup",
@@ -119,11 +120,13 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
         )
     ):
         family = "drilldown_followup"
-    if family == "unknown":
-        return None
     metric = _first_text(params.get("metric"), _get(logic_form, "metric"), output_format.get("metric"))
     derived_metadata = _derived_metric_metadata(params)
     dimension = explicit_dimension
+    if family == "unknown" and operation == "aggregation" and dimension and _derived_metric_is_product(params):
+        family = "aggregation"
+    if family == "unknown":
+        return None
     if family == "trend":
         dimension = _first_text(params.get("time_column"), params.get("time_dimension"), dimension)
     time_dimension = dimension if family == "trend" else None
@@ -517,7 +520,7 @@ def _required_columns(
         return columns
     for value in (dimension, required_metric, output_format.get("entity_field"), output_format.get("metric")):
         text = str(value or "").strip()
-        if text and text not in columns and family in {"topn", "gap", "trend", "drilldown_followup"}:
+        if text and text not in columns and family in {"topn", "gap", "trend", "aggregation", "drilldown_followup"}:
             columns.append(text)
     return columns
 
@@ -529,6 +532,8 @@ def _required_answer_elements(family: TaskFamily) -> list[str]:
         return ["comparison_baseline", "gap_value"]
     if family == "trend":
         return ["time_grain", "metric_series"]
+    if family == "aggregation":
+        return ["metric_value"]
     if family in {"contribution", "share", "contribution_followup"}:
         return ["referent_value", "metric_value", "total_metric_value", "share"]
     if family == "drilldown_followup":
@@ -617,6 +622,13 @@ def _derived_metric_metadata(params: dict[str, Any]) -> dict[str, str]:
         }.items()
         if value
     }
+
+
+def _derived_metric_is_product(params: dict[str, Any]) -> bool:
+    derived = _dict(params.get("derived_metric"))
+    operator = str(derived.get("operator") or derived.get("aggregation") or "").strip().lower()
+    formula = str(params.get("metric_formula") or derived.get("formula") or "")
+    return operator in {"multiply", "product", "product_sum", "sum_product"} or "*" in formula
 
 
 def _verify_derived_metric_contract(
