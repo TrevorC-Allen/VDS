@@ -82,7 +82,7 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
         return _detail_lookup(_analysis_dataframe(context, params), params)
     if op == "filtering":
         return _filtering(_analysis_dataframe(context, params), params)
-    if op == "aggregation":
+    if op in {"aggregation", "trend", "time_series"}:
         return _aggregation_dataframe(_analysis_dataframe(context, params), filters, params)
     if op == "ranking":
         return _ranking_dataframe(_analysis_dataframe(context, params), params, filters)
@@ -654,6 +654,7 @@ def _aggregation_dataframe(data: pd.DataFrame, filters: dict[str, Any], params: 
     source_data = data
     data = _apply_dataframe_filters(data, filters)
     data = _apply_candidate_topn_filter(data, params, source_data=source_data)
+    data = _apply_time_bucket(data, params)
     derived_metric = params.get("derived_metric")
     metric_specs = _metric_specs(params.get("metric_specs"))
     if isinstance(derived_metric, dict) and derived_metric:
@@ -1095,6 +1096,20 @@ def _aggregate_grouped(data: pd.DataFrame, dimension: str, metric: str | None, a
     working[metric] = pd.to_numeric(working[metric], errors="coerce")
     result = working.groupby(dimension, dropna=True)[metric].agg(aggregation).reset_index()
     return result.to_dict(orient="records")
+
+
+def _apply_time_bucket(data: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
+    if str(params.get("time_bucket") or "") != "month":
+        return data
+    dimension = str(params.get("dimension") or "")
+    source = str(params.get("source_time_field") or params.get("time_column") or "")
+    if dimension != "month" or not source or source not in data.columns:
+        return data
+    working = data.copy()
+    parsed = pd.to_datetime(working[source], errors="coerce")
+    working[dimension] = parsed.dt.to_period("M").astype(str)
+    working = working[parsed.notna()]
+    return working
 
 
 def _aggregate_series(data: pd.DataFrame, metric: str | None, aggregation: str) -> Any:

@@ -70,6 +70,94 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-06-05 13:15 CST
+
+### 本次目标
+
+建设 Retail 单 CSV / UK retail Product Floor 的 F4 monthly trend paraphrase 回归，修复按月 / monthly / by month 问法落到原始 `InvoiceDate` 行或 detail lookup 的问题；仅处理 F4，不修 F2/F5/F6/F7，不改前端、Microsoft、大 benchmark/report 或销售事实表，不 push。
+
+### 修改文件
+
+- data_agent_core/core/intent_parser.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/output/text_answer_framework.py
+- data_agent_core/task_execution_contracts.py
+- data_agent_core/verifier/rule_checker.py
+- tests/test_retail_cli_product_floor.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `tests/test_retail_cli_product_floor.py`：把当前 Product Floor 自动回归切到 F4，扩展 10 个 F4 monthly trend 代表问法，并新增硬断言：`InvoiceDate` 必须按 month bucket 聚合，结果列为 `month + Quantity/Sales`，销售额问法必须保留 `Sales = Quantity * UnitPrice`，不得返回 raw `InvoiceDate` 行或缺字段模板。
+- `data_agent_core/core/intent_parser.py`：识别显式月度时间桶问法（中文按月/月度/每月/月份和英文 monthly/by month/per month），生成 `task_type=trend`、`operation=aggregation`、`dimension=month`、`time_bucket=month` 的兼容契约；同时避开 ranking / result ranking / growth ranking，防止劫持月度 TopN 或极值追问。
+- `data_agent_core/executors/pandas_executor.py`：在聚合执行前按 `source_time_field/time_column` 派生 `month = YYYY-MM`，再按月聚合，避免把原始 `InvoiceDate` 当维度输出。
+- `data_agent_core/executors/sql_executor.py`：补齐 SQL 路径的 month bucket 聚合，支持普通指标和派生 Sales 公式按月汇总。
+- `data_agent_core/task_execution_contracts.py`、`data_agent_core/verifier/rule_checker.py`：让 `task_type=trend` 和显式月桶 aggregation 保留 trend family / time_dimension 语义，避免 verifier 选择较弱的 aggregation contract。
+- `data_agent_core/output/text_answer_framework.py`：趋势答案显式带出“趋势”语义。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_retail_cli_product_floor.py -k f4 --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_retail_cli_product_floor.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_real_sales_metadata_followup_regression.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_derived_metric_followup_inherits_formula.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/benchmark/test_agent_random_conversation_eval.py --tb=short`
+- `git diff --check`
+- 使用真实 `/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx` 通过 `DataAgentService` 重放 6 个 F4 代表问法，响应保存到 `/tmp/vds_retail_f4_monthly_trend_20260605`。
+
+### 测试结果
+
+- F4 focused regression 先红后绿：新增硬断言后 10 个 F4 variants 失败；实现后 `12 passed, 38 deselected, 1 xfailed, 2 xpassed`。
+- Product Floor suite 通过：`26 passed, 5 xfailed, 22 xpassed`，F1 Country Quantity TopN 和 F3 Sales/Revenue by Country 未回退。
+- `tests/test_real_sales_metadata_followup_regression.py` 通过：`15 passed, 45 warnings, 2 subtests passed`。
+- `tests/test_derived_metric_followup_inherits_formula.py` 通过：`9 passed, 1 warning, 6 subtests passed`。
+- `tests/benchmark/test_agent_random_conversation_eval.py` 通过：`156 passed`。
+- `git diff --check` 通过。
+- 真实 UK retail F4 service replay 通过：6/6 variants 均返回 `dimension=month`、`time_bucket=month`、`time_column=InvoiceDate`；Quantity 问法按月汇总 Quantity，Sales/revenue 问法按月汇总 `Sales = Quantity * UnitPrice`；结果不含 raw `InvoiceDate` 行，不返回缺字段 / 口径 / 维表模板。
+
+### 遗留问题
+
+- F2 share/contribution、F5 Top3 countries monthly trend、F6 RFM segmentation、F7 data quality 仍作为 Product Floor 后续 family 分阶段硬化；本轮没有修复这些 family。
+- 本轮未做前端浏览器 smoke、真实 LLM provider 回归或大 benchmark/report。
+- 工作区存在本轮未认领的无关 untracked 文件：`scripts/run_cli_data_agent_chat.py`、`tests/test_cli_data_agent_chat.py`；本轮不 stage、不修改、不删除。
+
+### 是否影响主流程
+
+是。影响 Retail / 通用上传表的时间序列解析、Pandas / SQL 聚合执行和语义 contract，使显式月度趋势问法可以通过确定性执行器返回按月聚合结果。
+
+### 是否涉及 Benchmark
+
+不涉及大 benchmark 或 benchmark runner 修改。涉及 `tests/benchmark/test_agent_random_conversation_eval.py` 作为非回归检查。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+轻微正向影响。该修改把月度趋势语义保留在 LogicForm / TaskExecutionContract / executor 的稳定契约中，不依赖 provider 或 Microsoft adapter。
+
+### 是否修改核心数据契约
+
+是。未改 API schema，但扩展了既有 LogicForm / TaskExecutionContract 参数口径：`time_bucket=month`、`source_time_field`、`capability_family=time_series`，并让 trend family 可承接 aggregation operation。
+
+### 是否修改 API 契约
+
+否。未修改后端 API 路由、请求字段或响应 schema。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。
+
+### 是否已同步 README
+
+否。本轮是 Product Floor F4 regression 和核心算法语义修复，不改变安装方式、API 契约、阶段完成状态或对外运行说明；README 不需要同步。
+
 2026-06-05 11:49 CST
 
 ### 本次目标

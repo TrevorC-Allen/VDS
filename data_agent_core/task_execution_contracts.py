@@ -128,7 +128,10 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
     if family == "unknown":
         return None
     if family == "trend":
-        dimension = _first_text(params.get("time_column"), params.get("time_dimension"), dimension)
+        if str(params.get("time_bucket") or "") == "month":
+            dimension = _first_text(params.get("time_dimension"), dimension, params.get("time_column"))
+        else:
+            dimension = _first_text(params.get("time_column"), params.get("time_dimension"), dimension)
     time_dimension = dimension if family == "trend" else None
     question_required_n = _required_n_from_question(question)
     required_n = question_required_n or _positive_int(params.get("limit") or params.get("top_n") or params.get("k"))
@@ -471,6 +474,8 @@ def _task_family(*, operation: str, task_type: str, question: str, source_tables
         return "data_quality"
     if quality_question:
         return "data_quality"
+    if task_type in {"trend", "time_series"} or operation in {"trend", "time_series"}:
+        return "trend"
     if operation == "top_k_share" or any(token in compact_question for token in ("占比", "占总", "占整体", "贡献率", "贡献", "share", "contribution")):
         if _looks_like_followup(question):
             return "contribution_followup"
@@ -479,7 +484,10 @@ def _task_family(*, operation: str, task_type: str, question: str, source_tables
         if any(token in compact_question for token in ("差距", "gap", "compare", "比较")):
             return "gap"
         return "topn"
-    if operation in {"aggregation", "trend", "time_series"} and any(token in compact_question for token in ("趋势", "trend", "按月", "月度", "变化")):
+    if operation in {"aggregation", "trend", "time_series"} and any(
+        token in compact_question
+        for token in ("趋势", "trend", "按月", "月度", "变化", "每月", "每个月", "各月", "月份", "monthly", "bymonth", "monthbymonth", "permonth")
+    ):
         return "trend"
     if _looks_like_followup(question):
         return "followup_referent"

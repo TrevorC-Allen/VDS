@@ -212,6 +212,13 @@ def _question_contract_is_more_specific(
     if current.task_family == "topn" and current.required_n is None and question_contract.required_n is not None:
         return True
     if (
+        current.task_family == "trend"
+        and not current.time_dimension
+        and question_contract.time_dimension
+        and current.dimension == question_contract.dimension
+    ):
+        return True
+    if (
         not current.metric_formula
         and question_contract.metric_formula
         and current.metric == question_contract.metric

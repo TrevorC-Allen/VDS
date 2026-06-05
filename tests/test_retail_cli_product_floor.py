@@ -13,7 +13,7 @@ from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.llm.client import MockLLMClient
 
 
-SELECTED_FAMILY_ID = "F3"
+SELECTED_FAMILY_ID = "F4"
 
 RETAIL_INTENT_FAMILIES: list[dict[str, Any]] = [
     {
@@ -227,8 +227,15 @@ AUTOMATED_QUERY_VARIANTS: dict[str, list[str]] = {
     ],
     "F4": [
         "按月看 Quantity 趋势",
+        "Quantity 的月度变化",
+        "每个月销量是多少？",
         "monthly quantity trend",
         "按 InvoiceDate 汇总到月份看走势",
+        "销售额月度趋势",
+        "revenue by month",
+        "过去一年每月销售额变化",
+        "月度销量曲线",
+        "按月份统计销售额",
     ],
     "F5": [
         "Top 3 countries by revenue, monthly trend",
@@ -281,6 +288,18 @@ def test_f3_retail_revenue_by_country_paraphrases_use_derived_sales_contract(
     response = service.respond_to_message(dataset_id=dataset_id, question=question, execution_mode="dual")
 
     _assert_sales_by_country_contract(response)
+
+
+@pytest.mark.parametrize("question", AUTOMATED_QUERY_VARIANTS["F4"])
+def test_f4_retail_monthly_trend_paraphrases_use_invoice_month_bucket(
+    retail_service_context: tuple[DataAgentService, str],
+    question: str,
+) -> None:
+    service, dataset_id = retail_service_context
+
+    response = service.respond_to_message(dataset_id=dataset_id, question=question, execution_mode="dual")
+
+    _assert_monthly_trend_contract(response, question)
 
 
 @pytest.mark.parametrize(
@@ -392,6 +411,54 @@ def _assert_sales_by_country_contract(response: dict[str, Any]) -> None:
     assert "缺少" not in answer_blob
     assert "missing" not in answer_blob.lower()
     assert "Quantity" in serialized and "UnitPrice" in serialized
+
+
+def _assert_monthly_trend_contract(response: dict[str, Any], question: str) -> None:
+    logic = response.get("logic_form") or {}
+    params = logic.get("parameters") or {}
+    task_contract = (response.get("verification") or {}).get("task_contract") or logic.get("task_contract") or {}
+    result = response.get("result") or {}
+    columns = [str(column) for column in result.get("columns") or []]
+    rows = result.get("rows") or []
+    answer_blob = str(response.get("answer") or "")
+    serialized = str(response)
+    sales_question = _f4_query_requests_sales(question)
+    expected_metric = "Sales" if sales_question else "Quantity"
+    formula = (
+        task_contract.get("metric_formula")
+        or params.get("metric_formula")
+        or (params.get("derived_metric") or {}).get("formula")
+        or ""
+    )
+
+    assert response.get("success") is True, response.get("errors")
+    assert response.get("semantic_status") == "passed"
+    assert logic.get("operation") in {"trend", "time_series", "aggregation"}
+    if logic.get("operation") == "aggregation":
+        assert params.get("capability_family") == "time_series"
+        assert task_contract.get("task_family") == "trend"
+    assert params.get("time_column") == "InvoiceDate"
+    assert params.get("time_bucket") == "month"
+    assert params.get("dimension") == "month"
+    assert task_contract.get("time_dimension") == "month"
+    assert columns == ["month", expected_metric]
+    assert rows
+    assert all("InvoiceDate" not in row for row in rows if isinstance(row, dict))
+    assert all(str(row.get("month") or "").count("-") == 1 for row in rows if isinstance(row, dict))
+    assert params.get("metric") == expected_metric
+    if sales_question:
+        assert "Quantity" in formula and "UnitPrice" in formula and "*" in formula
+        assert task_contract.get("metric_formula") == "Quantity * UnitPrice"
+        assert "Quantity" in serialized and "UnitPrice" in serialized
+    assert "InvoiceDate" not in columns
+    assert "缺少" not in answer_blob
+    assert "missing" not in answer_blob.lower()
+    assert any(token in answer_blob.lower() for token in ("趋势", "变化", "trend"))
+
+
+def _f4_query_requests_sales(question: str) -> bool:
+    lowered = question.lower()
+    return any(token in question for token in ("销售额", "金额", "收入")) or any(token in lowered for token in ("revenue", "sales"))
 
 
 def _assert_rfm_contract(response: dict[str, Any]) -> None:

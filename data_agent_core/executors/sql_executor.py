@@ -68,7 +68,7 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
             return _top_count_sql(conn, plan)
         if op == "group_average":
             return _group_average_sql(conn, plan)
-        if op == "aggregation":
+        if op in {"aggregation", "trend", "time_series"}:
             return _aggregation_sql(conn, plan)
         if op == "ranking":
             return _ranking_sql(conn, plan)
@@ -214,6 +214,17 @@ def _aggregation_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> Any:
     where_sql, values = _where_from_filters(plan.logic_form.filters)
     where_sql, values = _with_candidate_topn_filter_sql(where_sql, values, params)
     metric_specs = _metric_specs(params.get("metric_specs"))
+    if _uses_month_time_bucket(params):
+        if isinstance(derived_metric, dict) and derived_metric:
+            return _grouped_month_bucket_derived_sql(conn, derived_metric, params=params, where_sql=where_sql, values=values)
+        return _grouped_month_bucket_aggregation_sql(
+            conn,
+            None if metric is None else str(metric),
+            aggregation,
+            params=params,
+            where_sql=where_sql,
+            values=values,
+        )
     if isinstance(derived_metric, dict) and derived_metric:
         if metric_specs:
             return _attach_group_share_if_requested_sql(
@@ -1139,6 +1150,64 @@ def _grouped_aggregation_sql(
         values,
     ).fetchall()
     return [{dimension: row[0], metric: row[1]} for row in rows]
+
+
+def _uses_month_time_bucket(params: dict[str, Any]) -> bool:
+    return str(params.get("time_bucket") or "") == "month" and str(params.get("dimension") or "") == "month"
+
+
+def _grouped_month_bucket_aggregation_sql(
+    conn: sqlite3.Connection,
+    metric: str | None,
+    aggregation: str,
+    *,
+    params: dict[str, Any],
+    where_sql: str = "",
+    values: list[Any] | None = None,
+) -> list[dict[str, Any]]:
+    values = values or []
+    bucket_expr = _month_bucket_sql_expression(params)
+    if aggregation == "count" or metric is None:
+        rows = conn.execute(
+            f"SELECT {bucket_expr} AS month, COUNT(*) AS count FROM analysis_table{where_sql} "
+            f"GROUP BY month ORDER BY month",
+            values,
+        ).fetchall()
+        return [{"month": row[0], "count": row[1]} for row in rows if row[0] not in {None, ""}]
+    q_metric = _quote_identifier(str(metric))
+    sql_func = _sql_agg_func(aggregation)
+    rows = conn.execute(
+        f"SELECT {bucket_expr} AS month, {sql_func}({q_metric}) AS {q_metric} FROM analysis_table{where_sql} "
+        f"GROUP BY month ORDER BY month",
+        values,
+    ).fetchall()
+    return [{"month": row[0], str(metric): row[1]} for row in rows if row[0] not in {None, ""}]
+
+
+def _grouped_month_bucket_derived_sql(
+    conn: sqlite3.Connection,
+    derived_metric: dict[str, Any],
+    *,
+    params: dict[str, Any],
+    where_sql: str = "",
+    values: list[Any] | None = None,
+) -> list[dict[str, Any]]:
+    values = values or []
+    metric_name = str(derived_metric.get("name") or "ratio")
+    bucket_expr = _month_bucket_sql_expression(params)
+    rows = conn.execute(
+        f"SELECT {bucket_expr} AS month, {_derived_metric_sql_expression(derived_metric)} AS value "
+        f"FROM analysis_table{where_sql} GROUP BY month ORDER BY month",
+        values,
+    ).fetchall()
+    return [{"month": row[0], metric_name: row[1]} for row in rows if row[0] not in {None, ""}]
+
+
+def _month_bucket_sql_expression(params: dict[str, Any]) -> str:
+    source = str(params.get("source_time_field") or params.get("time_column") or "")
+    if not source:
+        raise ValueError("Month time bucket requires a source time column.")
+    return f"strftime('%Y-%m', {_sql_date_expr(source)})"
 
 
 def _grouped_derived_ratio_sql(
