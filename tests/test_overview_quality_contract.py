@@ -81,6 +81,40 @@ class OverviewQualityContractTest(unittest.TestCase):
         self.assertIn("join 风险", answer)
         self.assertIn("数据质量", answer)
 
+    def test_multi_file_overview_allows_no_candidate_join_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sales_path = root / "sales_fact.csv"
+            metadata_path = root / "metadata_fields.csv"
+            sales_path.write_text(
+                "city,sign_amt,qty,sku_factor,sign_time,emp_name\n"
+                "北京市,100,8,A,2026-01-10,张三\n"
+                "上海市,200,10,B,2026-01-25,李四\n"
+                "杭州市,300,4,C,2026-02-15,王五\n",
+                encoding="utf-8",
+            )
+            metadata_path.write_text(
+                "field_name,field_label,field_type,description\n"
+                "city,城市,text,城市名称\n"
+                "sign_amt,签约金额,numeric,合同签约金额\n"
+                "qty,数量,numeric,数量指标\n"
+                "sign_time,签约时间,datetime,签约日期\n",
+                encoding="utf-8",
+            )
+            service = DataAgentService(file_store=TempFileStore(root / "storage"), llm_client=MockLLMClient())
+
+            upload = service.upload_datasets([sales_path, metadata_path], original_filenames=["sales_fact.csv", "metadata_fields.csv"])
+            response = service.respond_to_message(
+                dataset_id=upload["dataset_id"],
+                question="请概览这批uploaded_dataset数据的结构和关键字段。",
+                execution_mode="dual",
+            )
+
+        self.assertTrue(response["success"], response.get("errors"))
+        self.assertEqual("passed", response.get("semantic_status"), response.get("verification"))
+        self.assertEqual("multi_file_overview", response.get("contract_family"))
+        self.assertNotIn("OVERVIEW_JOIN_KEY_MISSING", json.dumps(response.get("verification"), ensure_ascii=False))
+
     def test_data_quality_contract_returns_field_level_zero_rows_and_non_repeating_next_steps(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
