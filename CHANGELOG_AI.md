@@ -70,6 +70,91 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-06-07 01:24 CST
+
+### 本次目标
+
+在干净隔离 worktree `/Users/trevorcui/Documents/VDS-real-user-eval-stability` 中从 unified 语义契约分支继续修复 UK Retail 真实用户 Stability Gate；先复现当前 stability 表现，再修复连续对话里国家占比之后“订单数量最多的前5个客户是谁？”被错误当成上一轮 follow-up action 的问题，并完成连续 3 轮 16/16 gate 全绿后提交和 push。
+
+### 修改文件
+
+- data_agent_core/core/conversation_actions.py
+- tests/test_generic_business_semantic_binding.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `data_agent_core/core/conversation_actions.py`：扩展 `_asks_top_or_gap_followup` 的显式 ranking 信号，覆盖 `排行`、`前`、`最多`、`最少`、`最大`、`最小` 等问法，使“订单数量最多的前5个客户是谁？”这类自包含 TopN 问题在连续对话中先触发 self-contained ranking 短路，不再被上一轮国家 share 的 structured follow-up action 改写为 `按客户看Country排名前3`。
+- `tests/test_generic_business_semantic_binding.py`：增强 exact-order mini 回归，断言国家 share 后再问客户订单数量 Top5 时，第三轮必须返回 `CustomerID + count`，参数必须是 `dimension=CustomerID`、`metric=InvoiceNo`、`aggregation=nunique/distinct_count`，且返回 5 行；第四轮客户销售额仍必须用 `Quantity * UnitPrice` 覆盖上一轮 count metric。
+- `CHANGELOG_AI.md`：记录本轮真实修复、测试和三连 gate 证据路径。
+
+### 测试方式
+
+- 首次真实 HTTP gate 复现：`/tmp/vds-uk-retail-stability-20260607-010639/repro_results_gate.json`
+- focused 新增/相关回归：`python3 -m pytest -q tests/test_generic_business_semantic_binding.py -k "exact_order_mini or customer_order_count" --tb=short`
+- Focused tests：`python3 -m pytest tests/test_topn_filter_drilldown_followup.py tests/test_generic_business_semantic_binding.py tests/test_semantic_contract_instrumentation.py`
+- semantic selector：`python3 -m pytest tests -k "semantic_contract or verifier or execution_trace"`
+- Retail Product Floor：`python3 -m pytest -rxX tests/test_retail_cli_product_floor.py`
+- py_compile：按用户列出的 15 个候选模块执行 `python3 -m py_compile ...`
+- `git diff --check`
+- 修复后单轮真实 HTTP gate：`/tmp/vds-uk-retail-stability-afterfix-20260607-011621/after_fix_results_gate.json`
+- 三连稳定性 gate：`/tmp/vds-uk-retail-stability-20260607-011911/cycle_1_results_gate.json`、`cycle_2_results_gate.json`、`cycle_3_results_gate.json`
+- 三连汇总：`/tmp/vds-uk-retail-stability-20260607-011911/stability_report.md`
+
+### 测试结果
+
+- 首次 stability gate 复现为 `14/16 passed, 0 HTTP 5xx`；真实失败项为连续第 7 题客户订单数被改写为 `按客户看Country排名前3`，返回 `CustomerID, Quantity` 且只有 3 行。
+- focused 新增/相关回归通过：`2 passed, 13 deselected, 12 warnings`。
+- Focused tests 通过：`52 passed, 78 warnings`。
+- semantic selector 通过：`58 passed, 907 deselected, 32 warnings`。
+- Retail Product Floor 通过：`48 passed, 5 xfailed, 222 warnings`。
+- py_compile 通过。
+- `git diff --check` 通过。
+- 修复后单轮真实 HTTP gate 通过：`16/16 passed, 0 HTTP 5xx`。
+- 三连稳定性 gate 通过：cycle 1 / 2 / 3 均为 `16/16 passed, 0 HTTP 5xx`；每轮均重启服务、重新上传 `/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx`，并确认 8876 端口释放。
+
+### 遗留问题
+
+- 本轮未扩大修复 Retail Product Floor 既有 `5 xfailed`。
+- 本轮未运行完整 pytest、长 benchmark、真实 LLM provider gate 或前端浏览器 smoke。
+- 临时 gate runner 位于 `/tmp/vds_uk_retail_gate_runner.py`，不属于仓库文件；它用于本轮固定 16 题验证，不作为 benchmark runner 变更提交。
+
+### 是否影响主流程
+
+是。影响真实上传 CSV / Excel 后连续自然语言数据分析中的 follow-up action 识别边界，防止显式新 TopN/ranking 问题被上一轮 focus set 或 metric 错误劫持。
+
+### 是否涉及 Benchmark
+
+不修改 benchmark runner、题集、scorer 或标准答案；本轮只运行 focused regression、Retail Product Floor 回归和真实 UK Retail HTTP Stability Gate。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。修复保持在 provider-neutral 的 conversation follow-up action 判定层，不引入 Microsoft Agent Framework 或 provider 耦合。
+
+### 是否修改核心数据契约
+
+否。不新增或修改 contract schema；仅修正自包含 ranking 问题和 follow-up action 的分类边界。
+
+### 是否修改 API 契约
+
+否。HTTP endpoint 和响应字段形状不变；行为层修复让连续对话中的客户订单 TopN 返回可信 `success=true` / `semantic_status=passed`。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。没有新增 trace schema；修复后现有 logic_form / execution_trace 会显示 `metric=InvoiceNo`、`aggregation=nunique`、`dimension=CustomerID`。
+
+### 是否已同步 README
+
+否。本轮是内部真实 API gate 语义修复，不改变公开启动方式、安装方式、API 端点、前端入口或 README 顶层项目说明；README 暂不需要同步。
+
 2026-06-06 23:44 CST
 
 ### 本次目标

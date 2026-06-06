@@ -389,6 +389,12 @@ def test_exact_order_mini_country_share_then_customer_sales_override(
     assert second.get("semantic_status") == "passed"
     assert all("Sales_share" in row and "total_Sales" in row for row in _rows(second))
     assert third.get("success") is True, third.get("answer")
+    assert third.get("semantic_status") == "passed"
+    assert _params(third).get("dimension") == "CustomerID"
+    assert _params(third).get("metric") == "InvoiceNo"
+    assert _params(third).get("aggregation") in {"nunique", "distinct_count"}
+    assert (third.get("result") or {}).get("columns") == ["CustomerID", "count"]
+    assert len(_rows(third)) == 5
     assert fourth.get("success") is True, fourth.get("answer")
     assert fourth.get("semantic_status") == "passed"
     assert (fourth.get("result") or {}).get("columns") == ["CustomerID", "Sales"]

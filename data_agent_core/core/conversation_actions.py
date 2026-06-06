@@ -1718,7 +1718,28 @@ def _asks_dimension_switch(compact: str) -> bool:
 
 
 def _asks_top_or_gap_followup(compact: str) -> bool:
-    return _asks_rank_position_followup(compact) or any(token in compact for token in ("top", "Top", "排名", "最高", "最低", "最集中", "集中", "差距", "差多少", "比较", "继续看"))
+    return _asks_rank_position_followup(compact) or any(
+        token in compact
+        for token in (
+            "top",
+            "Top",
+            "排名",
+            "排行",
+            "前",
+            "最高",
+            "最低",
+            "最多",
+            "最少",
+            "最大",
+            "最小",
+            "最集中",
+            "集中",
+            "差距",
+            "差多少",
+            "比较",
+            "继续看",
+        )
+    )
 
 
 def _asks_explicit_ranking_followup(compact: str) -> bool:
