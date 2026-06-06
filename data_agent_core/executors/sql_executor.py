@@ -811,17 +811,23 @@ def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float | li
     limit = int(params.get("limit") or 3)
     where_sql, values = _where_from_filters(plan.logic_form.filters)
     q_dimension = _quote_identifier(dimension)
-    if aggregation == "count" or not ranking_metric or ranking_metric in {"__row_count__", "row_count", "transaction_count"}:
+    referent_values = [value for value in params.get("referent_values") or [] if value not in (None, "")]
+    referent_dimension = str(params.get("referent_dimension") or dimension)
+    if referent_values and referent_dimension == dimension:
+        selected_values = referent_values
+    elif aggregation == "count" or not ranking_metric or ranking_metric in {"__row_count__", "row_count", "transaction_count"}:
         rows = conn.execute(
             f"SELECT {q_dimension} FROM analysis_table{where_sql} GROUP BY {q_dimension} ORDER BY COUNT(*) DESC LIMIT ?",
             values + [limit],
         ).fetchall()
+        selected_values = [row[0] for row in rows]
     elif use_derived_ranking:
         rows = conn.execute(
             f"SELECT {q_dimension}, {derived_expr} AS value FROM analysis_table{where_sql} "
             f"GROUP BY {q_dimension} ORDER BY value DESC LIMIT ?",
             values + [limit],
         ).fetchall()
+        selected_values = [row[0] for row in rows]
     else:
         ranking_metric_name = str(ranking_metric)
         rows = conn.execute(
@@ -829,7 +835,7 @@ def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float | li
             f"GROUP BY {q_dimension} ORDER BY SUM({_quote_identifier(ranking_metric_name)}) DESC LIMIT ?",
             values + [limit],
         ).fetchall()
-    selected_values = [row[0] for row in rows]
+        selected_values = [row[0] for row in rows]
     if not selected_values:
         return [] if params.get("requires_previous_artifact") or params.get("referent_values") else 0.0
     placeholders = ", ".join("?" for _ in selected_values)

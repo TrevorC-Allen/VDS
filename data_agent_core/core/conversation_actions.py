@@ -350,7 +350,7 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
         if action:
             actions.append(action)
 
-    if not actions and _asks_grouped_distribution_followup(compact):
+    if not actions and _asks_grouped_distribution_followup(compact) and not _asks_share_followup(compact):
         action = _generic_grouped_distribution_action(context, compact)
         if action:
             actions.append(action)
@@ -532,6 +532,8 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
         if _compact_mentions_derived_metric(compact, derived_metadata):
             parameters["metric"] = derived_metadata["derived_metric_name"]
     filters = dict(inherited.get("filters") or {})
+    if _share_total_scope_requested(compact):
+        filters = {}
     same_dimension_grouping = (
         not gap_comparison
         and str(parameters.get("dimension") or "") == dimension
@@ -539,10 +541,14 @@ def _attach_referent_resolution(action: dict[str, Any], resolution: Mapping[str,
             "aggregation",
             "ranking",
             "filtered_metric_ranking",
+            "top_k_share",
         }
     )
     if auto_expand:
         filters.pop(dimension, None)
+    elif same_dimension_grouping and not _asks_share_followup(compact):
+        filters[dimension] = values[0] if len(values) == 1 else values
+        parameters.pop("candidate_filter", None)
     elif same_dimension_grouping:
         filters.pop(dimension, None)
         requested_limit = _focus_set_requested_limit(compact) or _positive_int(ranking_context.get("limit"))
@@ -799,6 +805,11 @@ def _compact_mentions_derived_metric(compact: str, metadata: Mapping[str, Any]) 
     name = str(metadata.get("derived_metric_name") or "").lower()
     if name and name in text:
         return True
+    if name in {"sales", "amount", "revenue"} and any(
+        token in str(compact or "")
+        for token in ("销售额", "销售金额", "订单金额", "订单总额", "总销售额", "收入", "营收")
+    ):
+        return True
     return any(
         token in text
         for token in (
@@ -815,6 +826,43 @@ def _compact_mentions_derived_metric(compact: str, metadata: Mapping[str, Any]) 
             "averageordervalue",
             "average_order_value",
         )
+    )
+
+
+def _explicit_sales_derived_metric(compact: str, available_columns: list[str]) -> dict[str, str]:
+    available = [str(column) for column in available_columns if str(column or "").strip()]
+    if not available:
+        return {}
+    compact_text = str(compact or "")
+    lowered = compact_text.lower().replace(" ", "")
+    sales_signal = any(
+        token in compact_text
+        for token in ("销售额", "销售金额", "订单金额", "订单总额", "总销售额", "收入", "营收")
+    ) or any(token in lowered for token in ("sales", "revenue", "amount"))
+    formula_signal = bool(re.search(r"quantity\s*\*\s*unit\s*price", compact_text, re.I)) or any(
+        token in lowered for token in ("quantity*unitprice", "quantity×unitprice", "quantityxunitprice")
+    )
+    if not (sales_signal or formula_signal):
+        return {}
+    numerator = _pick_column_by_aliases(available, ("quantity", "qty", "数量"))
+    denominator = _pick_column_by_aliases(available, ("unitprice", "unit_price", "unit price", "price", "单价", "价格"))
+    if not numerator or not denominator:
+        return {}
+    name = _pick_column_by_aliases(available, ("sales", "amount", "revenue", "销售额", "销售金额", "订单金额", "收入")) or "Sales"
+    return {
+        "name": name,
+        "numerator": numerator,
+        "denominator": denominator,
+        "formula": f"{numerator} * {denominator}",
+        "operator": "multiply",
+    }
+
+
+def _share_total_scope_requested(compact: str) -> bool:
+    lowered = str(compact or "").lower()
+    return _asks_share_followup(compact) and (
+        any(token in str(compact or "") for token in ("占总", "总销售额", "总金额", "整体", "总体", "全量", "全部", "所有"))
+        or any(token in lowered for token in ("total", "overall", "all"))
     )
 
 
@@ -1374,10 +1422,26 @@ def _generic_focus_set_metric_aggregation_action(context: Mapping[str, Any], com
     params = logic.get("parameters") if isinstance(logic.get("parameters"), Mapping) else {}
     available = [str(column) for column in params.get("available_columns") or []]
     scope = context.get("scope") if isinstance(context.get("scope"), Mapping) else {}
+    explicit_derived_metric = _explicit_sales_derived_metric(compact, available)
     explicit_metrics = _explicit_metric_columns(compact, available)
-    metric = _first_text(*(explicit_metrics or []), _explicit_metric_column(compact, available), scope.get("metric"), params.get("metric"), logic.get("metric"), "核心指标")
+    explicit_metric = _first_text(
+        explicit_derived_metric.get("name") if explicit_derived_metric else "",
+        *(explicit_metrics or []),
+        _explicit_metric_column(compact, available),
+        _explicit_metric_concept(compact),
+    )
+    metric = _first_text(explicit_metric, scope.get("metric"), params.get("metric"), logic.get("metric"), "核心指标")
     metric_label = "和".join(_metric_question_label(item) for item in explicit_metrics) if len(explicit_metrics) > 1 else _metric_question_label(metric)
     metric_params = {"metric": metric, **({"metrics": explicit_metrics} if len(explicit_metrics) > 1 else {})}
+    if explicit_derived_metric:
+        metric_params.update(
+            {
+                "metric": str(explicit_derived_metric.get("name") or metric),
+                "derived_metric": explicit_derived_metric,
+                "aggregation": "sum",
+            }
+        )
+        metric_params.update(_derived_metric_metadata(metric_params))
     time_column = _first_time_column(available)
     filter_prefix = _combined_filter_question_prefix(context, compact)
     time_prefix = _combined_time_question_prefix(context, compact)
@@ -1401,6 +1465,30 @@ def _generic_focus_set_metric_aggregation_action(context: Mapping[str, Any], com
         ),
         "",
     )
+    if focus_dimension and _asks_share_followup(compact):
+        limit = _ranked_entity_share_limit(compact=compact, context=context, dimension=focus_dimension)
+        share_metric = str(metric_params.get("metric") or metric)
+        total_column = f"total_{share_metric}" if share_metric and share_metric != "核心指标" else "total_metric_value"
+        share_column = f"{share_metric}_share" if share_metric and share_metric != "核心指标" else "share"
+        return _action(
+            action_id="ranked_entity_share",
+            label="计算当前对象集合贡献占比",
+            operation="top_k_share",
+            question=f"{scope_prefix}按{_dimension_question_label(focus_dimension)}看{_metric_question_label(share_metric)}分别占总{_metric_question_label(share_metric)}的比例。",
+            inherited_parameters=_generic_inherited_parameters_for_question(logic, params, compact),
+            parameters={
+                **metric_params,
+                "dimension": focus_dimension,
+                "ranking_metric": share_metric,
+                "share_metric": share_metric,
+                "share_column": share_column,
+                "total_metric_column": total_column,
+                "share_of_total": True,
+                "share_denominator_scope": "all_rows" if _share_total_scope_requested(compact) else "current_context",
+                "limit": limit,
+            },
+            dimension=focus_dimension,
+        )
     if focus_dimension and any(token in compact for token in ("分别", "各自", "每个", "各个")):
         return _action(
             action_id="aggregate_focus_set_metric",
@@ -1493,6 +1581,7 @@ def _generic_ranked_entity_share_action(context: Mapping[str, Any], compact: str
     params = logic.get("parameters") if isinstance(logic.get("parameters"), Mapping) else {}
     scope = context.get("scope") if isinstance(context.get("scope"), Mapping) else {}
     available = [str(column) for column in params.get("available_columns") or []]
+    explicit_derived_metric = _explicit_sales_derived_metric(compact, available)
     dimension = _first_text(
         _explicit_rank_target_dimension_column(compact, available),
         _explicit_dimension_column(compact, available),
@@ -1501,21 +1590,44 @@ def _generic_ranked_entity_share_action(context: Mapping[str, Any], compact: str
         params.get("dimension"),
         logic.get("group_by"),
     )
-    metric = _first_text(_explicit_metric_column(compact, available), scope.get("metric"), params.get("metric"), logic.get("metric"), _explicit_metric_concept(compact), "核心指标")
+    metric = _first_text(
+        explicit_derived_metric.get("name") if explicit_derived_metric else "",
+        _explicit_metric_column(compact, available),
+        _explicit_metric_concept(compact),
+        scope.get("metric"),
+        params.get("metric"),
+        logic.get("metric"),
+        "核心指标",
+    )
     if not dimension or not metric:
         return {}
     limit = _ranked_entity_share_limit(compact=compact, context=context, dimension=dimension)
     label = _dimension_question_label(dimension)
     metric_label = _metric_question_label(metric)
     share_column = f"{metric}_share" if metric and metric != "核心指标" else "share"
-    action_parameters = {"metric": metric, "share_metric": metric, "share_column": share_column, "dimension": dimension, "limit": limit}
-    if isinstance(params.get("derived_metric"), Mapping) and params.get("derived_metric"):
+    total_column = f"total_{metric}" if metric and metric != "核心指标" else "total_metric_value"
+    action_parameters = {
+        "metric": metric,
+        "ranking_metric": metric,
+        "share_metric": metric,
+        "share_column": share_column,
+        "total_metric_column": total_column,
+        "share_of_total": True,
+        "share_denominator_scope": "all_rows" if _share_total_scope_requested(compact) else "current_context",
+        "dimension": dimension,
+        "limit": limit,
+    }
+    if explicit_derived_metric:
+        action_parameters["derived_metric"] = explicit_derived_metric
+        action_parameters["aggregation"] = "sum"
+    elif isinstance(params.get("derived_metric"), Mapping) and params.get("derived_metric"):
         action_parameters["derived_metric"] = dict(params.get("derived_metric") or {})
+    action_parameters.update(_derived_metric_metadata(action_parameters))
     action = _action(
         action_id="ranked_entity_share",
         label="计算已排名对象贡献占比",
         operation="top_k_share",
-        question=f"按{label}看{metric_label}前{limit}名分别贡献占比是多少？",
+        question=f"按{label}看{metric_label}前{limit}名分别占总{metric_label}的比例。",
         inherited_parameters=_generic_inherited_parameters_for_question(logic, params, compact),
         parameters=action_parameters,
         dimension=dimension,

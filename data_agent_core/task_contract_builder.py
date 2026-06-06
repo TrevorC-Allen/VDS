@@ -69,12 +69,19 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
         setattr(logic_form, "output_format", output_format)
     else:
         same_dimension_grouping = (
-            str(getattr(logic_form, "operation", "") or "") in {"aggregation", "ranking", "filtered_metric_ranking"}
+            str(getattr(logic_form, "operation", "") or "") in {"aggregation", "ranking", "filtered_metric_ranking", "top_k_share"}
             and str(action_parameters.get("dimension") or params.get("dimension") or getattr(logic_form, "group_by", "") or "") == dimension
             and isinstance(action_parameters.get("candidate_filter") or params.get("candidate_filter"), Mapping)
         )
-        if same_dimension_grouping:
+        share_same_dimension = same_dimension_grouping and (
+            str(getattr(logic_form, "operation", "") or "") == "top_k_share" or bool(action_parameters.get("share_of_total"))
+        )
+        if share_same_dimension:
             filters.pop(dimension, None)
+        elif same_dimension_grouping:
+            filters[dimension] = values[0] if len(values) == 1 else values
+            if "candidate_filter" not in action_parameters:
+                params.pop("candidate_filter", None)
         else:
             filters[dimension] = values[0] if len(values) == 1 else values
         if str(getattr(logic_form, "operation", "") or "") == "top_k_share":
@@ -134,6 +141,8 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
                     "share_metric",
                     "share_column",
                     "total_metric_column",
+                    "share_of_total",
+                    "share_denominator_scope",
                     "capability_family",
                 }
                 and value not in (None, "", [], {})

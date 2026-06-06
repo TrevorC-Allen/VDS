@@ -1734,7 +1734,21 @@ def _top_k_share(df: pd.DataFrame, filters: dict[str, Any], params: dict[str, An
         ranking_grouped = (
             pd.to_numeric(data[ranking_metric_name], errors="coerce").fillna(0).groupby(data[dimension]).sum().sort_values(ascending=False)
         )
-    selected_ranking = ranking_grouped.head(limit)
+    referent_values = [value for value in params.get("referent_values") or [] if value not in (None, "")]
+    referent_dimension = str(params.get("referent_dimension") or dimension)
+    if referent_values and referent_dimension == dimension:
+        index_by_text = {str(index): index for index in ranking_grouped.index}
+        selected_index: list[Any] = []
+        for value in referent_values:
+            if value in ranking_grouped.index:
+                selected_index.append(value)
+                continue
+            matched = index_by_text.get(str(value))
+            if matched is not None:
+                selected_index.append(matched)
+        selected_ranking = ranking_grouped.loc[selected_index] if selected_index else ranking_grouped.head(limit)
+    else:
+        selected_ranking = ranking_grouped.head(limit)
     selected_groups = set(selected_ranking.index)
     selected_rows = data[data[dimension].isin(selected_groups)]
     structured_referent_share = bool(params.get("requires_previous_artifact") or params.get("referent_values"))

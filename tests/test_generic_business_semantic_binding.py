@@ -9,7 +9,13 @@ import pytest
 from backend.routers.data_agent import _http_status_for_response
 from backend.services.data_agent_service import DataAgentService
 from backend.storage.temp_file_store import TempFileStore
+from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.llm.client import MockLLMClient
+from data_agent_core.task_execution_contracts import (
+    TaskExecutionContract,
+    semantic_status_from_report,
+    verify_task_execution_contract,
+)
 
 
 @pytest.fixture()
@@ -283,13 +289,13 @@ def test_followup_country_share_inherits_sales_formula(
     first = _ask(
         service,
         dataset_id,
-        "销售额最高的前5个国家是什么？销售额按 Quantity * UnitPrice 算。",
+        "销售额最高的前3个国家是什么？销售额按 Quantity * UnitPrice 算。",
         conversation_id=conversation_id,
     )
     second = _ask(
         service,
         dataset_id,
-        "这些国家占比是多少？",
+        "这些国家分别占总销售额的比例是多少？",
         conversation_id=str(first.get("conversation_id") or conversation_id),
     )
     params = _params(second)
@@ -304,7 +310,88 @@ def test_followup_country_share_inherits_sales_formula(
     assert trace.get("formula") == "Quantity * UnitPrice"
     assert trace.get("groupby_columns") == ["Country"]
     assert rows
+    assert len(rows) == 3
     assert all("Sales_share" in row for row in rows)
+    assert all(row.get("total_Sales") == pytest.approx(100.0) for row in rows)
+    assert sum(float(row["Sales"]) for row in rows) != pytest.approx(100.0)
+
+
+def test_followup_customer_sales_formula_overrides_previous_order_count(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_customer_metric_override"
+
+    first = _ask(
+        service,
+        dataset_id,
+        "订单数量最多的前5个客户是谁？",
+        conversation_id=conversation_id,
+    )
+    second = _ask(
+        service,
+        dataset_id,
+        "这些客户的销售额分别是多少？销售额按 Quantity * UnitPrice 算。",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    params = _params(second)
+    trace = ((second.get("debug") or {}).get("execution_trace") or {})
+    columns = (second.get("result") or {}).get("columns") or []
+    rows = _rows(second)
+
+    assert first.get("success") is True, first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert second.get("semantic_status") == "passed"
+    assert params.get("dimension") == "CustomerID"
+    assert params.get("metric") == "Sales"
+    assert params.get("derived_metric", {}).get("formula") == "Quantity * UnitPrice"
+    assert trace.get("formula") == "Quantity * UnitPrice"
+    assert {"Quantity", "UnitPrice"} <= set(trace.get("metric_columns") or [])
+    assert trace.get("groupby_columns") == ["CustomerID"]
+    assert columns == ["CustomerID", "Sales"]
+    assert all("count" not in row for row in rows)
+    assert next(row for row in rows if row["CustomerID"] == "C1")["Sales"] == pytest.approx(97.5)
+
+
+def test_exact_order_mini_country_share_then_customer_sales_override(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_exact_order_mini"
+
+    first = _ask(
+        service,
+        dataset_id,
+        "销售额最高的前5个国家是什么？销售额按 Quantity * UnitPrice 算。",
+        conversation_id=conversation_id,
+    )
+    second = _ask(
+        service,
+        dataset_id,
+        "这些国家分别占总销售额的比例是多少？",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    third = _ask(
+        service,
+        dataset_id,
+        "订单数量最多的前5个客户是谁？",
+        conversation_id=str(second.get("conversation_id") or conversation_id),
+    )
+    fourth = _ask(
+        service,
+        dataset_id,
+        "这些客户的销售额分别是多少？销售额按 Quantity * UnitPrice 算。",
+        conversation_id=str(third.get("conversation_id") or conversation_id),
+    )
+
+    assert first.get("success") is True, first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert second.get("semantic_status") == "passed"
+    assert all("Sales_share" in row and "total_Sales" in row for row in _rows(second))
+    assert third.get("success") is True, third.get("answer")
+    assert fourth.get("success") is True, fourth.get("answer")
+    assert fourth.get("semantic_status") == "passed"
+    assert (fourth.get("result") or {}).get("columns") == ["CustomerID", "Sales"]
 
 
 def test_country_sales_share_explicit_formula_uses_derived_metric(
@@ -325,6 +412,39 @@ def test_country_sales_share_explicit_formula_uses_derived_metric(
     assert trace.get("groupby_columns") == ["Country"]
     assert rows
     assert all("Sales_share" in row for row in rows)
+
+
+def test_contribution_contract_rejects_share_result_without_share_column() -> None:
+    contract = TaskExecutionContract(
+        contract_id="contract_missing_share",
+        task_family="contribution_followup",
+        metric="Sales",
+        dimension="Country",
+        referent_dimension="Country",
+        referent_values=["US", "CA"],
+        required_output_columns=["Country", "Sales", "total_Sales", "Sales_share"],
+        required_answer_elements=["referent_value", "metric_value", "total_metric_value", "share"],
+        verification_rules={
+            "share_column": "Sales_share",
+            "denominator_total_metric": "total_Sales",
+            "per_referent_share_required": True,
+        },
+    )
+    result = ExecutionResult(
+        backend="unit",
+        success=True,
+        columns=["Country", "Sales"],
+        rows=[{"Country": "US", "Sales": 65.0}, {"Country": "CA", "Sales": 56.0}],
+        value=[{"Country": "US", "Sales": 65.0}, {"Country": "CA", "Sales": 56.0}],
+        summary="US and CA sales.",
+    )
+
+    report = verify_task_execution_contract(contract, result)
+    codes = {violation.code for violation in report.violations}
+
+    assert report.passed is False
+    assert semantic_status_from_report(contract=contract, report=report) != "passed"
+    assert "CONTRIBUTION_SHARE_MISSING" in codes
 
 
 def test_semantic_failure_with_user_answer_is_not_http_500() -> None:

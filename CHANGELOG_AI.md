@@ -70,6 +70,95 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-06-06 23:44 CST
+
+### 本次目标
+
+只修复 UK Retail Real API Demo Gate exact-order 复测中剩余 2 个失败项：连续追问“这些国家分别占总销售额的比例是多少？”必须返回 focus 国家对全量销售额的占比；连续追问“这些客户的销售额分别是多少？销售额按 Quantity * UnitPrice 算。”必须让当前显式销售额公式覆盖上一轮订单数量指标。验证通过后按指定 message 提交，不 push，不触碰原始 `/Users/trevorcui/Documents/VDS`。
+
+### 修改文件
+
+- CHANGELOG_AI.md
+- backend/services/data_agent_service.py
+- data_agent_core/core/conversation_actions.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/task_contract_builder.py
+- tests/test_generic_business_semantic_binding.py
+
+### 修改内容
+
+- 将结构化 follow-up action 规划提前到旧的 contextual dimension rewrite 之前，避免已修正的 share / metric override action 被旧 rewrite 截走。
+- 在 follow-up action 层增加 schema-aware 的显式销售额派生指标识别：当问题出现销售额 / revenue / amount 或 `Quantity * UnitPrice`，且数据列中存在数量列和单价列时，构造 `Sales = Quantity * UnitPrice`，用于覆盖上一轮继承的 count / quantity 类指标。
+- 对“这些国家占总销售额比例”这类 focus set share 问题生成 `top_k_share`，保留 referent countries，同时使用 `share_of_total=True` 和 `share_denominator_scope=all_rows`，输出 `Country, Sales, total_Sales, Sales_share`。
+- 调整 referent contract 注入：普通同维度聚合会过滤到 referent values；`top_k_share` / 总占比场景保留 referent values 但不把 denominator 缩成 focus rows。
+- Pandas / SQL `top_k_share` 在存在同维度 `referent_values` 时优先计算这些 referent 的贡献占比，而不是重新选 top N；分母仍按当前 contract scope 计算。
+- 新增 focused regressions 覆盖国家总销售额占比、客户销售额显式公式覆盖上一轮订单数量指标、exact-order mini conversation，以及 share 结果缺少 share column 时不能通过 semantic contract。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_generic_business_semantic_binding.py -k "country_share or customer_sales_formula or exact_order_mini or contribution_contract" --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest tests/test_topn_filter_drilldown_followup.py tests/test_generic_business_semantic_binding.py tests/test_semantic_contract_instrumentation.py`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest tests -k "semantic_contract or verifier or execution_trace"`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -rxX tests/test_retail_cli_product_floor.py`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile backend/services/data_agent_service.py data_agent_core/core/conversation_actions.py data_agent_core/core/intent_parser.py data_agent_core/core/semantic_contract.py data_agent_core/core/analysis_planner.py data_agent_core/task_contract_builder.py data_agent_core/result_artifacts.py data_agent_core/contracts/analysis_contracts.py data_agent_core/contracts/execution_contracts.py data_agent_core/executors/pandas_executor.py data_agent_core/executors/sql_executor.py data_agent_core/verifier/rule_checker.py data_agent_core/output/response_builder.py`
+- `git diff --check`
+- 真实 HTTP exact-order gate：`VDS_WORKBENCH_PORT=8876 VDS_WORKBENCH_HOST=127.0.0.1 VDS_LLM_PROVIDER=mock ./scripts/run_workbench_server.sh`，上传 `/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx`，结果保存到 `/tmp/vds-uk-retail-api-20260606-234029/results_gate_retest_exact_after_fix.json`
+
+### 测试结果
+
+- Focused regressions：`4 passed, 11 deselected`。
+- TopN / generic semantic binding / semantic instrumentation：`52 passed, 78 warnings`。
+- semantic / verifier / execution_trace selector：`58 passed, 907 deselected, 32 warnings`。
+- Retail Product Floor：`48 passed, 5 xfailed, 222 warnings`。
+- py_compile 通过。
+- `git diff --check` 通过。
+- UK Retail Real API exact-order gate：`15/15 passed, 0 failed, 0 HTTP 5xx`。
+- 关键失败项已通过：连续 turn 6 输出 `Country, Sales, total_Sales, Sales_share`，首行 `United Kingdom` 的 `Sales_share` 为约 `83.9969%`，分母为全量 `total_Sales=9747747.933999998`；连续 turn 8 输出 `CustomerID, Sales`，trace 保留 `formula=Quantity * UnitPrice`，不再沿用上一轮订单数量指标。
+- 8876 本地服务已停止，未留下本轮启动的监听服务。
+
+### 遗留问题
+
+- 本轮未扩大修复 Retail Product Floor 既有 `5 xfailed`。
+- 未运行完整 pytest、长 benchmark、真实 LLM provider gate 或前端浏览器 smoke；用户本轮明确禁止修改前端和 benchmark runner。
+- 该修复依赖 schema 中存在可识别的数量列和单价列；如果未来数据集字段命名完全脱离 quantity / price 语义，需要另行增强字段语义映射。
+
+### 是否影响主流程
+
+是。影响真实上传 Excel / CSV 后的连续自然语言数据分析中 follow-up action 规划、referent 继承、派生指标覆盖、贡献占比执行和 semantic contract 判定。
+
+### 是否涉及 Benchmark
+
+不修改 benchmark runner、题集、scorer 或标准答案；仅运行 focused regression、Retail Product Floor 回归和真实 UK retail API gate 作为本轮验证。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。修复保持在 provider-neutral 的 follow-up action params、TaskExecutionContract、Pandas / SQL executor 和 semantic verifier 层，不引入 Microsoft Agent Framework 或 provider 耦合。
+
+### 是否修改核心数据契约
+
+是，兼容性修改。`top_k_share` follow-up contract 现在允许携带 `share_of_total` 和 `share_denominator_scope`，并区分同维度 referent rows 与全量 denominator。
+
+### 是否修改 API 契约
+
+否。HTTP endpoint 和响应字段形状不变；行为层修复让原 exact-order 失败项返回可信 `success=true` / `semantic_status=passed`。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+是，行为层影响。没有新增 trace schema，但显式派生指标和 referent share 现在能通过 action / contract / executor 参数进入既有 actual execution_trace，保留 `formula=Quantity * UnitPrice` 等证据。
+
+### 是否已同步 README
+
+否。本轮是内部真实 API gate 语义修复，不改变公开启动方式、安装方式、API 端点或 README 顶层项目说明；README 暂不需要同步。
+
 2026-06-06 16:50 CST
 
 ### 本次目标

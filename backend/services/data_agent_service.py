@@ -3932,6 +3932,18 @@ def _build_turn_followup_context(record: dict[str, Any] | None, *, question: str
             "carried_operation": analysis_context.get("operation") or "",
             "pending_actions": [],
         }
+    planned_actions = plan_followup_actions(question, analysis_context)
+    if planned_actions:
+        rewritten_questions = action_questions(planned_actions)
+        return {
+            "is_followup": True,
+            "reason": "compound_followup_actions" if len(planned_actions) > 1 else "structured_followup_action",
+            "previous_run_id": analysis_context.get("run_id") or payload.get("run_id") or "",
+            "previous_question": analysis_context.get("question") or previous.get("question") or payload.get("question") or "",
+            "revised_question": rewritten_questions[0] if rewritten_questions else question,
+            "carried_operation": analysis_context.get("operation") or "",
+            "pending_actions": planned_actions,
+        }
     contextual_dimension_rewrite = _rewrite_contextual_extreme_dimension_reference(
         record,
         question=question,
@@ -3957,18 +3969,6 @@ def _build_turn_followup_context(record: dict[str, Any] | None, *, question: str
             "carried_operation": "",
             "pending_actions": [],
             "self_contained": True,
-        }
-    planned_actions = plan_followup_actions(question, analysis_context)
-    if planned_actions:
-        rewritten_questions = action_questions(planned_actions)
-        return {
-            "is_followup": True,
-            "reason": "compound_followup_actions" if len(planned_actions) > 1 else "structured_followup_action",
-            "previous_run_id": analysis_context.get("run_id") or payload.get("run_id") or "",
-            "previous_question": analysis_context.get("question") or previous.get("question") or payload.get("question") or "",
-            "revised_question": rewritten_questions[0] if rewritten_questions else question,
-            "carried_operation": analysis_context.get("operation") or "",
-            "pending_actions": planned_actions,
         }
     logic = payload.get("logic_form") if isinstance(payload.get("logic_form"), dict) else {}
     rewritten = _rewrite_followup_question(question, previous_question=str(previous.get("question") or ""), logic=logic)
