@@ -354,6 +354,14 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
         action = _generic_grouped_distribution_action(context, compact)
         if action:
             actions.append(action)
+    if not actions and bool(referent_resolution.get("resolved")) and _asks_referent_child_dimension_breakdown(compact):
+        available_columns = [str(column) for column in params.get("available_columns") or []]
+        child_dimension = _explicit_child_drilldown_dimension(compact, available_columns)
+        referent_dimension = str(referent_resolution.get("referent_dimension") or "")
+        if child_dimension and child_dimension != referent_dimension:
+            action = _generic_grouped_child_ranking_action(context, compact)
+            if action:
+                actions.append(action)
     if not actions and _asks_ranked_entity_share_followup(compact):
         action = _generic_ranked_entity_share_action(context, compact)
         if action:
@@ -1447,7 +1455,7 @@ def _generic_grouped_child_ranking_action(context: Mapping[str, Any], compact: s
         operation="filtered_metric_ranking",
         question=f"{compact}？" if compact and not compact.endswith(("?", "？")) else compact,
         inherited_parameters=_generic_inherited_parameters_for_question(logic, params, compact),
-        parameters={"metric": metric, "dimension": child_dimension, "sort_order": "desc"},
+        parameters={"metric": metric, "dimension": child_dimension, "sort_order": "desc", "limit": _extract_limit_from_compact(compact, default=5)},
         dimension=child_dimension,
     )
     action["capability_family"] = "drilldown_followup"
@@ -1456,9 +1464,12 @@ def _generic_grouped_child_ranking_action(context: Mapping[str, Any], compact: s
 
 def _explicit_child_drilldown_dimension(compact: str, available_columns: list[str]) -> str:
     available = [str(column) for column in available_columns if str(column or "").strip()]
+    explicit = _explicit_rank_target_dimension_column(compact, available) or _explicit_grouped_dimension_column(compact, available) or _explicit_dimension_column(compact, available)
+    if explicit:
+        return explicit
     if any(token in compact for token in ("产品", "商品", "sku", "SKU")):
-        return _pick_column_by_aliases(available, ("product", "product_name", "sku", "sku_name", "item", "goods", "产品", "商品")) or "product"
-    return _explicit_rank_target_dimension_column(compact, available) or _explicit_dimension_concept(compact)
+        return _pick_column_by_aliases(available, ("product", "product_name", "product_label", "description", "desc", "stockcode", "stock_code", "sku", "sku_name", "item", "goods", "产品", "商品", "品名", "描述")) or "product"
+    return _explicit_dimension_concept(compact)
 
 
 def _generic_ranked_entity_share_action(context: Mapping[str, Any], compact: str = "") -> dict[str, Any]:
@@ -1645,6 +1656,15 @@ def _asks_grouped_child_ranking_followup(compact: str) -> bool:
     child_dimension_signal = any(token in compact for token in ("产品", "商品", "sku", "SKU"))
     parent_scope_signal = parent_set_signal or any(token in compact for token in ("它下面", "其下", "里面", "里"))
     return ranking_signal and parent_scope_signal and child_dimension_signal and grouped_parent and child_question
+
+
+def _asks_referent_child_dimension_breakdown(compact: str) -> bool:
+    references_previous_set = any(token in compact for token in ("这些", "这几个", "上述", "它们", "Top", "top", "TOP", "前几个"))
+    if not references_previous_set:
+        return False
+    child_question = any(token in compact for token in ("哪个", "哪些", "哪几个", "主要", "分别", "各自", "每个", "各个", "列出", "拆分", "分布"))
+    child_dimension = bool(_explicit_dimension_concept(compact))
+    return child_question and child_dimension
 
 
 def _asks_reasonableness_boundary(compact: str) -> bool:
@@ -2119,7 +2139,7 @@ def _generic_followup_dimension(compact: str, available_columns: list[str], *, c
         (("客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "segment", "细分", "分段"), ("segment", "customer_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分", "分段"), "segment"),
         (("产品", "商品", "sku", "SKU"), ("product", "sku", "item", "goods", "产品", "商品"), "product"),
         (("客户", "顾客"), ("customer", "cust", "client", "buyer", "客户", "顾客"), "customer"),
-        (("城市", "地区", "区域", "地域"), ("city", "region", "area", "province", "城市", "地区", "区域"), "city"),
+        (("国家", "城市", "地区", "区域", "地域", "country", "region"), ("country", "nation", "region", "area", "province", "city", "国家", "地区", "区域", "城市"), "country"),
         (("门店", "店铺", "门店"), ("store", "shop", "门店", "店铺"), "store"),
         (("品类", "类别", "类目"), ("category", "ctg", "type", "品类", "类别", "类目"), "category"),
         (("团队", "小组", "部门"), ("team", "group", "department", "团队", "小组", "部门"), "team"),
@@ -2650,7 +2670,7 @@ def _explicit_dimension_column(compact: str, available_columns: list[str]) -> st
         (("客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "segment", "细分", "分段"), ("segment", "customer_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分", "分段")),
         (("产品", "商品", "sku", "SKU"), ("product", "sku", "item", "goods", "产品", "商品")),
         (("客户", "顾客"), ("customer", "cust", "client", "buyer", "客户", "顾客")),
-        (("城市", "地区", "区域", "地域"), ("city", "region", "area", "province", "城市", "地区", "区域")),
+        (("国家", "城市", "地区", "区域", "地域", "country", "region"), ("country", "nation", "region", "area", "province", "city", "国家", "地区", "区域", "城市")),
         (("门店", "店铺", "门店"), ("store", "shop", "门店", "店铺")),
         (("容量", "规格", "包装规格"), ("capacity", "volume", "size", "规格", "容量")),
         (("品类", "类别", "类目"), ("category", "ctg", "type", "品类", "类别")),
@@ -2673,7 +2693,7 @@ def _explicit_grouped_dimension_column(compact: str, available_columns: list[str
             ("各服务线", "每个服务线", "各条服务线", "每条服务线", "按服务线", "服务线分布", "各业务线", "每个业务线", "各条业务线", "每条业务线", "按业务线", "业务线分布"),
             ("service_line", "line", "channel", "渠道", "服务线", "业务线"),
         ),
-        (("各城市", "每个城市", "按城市", "各地区", "每个地区", "按地区", "各区域", "每个区域", "按区域"), ("city", "region", "area", "province", "城市", "地区", "区域")),
+        (("各国家", "每个国家", "按国家", "主要国家", "哪些国家", "哪个国家", "各城市", "每个城市", "按城市", "各地区", "每个地区", "按地区", "各区域", "每个区域", "按区域"), ("country", "nation", "region", "area", "province", "city", "国家", "地区", "区域", "城市")),
         (
             ("各客户细分", "每个客户细分", "按客户细分", "各客户群", "每个客户群", "按客户群", "各客户群体", "每个客户群体", "按客户群体", "各客户分区", "每个客户分区", "按客户分区", "各客户分段", "每个客户分段", "按客户分段", "各客户段", "每个客户段", "按客户段"),
             ("segment", "customer_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分", "分段"),
@@ -2697,7 +2717,7 @@ def _explicit_rank_target_dimension_column(compact: str, available_columns: list
     available = [str(column) for column in available_columns if str(column or "").strip()]
     label_aliases = [
         ("service_line", ("服务线", "业务线"), ("service_line", "line", "business_line", "channel", "服务线", "业务线")),
-        ("city", ("城市", "地区", "区域"), ("city", "region", "area", "province", "城市", "地区", "区域")),
+        ("country", ("国家", "城市", "地区", "区域"), ("country", "nation", "region", "area", "province", "city", "国家", "地区", "区域", "城市")),
         ("segment", ("客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分市场"), ("segment", "customer_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分", "分段")),
         ("customer", ("客户", "顾客"), ("customer", "cust", "client", "buyer", "客户", "顾客")),
         ("product", ("产品", "商品", "sku", "SKU"), ("product", "sku", "item", "goods", "产品", "商品")),
@@ -2785,7 +2805,7 @@ def _explicit_dimension_concept(compact: str) -> str:
         return "month"
     alias_groups = [
         (("客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "segment", "细分"), "segment"),
-        (("城市", "地区", "区域", "地域"), "city"),
+        (("国家", "城市", "地区", "区域", "地域", "country", "region"), "country"),
         (("客户", "顾客"), "customer"),
         (("产品", "商品", "sku", "SKU"), "product"),
         (("容量", "规格", "包装规格"), "capacity"),
@@ -3111,6 +3131,7 @@ def _time_filter_value_prefix(column: str, value: Any) -> str:
 def _dimension_question_label(dimension: str) -> str:
     mapping = {
         "city": "城市",
+        "country": "国家",
         "product": "产品",
         "store": "门店",
         "customer": "客户",

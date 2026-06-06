@@ -1234,7 +1234,11 @@ def _aggregate_grouped_multi(data: pd.DataFrame, dimensions: list[str], metric: 
         return grouped.to_dict(orient="records")
     working = data[[*dimensions, metric]].copy()
     working[metric] = pd.to_numeric(working[metric], errors="coerce")
-    grouped = working.groupby(dimensions, dropna=True)[metric].agg(aggregation).reset_index()
+    if aggregation == "sum_abs":
+        working[metric] = working[metric].abs()
+        grouped = working.groupby(dimensions, dropna=True)[metric].sum().reset_index()
+    else:
+        grouped = working.groupby(dimensions, dropna=True)[metric].agg(aggregation).reset_index()
     return grouped.to_dict(orient="records")
 
 
@@ -1396,6 +1400,8 @@ def _aggregate_spec_series(series: pd.Series, aggregation: str) -> Any:
     numeric = pd.to_numeric(series, errors="coerce")
     if numeric.dropna().empty:
         return 0.0
+    if aggregation == "sum_abs":
+        return float(numeric.abs().sum())
     if aggregation == "mean":
         return float(numeric.mean())
     if aggregation == "max":
@@ -1439,7 +1445,11 @@ def _aggregate_grouped(data: pd.DataFrame, dimension: str, metric: str | None, a
         raise ValueError(f"Unknown metric column: {metric}")
     working = data[[dimension, metric]].copy()
     working[metric] = pd.to_numeric(working[metric], errors="coerce")
-    result = working.groupby(dimension, dropna=True)[metric].agg(aggregation).reset_index()
+    if aggregation == "sum_abs":
+        working[metric] = working[metric].abs()
+        result = working.groupby(dimension, dropna=True)[metric].sum().reset_index()
+    else:
+        result = working.groupby(dimension, dropna=True)[metric].agg(aggregation).reset_index()
     return result.to_dict(orient="records")
 
 
@@ -1467,6 +1477,8 @@ def _aggregate_series(data: pd.DataFrame, metric: str | None, aggregation: str) 
     series = pd.to_numeric(data[metric], errors="coerce")
     if series.dropna().empty:
         return 0.0
+    if aggregation == "sum_abs":
+        return float(series.abs().sum())
     if aggregation == "mean":
         return float(series.mean())
     if aggregation == "max":

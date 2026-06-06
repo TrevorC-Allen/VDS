@@ -238,6 +238,9 @@ def _requires_contract_quality(question: str) -> bool:
 def _render_direct_answer(context: _FrameContext) -> str:
     if _should_preserve_existing_answer(context):
         return ""
+    drilldown = render_drilldown_answer(context)
+    if drilldown:
+        return drilldown
     if context.kind == "overview" and _requires_contract_overview(context.question):
         return render_overview_answer(context)
     if context.kind == "gap":
@@ -249,9 +252,6 @@ def _render_direct_answer(context: _FrameContext) -> str:
     if context.kind == "contribution":
         return render_contribution_answer(context)
     if context.kind == "ranking":
-        drilldown = render_drilldown_answer(context)
-        if drilldown:
-            return drilldown
         if len(context.rows) == 1 and _single_row_ranking_uses_structured_frame(context):
             return ""
         if len(context.rows) == 1:
@@ -310,25 +310,27 @@ def render_drilldown_answer(context: _FrameContext) -> str:
     referent_values = [str(value) for value in (params.get("referent_values") or task_contract.get("referent_values") or []) if value not in (None, "")]
     filters = _as_dict(context.logic_form.get("filters")) or _as_dict(params.get("merged_filters")) or _as_dict(task_contract.get("merged_filters"))
     region = filters.get("region") or filters.get("area") or filters.get("区域")
-    metric_label = _drilldown_metric_label(metric)
+    child_label = _display_dimension_label(label)
+    referent_label = _display_dimension_label(str(params.get("referent_dimension") or task_contract.get("referent_dimension") or "对象"))
+    metric_label = _drilldown_metric_label(metric, child_label=child_label)
     items = [f"{row.get(label)}（{_format_cell_value(row.get(metric), metric)}）" for row in context.rows if row.get(label) not in {None, ""} and row.get(metric) not in {None, ""}]
     if not items:
         return ""
     if len(referent_values) == 1:
-        city = referent_values[0]
-        return _sanitize_text(f"排名第一的城市{city}中，{metric_label}最高的是" + "、".join(items) + "。" + _derived_metric_followup_scope(context))
-    scope = f"Top{len(referent_values)} 城市"
+        referent = referent_values[0]
+        return _sanitize_text(f"排名第一的{referent_label}{referent}中，{metric_label}最高的是" + "、".join(items) + "。" + _derived_metric_followup_scope(context))
+    scope = f"Top{len(referent_values)} {referent_label}"
     if region:
         scope += f"且{region}区域"
-    suffix = f"范围城市：{'、'.join(referent_values)}。" if referent_values else ""
+    suffix = f"范围{referent_label}：{'、'.join(referent_values)}。" if referent_values else ""
     return _sanitize_text(f"在 {scope}内，{metric_label}排名为" + "、".join(items) + "。" + suffix + _derived_metric_followup_scope(context))
 
 
-def _drilldown_metric_label(metric: str) -> str:
+def _drilldown_metric_label(metric: str, *, child_label: str = "产品") -> str:
     lowered = str(metric or "").lower()
     if lowered in {"order_amount", "amount", "sales", "revenue"} or any(token in str(metric) for token in ("销售额", "金额", "收入")):
-        return "产品销售额"
-    return f"产品{_derived_metric_display_name(metric)}"
+        return f"{child_label}销售额" if child_label else "销售额"
+    return f"{child_label}{_derived_metric_display_name(metric)}" if child_label else _derived_metric_display_name(metric)
 
 
 def _supplemental_topn_columns(columns: list[str], *, label: str, metric: str) -> list[str]:
@@ -1138,9 +1140,13 @@ def _display_dimension_label(column: str | None) -> str:
         return "容量"
     if any(token in text for token in ("城市", "地市")) or any(token in lowered for token in ("city_name", "citynm")) or lowered == "city":
         return "城市"
+    if any(token in text for token in ("国家",)) or any(token in lowered for token in ("country", "nation")):
+        return "国家"
     if any(token in text for token in ("客户", "customer")) or "customer" in lowered:
         return "客户"
-    if any(token in text for token in ("产品", "商品", "sku", "product")) or "product" in lowered:
+    if any(token in text for token in ("产品", "商品", "sku", "SKU", "品名", "名称", "描述")) or any(
+        token in lowered for token in ("product", "sku", "stock", "description", "desc", "item", "goods", "name", "label", "title")
+    ):
         return "产品"
     if any(token in text for token in ("月份", "日期", "时间", "month", "date", "period")) or any(token in lowered for token in ("month", "date", "period")):
         return "周期"

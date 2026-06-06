@@ -43,10 +43,12 @@ def prepare_execution_plan_for_backend(plan: AnalysisPlan, *, source: str) -> tu
         operation = str(spec.get("physical_operation") or spec.get("operation") or operation)
         task_type = str(spec.get("task_type") or task_type)
         metric_columns = [str(item) for item in spec.get("metric_columns") or [] if str(item)]
+        dimensions = [str(item) for item in spec.get("dimensions") or [] if str(item)]
+        ranking = spec.get("ranking") if isinstance(spec.get("ranking"), Mapping) else {}
         if metric_columns:
             _record_mismatch(warnings, "metric", legacy_params.get("metric"), metric_columns[0])
             params["metric"] = metric_columns[0]
-            if _spec_primary_metric_semantic_type(spec) == "entity_count":
+            if _spec_primary_metric_semantic_type(spec) == "entity_count" and not dimensions and not ranking:
                 _record_mismatch(warnings, "operation", getattr(logic, "operation", None), "distinct_count")
                 operation = "distinct_count"
                 params["field"] = metric_columns[0]
@@ -57,7 +59,6 @@ def prepare_execution_plan_for_backend(plan: AnalysisPlan, *, source: str) -> tu
         formula = spec.get("formula")
         if formula not in (None, "", {}, []):
             params.setdefault("derived_metric", _derived_metric_payload(spec, formula))
-        dimensions = [str(item) for item in spec.get("dimensions") or [] if str(item)]
         if dimensions:
             _record_mismatch(warnings, "dimension", legacy_params.get("dimension") or getattr(logic, "group_by", None), dimensions[0])
             params["dimension"] = dimensions[0]
@@ -75,7 +76,6 @@ def prepare_execution_plan_for_backend(plan: AnalysisPlan, *, source: str) -> tu
             if time_spec.get("grain"):
                 params["time_grain"] = time_spec.get("grain")
                 params["time_bucket"] = time_spec.get("grain")
-        ranking = spec.get("ranking") if isinstance(spec.get("ranking"), Mapping) else {}
         if ranking:
             if ranking.get("order"):
                 params["sort_order"] = ranking.get("order")

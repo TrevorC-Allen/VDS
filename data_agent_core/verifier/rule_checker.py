@@ -368,29 +368,16 @@ def _verify_semantic_contract(
     question = user_question.question.lower()
     notes: list[str] = []
     correction_action: dict[str, object] | None = None
+    fraud_passed, fraud_notes, fraud_action = _verify_fraud_ranking_metric(logic, question)
+    notes.extend(fraud_notes)
+    if not fraud_passed:
+        return False, notes, fraud_action
     contract_passed, contract_notes, contract_action = _verify_generalization_contract(plan, user_question, primary)
     notes.extend(contract_notes)
     if not contract_passed:
         return False, notes, contract_action
-    is_fraud_ranking = (
-        logic.task_type == "ranking"
-        and "fraud" in question
-        and any(token in question for token in ("top", "highest", "lowest", "rank"))
-    )
-    if is_fraud_ranking:
-        metric_name = logic.metric or logic.parameters.get("metric")
-        if metric_name in {"fraud_volume_rate", "fraud_transaction_rate"} and logic.numerator and logic.denominator:
-            notes.append(f"Fraud ranking uses semantic metric {metric_name}.")
-        else:
-            notes.append("Fraud ranking requires a rate metric derived from manual-defined fraud volume over total volume.")
-            correction_action = {
-                "action": "replace_logic_form",
-                "from_operation": logic.operation,
-                "to_operation": "rank_by_metric",
-                "metric": "fraud_volume_rate",
-                "reason": "Manual defines fraud as fraudulent volume divided by total volume.",
-            }
-            return False, notes, correction_action
+    if fraud_action is not None:
+        correction_action = fraud_action
     if isinstance(primary.value, dict) and primary.value.get("candidate_table"):
         notes.append("Execution returned a candidate table for verifier inspection.")
         if logic.options and primary.value.get("selected") not in {str(value) for value in logic.options.values()}:
@@ -403,6 +390,30 @@ def _verify_semantic_contract(
     if logic.metric_definition:
         notes.append("LogicForm includes a metric_definition for audit.")
     return True, notes, correction_action
+
+
+def _verify_fraud_ranking_metric(logic: Any, question: str) -> tuple[bool, list[str], dict[str, object] | None]:
+    notes: list[str] = []
+    is_fraud_ranking = (
+        getattr(logic, "task_type", None) == "ranking"
+        and "fraud" in question
+        and any(token in question for token in ("top", "highest", "lowest", "rank"))
+    )
+    if is_fraud_ranking:
+        params = getattr(logic, "parameters", {}) or {}
+        metric_name = getattr(logic, "metric", None) or params.get("metric")
+        if metric_name in {"fraud_volume_rate", "fraud_transaction_rate"} and getattr(logic, "numerator", None) and getattr(logic, "denominator", None):
+            notes.append(f"Fraud ranking uses semantic metric {metric_name}.")
+        else:
+            notes.append("Fraud ranking requires a rate metric derived from manual-defined fraud volume over total volume.")
+            return False, notes, {
+                "action": "replace_logic_form",
+                "from_operation": getattr(logic, "operation", None),
+                "to_operation": "rank_by_metric",
+                "metric": "fraud_volume_rate",
+                "reason": "Manual defines fraud as fraudulent volume divided by total volume.",
+            }
+    return True, notes, None
 
 
 def _verify_fee_candidate_table(logic: Any, value: Any) -> tuple[bool, list[str], dict[str, object] | None]:
@@ -577,7 +588,32 @@ def _verify_generalization_contract(
 
 
 DIMENSION_CONCEPT_ALIASES = {
-    "product": ("product", "product_name", "sku", "item", "产品", "商品", "品名", "商品名称", "产品名称"),
+    "product": (
+        "product",
+        "product_name",
+        "product_label",
+        "product_title",
+        "product_description",
+        "item",
+        "item_name",
+        "item_description",
+        "sku",
+        "sku_name",
+        "stock",
+        "stockcode",
+        "stock_code",
+        "description",
+        "desc",
+        "产品",
+        "商品",
+        "货品",
+        "物料",
+        "品名",
+        "商品名称",
+        "产品名称",
+        "商品描述",
+        "产品描述",
+    ),
     "category": (
         "category",
         "category_name",
@@ -633,7 +669,25 @@ DIMENSION_CONCEPT_ALIASES = {
     "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "source", "origin", "来源", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
     "segment": ("segment", "customer_segment", "cust_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分"),
     "service_line": ("service_line", "business_line", "service", "line", "服务线", "业务线", "服务", "业务"),
-    "customer": ("customer", "cust", "client", "客户", "终端"),
+    "country": ("country", "nation", "region", "area", "国家", "地区", "区域"),
+    "customer": (
+        "customer",
+        "customerid",
+        "customer_id",
+        "cust",
+        "cust_id",
+        "client",
+        "client_id",
+        "user",
+        "user_id",
+        "buyer",
+        "buyer_id",
+        "客户",
+        "顾客",
+        "用户",
+        "买家",
+        "终端",
+    ),
     "service_line": ("service_line", "business_line", "service", "line", "服务线", "业务线", "服务", "业务"),
     "month": ("month", "month_id", "month_code", "stat_month", "ym", "year_month", "biz_month", "period", "month_period", "period_month", "年月", "月份", "月度", "业务月份", "统计月份", "期间"),
     "time": ("date", "day", "week", "period", "time", "sign_time", "create_time", "日期", "时间", "周期", "业务日期", "统计日期", "签收时间", "创建时间"),
@@ -654,6 +708,7 @@ def _verify_requested_metric_dimension_binding(
     notes: list[str] = []
     dimension_fields = _semantic_dimension_fields(logic)
     requested_dimensions = _target_dimension_concepts(question) or _requested_dimension_concepts(question)
+    requested_dimensions = _drop_referent_scope_dimensions(logic, requested_dimensions)
     schema_backed_semantics = _uses_schema_backed_semantic_binding(logic)
     if _card_scheme_steering_uses_temporal_scope_filters(logic, requested_dimensions):
         notes.append("Card scheme steering uses month/year language as filter scope, not as a grouped output dimension.")
@@ -932,6 +987,7 @@ def _target_dimension_concepts(question: str) -> list[str]:
     ordered_patterns = (
         ("segment", ("客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "细分市场", "哪个客户群", "哪些客户群", "哪个客群", "哪些客群", "客群是什么", "客群是哪", "按客群", "客群排名", "segment")),
         ("product", ("哪个产品", "哪种产品", "哪些产品", "产品是哪个", "产品是哪", "产品有哪些", "产品是哪些", "按产品", "产品贡献", "产品排名", "which product", "by product")),
+        ("country", ("哪个国家", "哪些国家", "国家是哪个", "国家是哪", "国家有哪些", "国家是哪些", "按国家", "国家贡献", "国家排名", "which country", "by country")),
         ("customer", ("哪个客户", "哪些客户", "客户是哪个", "客户是哪", "客户是谁", "客户是什么", "客户有哪些", "客户是哪些", "按客户", "客户贡献", "客户排名", "which customer", "by customer")),
         ("service_line", ("哪个服务线", "哪些服务线", "服务线是哪个", "服务线是哪", "服务线有哪些", "按服务线", "服务线排名", "哪个业务线", "哪些业务线", "业务线是哪个", "业务线是哪", "业务线有哪些", "按业务线", "业务线排名", "which service line", "by service line", "business line")),
         ("city", ("各城市", "各个城市", "每个城市", "哪个城市", "哪些城市", "城市是哪个", "城市是哪", "城市有哪些", "城市是哪些", "这些城市", "这几个城市", "按城市", "城市贡献", "城市排名", "which city", "by city")),
@@ -1414,6 +1470,27 @@ def _execution_rows(primary: ExecutionResult) -> list[dict[str, Any]]:
     return []
 
 
+def _drop_referent_scope_dimensions(logic: Any, requested_dimensions: list[str]) -> list[str]:
+    if not requested_dimensions:
+        return []
+    params = getattr(logic, "parameters", {}) or {}
+    task_contract = getattr(logic, "task_contract", {}) or {}
+    family = str(params.get("capability_family") or task_contract.get("task_family") or "")
+    if family != "drilldown_followup":
+        return requested_dimensions
+    referent_dimension = str(params.get("referent_dimension") or task_contract.get("referent_dimension") or "")
+    if not referent_dimension:
+        return requested_dimensions
+    referent_concepts = {
+        concept
+        for concept in requested_dimensions
+        if _column_matches_concept(referent_dimension, concept, DIMENSION_CONCEPT_ALIASES)
+    }
+    if not referent_concepts:
+        return requested_dimensions
+    return [concept for concept in requested_dimensions if concept not in referent_concepts]
+
+
 def _uses_schema_backed_internal_source_alignment(logic: Any) -> bool:
     operation = str(getattr(logic, "operation", "") or "")
     if not operation.startswith("retail_"):
@@ -1566,6 +1643,29 @@ def _flatten_filter_values(value: Any) -> list[str]:
 
 
 def _asks_count_metric(question: str) -> bool:
+    lowered = str(question or "").lower()
+    compact = re.sub(r"\s+", "", str(question or ""))
+    if (
+        any(token in compact for token in ("退货数量", "退款数量", "退回数量")) or any(token in lowered for token in ("return quantity", "returned quantity", "refund quantity"))
+    ) and not any(token in compact for token in ("订单数", "订单数量", "交易数", "发票数")):
+        return False
+    if any(
+        token in lowered
+        for token in (
+            "销售额",
+            "销售金额",
+            "总销售额",
+            "金额",
+            "收入",
+            "营收",
+            "利润",
+            "sales",
+            "revenue",
+            "amount",
+            "profit",
+        )
+    ) or re_search(r"\b[a-z_][a-z0-9_]*\s*(?:\*|x|times|乘以?|by)\s*[a-z_][a-z0-9_]*\b", lowered):
+        return False
     return bool(
         re_search(
             r"\b(row count|record count|transaction count|number of rows|number of records|number of transactions|how many rows|how many records|how many transactions)\b",

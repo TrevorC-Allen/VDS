@@ -337,8 +337,7 @@ def _aggregation_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> Any:
     if aggregation in {"nunique", "distinct_count"}:
         value = conn.execute(f"SELECT COUNT(DISTINCT {_quote_identifier(str(metric))}) FROM analysis_table{where_sql}", values).fetchone()[0]
         return int(value or 0)
-    sql_func = _sql_agg_func(aggregation)
-    value = conn.execute(f"SELECT {sql_func}({_quote_identifier(str(metric))}) FROM analysis_table{where_sql}", values).fetchone()[0]
+    value = conn.execute(f"SELECT {_sql_metric_agg_expr(str(metric), aggregation)} FROM analysis_table{where_sql}", values).fetchone()[0]
     return 0.0 if value is None else value
 
 
@@ -436,9 +435,12 @@ def _metric_spec_sql_expression(spec: dict[str, str]) -> str:
     elif aggregation == "count":
         q_field = _quote_identifier(field)
         expression = f"COUNT({q_field})"
+    elif aggregation == "sum_abs":
+        q_field = _quote_identifier(field)
+        expression = f"SUM(ABS(CAST({q_field} AS REAL)))"
     else:
         q_field = _quote_identifier(field)
-        expression = f"{_sql_agg_func(aggregation)}({q_field})"
+        expression = f"{_sql_agg_func(aggregation)}(CAST({q_field} AS REAL))"
     return f"{expression} AS {_quote_identifier(name)}"
 
 
@@ -496,9 +498,8 @@ def _multi_metric_aggregation_sql(
     values: list[Any] | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     values = list(values or [])
-    sql_func = _sql_agg_func(aggregation)
     metric_exprs = [
-        f"{sql_func}({_quote_identifier(metric)}) AS {_quote_identifier(metric)}"
+        f"{_sql_metric_agg_expr(metric, aggregation)} AS {_quote_identifier(metric)}"
         for metric in metrics
     ]
     if dimension:
@@ -914,33 +915,36 @@ def _filtered_metric_ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -
     limit = 1000000 if isinstance(params.get("rank_target"), dict) else int(params.get("rank_position") or params.get("limit") or 1)
     where_sql, values = _where_from_filters(plan.logic_form.filters)
     where_sql, values = _with_candidate_topn_filter_sql(where_sql, values, params)
+    where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(dimension))
     if isinstance(derived_metric, dict) and derived_metric:
         metric_name = str(derived_metric.get("name") or "ratio")
+        q_dimension = _quote_identifier(dimension)
         rows = conn.execute(
-            f"SELECT {_quote_identifier(dimension)}, {_derived_metric_sql_expression(derived_metric)} AS value "
-            f"FROM analysis_table{where_sql} GROUP BY {_quote_identifier(dimension)} ORDER BY value {sort_order} LIMIT ?",
+            f"SELECT {q_dimension}, {_derived_metric_sql_expression(derived_metric)} AS value "
+            f"FROM analysis_table{where_sql} GROUP BY {q_dimension} ORDER BY value {sort_order}, {q_dimension} ASC LIMIT ?",
             values + [limit],
         ).fetchall()
         return _slice_ranked_rows([{dimension: row[0], metric_name: row[1]} for row in rows], params)
+    q_dimension = _quote_identifier(dimension)
     if aggregation == "count" or metric is None:
         rows = conn.execute(
-            f"SELECT {_quote_identifier(dimension)}, COUNT(*) AS count FROM analysis_table{where_sql} "
-            f"GROUP BY {_quote_identifier(dimension)} ORDER BY count {sort_order} LIMIT ?",
+            f"SELECT {q_dimension}, COUNT(*) AS count FROM analysis_table{where_sql} "
+            f"GROUP BY {q_dimension} ORDER BY count {sort_order}, {q_dimension} ASC LIMIT ?",
             values + [limit],
         ).fetchall()
         return _slice_ranked_rows([{dimension: row[0], "count": row[1]} for row in rows], params)
     if aggregation in {"nunique", "distinct_count"}:
         rows = conn.execute(
-            f"SELECT {_quote_identifier(dimension)}, COUNT(DISTINCT {_quote_identifier(str(metric))}) AS count "
-            f"FROM analysis_table{where_sql} GROUP BY {_quote_identifier(dimension)} ORDER BY count {sort_order} LIMIT ?",
+            f"SELECT {q_dimension}, COUNT(DISTINCT {_quote_identifier(str(metric))}) AS count "
+            f"FROM analysis_table{where_sql} GROUP BY {q_dimension} ORDER BY count {sort_order}, {q_dimension} ASC LIMIT ?",
             values + [limit],
         ).fetchall()
         return _slice_ranked_rows([{dimension: row[0], "count": row[1]} for row in rows], params)
     metric_name = str(metric)
-    sql_func = _sql_agg_func(aggregation)
+    metric_expr = _sql_metric_agg_expr(metric_name, aggregation)
     rows = conn.execute(
-        f"SELECT {_quote_identifier(dimension)}, {sql_func}({_quote_identifier(metric_name)}) AS value FROM analysis_table{where_sql} "
-        f"GROUP BY {_quote_identifier(dimension)} ORDER BY value {sort_order} LIMIT ?",
+        f"SELECT {q_dimension}, {metric_expr} AS value FROM analysis_table{where_sql} "
+        f"GROUP BY {q_dimension} ORDER BY value {sort_order}, {q_dimension} ASC LIMIT ?",
         values + [limit],
     ).fetchall()
     result_rows = [{dimension: row[0], metric_name: row[1]} for row in rows]
@@ -975,6 +979,8 @@ def _grouped_child_ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> 
         metric_expr = f"{_sql_agg_func(aggregation)}({_quote_identifier(metric_name)})"
     q_parent = _quote_identifier(parent_dimension)
     q_child = _quote_identifier(child_dimension)
+    where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(parent_dimension))
+    where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(child_dimension))
     rows = conn.execute(
         f"""
 WITH grouped AS (
@@ -1208,24 +1214,25 @@ def _grouped_aggregation_sql(
     values: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
     values = values or []
+    q_dimension = _quote_identifier(dimension)
+    where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(dimension))
     if aggregation == "count" or metric is None:
         rows = conn.execute(
-            f"SELECT {_quote_identifier(dimension)}, COUNT(*) AS count FROM analysis_table{where_sql} GROUP BY {_quote_identifier(dimension)}",
+            f"SELECT {q_dimension}, COUNT(*) AS count FROM analysis_table{where_sql} GROUP BY {q_dimension}",
             values,
         ).fetchall()
         return [{dimension: row[0], "count": row[1]} for row in rows]
     if aggregation in {"nunique", "distinct_count"}:
         rows = conn.execute(
-            f"SELECT {_quote_identifier(dimension)}, COUNT(DISTINCT {_quote_identifier(str(metric))}) AS count "
-            f"FROM analysis_table{where_sql} GROUP BY {_quote_identifier(dimension)}",
+            f"SELECT {q_dimension}, COUNT(DISTINCT {_quote_identifier(str(metric))}) AS count "
+            f"FROM analysis_table{where_sql} GROUP BY {q_dimension}",
             values,
         ).fetchall()
         return [{dimension: row[0], "count": row[1]} for row in rows]
-    sql_func = _sql_agg_func(aggregation)
-    q_dimension = _quote_identifier(dimension)
     q_metric = _quote_identifier(str(metric))
+    metric_expr = _sql_metric_agg_expr(str(metric), aggregation)
     rows = conn.execute(
-        f"SELECT {q_dimension}, {sql_func}({q_metric}) AS {q_metric} FROM analysis_table{where_sql} GROUP BY {q_dimension}",
+        f"SELECT {q_dimension}, {metric_expr} AS {q_metric} FROM analysis_table{where_sql} GROUP BY {q_dimension}",
         values,
     ).fetchall()
     return [{dimension: row[0], metric: row[1]} for row in rows]
@@ -1254,9 +1261,9 @@ def _grouped_month_bucket_aggregation_sql(
         ).fetchall()
         return [{"month": row[0], "count": row[1]} for row in rows if row[0] not in {None, ""}]
     q_metric = _quote_identifier(str(metric))
-    sql_func = _sql_agg_func(aggregation)
+    metric_expr = _sql_metric_agg_expr(str(metric), aggregation)
     rows = conn.execute(
-        f"SELECT {bucket_expr} AS month, {sql_func}({q_metric}) AS {q_metric} FROM analysis_table{where_sql} "
+        f"SELECT {bucket_expr} AS month, {metric_expr} AS {q_metric} FROM analysis_table{where_sql} "
         f"GROUP BY month ORDER BY month",
         values,
     ).fetchall()
@@ -1357,6 +1364,17 @@ def _quote_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def _append_where_clause(where_sql: str, clause: str) -> str:
+    if not clause:
+        return where_sql
+    return f"{where_sql} AND {clause}" if where_sql else f" WHERE {clause}"
+
+
+def _dimension_not_null_clause(dimension: str) -> str:
+    q_dimension = _quote_identifier(str(dimension))
+    return f"({q_dimension} IS NOT NULL AND TRIM(CAST({q_dimension} AS TEXT)) != '')"
+
+
 def _where_from_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
     where = []
     values: list[Any] = []
@@ -1451,6 +1469,8 @@ def _sql_metric_agg_expr(metric: str, aggregation: str) -> str:
         return f"COUNT(DISTINCT {q_metric})"
     if aggregation == "count":
         return f"COUNT({q_metric})"
+    if aggregation == "sum_abs":
+        return f"SUM(ABS(CAST({q_metric} AS REAL)))"
     return f"{_sql_agg_func(aggregation)}(CAST({q_metric} AS REAL))"
 
 

@@ -555,7 +555,7 @@ def _dimension_concept_from_column(dimension: str) -> str:
     normalized = _normalize(dimension)
     if any(alias in normalized for alias in ("city", "城市", "region", "area", "地区", "区域")):
         return "city"
-    if any(alias in normalized for alias in ("product", "sku", "item", "goods", "产品", "商品")):
+    if any(alias in normalized for alias in ("product", "sku", "stock", "description", "desc", "item", "goods", "name", "label", "title", "产品", "商品", "品名", "名称", "描述")):
         return "product"
     if any(alias in normalized for alias in ("customer", "cust", "client", "buyer", "客户", "顾客")):
         return "customer"
@@ -565,7 +565,7 @@ def _dimension_concept_from_column(dimension: str) -> str:
 def _dimension_matches_concept(dimension: str, concept: str) -> bool:
     aliases = {
         "city": ("city", "城市", "市", "region", "area", "地区", "区域"),
-        "product": ("product", "sku", "item", "goods", "产品", "商品"),
+        "product": ("product", "sku", "stock", "description", "desc", "item", "goods", "name", "label", "title", "产品", "商品", "品名", "名称", "描述"),
         "customer": ("customer", "cust", "client", "buyer", "客户", "顾客"),
     }.get(concept, ())
     normalized = _normalize(dimension)

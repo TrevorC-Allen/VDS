@@ -988,10 +988,28 @@ def _semantic_hints(name: str, inferred_type: str, *, unique_count: int, row_cou
     hints: list[str] = []
     if inferred_type == "datetime" or any(token in lowered for token in ("date", "time", "month", "year", "day")) or any(token in name for token in ("日期", "时间", "月份", "年月")):
         hints.append("time")
+        hints.append("time_dimension")
     if inferred_type == "number" or any(token in lowered for token in ("amount", "sales", "revenue", "profit", "price", "cost", "qty", "quantity", "volume", "rate", "fee")) or any(token in name for token in ("金额", "销售", "收入", "营收", "利润", "数量", "价格", "费用", "费率", "率")):
         hints.append("metric")
+    if any(token in lowered for token in ("amount", "sales", "revenue")) or any(token in name for token in ("金额", "销售额", "收入", "营收")):
+        hints.append("amount_measure")
+    if any(token in lowered for token in ("qty", "quantity", "volume")) or any(token in name for token in ("数量", "销量", "销售量", "件数")):
+        hints.append("quantity_measure")
+        hints.append("return_quantity_evidence")
+    if any(token in lowered for token in ("unitprice", "unit_price", "unit price", "price")) or any(token in name for token in ("单价", "价格")):
+        hints.append("unit_price_measure")
     if any(token in lowered for token in ("city", "region", "country", "province", "area", "district")) or any(token in name for token in ("城市", "地区", "区域", "省份", "国家")):
         hints.append("location")
+        hints.append("geography_dimension")
+    if any(token in lowered for token in ("description", "product_name", "item_name", "sku_name", "product_label")) or any(token in name for token in ("品名", "商品名称", "产品名称", "描述")):
+        hints.append("product_label")
+    if any(token in lowered for token in ("stockcode", "stock_code", "sku", "product_id", "item_id")) or any(token in name for token in ("商品编码", "产品编码", "物料编码")):
+        hints.append("product_key")
+    if any(token in lowered for token in ("customerid", "customer_id", "cust_id", "client_id", "user_id", "buyer_id")) or any(token in name for token in ("客户编号", "客户ID", "用户ID", "买家ID")):
+        hints.append("customer_key")
+    if any(token in lowered for token in ("invoice", "order_id", "orderid", "transaction_id", "transactionid", "receipt")) or any(token in name for token in ("订单号", "订单编号", "发票号", "交易号", "流水号", "单号")):
+        hints.append("transaction_key")
+        hints.append("invoice_or_order_key")
     if normalized.endswith("id") or "id" in re.split(r"[^a-z0-9]+", lowered) or any(token in name for token in ("编号", "代码", "ID")):
         hints.append("id")
     if inferred_type in {"category", "text"} and 0 < unique_count <= max(20, int(max(1, row_count) * 0.2)):
@@ -1000,6 +1018,20 @@ def _semantic_hints(name: str, inferred_type: str, *, unique_count: int, row_cou
 
 
 def _column_semantic_type(name: str, inferred_type: str, hints: list[str]) -> str:
+    for semantic_type in (
+        "product_label",
+        "product_key",
+        "customer_key",
+        "transaction_key",
+        "invoice_or_order_key",
+        "geography_dimension",
+        "time_dimension",
+        "quantity_measure",
+        "unit_price_measure",
+        "amount_measure",
+    ):
+        if semantic_type in hints:
+            return semantic_type
     if "time" in hints:
         return "time"
     if "metric" in hints and inferred_type == "number":
@@ -1016,19 +1048,47 @@ def _column_semantic_type(name: str, inferred_type: str, hints: list[str]) -> st
 
 
 def _schema_candidates(tables: list[dict[str, Any]]) -> dict[str, list[str]]:
-    candidates = {"metrics": [], "dimensions": [], "filters": [], "time": [], "entity_ids": []}
+    candidates = {
+        "metrics": [],
+        "dimensions": [],
+        "filters": [],
+        "time": [],
+        "entity_ids": [],
+        "product_labels": [],
+        "product_keys": [],
+        "customer_keys": [],
+        "transaction_keys": [],
+        "geography": [],
+        "quantity_measures": [],
+        "unit_price_measures": [],
+        "amount_measures": [],
+    }
     for column in _iter_columns(tables):
         name = str(column.get("name") or "")
         semantic_type = str(column.get("semantic_type") or "")
-        if semantic_type in {"metric", "measure"} and name not in candidates["metrics"]:
+        if semantic_type in {"metric", "measure", "quantity_measure", "unit_price_measure", "amount_measure"} and name not in candidates["metrics"]:
             candidates["metrics"].append(name)
-        if semantic_type in {"dimension", "category", "location"} and name not in candidates["dimensions"]:
+        if semantic_type in {"dimension", "category", "location", "product_label", "product_key", "customer_key", "geography_dimension"} and name not in candidates["dimensions"]:
             candidates["dimensions"].append(name)
             candidates["filters"].append(name)
-        if semantic_type == "time" and name not in candidates["time"]:
+        if semantic_type in {"time", "time_dimension"} and name not in candidates["time"]:
             candidates["time"].append(name)
-        if semantic_type == "entity_id" and name not in candidates["entity_ids"]:
+        if semantic_type in {"entity_id", "product_key", "customer_key", "transaction_key", "invoice_or_order_key"} and name not in candidates["entity_ids"]:
             candidates["entity_ids"].append(name)
+        role_targets = {
+            "product_label": "product_labels",
+            "product_key": "product_keys",
+            "customer_key": "customer_keys",
+            "transaction_key": "transaction_keys",
+            "invoice_or_order_key": "transaction_keys",
+            "geography_dimension": "geography",
+            "quantity_measure": "quantity_measures",
+            "unit_price_measure": "unit_price_measures",
+            "amount_measure": "amount_measures",
+        }
+        bucket = role_targets.get(semantic_type)
+        if bucket and name not in candidates[bucket]:
+            candidates[bucket].append(name)
     return candidates
 
 
@@ -1251,7 +1311,13 @@ def _entity_count_metric_from_question(question: str, schema_profile: Mapping[st
     normalized_question = _normalize_text(question)
     best: tuple[int, str] | None = None
     for column in _iter_columns(schema_profile):
-        if str(column.get("semantic_type") or "") != "entity_id":
+        if str(column.get("semantic_type") or "") not in {
+            "entity_id",
+            "product_key",
+            "customer_key",
+            "transaction_key",
+            "invoice_or_order_key",
+        }:
             continue
         name = str(column.get("name") or "")
         score = _overlap_score(name, normalized_question)
@@ -1322,7 +1388,15 @@ def _resolve_filters(
     for column, value in _dict_field(logic, "filters").items():
         if value in (None, "", []):
             continue
-        values = list(value) if isinstance(value, (list, tuple, set)) else [value]
+        operator = "in" if isinstance(value, (list, tuple, set)) else "eq"
+        if isinstance(value, Mapping) and "operator" in value:
+            operator = str(value.get("operator") or "eq")
+            if "values" in value and isinstance(value.get("values"), (list, tuple, set)):
+                values = list(value.get("values") or [])
+            else:
+                values = [value.get("value")]
+        else:
+            values = list(value) if isinstance(value, (list, tuple, set)) else [value]
         resolved = _resolve_column_reference(str(column), schema_profile, column_mapping, preferred_role="dimension")
         resolved_column = resolved[0] if resolved else str(column)
         filters.append(
@@ -1331,7 +1405,7 @@ def _resolve_filters(
                 display_name=resolved_column,
                 source_text=str(column),
                 resolved_column=resolved_column,
-                operator="in" if len(values) > 1 else "eq",
+                operator=operator if operator not in {"", "in"} else ("in" if len(values) > 1 else "eq"),
                 values=values,
                 confidence=0.95,
                 evidence=["logic_form.filters"] + (["schema_column_match"] if resolved else []),

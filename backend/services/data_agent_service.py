@@ -4465,9 +4465,13 @@ def _looks_like_self_contained_analysis_request(question: str) -> bool:
         )
     ):
         return False
-    if re.search(
+    top_dimension_match = re.search(
         r"(?:这|这些)?(?:排名|排行)?前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:大)?的?(?:城市|客户|产品|品类|区域|地区|服务线|业务线|团队|客群|客户群|客户群体|月份|容量|规格)",
         compact,
+    )
+    if top_dimension_match and (
+        top_dimension_match.group(0).startswith("这")
+        or any(token in compact for token in ("这些", "这几个", "上述", "刚才", "继续"))
     ):
         return False
     has_metric = any(
