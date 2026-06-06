@@ -11,6 +11,7 @@ from data_agent_core.contracts.analysis_contracts import AnalysisPlan, UserQuest
 from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.contracts.response_contracts import ChartSpec, DataQualityReport, FinalResponse, InsightResult, ReasoningTraceStep
 from data_agent_core.contracts.verification_contracts import VerificationResult
+from data_agent_core.core.semantic_contract import semantic_contract_payload, verify_semantic_contract_coverage
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import CAPABILITY_GAP, OUTPUT_CONTRACT_VALIDATION_FAILED
 from data_agent_core.output.execution_artifacts import build_execution_artifacts
@@ -34,6 +35,8 @@ def build_response(
 
     canonical_answer = canonicalize_final_answer(execution_result.value, plan.logic_form.output_format)
     answer = canonical_answer.answer
+    semantic_status = str(getattr(verification, "semantic_status", None) or "legacy_unverified")
+    semantic_success = _semantic_success(verification, semantic_status)
     semantic_failure_answer = _semantic_failure_answer(user_question, plan, verification)
     if semantic_failure_answer is not None:
         answer = semantic_failure_answer
@@ -60,11 +63,14 @@ def build_response(
     success = (
         execution_result.success
         and verification.passed
+        and semantic_success
         and canonical_answer.validation.passed
         and not_applicable_attribution.get("category") != "capability_gap"
     )
     warnings = list(execution_result.warnings)
     errors = list(execution_result.errors)
+    if not semantic_success:
+        warnings.append("Semantic verification did not fully pass; treat this result as untrusted until rerun or clarification.")
     debug_payload = dict(debug or {})
     if ranking_display_answer is not None:
         debug_payload["user_experience_shaping"] = {
@@ -89,7 +95,6 @@ def build_response(
     referent_prefix = _referent_answer_prefix(verification)
     if referent_prefix:
         debug_payload["referent_answer_prefix"] = referent_prefix
-    semantic_status = str(getattr(verification, "semantic_status", None) or "legacy_unverified")
     contract_report = getattr(verification, "contract_report", None) if isinstance(getattr(verification, "contract_report", None), dict) else None
     task_contract = getattr(verification, "task_contract", None) if isinstance(getattr(verification, "task_contract", None), dict) else None
     oracle_result = getattr(verification, "oracle_result", None) if isinstance(getattr(verification, "oracle_result", None), dict) else None
@@ -107,6 +112,21 @@ def build_response(
     if insufficient_answer:
         answer = insufficient_answer
     debug_payload["semantic_status"] = semantic_status
+    debug_payload["semantic_success"] = semantic_success
+    semantic_contract = semantic_contract_payload(getattr(plan, "semantic_contract", None) or getattr(plan.logic_form, "semantic_contract", None))
+    if semantic_contract:
+        debug_payload["semantic_contract"] = semantic_contract
+        debug_payload["semantic_contract_coverage"] = verify_semantic_contract_coverage(
+            semantic_contract,
+            plan.logic_form,
+            execution_result,
+        )
+    if getattr(plan, "execution_spec", None):
+        debug_payload["execution_spec"] = dict(getattr(plan, "execution_spec", {}) or {})
+    if getattr(execution_result, "execution_trace", None):
+        debug_payload["execution_trace"] = dict(getattr(execution_result, "execution_trace", {}) or {})
+    if getattr(verification, "semantic_issues", None):
+        debug_payload["semantic_issues"] = list(getattr(verification, "semantic_issues", []) or [])
     debug_payload["task_contract"] = task_contract
     debug_payload["contract_report"] = contract_report
     debug_payload["oracle_result"] = oracle_result
@@ -175,6 +195,7 @@ def build_response(
         ),
         artifacts_manifest={"result_artifacts": result_artifacts} if result_artifacts else {},
         semantic_status=semantic_status,
+        semantic_success=semantic_success,
         contract_satisfied=contract_satisfied,
         contract_family=contract_family or None,
         violations=violations,
@@ -363,6 +384,17 @@ def _semantic_failure_answer(user_question: UserQuestion, plan: AnalysisPlan, ve
         return "这个追问依赖上一轮结果对象，但上一轮 artifact 中没有可用对象集合。请明确要分析的对象范围。"
     action = verification.correction_action if isinstance(verification.correction_action, dict) else {}
     action_name = str(action.get("action") or "")
+    if action_name in {
+        "add_missing_filter_and_rerun",
+        "fix_metric_formula_and_rerun",
+        "fix_comparison_type_and_rerun",
+        "add_missing_groupby_and_rerun",
+        "fix_time_grain_and_rerun",
+        "fix_ranking_and_rerun",
+        "legacy_unverified",
+    }:
+        reason = str(action.get("reason") or "执行结果没有覆盖本轮 canonical semantic contract。")
+        return f"这次执行结果没有通过语义契约校验，不能把当前数值标记为可信答案。原因：{reason}"
     if action_name not in {"clarify_join_key", "repair_table_selection_or_join", "repair_dimension_binding", "repair_metric_definition"}:
         return None
     logic = plan.logic_form
@@ -421,6 +453,27 @@ def _semantic_failure_answer(user_question: UserQuestion, plan: AnalysisPlan, ve
         if "利润率" in user_question.question or "margin" in user_question.question.lower():
             return "这个问题问的是利润率，必须按 profit / sales 这类分子/分母口径计算；当前计划没有可靠的派生指标口径，所以不能用销售额或利润额直接排名。"
     return None
+
+
+def _semantic_success(verification: VerificationResult, semantic_status: str) -> bool:
+    if semantic_status in {"failed", "needs_clarification", "need_clarification"}:
+        return False
+    critical_warning_types = {
+        "legacy_unverified",
+        "missing_execution_trace",
+        "trace_not_actual",
+        "unsupported_execution_trace",
+        "partial_execution_trace",
+        "partial_execution_trace_with_required_semantics",
+        "contract_execution_mismatch",
+    }
+    issues = getattr(verification, "semantic_issues", []) or []
+    issue_types = {str(item.get("type") or item.get("code") or "") for item in issues if isinstance(item, dict)}
+    if issue_types & critical_warning_types:
+        return False
+    if semantic_status == "warning" and getattr(verification, "semantic_passed", None) is False:
+        return False
+    return bool(getattr(verification, "semantic_passed", True) is not False)
 
 
 def _referent_answer_prefix(verification: VerificationResult) -> str:

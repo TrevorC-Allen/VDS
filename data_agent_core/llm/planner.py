@@ -29,6 +29,7 @@ SUPPORTED_OPERATIONS = {
     "top_k_share",
     "filtered_metric_ranking",
     "growth_ranking",
+    "grouped_child_ranking",
     "top_count",
     "ranking",
     "filtering",
@@ -63,7 +64,15 @@ SUPPORTED_OPERATIONS = {
     "vds_period_rate_top",
     "vds_current_threshold_top",
     "vds_current_category_share_top",
+    "vds_current_filtered_metric_top",
     "vds_peer_anomaly",
+    "vds_period_group_comparison",
+    "vds_current_rank_with_period_change",
+    "vds_group_top_entities",
+    "vds_status_impact_top",
+    "vds_current_share_top",
+    "vds_current_top",
+    "vds_three_period_top",
 }
 
 
@@ -126,7 +135,10 @@ def complete_stage_with_llm(
             ),
         },
     ]
-    raw = llm_client.complete_json(messages, temperature=temperature)
+    try:
+        raw = llm_client.complete_json(messages, temperature=temperature)
+    except Exception as exc:  # noqa: BLE001 - provider JSON failures must not abort deterministic execution.
+        raw = _fallback_stage_raw(stage_name, exc)
     return LLMStageResult(
         stage_name=stage_name,
         raw=_safe_stage_raw(raw),
@@ -177,7 +189,10 @@ def plan_with_llm(
             ),
         },
     ]
-    raw = llm_client.complete_json(messages, temperature=0.0)
+    try:
+        raw = llm_client.complete_json(messages, temperature=0.0)
+    except Exception as exc:  # noqa: BLE001 - keep direct planner calls robust against malformed provider JSON.
+        raw = _fallback_plan_raw(exc)
     logic_form = _logic_form_from_raw(raw)
     return LLMPlanResult(
         logic_form=logic_form,
@@ -241,6 +256,34 @@ def _safe_raw(raw: dict[str, Any]) -> dict[str, Any]:
         "caveats",
     }
     return {key: _safe_stage_raw(raw.get(key)) for key in allowed if key in raw}
+
+
+def _fallback_plan_raw(exc: Exception) -> dict[str, Any]:
+    return {
+        "task_type": "llm_fallback",
+        "operation": "not_applicable",
+        "filters": {},
+        "parameters": {},
+        "output_format": {},
+        "confidence": 0.0,
+        "reasoning_summary": (
+            "Provider planning response was not usable; deterministic guardrail plan was used. "
+            f"error_type={type(exc).__name__}"
+        ),
+    }
+
+
+def _fallback_stage_raw(stage_name: str, exc: Exception) -> dict[str, Any]:
+    return {
+        "stage_name": stage_name,
+        "confidence": 0.0,
+        "reasoning_summary": (
+            "Provider stage response was not usable; deterministic stage fallback was used. "
+            f"error_type={type(exc).__name__}"
+        ),
+        "fallback": True,
+        "error_type": type(exc).__name__,
+    }
 
 
 def _safe_stage_raw(value: Any) -> Any:

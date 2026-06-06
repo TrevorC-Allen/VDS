@@ -458,6 +458,10 @@ def _normalize_join_keys(raw: Any) -> list[dict[str, str]]:
 
 
 def _looks_like_referent_question(compact: str) -> bool:
+    if re.search(r"(?:这些|这几个|上述|刚才|上一轮)?(?:排名|排行)?前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:产品|商品|客户|国家|城市|地区|区域|对象)", compact):
+        return True
+    if re.search(r"(?:top|Top|TOP)(?:\d+)?(?:产品|商品|客户|国家|城市|地区|区域|对象)", compact):
+        return True
     if any(
         token in compact
         for token in (
@@ -555,7 +559,7 @@ def _dimension_concept_from_column(dimension: str) -> str:
     normalized = _normalize(dimension)
     if any(alias in normalized for alias in ("city", "城市", "region", "area", "地区", "区域")):
         return "city"
-    if any(alias in normalized for alias in ("product", "sku", "item", "goods", "产品", "商品")):
+    if any(alias in normalized for alias in ("product", "sku", "stock", "description", "desc", "item", "goods", "name", "label", "title", "产品", "商品", "品名", "名称", "描述")):
         return "product"
     if any(alias in normalized for alias in ("customer", "cust", "client", "buyer", "客户", "顾客")):
         return "customer"
@@ -565,7 +569,7 @@ def _dimension_concept_from_column(dimension: str) -> str:
 def _dimension_matches_concept(dimension: str, concept: str) -> bool:
     aliases = {
         "city": ("city", "城市", "市", "region", "area", "地区", "区域"),
-        "product": ("product", "sku", "item", "goods", "产品", "商品"),
+        "product": ("product", "sku", "stock", "description", "desc", "item", "goods", "name", "label", "title", "产品", "商品", "品名", "名称", "描述"),
         "customer": ("customer", "cust", "client", "buyer", "客户", "顾客"),
     }.get(concept, ())
     normalized = _normalize(dimension)

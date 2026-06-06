@@ -1657,6 +1657,8 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
     rank_position_dimension = str(rank_position_target.get("dimension") or "") if isinstance(rank_position_target, dict) else ""
     direct_target_dimension_concepts = _direct_target_dimension_concepts(question)
     target_dimension_concepts = _target_dimension_concepts(question)
+    if explicit_time_dimension and any(concept not in {"month", "time"} for concept in target_dimension_concepts):
+        explicit_time_dimension = None
     override_target_concepts = direct_target_dimension_concepts or target_dimension_concepts
     explicit_dimension_override = (
         explicit_group_by
@@ -1681,6 +1683,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
     )
     if (
         _question_requests_time_series(question)
+        and not _question_requests_month_bucket(question)
         and not _is_growth_ranking_question(question, lowered)
         and not (dimension and _column_name_explicitly_mentioned(str(dimension), question, lowered))
         and not (
@@ -1729,6 +1732,13 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         result_time_filters = candidate_filter.pop("result_time_filters", {}) or {}
     if isinstance(result_time_filters, dict) and result_time_filters:
         filters.update(result_time_filters)
+    if (
+        isinstance(candidate_filter, dict)
+        and _entity_count_is_secondary_ranking_metric(question, lowered)
+        and dimension
+        and str(candidate_filter.get("dimension") or "") != str(dimension)
+    ):
+        candidate_filter = None
 
     if missing_dimension_concepts and (_is_ranking_question(lowered) or _is_grouped_metric_display_question(lowered)):
         return make_logic_form(
@@ -1748,6 +1758,41 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 table_context,
             ),
             output_format=output_format | {"answer_type": "clarification"},
+        )
+
+    return_quantity_spec = _return_quantity_ranking_spec(question, df, dimension=dimension)
+    if return_quantity_spec and dimension:
+        return_filters = {**filters, str(return_quantity_spec["quantity"]): {"operator": "<", "value": 0}}
+        return make_logic_form(
+            task_type="ranking",
+            operation="filtered_metric_ranking",
+            metric=str(return_quantity_spec["quantity"]),
+            group_by=dimension,
+            filters=return_filters,
+            metric_definition={
+                "name": "return_quantity",
+                "capability_family": "return_quantity_ranking",
+                "aggregation": "sum_abs",
+                "business_definition": (
+                    f"Rank {dimension} by the absolute quantity of rows where {return_quantity_spec['quantity']} is negative."
+                ),
+            },
+            numerator={
+                "aggregation": "sum_abs",
+                "field": str(return_quantity_spec["quantity"]),
+                "scope": "negative_quantity_rows",
+            },
+            denominator={"scope": "not_required"},
+            parameters=_with_table_context({
+                "table": table_name,
+                "metric": str(return_quantity_spec["quantity"]),
+                "dimension": dimension,
+                "aggregation": "sum_abs",
+                "return_quantity_evidence": "negative_quantity",
+                "sort_order": "desc",
+                "limit": _extract_limit(question, default=5),
+            }, table_context),
+            output_format=output_format | {"answer_type": "table", "chart_type": "bar"},
         )
 
     grouped_child_ranking = _grouped_child_ranking_spec(
@@ -1917,12 +1962,20 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         aggregation = "count" if record_count_requested else _infer_aggregation(lowered, default="sum" if metric else "count")
         share_metric = "__row_count__" if _asks_for_transaction_share(lowered) or aggregation == "count" else metric
         share_column = _share_column_name(share_metric, aggregation)
+        metric_definition = {
+            "name": metric,
+            "capability_family": "grouped_share",
+            "aggregation": aggregation,
+            "business_definition": f"Calculate each {dimension} group's share of total {metric}.",
+            **({"formula": derived_metric.get("formula")} if isinstance(derived_metric, dict) and derived_metric.get("formula") else {}),
+        }
         return make_logic_form(
             task_type="aggregation",
             operation="aggregation",
             metric=None if share_metric in {"__row_count__", "row_count", "transaction_count"} else share_metric,
             group_by=dimension,
             filters=filters,
+            metric_definition=metric_definition,
             parameters=_with_table_context({
                 "table": table_name,
                 "metric": None if share_metric in {"__row_count__", "row_count", "transaction_count"} else share_metric,
@@ -1931,6 +1984,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 "share_column": share_column,
                 "dimension": dimension,
                 "aggregation": aggregation,
+                **({"derived_metric": derived_metric} if derived_metric else {}),
             }, table_context),
             output_format=output_format | {"answer_type": "table"},
         )
@@ -2002,12 +2056,20 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         aggregation = "count" if record_count_requested else _infer_aggregation(lowered, default="sum" if metric else "count")
         share_metric = "__row_count__" if _asks_for_transaction_share(lowered) or aggregation == "count" else metric
         ranking_metric = metric if _asks_for_amount_volume_ranking(lowered) and metric else share_metric
+        metric_definition = {
+            "name": metric,
+            "capability_family": "top_k_share",
+            "aggregation": aggregation,
+            "business_definition": f"Calculate the selected top {dimension} groups' share of total {metric}.",
+            **({"formula": derived_metric.get("formula")} if isinstance(derived_metric, dict) and derived_metric.get("formula") else {}),
+        }
         return make_logic_form(
             task_type="aggregation",
             operation="top_k_share",
             metric=ranking_metric,
             group_by=dimension,
             filters=filters,
+            metric_definition=metric_definition,
             parameters=_with_table_context({
                 "table": table_name,
                 "metric": None if ranking_metric in {"__row_count__", "row_count", "transaction_count"} else ranking_metric,
@@ -2016,6 +2078,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 "dimension": dimension,
                 "aggregation": aggregation,
                 "limit": _extract_limit(question, default=3),
+                **({"derived_metric": derived_metric} if derived_metric else {}),
             }, table_context),
             output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
         )
@@ -2077,8 +2140,11 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
 
     if (
         _question_requests_month_bucket(question)
-        and not _is_ranking_question(lowered)
-        and not _asks_result_ranking_question(question, lowered)
+        and (
+            not _is_ranking_question(lowered)
+            or _asks_result_ranking_question(question, lowered)
+            or set(_target_dimension_concepts(question)).issubset({"month", "time"})
+        )
         and not _is_growth_ranking_question(question, lowered)
     ):
         time_column = _find_time_column(df)
@@ -2254,6 +2320,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         metric_spec_payload = _apply_default_aggregation(metric_specs, aggregation)
         metric_names = _metric_names_for_payload(metric_spec_payload, requested_metrics, derived_metric)
         has_multi_metric_result = len(requested_metrics) > 1 or bool(metric_spec_payload)
+        uses_grouping_dimension = _has_grouping_language(lowered) and not _formula_calculation_without_dimension_grouping(question)
         return make_logic_form(
             task_type="aggregation",
             operation="aggregation",
@@ -2264,13 +2331,13 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 "metric": metric,
                 **({"metrics": metric_names} if metric_names else {}),
                 **({"metric_specs": metric_spec_payload} if metric_spec_payload else {}),
-                "dimension": dimension if _has_grouping_language(lowered) else None,
+                "dimension": dimension if uses_grouping_dimension else None,
                 "aggregation": aggregation,
                 **({"derived_metric": derived_metric} if derived_metric else {}),
                 **({"candidate_filter": candidate_filter} if candidate_filter else {}),
             }, table_context),
             output_format=output_format
-            | {"answer_type": "table" if has_multi_metric_result or (dimension and _has_grouping_language(lowered)) else "number"}
+            | {"answer_type": "table" if has_multi_metric_result or (dimension and uses_grouping_dimension) else "number"}
             | ({"decimals": decimals} if decimals is not None else {}),
         )
 
@@ -2894,6 +2961,7 @@ def _best_dimension_column(
                     score += 40
                 if any(concept in {"month", "time"} for concept in requested_concepts):
                     score += _time_column_preference(column_name)
+                score += max(_semantic_dimension_preference(column_name, concept) for concept in requested_concepts)
                 if _dimension_looks_like_join_identifier(column_name):
                     score -= 10
                 if table_name == preferred_table:
@@ -3027,7 +3095,33 @@ def _table_selection_reason(
 
 
 SEMANTIC_COLUMN_ALIASES = {
-    "product": ("product", "product_name", "sku", "item", "goods", "产品", "商品", "品名", "商品名称", "产品名称"),
+    "product": (
+        "product",
+        "product_name",
+        "product_label",
+        "product_title",
+        "product_description",
+        "item",
+        "item_name",
+        "item_description",
+        "sku",
+        "sku_name",
+        "stock",
+        "stockcode",
+        "stock_code",
+        "description",
+        "desc",
+        "goods",
+        "产品",
+        "商品",
+        "货品",
+        "物料",
+        "品名",
+        "商品名称",
+        "产品名称",
+        "商品描述",
+        "产品描述",
+    ),
     "category": (
         "category",
         "category_name",
@@ -3085,7 +3179,48 @@ SEMANTIC_COLUMN_ALIASES = {
         "省份",
     ),
     "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "source", "origin", "来源", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
-    "customer": ("customer", "cust", "client", "客户", "终端"),
+    "customer": (
+        "customer",
+        "customerid",
+        "customer_id",
+        "cust",
+        "cust_id",
+        "client",
+        "client_id",
+        "user",
+        "user_id",
+        "buyer",
+        "buyer_id",
+        "shopper",
+        "客户",
+        "顾客",
+        "用户",
+        "买家",
+        "终端",
+    ),
+    "order": (
+        "invoice",
+        "invoiceno",
+        "invoice_no",
+        "invoice_id",
+        "order",
+        "orderid",
+        "order_id",
+        "transaction",
+        "transactionid",
+        "transaction_id",
+        "receipt",
+        "receipt_id",
+        "订单",
+        "订单号",
+        "订单编号",
+        "发票",
+        "发票号",
+        "交易",
+        "交易号",
+        "流水号",
+        "单号",
+    ),
     "employee": ("employee", "emp", "emp_name", "salesperson", "sales_rep", "salesperson_name", "销售员", "销售人员", "销售代表", "业务员", "业代", "员工"),
     "segment": ("segment", "customer_segment", "cust_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分"),
     "service_line": ("service_line", "business_line", "service", "line", "服务线", "业务线", "服务", "业务"),
@@ -3195,6 +3330,11 @@ def _direct_target_dimension_concepts(question: str) -> list[str]:
         ("customer", r"哪(?:\d+|[一二两三四五六七八九十]+)?个客户"),
         ("product", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|种)?产品"),
         ("service_line", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|条)?(?:服务线|业务线)"),
+        ("city", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?)(?:的)?城市"),
+        ("country", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?)(?:的)?国家"),
+        ("customer", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?)(?:的)?(?:客户|顾客|用户|买家)"),
+        ("product", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|种)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|种)?)(?:的)?(?:产品|商品|货品|物料|SKU|sku)"),
+        ("service_line", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|条)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|条)?)(?:的)?(?:服务线|业务线)"),
     )
     for concept, pattern in quantity_targets:
         match = re.search(pattern, compact)
@@ -3261,6 +3401,11 @@ def _target_dimension_concepts(question: str) -> list[str]:
         ("customer", r"哪(?:\d+|[一二两三四五六七八九十]+)?个客户"),
         ("product", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|种)?产品"),
         ("service_line", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|条)?(?:服务线|业务线)"),
+        ("city", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?)(?:的)?城市"),
+        ("country", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?)(?:的)?国家"),
+        ("customer", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?)(?:的)?(?:客户|顾客|用户|买家)"),
+        ("product", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|种)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|种)?)(?:的)?(?:产品|商品|货品|物料|SKU|sku)"),
+        ("service_line", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|条)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|条)?)(?:的)?(?:服务线|业务线)"),
     )
     for concept, pattern in quantity_targets:
         if re.search(pattern, compact) and concept not in targets:
@@ -3707,6 +3852,11 @@ def _grouped_child_ranking_spec(
     valid_dimensions = {str(column) for column in df.columns} | {str(column) for column in available_columns or []}
     if not parent_dimension or parent_dimension not in valid_dimensions:
         return None
+    if (
+        _entity_count_is_secondary_ranking_metric(question, lowered)
+        and (not current_dimension or str(parent_dimension) == str(current_dimension))
+    ):
+        return None
 
     child_search_text = _grouped_child_ranking_suffix(question)
     child_dimension = _find_child_dimension_from_columns(child_search_text, available_columns or [], exclude={parent_dimension}) if available_columns else ""
@@ -3950,6 +4100,19 @@ def _semantic_concept_column_score(column_name: str, concept: str) -> int:
         elif normalized_alias in normalized_column:
             best = max(best, 100)
     return best
+
+
+def _semantic_dimension_preference(column_name: str, concept: str) -> int:
+    normalized = _normalize_column_token(column_name)
+    if concept == "product":
+        if any(token in normalized for token in ("description", "desc", "name", "label", "title", "品名", "名称", "描述")):
+            return 35
+        if any(token in normalized for token in ("stockcode", "stock_code", "sku", "code", "id", "编号", "代码", "编码")):
+            return -15
+    if concept in {"customer", "order"}:
+        if normalized.endswith("id") or normalized.endswith("no") or any(token in normalized for token in ("id", "no", "number", "编号", "单号", "号")):
+            return 12
+    return 0
 
 
 def _dimension_matches_any_concept(column_name: str, concepts: list[str]) -> bool:
@@ -4649,7 +4812,11 @@ def _best_target_dimension_column(
             column = _find_target_dimension_column(question, df, metric, concepts=[concept])
             if not column:
                 continue
-            score = _semantic_concept_column_score(column, concept) + (8 if table_name == preferred_table else 0)
+            score = (
+                _semantic_concept_column_score(column, concept)
+                + _semantic_dimension_preference(column, concept)
+                + (8 if table_name == preferred_table else 0)
+            )
             candidates.append((score, -table_index, table_name, column))
         if candidates:
             candidates.sort(key=lambda item: (-item[0], item[1]))
@@ -4683,6 +4850,7 @@ def _find_target_dimension_column(
                 score = _semantic_concept_column_score(name, "time") - 10
             if score <= 0:
                 continue
+            score += _semantic_dimension_preference(name, concept)
             if _dimension_looks_like_join_identifier(name):
                 score -= 10
             candidates.append((score, index, name))
@@ -4741,6 +4909,7 @@ def _find_dimension_column(
                 score += 40
             if any(concept in {"month", "time"} for concept in requested_concepts):
                 score += _time_column_preference(name)
+            score += max(_semantic_dimension_preference(name, concept) for concept in requested_concepts)
             if _dimension_looks_like_join_identifier(name):
                 score -= 10
             semantic_candidates.append((score, index, name))
@@ -5106,6 +5275,19 @@ def _has_grouping_language(lowered: str) -> bool:
     )
 
 
+def _formula_calculation_without_dimension_grouping(question: str) -> bool:
+    if _target_dimension_concepts(question) or _direct_target_dimension_concepts(question):
+        return False
+    text = str(question or "")
+    return bool(
+        re.search(
+            r"(?:按|用|以|按照|calculated\s+as|calculate(?:d)?\s+by)?\s*[\w\u4e00-\u9fff_ -]{1,40}\s*(?:\*|×|x|times|乘以?|by)\s*[\w\u4e00-\u9fff_ -]{1,40}\s*(?:算|计算|calculated|calculate)?",
+            text,
+            re.I,
+        )
+    )
+
+
 def _is_grouped_metric_display_question(lowered: str) -> bool:
     if not _has_grouping_language(lowered):
         return False
@@ -5228,6 +5410,23 @@ def _is_row_count_question(lowered: str) -> bool:
 
 
 def _is_record_count_metric_question(lowered: str) -> bool:
+    if any(
+        token in lowered
+        for token in (
+            "销售额",
+            "销售金额",
+            "总销售额",
+            "金额",
+            "收入",
+            "营收",
+            "利润",
+            "sales",
+            "revenue",
+            "amount",
+            "profit",
+        )
+    ) or re.search(r"\b[a-z_][a-z0-9_]*\s*(?:\*|x|times|乘以?|by)\s*[a-z_][a-z0-9_]*\b", lowered):
+        return False
     return any(
         token in lowered
         for token in (
@@ -5522,7 +5721,10 @@ def _find_target_dimension_name_in_columns(
         name = str(column)
         if name == metric or name in excluded:
             continue
-        score = max(_semantic_concept_column_score(name, item) for item in concepts)
+        score = max(
+            _semantic_concept_column_score(name, item) + _semantic_dimension_preference(name, item)
+            for item in concepts
+        )
         if score <= 0:
             continue
         if _dimension_looks_like_join_identifier(name):
@@ -5623,6 +5825,10 @@ def _find_count_target_column(question: str, df: pd.DataFrame, *, dimension: str
     compact = re.sub(r"\s+", "", str(question or ""))
     lowered = str(question or "").lower()
     concepts: list[str] = []
+    if any(token in compact for token in ("订单数量", "订单数", "订单量", "交易数量", "交易数", "发票数量", "发票数")) or any(
+        token in lowered for token in ("order count", "number of orders", "transaction count", "invoice count")
+    ):
+        concepts.append("order")
     if any(token in compact for token in ("客户数量", "客户数", "客户总数", "总客户数", "顾客数量", "顾客数", "多少客户", "有多少客户", "多少顾客", "有多少顾客")) or any(
         token in lowered for token in ("customer count", "number of customers")
     ):
@@ -5638,12 +5844,37 @@ def _find_count_target_column(question: str, df: pd.DataFrame, *, dimension: str
             if str(column) != str(dimension or "") and _semantic_concept_column_score(str(column), concept) > 0
         ]
         if candidates:
-            candidates.sort(key=lambda item: (0 if item[1].lower().endswith("_id") else 1, item[0]))
+            candidates.sort(
+                key=lambda item: (
+                    -_semantic_dimension_preference(item[1], concept),
+                    0 if item[1].lower().endswith(("_id", "id", "_no", "no")) else 1,
+                    item[0],
+                )
+            )
             return candidates[0][1]
     named = _find_named_column(question, df) or _find_entity_column(question, df)
     if named and named != dimension:
         return named
     return None
+
+
+def _return_quantity_ranking_spec(question: str, df: pd.DataFrame, *, dimension: str | None) -> dict[str, str] | None:
+    if not dimension:
+        return None
+    compact = re.sub(r"\s+", "", str(question or ""))
+    lowered = str(question or "").lower()
+    asks_returns = any(token in compact for token in ("退货", "退款", "退回", "取消订单", "取消交易")) or any(
+        token in lowered for token in ("return", "returns", "refund", "refunded", "cancelled", "canceled", "cancellation")
+    )
+    if not asks_returns:
+        return None
+    quantity = _find_semantic_column(df, "quantity")
+    if not quantity or quantity not in df.columns:
+        return None
+    numeric = pd.to_numeric(df[quantity], errors="coerce")
+    if not bool((numeric < 0).any()):
+        return None
+    return {"quantity": quantity}
 
 
 def _count_metric_label(question: str, metric: str | None) -> str:

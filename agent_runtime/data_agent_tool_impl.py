@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm
+from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm, UserQuestion
 from data_agent_core.contracts.dataset_contracts import DatasetProfile
 from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.core.analysis_planner import build_analysis_plan
@@ -96,8 +96,23 @@ def runtime_build_analysis_plan(runtime: DataAgentToolRuntime) -> Any:
         intent = dict(arguments["intent"])
         column_mapping = dict(arguments["column_mapping"])
         logic_form = _logic_form_from_payload(intent.get("logic_form") or intent, column_mapping)
-        plan = build_analysis_plan(logic_form)
-        return {"dataset_id": dataset_id, "logic_form": asdict(logic_form), "analysis_plan": asdict(plan)}
+        plan_question = "" if arguments.get("semantic_contract") else str(arguments.get("question") or "")
+        plan = build_analysis_plan(
+            logic_form,
+            question=plan_question,
+            semantic_contract=arguments.get("semantic_contract"),
+            semantic_context={
+                "route": "tool_runtime",
+                "schema_profile": arguments.get("schema_profile"),
+                "column_mapping": column_mapping,
+            },
+        )
+        return {
+            "dataset_id": dataset_id,
+            "logic_form": asdict(plan.logic_form),
+            "analysis_plan": asdict(plan),
+            "semantic_contract": dict(plan.semantic_contract or {}),
+        }
 
     return build_plan
 
@@ -133,7 +148,31 @@ def runtime_verify_results() -> Any:
         pandas_result = _execution_result_from_payload(arguments["pandas_result"])
         sql_result = _execution_result_from_payload(arguments["sql_result"])
         comparison = compare_results(pandas_result, sql_result)
-        verification = verify_execution(pandas_result, comparison)
+        plan = _optional_analysis_plan_from_verify_args(arguments)
+        user_question = None
+        if plan is not None:
+            user_question = UserQuestion(
+                dataset_id=str(arguments.get("dataset_id") or "tool_runtime"),
+                question=str(arguments.get("question") or ""),
+                execution_mode="dual",
+            )
+        verification = verify_execution(pandas_result, comparison, plan=plan, user_question=user_question)
+        if plan is None:
+            legacy_issue = {
+                "type": "legacy_unverified",
+                "code": "legacy_unverified",
+                "severity": "warning",
+                "message": "verify_results was called without analysis_plan or semantic_contract; canonical semantic coverage was not checked.",
+            }
+            verification.passed = False
+            verification.confidence = 0.0
+            verification.semantic_status = "warning"
+            verification.semantic_passed = False
+            verification.semantic_issues = [legacy_issue]
+            if "Canonical semantic contract coverage was not checked." not in verification.issues:
+                verification.issues.append("Canonical semantic contract coverage was not checked.")
+            verification.semantic_verification_notes.append(legacy_issue["message"])
+            verification.correction_action = {"action": "legacy_unverified", "issue_type": "legacy_unverified", "reason": legacy_issue["message"]}
         return {
             "comparison": _json_ready(comparison),
             "verification": _json_ready(verification),
@@ -142,6 +181,25 @@ def runtime_verify_results() -> Any:
         }
 
     return verify
+
+
+def _optional_analysis_plan_from_verify_args(arguments: dict[str, Any]) -> AnalysisPlan | None:
+    raw_plan = arguments.get("analysis_plan")
+    if isinstance(raw_plan, dict) and raw_plan:
+        return _analysis_plan_from_payload(raw_plan)
+    semantic_contract = arguments.get("semantic_contract")
+    if isinstance(semantic_contract, dict) and semantic_contract:
+        logic = LogicForm(
+            task_type=str(semantic_contract.get("task_type") or "unknown"),
+            operation=str(semantic_contract.get("physical_operation") or semantic_contract.get("task_type") or "not_applicable"),
+            semantic_contract=dict(semantic_contract),
+        )
+        return build_analysis_plan(
+            logic,
+            question=str(arguments.get("question") or ""),
+            semantic_contract=semantic_contract,
+        )
+    return None
 
 
 def runtime_build_chart_spec() -> Any:
@@ -234,6 +292,7 @@ def _logic_form_from_payload(payload: dict[str, Any], column_mapping: dict[str, 
         output_format=dict(payload.get("output_format") or {}),
         output_contract=dict(payload.get("output_contract") or {}),
         task_contract=dict(payload.get("task_contract") or {}),
+        semantic_contract=dict(payload.get("semantic_contract") or {}),
     )
 
 
@@ -248,6 +307,8 @@ def _analysis_plan_from_payload(payload: dict[str, Any]) -> AnalysisPlan:
         expected_result_shape=str(data.get("expected_result_shape") or "scalar"),
         constraints=dict(data.get("constraints") or {}),
         task_contract=_task_contract_from_payload(data.get("task_contract") or getattr(logic_form, "task_contract", None)),
+        semantic_contract=dict(data.get("semantic_contract") or getattr(logic_form, "semantic_contract", {}) or {}),
+        execution_spec=dict(data.get("execution_spec") or {}),
     )
 
 
@@ -287,6 +348,8 @@ def _execution_result_from_payload(payload: dict[str, Any]) -> ExecutionResult:
         warnings=list(data.get("warnings") or []),
         errors=list(data.get("errors") or []),
         debug=dict(data.get("debug") or {}),
+        execution_trace=dict(data.get("execution_trace") or dict(data.get("debug") or {}).get("execution_trace") or {}),
+        expected_trace=dict(data.get("expected_trace") or dict(data.get("debug") or {}).get("expected_trace") or {}),
     )
 
 

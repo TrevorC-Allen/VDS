@@ -13,6 +13,7 @@ class WorkflowState:
     dataset_id: str
     question: str
     schema_profile: Any = None
+    semantic_contract: Any = None
     logic_form: Any = None
     analysis_plan: Any = None
     pandas_result: Any = None

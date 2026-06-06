@@ -42,6 +42,7 @@ class LogicForm:
     output_format: dict[str, Any] = field(default_factory=dict)
     output_contract: dict[str, Any] = field(default_factory=dict)
     task_contract: dict[str, Any] = field(default_factory=dict)
+    semantic_contract: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -54,3 +55,5 @@ class AnalysisPlan:
     expected_result_shape: str = "scalar"
     constraints: dict[str, Any] = field(default_factory=dict)
     task_contract: Any = None
+    semantic_contract: dict[str, Any] = field(default_factory=dict)
+    execution_spec: dict[str, Any] = field(default_factory=dict)

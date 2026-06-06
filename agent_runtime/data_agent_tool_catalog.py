@@ -54,7 +54,14 @@ def _tool_definitions(overrides: dict[str, ToolCallable]) -> list[ToolDefinition
             description="Build a LogicForm and AnalysisPlan from validated intent and column mapping.",
             input_schema=_object_schema(
                 required=["dataset_id", "intent", "column_mapping"],
-                properties={"dataset_id": "string", "intent": "object", "column_mapping": "object"},
+                properties={
+                    "dataset_id": "string",
+                    "question": "string",
+                    "intent": "object",
+                    "column_mapping": "object",
+                    "schema_profile": "object",
+                    "semantic_contract": "object",
+                },
             ),
             allowed_roles=[AgentRole.PLANNER],
             timeout_seconds=10,
@@ -93,7 +100,14 @@ def _tool_definitions(overrides: dict[str, ToolCallable]) -> list[ToolDefinition
             description="Compare execution results and return verification notes, confidence, and issues.",
             input_schema=_object_schema(
                 required=["pandas_result", "sql_result"],
-                properties={"pandas_result": "object", "sql_result": "object"},
+                properties={
+                    "pandas_result": "object",
+                    "sql_result": "object",
+                    "analysis_plan": "object",
+                    "semantic_contract": "object",
+                    "question": "string",
+                    "dataset_id": "string",
+                },
             ),
             allowed_roles=[AgentRole.VERIFIER],
             timeout_seconds=15,

@@ -70,6 +70,470 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-06-06 16:50 CST
+
+### 本次目标
+
+在 unified merge worktree 内只修 UK Retail Real API Demo Gate 剩余失败：Top5 商品月度趋势追问、国家销售额占比追问、显式 `Quantity * UnitPrice` 销售额占比，以及修复复测中暴露的 gap follow-up 额外要求 `StockCode` 导致的 contract false negative。
+
+### 修改文件
+
+- CHANGELOG_AI.md
+- data_agent_core/contracts/execution_contracts.py
+- data_agent_core/core/conversation_actions.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/result_artifacts.py
+- data_agent_core/task_contract_builder.py
+- data_agent_core/task_execution_contracts.py
+- tests/test_generic_business_semantic_binding.py
+
+### 修改内容
+
+- 让“前5商品按月份趋势怎么看”继承上一轮 Top 商品 focus set，并把 `InvoiceDate` bucket 到 `month`，结果按 `month + Description` 聚合。
+- 让显式或历史继承的 `Sales = Quantity * UnitPrice` 继续传递到 follow-up trend / share / ranking / gap 的 semantic contract、execution params 和 actual execution_trace。
+- 扩展 Pandas / SQL 的 `top_k_share` derived metric 支持，不再要求 `Sales` 必须是物理列；SQL month bucket 聚合补齐 `series_dimension` 分组，和 Pandas 双执行器结果对齐。
+- actual execution_trace 的 `groupby_columns` 纳入 `series_dimension`，避免结果实际按产品拆线但 trace 只显示月份。
+- referent 识别补齐前几商品、Top products / countries / customers 等自然追问形态。
+- gap follow-up contract 不再把 `output_format.entity_field`（如 `StockCode`）强制要求为结果列；“第一名和第二名差多少”只要求本轮比较维度和指标列。
+- 新增 focused regression 覆盖 Top 商品月度趋势、国家 share 继承公式、显式公式 share、商品 gap follow-up 不强制 product key 列。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_generic_business_semantic_binding.py -k "product_gap_followup or monthly_trend_inherits_filter or country_share_inherits_sales_formula or country_sales_share_explicit_formula" --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_topn_filter_drilldown_followup.py tests/test_generic_business_semantic_binding.py tests/test_semantic_contract_instrumentation.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests -k "semantic_contract or verifier or execution_trace" --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -rxX tests/test_retail_cli_product_floor.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile data_agent_core/core/conversation_actions.py data_agent_core/core/intent_parser.py data_agent_core/contracts/execution_contracts.py data_agent_core/executors/pandas_executor.py data_agent_core/executors/sql_executor.py data_agent_core/result_artifacts.py data_agent_core/task_contract_builder.py data_agent_core/task_execution_contracts.py tests/test_generic_business_semantic_binding.py`
+- `git diff --check`
+- `git diff --cached --check`
+- 真实 HTTP API gate：`VDS_WORKBENCH_PORT=8876 VDS_WORKBENCH_HOST=127.0.0.1 VDS_LLM_PROVIDER=mock ./scripts/run_workbench_server.sh`，上传 `/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx`，结果保存到 `/tmp/vds-uk-retail-api-20260606-164819/results_gate_after_fix.json`
+
+### 测试结果
+
+- 4 个 focused regression：`4 passed, 8 deselected, 24 warnings`。
+- TopN drilldown + generic semantic binding + semantic instrumentation：`49 passed, 62 warnings`。
+- semantic / verifier / execution_trace 选择器：`58 passed, 904 deselected, 32 warnings`。
+- Retail Product Floor：`48 passed, 5 xfailed, 222 warnings`。
+- py_compile 通过。
+- `git diff --check` 和 `git diff --cached --check` 通过。
+- UK Retail Real API Demo Gate：`15/15 passed, 0 failed, 0 HTTP 5xx`。关键失败项已通过：连续 turn 4 输出 `month, Description, Sales` 且 trace 有 `formula=Quantity * UnitPrice`、`groupby_columns=["month","Description"]`、Description IN Top 商品 filter、`time_grain=month`；连续 turn 6 和独立 Country share 均输出 `Country, Sales, total_Sales, Sales_share`，trace 有实际 derived formula 和 Country groupby；连续 turn 3 gap follow-up 的 required output columns 收敛为 `Description, Sales`。
+
+### 遗留问题
+
+- 本轮未扩大修复 Retail Product Floor 既有 xfail：国家 Quantity 贡献、RFM、CustomerID 缺失影响等仍按原 manifest 保留。
+- 部分用户可见字段仍是英文列名（如 `Sales`、`Description`、`month`），语义 gate 已过，中文展示润色可另开任务。
+- 未运行完整 pytest、长 benchmark、真实 LLM provider gate 或前端浏览器 smoke。
+
+### 是否影响主流程
+
+是。影响真实上传 Excel / CSV 后的多轮 semantic binding、follow-up referent 继承、派生指标执行、Pandas/SQL 双执行器一致性、actual execution_trace 和 verifier contract 判定。
+
+### 是否涉及 Benchmark
+
+不修改 benchmark runner、题集、scorer 或标准答案；只运行 Retail Product Floor 回归和真实 UK retail API gate 作为本轮能力验证。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。修复保持在 provider-neutral 的 LogicForm params、TaskExecutionContract、executor actual trace 和 verifier 证据层，不引入框架耦合。
+
+### 是否修改核心数据契约
+
+是，兼容性修改。扩展 actual execution_trace 的 `groupby_columns` 语义以覆盖 `series_dimension`；调整 gap task contract 的 required output columns 判定，避免要求非本轮结果列。
+
+### 是否修改 API 契约
+
+否。HTTP endpoint 和响应字段形状不变；行为层修复让原 gate 失败项返回可信 `success=true` / `semantic_status=passed`。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+是。actual execution_trace 现在会在存在 series dimension 时记录完整 groupby 证据；SQL month bucket derived aggregation 的实际结果也按同一维度执行。
+
+### 是否已同步 README
+
+否。本轮是内部真实 API gate 语义修复与 merge 收口，不改变公开启动方式、安装方式或 README 顶层项目说明；README 暂不需要同步。
+
+2026-06-06 14:13 CST
+
+### 本次目标
+
+在干净 unified worktree 中人工解决 `codex/vds-real-user-eval-targets` 与 `codex/vds-canonical-semantic-contract` 的 merge conflict，保留 real-user-eval 的 UK retail demo/paraphrase/follow-up 修复，同时保留 canonical semantic contract、execution_spec、actual execution_trace、generic semantic binding 和 API 500 guard 修复。
+
+### 修改文件
+
+- CHANGELOG_AI.md
+- backend/services/data_agent_service.py
+- data_agent_core/core/conversation_actions.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/output/text_answer_framework.py
+- tests/test_retail_cli_product_floor.py
+
+### 修改内容
+
+- 解决 `backend/services/data_agent_service.py` 的 self-contained follow-up 冲突，保留“这些/上述/Top 结果”不被当成普通独立问题的判断。
+- 解决 `conversation_actions.py` 的 drilldown/focus-set 冲突，保留 Top result gap follow-up、Top 商品/国家 referent 继承、动态 child dimension 和 limit 传递。
+- 解决 `intent_parser.py` 的 retail paraphrase 与 generic semantic binding 冲突，保留月份 bucket、product/customer/order/country role inference、Quantity * UnitPrice 公式、CustomerID / InvoiceNo 订单数和退货数量口径。
+- 解决 Pandas / SQL executor 冲突，保留 actual execution_trace、实际 filters、derived formula 聚合、month bucket 和稳定排序。
+- 解决 `text_answer_framework.py` 冲突，保留动态 referent/child dimension 文案，避免把非城市对象硬写成城市。
+- 解决 Retail Product Floor 测试冲突，保留 F4 当前目标，同时保留 canonical 对真实 unsupported variants 的精确 xfail，避免 blanket xfail。
+- 保留两条分支已有 changelog 历史记录，不删除历史。
+
+### 测试方式
+
+见 2026-06-06 16:50 CST 记录；本轮已完成 `git diff --check`、focused semantic contract/generic binding/topn/retail tests、py_compile 和 UK Retail Real API Demo Gate。
+
+### 测试结果
+
+见 2026-06-06 16:50 CST 记录；UK Retail Real API Demo Gate 已复测为 `15/15 passed, 0 failed, 0 HTTP 5xx`。
+
+### 遗留问题
+
+见 2026-06-06 16:50 CST 记录；既有 Retail Product Floor xfail 未在本轮扩大修复。
+
+### 是否影响主流程
+
+是。合并范围覆盖真实上传数据后的 parser、conversation follow-up、executor trace、verifier/semantic contract 证据、回答文案和 `/message` API 状态语义。
+
+### 是否涉及 Benchmark
+
+不修改 benchmark runner、题集、scorer 或标准答案；后续仅运行 focused/retail 回归作为合并验证。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。合并保留 provider-neutral / framework-neutral 的 semantic contract、execution_spec 和 actual execution_trace 证据链。
+
+### 是否修改核心数据契约
+
+是，继承 canonical 分支的兼容性修改：`AnalysisPlan.execution_spec`、`ExecutionResult.execution_trace`、semantic issue/coverage 相关可选字段和 debug 结构。
+
+### 是否修改 API 契约
+
+是，继承 canonical 分支行为层修改：带用户可读 answer 的 semantic failed/warning/needs_clarification 不应升级为 HTTP 500；顶层响应字段形状不变。
+
+### 是否新增或修改错误类型
+
+未新增 ErrorResult 类型；保留 semantic issue code/action 和 HTTP status 映射调整。
+
+### 是否新增或修改运行追踪逻辑
+
+是。保留 executor actual execution_trace 与 contract-derived execution_spec 的分离和下游校验。
+
+### 是否已同步 README
+
+否。本轮是分支合并与真实 API gate 前的内部语义链路统一，不改变公开启动方式或 README 顶层说明；如后续 gate 通过并准备 PR，可单独判断是否需要 README。
+
+2026-06-06 13:10 CST
+
+### 本次目标
+
+修复真实 HTTP API 在 UK retail 数据上的通用语义失败：商品/客户/国家/月度维度绑定、显式 `Quantity * UnitPrice` 公式、退货负数量、订单 distinct count、连续追问继承 Top 商品上下文，以及语义失败不再暴露为 HTTP 500。
+
+### 修改文件
+
+- backend/routers/data_agent.py
+- backend/services/data_agent_service.py
+- data_agent_core/contracts/execution_contracts.py
+- data_agent_core/core/conversation_actions.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/core/semantic_contract.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/output/text_answer_framework.py
+- data_agent_core/result_artifacts.py
+- data_agent_core/verifier/rule_checker.py
+- tests/test_generic_business_semantic_binding.py
+- docs/test-runs/2026-06-06-1310-uk-retail-api-semantic-binding.md
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 扩展通用 schema semantic roles 和 alias：product label/key、customer key、country/geography、time、quantity、unit price、amount、invoice/order key，不写 UK retail 文件名、国家、商品或答案特调。
+- 增强显式二元乘法公式解析和执行透传：`Quantity * UnitPrice` 可进入 derived metric、execution_spec、executor 和 execution_trace；总销售额不再错误要求 dimension。
+- 增强排名维度推断：`商品/产品/SKU/stock` 优先可读 product label，`客户` 绑定 customer key，`国家` 绑定 geography dimension，`前三个国家/前5个商品` 不再被月度语言覆盖。
+- 增强月度趋势：`按月份/按月/月度趋势` 使用日期字段按 month bucket 聚合，未给时间范围时默认全量数据。
+- 增强退货语义：有负数量证据时按 `Quantity < 0` 过滤，并用 `sum_abs` 排名退货数量。
+- 增强订单数量语义：优先按 invoice/order/transaction key 做 distinct count，再按客户维度排名。
+- 增强连续追问：`这些 Top 商品` 继承上一轮 Top 商品值，过滤 referent dimension 后按国家汇总销售额；用户可见文案改为动态维度标签，避免把商品集合写成城市。
+- API `/message` 状态码映射增加语义失败兜底：有用户可读 answer 的 failed/warning/needs_clarification 不再返回 HTTP 500。
+- 新增 synthetic non-retail focused regression，覆盖公式、总额、客户订单数、退货商品、月度趋势、显式字段探针、Top 商品追问国家和 API 500 guard。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_generic_business_semantic_binding.py tests/test_semantic_contract_instrumentation.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests -k "semantic_contract or verifier or execution_trace" --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/agent_runtime/test_runtime_contracts.py tests/agent_runtime/test_tool_calling_contracts.py tests/test_semantic_status_defaults.py tests/test_topn_gap_trend_contract.py tests/core/test_semantic_metric_verification.py tests/core/test_vds_bi_capabilities.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -rxX tests/test_retail_cli_product_floor.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_topn_filter_drilldown_followup.py --tb=short`（与 generic focused test 合并运行）
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile backend/routers/data_agent.py backend/services/data_agent_service.py data_agent_core/contracts/execution_contracts.py data_agent_core/core/conversation_actions.py data_agent_core/core/intent_parser.py data_agent_core/core/semantic_contract.py data_agent_core/executors/pandas_executor.py data_agent_core/executors/sql_executor.py data_agent_core/output/text_answer_framework.py data_agent_core/result_artifacts.py data_agent_core/verifier/rule_checker.py tests/test_generic_business_semantic_binding.py`
+- 真实 HTTP smoke：`VDS_WORKBENCH_PORT=8876 VDS_WORKBENCH_HOST=127.0.0.1 VDS_LLM_PROVIDER=mock ./scripts/run_workbench_server.sh`，上传 `/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx`，结果保存到 `/tmp/vds-uk-retail-api-20260606-130839/results_after_fix.json`
+- `git diff --check origin/main...HEAD`
+
+### 测试结果
+
+- generic focused + semantic instrumentation：`33 passed, 38 warnings`。
+- semantic/verifier/execution_trace 筛选回归：`58 passed, 900 deselected, 32 warnings`。
+- runtime/tool/semantic-status/VDS BI 相邻集合：`55 passed`。
+- Retail Product Floor：`48 passed, 5 xfailed, 222 warnings`，无 xpass；保留 F2/F6/F7 既有 unsupported gaps。
+- drilldown 文案相邻回归与 generic focused 合并通过：`20 passed, 36 warnings`。
+- py_compile 通过。
+- 真实 HTTP smoke：9 次请求均为 HTTP 200、`success=true`、`semantic_status=passed`；连续追问第三问输出 `referent_dimension=Description`、`dimension=Country`，answer 为“Top5 产品内，国家销售额排名...范围产品...”。无 HTTP 500。
+
+### 遗留问题
+
+- 退货数量当前采用通用负 Quantity 启发；若数据有显式 return/refund/cancel 状态字段，后续可继续提高优先级和解释。
+- 月度趋势与总额回答仍有部分字段英文标签（如 `Sales`、`Quantity`、`month`），语义正确但中文可读性仍可单独润色。
+- 本轮不解决 Retail Product Floor 中 RFM、国家 Quantity 贡献、CustomerID 缺失影响等既有 xfail。
+- 未运行完整 pytest、长 benchmark、真实 LLM provider gate 或前端浏览器 smoke。
+
+### 是否影响主流程
+
+是。影响真实上传表格后的 parser、semantic contract、execution plan preparation、Pandas/SQL executor、Verifier、Response Builder 文案和 `/message` HTTP 状态映射。
+
+### 是否涉及 Benchmark
+
+不修改 benchmark runner、题集、scorer 或标准答案；仅运行 Retail Product Floor 回归，作为 non-regression 证据。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。新增能力仍通过 provider-neutral schema semantics、AnalysisPlan/execution_spec/execution_trace、Verifier 和 conversation referent contract 表达，不把核心逻辑写入 adapter。
+
+### 是否修改核心数据契约
+
+是，兼容性修改。扩展 semantic role / execution preparation / execution trace 使用方式；未新增必填 dataclass 字段。
+
+### 是否修改 API 契约
+
+是，行为层修改。`/api/data-agent/message` 对带用户可读 answer 的 semantic failed/warning/needs_clarification 返回 HTTP 200，顶层响应字段形状不变。
+
+### 是否新增或修改错误类型
+
+未新增 ErrorResult 类型；修改 semantic failure 到 HTTP status 的映射，避免用户可修复语义问题直接变成 500。
+
+### 是否新增或修改运行追踪逻辑
+
+是。execution_trace 继续携带实际 formula、groupby、filter 等信息，并用于真实 API smoke 复核公式和维度。
+
+### 是否已同步 README
+
+否。本轮不改变 README 启动方式、公开安装流程或顶层必需字段；API 行为和测试证据已记录在本 CHANGELOG 和 `docs/test-runs/2026-06-06-1310-uk-retail-api-semantic-binding.md`。
+
+2026-06-05 16:14 CST
+
+### 本次目标
+
+修复 canonical semantic contract 审查指出的 P0/P1 缺口：让 contract-derived `execution_spec` 真正进入 executor，Pandas / SQL 输出稳定 `execution_trace`，Verifier 优先按 trace 做 canonical coverage，tool runtime plan-less `verify_results` 不再伪装成已校验，并补 focused non-retail 回归与 Retail xpass 清理。
+
+### 修改文件
+
+- data_agent_core/contracts/analysis_contracts.py
+- data_agent_core/contracts/execution_contracts.py
+- data_agent_core/contracts/verification_contracts.py
+- data_agent_core/core/semantic_contract.py
+- data_agent_core/core/analysis_planner.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/verifier/rule_checker.py
+- data_agent_core/task_execution_contracts.py
+- data_agent_core/output/response_builder.py
+- data_agent_core/agent/single_agent.py
+- agent_runtime/data_agent_tool_impl.py
+- agent_runtime/data_agent_tool_catalog.py
+- agent_runtime/data_analysis_roles.py
+- agent_runtime/workflow_state.py
+- data_agent_core/contracts/response_contracts.py
+- data_agent_core/tracing/run_trace.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- tests/test_semantic_contract_instrumentation.py
+- tests/core/test_semantic_metric_verification.py
+- tests/test_semantic_status_defaults.py
+- tests/test_topn_gap_trend_contract.py
+- tests/test_retail_cli_product_floor.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- `AnalysisPlan` 新增可选 `execution_spec`，由 canonical semantic contract 派生 metric / dimension / filter / comparison / time / ranking / physical operation，供 executor 优先使用。
+- `ExecutionResult` 新增可选 `execution_trace`；Pandas 主路径输出完整 trace，SQL 路径输出同结构 trace，失败时保留 partial trace。
+- 新增 executor 共用 helper，把 `execution_spec` 合并到 effective plan 后再执行；旧 `logic_form.parameters` 只作为 fallback，并在 trace/debug 中暴露 mismatch warning。
+- Verifier canonical coverage 改为 trace-first：缺 trace、unsupported trace、missing filter/groupby、wrong metric formula、wrong comparison type、ranking/time mismatch 都不能标记为 full passed，并输出结构化 `semantic_issues` 和 typed `correction_action`。
+- `verify_results` tool schema 兼容扩展 `analysis_plan` / `semantic_contract` / `question` / `dataset_id`；plan-less 路径明确返回 `semantic_status=warning` 和 `legacy_unverified` issue。
+- Response Builder debug 暴露 `semantic_contract`、`execution_spec`、`execution_trace`、`semantic_issues`；semantic failed 时不把执行值包装成完全可信答案。
+- single-agent generic-table path 复用 schema-aware canonical contract resolver。
+- task contract 增加对 `current_value` / `metric_value` 等规范 metric 列别名的识别，并把 `vds_period_growth_count_share` 标为 combined-share 汇总口径，避免误要求 per-referent contribution 表。
+- Retail Product Floor baseline 只保留真实未支持 variants 的 xfail；已 xpass 的 variants 改为普通断言。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_semantic_contract_instrumentation.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests -k "semantic_contract or verifier or execution_trace" --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/agent_runtime/test_runtime_contracts.py tests/agent_runtime/test_tool_calling_contracts.py tests/test_semantic_status_defaults.py tests/test_topn_gap_trend_contract.py tests/core/test_semantic_metric_verification.py tests/core/test_vds_bi_capabilities.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -rxX tests/test_retail_cli_product_floor.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile data_agent_core/contracts/analysis_contracts.py data_agent_core/contracts/execution_contracts.py data_agent_core/contracts/verification_contracts.py data_agent_core/core/semantic_contract.py data_agent_core/core/analysis_planner.py data_agent_core/executors/pandas_executor.py data_agent_core/executors/sql_executor.py data_agent_core/verifier/rule_checker.py data_agent_core/task_execution_contracts.py agent_runtime/data_agent_tool_impl.py agent_runtime/data_agent_tool_catalog.py agent_runtime/data_analysis_roles.py data_agent_core/output/response_builder.py data_agent_core/agent/single_agent.py tests/test_semantic_contract_instrumentation.py tests/core/test_semantic_metric_verification.py tests/core/test_vds_bi_capabilities.py tests/test_semantic_status_defaults.py tests/test_topn_gap_trend_contract.py tests/test_retail_cli_product_floor.py`
+- `git diff --check`
+
+### 测试结果
+
+- `tests/test_semantic_contract_instrumentation.py` 通过：`25 passed, 2 warnings`。
+- semantic/verifier/execution_trace 选择性测试通过：`58 passed, 878 deselected, 32 warnings`。
+- runtime/tool/semantic-status/VDS BI 相邻回归通过：`52 passed`。
+- Retail Product Floor 通过：`48 passed, 5 xfailed, 222 warnings`，已清理为 `0 xpassed`；剩余 xfail 为 F2 一个贡献问法、F6 三个 RFM 问法、F7 一个 CustomerID 缺失影响问法。
+- py_compile 通过。
+- `git diff --check` 通过。
+
+### 遗留问题
+
+- 本轮没有实现完整 rerun/correction loop，只输出 typed `correction_action`，由后续 correction planner 消费。
+- SQL trace 仍是 SQL MVP 能力范围内的结构化 trace；非 SQL-native operation 仍会失败并携带 partial trace。
+- 未运行完整 pytest、大 benchmark、真实 LLM provider gate、前端浏览器 smoke 或长链路 API 压测。
+- Retail F2 `国家维度的 Quantity 贡献`、F6 RFM、F7 CustomerID 缺失影响仍保留为明确 xfail。
+
+### 是否影响主流程
+
+是。影响 AnalysisPlan、Pandas / SQL executor、Verifier、tool runtime、single-agent generic path、Response Builder debug 和 task contract 校验。
+
+### 是否涉及 Benchmark
+
+不涉及 benchmark runner、题集、scorer 或标准答案；仅运行 focused/unit 回归与 Retail Product Floor 测试。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。`execution_spec` / `execution_trace` 是 provider-neutral、framework-neutral 的 Planner -> Executor -> Verifier 闭环契约。
+
+### 是否修改核心数据契约
+
+是。`AnalysisPlan` 新增 optional `execution_spec`；`ExecutionResult` 新增 optional `execution_trace`；`VerificationResult` 新增 optional `semantic_issues`，均保持默认值兼容旧构造。
+
+### 是否修改 API 契约
+
+不修改顶层 API 必需字段；debug / verification 内会新增 `execution_spec`、`execution_trace`、`semantic_issues`，tool `verify_results` schema 增加 optional 入参。
+
+### 是否新增或修改错误类型
+
+未新增 ErrorResult 类型；新增 semantic issue code/action，包括 `missing_execution_trace`、`missing_filter`、`missing_groupby`、`wrong_metric_formula`、`wrong_comparison_type`、`legacy_unverified` 等。
+
+### 是否新增或修改运行追踪逻辑
+
+是。Executor 输出稳定 `execution_trace`，Response Builder debug 和 tool payload 可读取该 trace。
+
+### 是否已同步 README
+
+否。本轮为内部语义 contract / trace / verifier 闭环与测试预期修正，不改变 README 的启动方式、公开主流程说明或顶层 API 必需字段；本记录已说明原因。
+
+2026-06-05 14:54 CST
+
+### 本次目标
+
+新增 schema-aware CanonicalSemanticContract 语义契约层，把 deterministic parser、LLM intent/plan、轻量 schema semantics、metric/dimension/filter/comparison/time/ranking 解析统一为可序列化、可验证的 Planner 权威语义契约；保持现有 9 个 Role 节点和既有 API 顶层形状。
+
+### 修改文件
+
+- data_agent_core/core/semantic_contract.py
+- data_agent_core/contracts/analysis_contracts.py
+- data_agent_core/core/analysis_planner.py
+- agent_runtime/workflow_state.py
+- agent_runtime/data_analysis_roles.py
+- agent_runtime/data_agent_tool_catalog.py
+- agent_runtime/data_agent_tool_impl.py
+- data_agent_core/agent/single_agent.py
+- data_agent_core/verifier/rule_checker.py
+- data_agent_core/output/response_builder.py
+- data_agent_core/tracing/run_trace.py
+- multi_agent_workflows/end_to_end_data_analysis_workflow.py
+- tests/test_semantic_contract_instrumentation.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `CanonicalSemanticContract` 及 `ResolvedMetric`、`ResolvedDimension`、`ResolvedFilter`、`ResolvedComparison`、`ResolvedTimeSpec`、`ResolvedRanking`，支持 `.to_dict()` 序列化。
+- 新增轻量 schema semantic profile、semantic candidate 收集、schema value filter linker、pairwise comparison classifier、ranking/time resolver 和 contract coverage verifier。
+- `build_analysis_plan()` 默认生成 canonical semantic contract，并把 contract 写入 `LogicForm.semantic_contract`、`AnalysisPlan.semantic_contract` 和 `constraints.generalization_contract.semantic_contract`；同时按 contract 对齐顶层 metric/group_by/filter/time/ranking 字段。
+- multi-agent Planner 将 deterministic guardrail、LLM intent、LLM plan、schema profile 和 column mapping 都作为候选输入，生成统一 contract 后再构建 AnalysisPlan；Data Engineer 节点顺序保持不变。
+- tool runtime、WorkflowState、single-agent fallback、RunTrace、monitor compact summary、Response Builder debug 和 Verifier 均支持传递/报告 canonical semantic contract。
+- Verifier 新增 canonical contract coverage 检查：执行成功但 plan 未覆盖 contract metric/dimension/filter/comparison 时 fail-closed，不再只依赖 Pandas/SQL 一致性。
+- 保持既有 TopN insufficient public status 兼容：multi-agent tool 在已有 canonical contract 时不再用 raw question 改写旧 task-contract public `semantic_status` 口径。
+- focused regression 覆盖：parameters metric/dimension 提升、schema value filter、实体数量优先 schema entity id 而非 row_count、pairwise gap、普通中文“和”连接词不误判 pairwise comparison、trend physical operation vs semantic capability、canonical filter coverage fail-closed。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile data_agent_core/core/semantic_contract.py data_agent_core/contracts/analysis_contracts.py data_agent_core/core/analysis_planner.py agent_runtime/workflow_state.py agent_runtime/data_analysis_roles.py agent_runtime/data_agent_tool_impl.py agent_runtime/data_agent_tool_catalog.py data_agent_core/verifier/rule_checker.py data_agent_core/output/response_builder.py data_agent_core/agent/single_agent.py multi_agent_workflows/end_to_end_data_analysis_workflow.py data_agent_core/tracing/run_trace.py`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_semantic_contract_instrumentation.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/agent_runtime/test_runtime_contracts.py tests/agent_runtime/test_tool_calling_contracts.py tests/test_semantic_status_defaults.py tests/test_topn_gap_trend_contract.py tests/core/test_not_applicable_guardrails.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_overview_then_join_ranking_uses_dataset_profile.py tests/test_real_sales_metadata_followup_regression.py tests/test_derived_metric_followup_inherits_formula.py tests/test_response_renderer_direct_answer.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_retail_cli_product_floor.py --tb=short`
+
+### 测试结果
+
+- py_compile 通过。
+- `tests/test_semantic_contract_instrumentation.py` 通过：`12 passed`。
+- runtime / tool / semantic-status 相邻测试通过：`26 passed`。
+- 真实上传 / 多文件 / follow-up / renderer 相邻回归通过：`38 passed, 66 warnings, 8 subtests passed`；warnings 为既有 pandas 日期格式推断 warning。
+- Retail Product Floor 回归通过：`26 passed, 5 xfailed, 22 xpassed, 222 warnings`；warnings 为既有 pandas 日期格式推断 warning。
+
+### 遗留问题
+
+- 本轮只建设 canonical semantic contract 的首个闭环，没有重写 executor 物理执行能力；pairwise gap、entity count、复杂 derived metric 若 executor 本身不支持，Verifier 会通过 coverage/既有 task contract 暴露语义缺口。
+- 本轮未运行大 benchmark、真实 LLM provider gate、前端浏览器 smoke 或完整 API long-run。
+- 原主目录 `/Users/trevorcui/Documents/VDS` 仍有本轮未触碰的既有 dirty/untracked 文件；本轮所有代码改动在新 worktree `/Users/trevorcui/Documents/VDS-canonical-semantic-contract`。
+
+### 是否影响主流程
+
+是。影响 Planner 产物、AnalysisPlan、Verifier、Response Builder debug、single-agent fallback 和 multi-agent state/trace 的语义契约传递；不改变 9 个 Role 节点顺序。
+
+### 是否涉及 Benchmark
+
+不涉及 benchmark runner、题集、scorer 或标准答案。仅运行了现有回归测试防止能力回退。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。新增 contract 是 provider-neutral / framework-neutral 的稳定语义契约，便于以后把 Planner、Verifier、Response Builder 按同一 contract 对接到其他编排框架。
+
+### 是否修改核心数据契约
+
+是。`LogicForm`、`AnalysisPlan` 和 `RunTrace` 新增可选 `semantic_contract` 字段；默认空 dict / None 兼容既有构造。
+
+### 是否修改 API 契约
+
+否。未新增或删除顶层 response 字段；canonical semantic contract 仅通过已有 `logic_form` / `analysis_plan` / `debug` / trace 内部结构暴露。
+
+### 是否新增或修改错误类型
+
+否。未新增 ErrorResult 类型；Verifier issue 使用现有 `issues` / `semantic_verification_notes` 路径表达 canonical coverage 失败。
+
+### 是否新增或修改运行追踪逻辑
+
+是。`RunTrace` 和 multi-agent monitor compact summary 会记录 canonical semantic contract 摘要。
+
+### 是否已同步 README
+
+否。本轮是内部 Planner/Verifier 语义契约闭环，不改变用户安装、启动、公开 API 顶层字段或 README 当前阶段描述；已在本记录说明原因。
+
 2026-06-05 13:15 CST
 
 ### 本次目标
@@ -8494,6 +8958,87 @@ YYYY-MM-DD HH:MM TZ
 ### 是否已同步 README
 
 否。本轮是即时 UI 修正，未改变公开产品契约；已同步 CHANGELOG_AI。
+
+2026-06-05 17:10 CST
+
+### 本次目标
+
+收口 canonical semantic contract 最终审查 P0/P1 残留缺口：修复 executor actual `execution_trace` 覆盖不足导致 fee-engine、VDS BI 和 data-quality 成功执行后仍被 Verifier 判为 unsupported / missing semantic evidence 的问题。
+
+### 修改文件
+
+- data_agent_core/executors/pandas_executor.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- Pandas executor actual trace builder 增加通用 fee-engine 分支：对 `card_scheme_steering` 等受控 fee rule operation 只记录实际调用 fee engine 使用的 filters / time scope / ranking objective evidence，不再把这些分支标成 unsupported。
+- 增加 VDS BI schema-backed operation actual trace：记录实际执行的 metric、group/entity grain、ranking order/limit、period comparison 和 value filters，避免 complete empty trace 造成 missing_groupby / ranking_mismatch。
+- DataFrame 分支的 `filters_applied` 改为只记录当前 DataFrame 上可解析、可执行的 filter / condition，避免计划中存在但执行分支未实际应用的 filter 进入 actual trace。
+- `metric_per_distinct_entity` trace 记录 entity denominator grain，匹配实际按 entity distinct denominator 计算的语义覆盖。
+- `data_quality_report` 增加通用 actual trace：仅当扫描表中确实存在 `time_column` 时记录该时间字段，避免成功质量扫描被误标为 unsupported。
+
+### 测试方式
+
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/backend/test_data_agent_service.py::DataAgentServiceTest::test_card_scheme_steering_monthly_scope_question_2644_passes_verifier tests/backend/test_data_agent_service.py::DataAgentServiceTest::test_card_scheme_steering_monthly_scope_with_explicit_year_passes_verifier tests/backend/test_data_agent_service.py::DataAgentServiceTest::test_card_scheme_steering_annual_scope_still_passes_verifier tests/core/test_vds_bi_capabilities.py::VdsBiCapabilitiesTest::test_group_top_entities_verifier_accepts_outer_group_and_inner_entity tests/core/test_vds_bi_capabilities.py::VdsBiCapabilitiesTest::test_period_delta_profit_margin_verifier_accepts_vds_ratio_metric --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/test_semantic_contract_instrumentation.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests -k "semantic_contract or verifier or execution_trace" --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q tests/agent_runtime/test_runtime_contracts.py tests/agent_runtime/test_tool_calling_contracts.py tests/test_semantic_status_defaults.py tests/test_topn_gap_trend_contract.py tests/core/test_semantic_metric_verification.py tests/core/test_vds_bi_capabilities.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -rxX tests/test_retail_cli_product_floor.py --tb=short`
+- `/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m py_compile data_agent_core/contracts/analysis_contracts.py data_agent_core/contracts/execution_contracts.py data_agent_core/contracts/verification_contracts.py data_agent_core/core/semantic_contract.py data_agent_core/core/analysis_planner.py data_agent_core/executors/pandas_executor.py data_agent_core/executors/sql_executor.py data_agent_core/verifier/rule_checker.py data_agent_core/task_execution_contracts.py agent_runtime/data_agent_tool_impl.py agent_runtime/data_agent_tool_catalog.py agent_runtime/data_analysis_roles.py data_agent_core/output/response_builder.py data_agent_core/agent/single_agent.py tests/test_semantic_contract_instrumentation.py tests/core/test_semantic_metric_verification.py tests/core/test_vds_bi_capabilities.py tests/test_semantic_status_defaults.py tests/test_topn_gap_trend_contract.py tests/test_retail_cli_product_floor.py`
+- `git diff --check`
+
+### 测试结果
+
+- 已知 5 个最终审查红点通过：`5 passed, 15 warnings`。
+- `tests/test_semantic_contract_instrumentation.py` 通过：`25 passed, 2 warnings`。
+- semantic/verifier/execution_trace 选择性测试通过：`58 passed, 878 deselected, 32 warnings`。
+- runtime/tool/semantic-status/VDS BI 相邻回归通过：`52 passed`。
+- Retail Product Floor 通过：`48 passed, 5 xfailed, 222 warnings`。
+- py_compile 通过。
+- `git diff --check` 通过。
+
+### 遗留问题
+
+- SQL executor 仍保持 MVP 范围：SQL-native operation 才能输出 complete actual trace，非 native operation 仍应 partial / unsupported。
+- 仍未运行完整 pytest、大 benchmark、真实 LLM provider gate、前端浏览器 smoke 或长链路 API 压测。
+- Retail Product Floor 仍保留既有 5 个 xfail，不属于本轮修复范围。
+
+### 是否影响主流程
+
+是。影响 Pandas executor 输出给 Verifier / Response Builder / tool runtime 的 actual execution trace 证据，但不改变业务计算结果。
+
+### 是否涉及 Benchmark
+
+不涉及 benchmark runner、题集、scorer 或标准答案；仅运行 focused/unit/retail regression 测试。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。actual execution trace 更接近 provider-neutral 的 Planner -> Executor -> Verifier 证据链。
+
+### 是否修改核心数据契约
+
+否。本轮没有新增 dataclass 字段；只收紧 `execution_trace` 既有字段的实际含义和填充范围。
+
+### 是否修改 API 契约
+
+不修改顶层 API 必需字段；debug / verification 中的 `execution_trace` 内容更准确。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+是。Pandas executor actual trace 针对 fee-engine、VDS BI、data-quality 和 DataFrame filters 增加实际执行证据记录。
+
+### 是否已同步 README
+
+否。本轮是内部 executor trace 证据修复，未改变公开使用说明、顶层 API 必填字段或用户可见功能入口；已同步 CHANGELOG_AI。
 
 ## 2026-06-05 Retail 单 CSV Product Floor F3：Sales/Revenue by Country
 

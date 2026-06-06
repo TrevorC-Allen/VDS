@@ -49,7 +49,7 @@ OLD_DEMO_QUESTION_TOKENS = (
 )
 
 OPERATION_EQUIVALENTS = {
-    "dataset_overview": {"dataset_overview", "multi_table_dataset_overview"},
+    "dataset_overview": {"dataset_overview", "multi_table_dataset_overview", "dataset_source_overview"},
     "ranking": {"ranking", "filtered_metric_ranking"},
     "growth_ranking": {"growth_ranking"},
     "cleaning_policy": {"cleaning_policy", "quality_summary", "data_quality_report", "anomaly_rules", "outlier_count", "numeric_quality", "temporal_quality"},
@@ -314,7 +314,7 @@ def run_agent_random_conversation_eval(
         {
             family
             for scenario in selected
-            for family in scenario.required_capability_families
+            for family in _required_families_for_turn_budget(scenario, max_followups=max_followups)
         }
     )
     required_scenario_families = _normalize_required_scenario_families(required_families, selected)
@@ -1824,18 +1824,37 @@ def _turn_issues(
 
 def _scenario_issues(scenario: ConversationScenario, turns: list[TurnEvidence]) -> list[str]:
     issues: list[str] = []
+    expected_turns = scenario.turn_templates[: len(turns)] if scenario.turn_templates else []
+    required_operations = list(
+        dict.fromkeys(
+            turn.required_operation
+            for turn in expected_turns
+            if turn.required_operation
+        )
+    ) or list(scenario.required_operations)
+    required_families = list(
+        dict.fromkeys(
+            turn.capability_family
+            for turn in expected_turns
+            if turn.capability_family
+        )
+    ) or list(scenario.required_capability_families)
     operations = {turn.operation for turn in turns if turn.operation}
-    for operation in scenario.required_operations:
+    for operation in required_operations:
         if not _operation_present(operation, operations):
             issues.append(f"missing_required_operation:{operation}")
     families = {turn.capability_family for turn in turns if turn.capability_family}
-    for family in scenario.required_capability_families:
+    for family in required_families:
         if family not in families:
             issues.append(f"missing_required_capability_family:{family}")
     if scenario.min_turn_count and len(turns) < scenario.min_turn_count:
         issues.append(f"min_turn_count_not_met:{len(turns)}<{scenario.min_turn_count}")
-    if scenario.min_distinct_capability_families and len(families) < scenario.min_distinct_capability_families:
-        issues.append(f"min_distinct_capability_families_not_met:{len(families)}<{scenario.min_distinct_capability_families}")
+    min_distinct_families = min(
+        scenario.min_distinct_capability_families,
+        len({turn.capability_family for turn in expected_turns if turn.capability_family}) or scenario.min_distinct_capability_families,
+    )
+    if min_distinct_families and len(families) < min_distinct_families:
+        issues.append(f"min_distinct_capability_families_not_met:{len(families)}<{min_distinct_families}")
     expected_followups = [turn for turn in turns[1:] if turn.expected_kind == "followup_analysis"]
     if expected_followups and not any(_turn_has_context(turn) for turn in expected_followups):
         issues.append("no_followup_turn_was_classified")
@@ -1846,6 +1865,14 @@ def _scenario_issues(scenario: ConversationScenario, turns: list[TurnEvidence]) 
             if token in turn.question:
                 issues.append(f"turn_{turn.index}:old_demo_question_token:{token}")
     return issues
+
+
+def _required_families_for_turn_budget(scenario: ConversationScenario, *, max_followups: int) -> list[str]:
+    if not scenario.turn_templates:
+        return list(scenario.required_capability_families)
+    turn_budget = max(1, int(max_followups or 0) + 1)
+    expected_turns = scenario.turn_templates[:turn_budget]
+    return list(dict.fromkeys(turn.capability_family for turn in expected_turns if turn.capability_family))
 
 
 def _llm_generated_conversation_issues(turns: list[TurnEvidence]) -> list[str]:

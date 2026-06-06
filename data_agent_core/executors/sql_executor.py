@@ -11,7 +11,12 @@ import time
 from typing import Any
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan
-from data_agent_core.contracts.execution_contracts import ExecutionResult
+from data_agent_core.contracts.execution_contracts import (
+    ExecutionResult,
+    build_actual_execution_trace,
+    empty_actual_execution_trace,
+    prepare_execution_plan_for_backend,
+)
 from data_agent_core.core.capability_registry import SQL_NATIVE_OPERATIONS
 from data_agent_core.errors.error_result import ErrorResult
 from data_agent_core.errors.error_types import SQL_EXECUTION_ERROR
@@ -24,19 +29,35 @@ def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult
     """Execute SQL-compatible operations using sqlite fallback."""
 
     start = time.perf_counter()
+    effective_plan = plan
+    expected_trace: dict[str, Any] = {}
+    execution_trace: dict[str, Any] = {}
     try:
-        value = _execute_value(plan, context)
+        effective_plan, expected_trace, trace_warnings = prepare_execution_plan_for_backend(plan, source="sql_executor")
+        value = _execute_value(effective_plan, context)
+        execution_trace = _actual_trace_for_plan(effective_plan, trace_warnings=trace_warnings)
         columns, rows = _result_rows(value)
+        debug = {
+            "execution_spec": dict(getattr(plan, "execution_spec", {}) or {}),
+            "expected_trace": expected_trace,
+            "execution_trace": execution_trace,
+        }
         return ExecutionResult(
             backend="sqlite",
             success=True,
             columns=columns,
             rows=rows,
             value=value,
-            summary=f"Executed SQL-compatible operation {plan.logic_form.operation}.",
+            summary=f"Executed SQL-compatible operation {effective_plan.logic_form.operation}.",
             latency_ms=(time.perf_counter() - start) * 1000,
+            warnings=trace_warnings,
+            debug=debug,
+            execution_trace=execution_trace,
+            expected_trace=expected_trace,
         )
     except Exception as exc:  # noqa: BLE001
+        trace_status = "unsupported" if str(effective_plan.logic_form.operation or "") not in SQL_NATIVE_OPERATIONS else "partial"
+        execution_trace = _actual_trace_for_plan(effective_plan, trace_status=trace_status)
         return ExecutionResult(
             backend="sqlite",
             success=False,
@@ -50,6 +71,13 @@ def execute_plan(plan: AnalysisPlan, context: dict[str, Any]) -> ExecutionResult
                     suggested_fix="Use the Pandas path for non-SQL rule-engine operations or inspect SQL translation.",
                 )
             ],
+            debug={
+                "execution_spec": dict(getattr(plan, "execution_spec", {}) or {}),
+                "expected_trace": expected_trace,
+                "execution_trace": execution_trace,
+            },
+            execution_trace=execution_trace,
+            expected_trace=expected_trace,
         )
 
 
@@ -105,6 +133,57 @@ def _execute_value(plan: AnalysisPlan, context: dict[str, Any]) -> Any:
     finally:
         conn.close()
     raise ValueError(f"Unsupported operation: {op}")
+
+
+def _actual_trace_for_plan(
+    plan: AnalysisPlan,
+    *,
+    trace_status: str = "complete",
+    trace_warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    logic = plan.logic_form
+    op = str(logic.operation or "")
+    params = dict(logic.parameters or {})
+    if op not in SQL_NATIVE_OPERATIONS:
+        return empty_actual_execution_trace(operation=op, source="sql_executor", trace_status="unsupported")
+    groupby_ops = {
+        "top_count",
+        "group_average",
+        "aggregation",
+        "trend",
+        "time_series",
+        "ranking",
+        "growth_ranking",
+        "filtered_metric_ranking",
+        "grouped_child_ranking",
+        "rank_by_metric",
+        "top_k_share",
+    }
+    ranking_ops = {"ranking", "growth_ranking", "filtered_metric_ranking", "grouped_child_ranking", "rank_by_metric", "top_k_share"}
+    aggregation_ops = SQL_NATIVE_OPERATIONS - {"field_values", "not_applicable"}
+    comparison_ops = {"growth_ranking"}
+    trace = build_actual_execution_trace(
+        plan,
+        source="sql_executor",
+        operation=op,
+        trace_status=trace_status,
+        include_metrics=op in aggregation_ops or op in ranking_ops,
+        include_aggregation=op in aggregation_ops,
+        include_formula=op in aggregation_ops or op in ranking_ops,
+        include_groupby=op in groupby_ops and bool(params.get("dimension") or params.get("group_by") or getattr(logic, "group_by", None)),
+        include_filters=op not in {"field_values", "not_applicable"},
+        include_comparison=op in comparison_ops or bool(params.get("comparison") or params.get("requires_gap_comparison")),
+        include_time=op in {"trend", "time_series", "growth_ranking"} or bool(params.get("time_column") or params.get("time_bucket")),
+        include_ranking=op in ranking_ops,
+        trace_warnings=trace_warnings,
+    )
+    if op == "row_count":
+        trace["aggregation"] = "count"
+    if op == "distinct_count":
+        trace["aggregation"] = params.get("aggregation") or "nunique"
+    if op == "growth_ranking" and not trace.get("comparison_type"):
+        trace["comparison_type"] = "time_adjacent_diff"
+    return trace
 
 
 def _result_rows(value: Any) -> tuple[list[str], list[dict[str, Any]]]:
@@ -258,8 +337,7 @@ def _aggregation_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> Any:
     if aggregation in {"nunique", "distinct_count"}:
         value = conn.execute(f"SELECT COUNT(DISTINCT {_quote_identifier(str(metric))}) FROM analysis_table{where_sql}", values).fetchone()[0]
         return int(value or 0)
-    sql_func = _sql_agg_func(aggregation)
-    value = conn.execute(f"SELECT {sql_func}({_quote_identifier(str(metric))}) FROM analysis_table{where_sql}", values).fetchone()[0]
+    value = conn.execute(f"SELECT {_sql_metric_agg_expr(str(metric), aggregation)} FROM analysis_table{where_sql}", values).fetchone()[0]
     return 0.0 if value is None else value
 
 
@@ -357,9 +435,12 @@ def _metric_spec_sql_expression(spec: dict[str, str]) -> str:
     elif aggregation == "count":
         q_field = _quote_identifier(field)
         expression = f"COUNT({q_field})"
+    elif aggregation == "sum_abs":
+        q_field = _quote_identifier(field)
+        expression = f"SUM(ABS(CAST({q_field} AS REAL)))"
     else:
         q_field = _quote_identifier(field)
-        expression = f"{_sql_agg_func(aggregation)}({q_field})"
+        expression = f"{_sql_agg_func(aggregation)}(CAST({q_field} AS REAL))"
     return f"{expression} AS {_quote_identifier(name)}"
 
 
@@ -417,9 +498,8 @@ def _multi_metric_aggregation_sql(
     values: list[Any] | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     values = list(values or [])
-    sql_func = _sql_agg_func(aggregation)
     metric_exprs = [
-        f"{sql_func}({_quote_identifier(metric)}) AS {_quote_identifier(metric)}"
+        f"{_sql_metric_agg_expr(metric, aggregation)} AS {_quote_identifier(metric)}"
         for metric in metrics
     ]
     if dimension:
@@ -714,6 +794,19 @@ def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float | li
     dimension = str(params["dimension"])
     ranking_metric = params.get("ranking_metric", params.get("metric"))
     share_metric = params.get("share_metric", params.get("metric"))
+    derived_metric = params.get("derived_metric") if isinstance(params.get("derived_metric"), dict) else {}
+    derived_metric_name = str(derived_metric.get("name") or "").strip() if derived_metric else ""
+    use_derived_ranking = bool(
+        derived_metric
+        and ranking_metric not in {None, "__row_count__", "row_count", "transaction_count"}
+        and str(ranking_metric) == derived_metric_name
+    )
+    use_derived_share = bool(
+        derived_metric
+        and share_metric not in {None, "__row_count__", "row_count", "transaction_count"}
+        and str(share_metric) == derived_metric_name
+    )
+    derived_expr = _derived_metric_sql_expression(derived_metric) if derived_metric else ""
     aggregation = str(params.get("aggregation") or "sum")
     limit = int(params.get("limit") or 3)
     where_sql, values = _where_from_filters(plan.logic_form.filters)
@@ -721,6 +814,12 @@ def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float | li
     if aggregation == "count" or not ranking_metric or ranking_metric in {"__row_count__", "row_count", "transaction_count"}:
         rows = conn.execute(
             f"SELECT {q_dimension} FROM analysis_table{where_sql} GROUP BY {q_dimension} ORDER BY COUNT(*) DESC LIMIT ?",
+            values + [limit],
+        ).fetchall()
+    elif use_derived_ranking:
+        rows = conn.execute(
+            f"SELECT {q_dimension}, {derived_expr} AS value FROM analysis_table{where_sql} "
+            f"GROUP BY {q_dimension} ORDER BY value DESC LIMIT ?",
             values + [limit],
         ).fetchall()
     else:
@@ -742,8 +841,12 @@ def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float | li
     else:
         share_metric_name = str(share_metric)
         q_share_metric = _quote_identifier(share_metric_name)
-        denominator = float(conn.execute(f"SELECT SUM({q_share_metric}) FROM analysis_table{where_sql}", values).fetchone()[0] or 0)
-        numerator = float(conn.execute(f"SELECT SUM({q_share_metric}) FROM analysis_table{selected_where}", values + selected_values).fetchone()[0] or 0)
+        if use_derived_share:
+            denominator = float(conn.execute(f"SELECT {derived_expr} FROM analysis_table{where_sql}", values).fetchone()[0] or 0)
+            numerator = float(conn.execute(f"SELECT {derived_expr} FROM analysis_table{selected_where}", values + selected_values).fetchone()[0] or 0)
+        else:
+            denominator = float(conn.execute(f"SELECT SUM({q_share_metric}) FROM analysis_table{where_sql}", values).fetchone()[0] or 0)
+            numerator = float(conn.execute(f"SELECT SUM({q_share_metric}) FROM analysis_table{selected_where}", values + selected_values).fetchone()[0] or 0)
     if denominator == 0.0:
         return [] if params.get("requires_previous_artifact") or params.get("referent_values") else 0.0
     if params.get("requires_previous_artifact") or params.get("referent_values"):
@@ -756,6 +859,8 @@ def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float | li
             value_params = values + [selected_value]
             if share_metric in {None, "__row_count__", "row_count", "transaction_count"}:
                 group_numerator = float(conn.execute(f"SELECT COUNT(*) FROM analysis_table{value_where}", value_params).fetchone()[0] or 0)
+            elif use_derived_share:
+                group_numerator = float(conn.execute(f"SELECT {derived_expr} FROM analysis_table{value_where}", value_params).fetchone()[0] or 0)
             else:
                 group_numerator = float(conn.execute(f"SELECT SUM({q_share_metric}) FROM analysis_table{value_where}", value_params).fetchone()[0] or 0)
             result_rows.append(
@@ -835,33 +940,36 @@ def _filtered_metric_ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -
     limit = 1000000 if isinstance(params.get("rank_target"), dict) else int(params.get("rank_position") or params.get("limit") or 1)
     where_sql, values = _where_from_filters(plan.logic_form.filters)
     where_sql, values = _with_candidate_topn_filter_sql(where_sql, values, params)
+    where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(dimension))
     if isinstance(derived_metric, dict) and derived_metric:
         metric_name = str(derived_metric.get("name") or "ratio")
+        q_dimension = _quote_identifier(dimension)
         rows = conn.execute(
-            f"SELECT {_quote_identifier(dimension)}, {_derived_metric_sql_expression(derived_metric)} AS value "
-            f"FROM analysis_table{where_sql} GROUP BY {_quote_identifier(dimension)} ORDER BY value {sort_order} LIMIT ?",
+            f"SELECT {q_dimension}, {_derived_metric_sql_expression(derived_metric)} AS value "
+            f"FROM analysis_table{where_sql} GROUP BY {q_dimension} ORDER BY value {sort_order}, {q_dimension} ASC LIMIT ?",
             values + [limit],
         ).fetchall()
         return _slice_ranked_rows([{dimension: row[0], metric_name: row[1]} for row in rows], params)
+    q_dimension = _quote_identifier(dimension)
     if aggregation == "count" or metric is None:
         rows = conn.execute(
-            f"SELECT {_quote_identifier(dimension)}, COUNT(*) AS count FROM analysis_table{where_sql} "
-            f"GROUP BY {_quote_identifier(dimension)} ORDER BY count {sort_order} LIMIT ?",
+            f"SELECT {q_dimension}, COUNT(*) AS count FROM analysis_table{where_sql} "
+            f"GROUP BY {q_dimension} ORDER BY count {sort_order}, {q_dimension} ASC LIMIT ?",
             values + [limit],
         ).fetchall()
         return _slice_ranked_rows([{dimension: row[0], "count": row[1]} for row in rows], params)
     if aggregation in {"nunique", "distinct_count"}:
         rows = conn.execute(
-            f"SELECT {_quote_identifier(dimension)}, COUNT(DISTINCT {_quote_identifier(str(metric))}) AS count "
-            f"FROM analysis_table{where_sql} GROUP BY {_quote_identifier(dimension)} ORDER BY count {sort_order} LIMIT ?",
+            f"SELECT {q_dimension}, COUNT(DISTINCT {_quote_identifier(str(metric))}) AS count "
+            f"FROM analysis_table{where_sql} GROUP BY {q_dimension} ORDER BY count {sort_order}, {q_dimension} ASC LIMIT ?",
             values + [limit],
         ).fetchall()
         return _slice_ranked_rows([{dimension: row[0], "count": row[1]} for row in rows], params)
     metric_name = str(metric)
-    sql_func = _sql_agg_func(aggregation)
+    metric_expr = _sql_metric_agg_expr(metric_name, aggregation)
     rows = conn.execute(
-        f"SELECT {_quote_identifier(dimension)}, {sql_func}({_quote_identifier(metric_name)}) AS value FROM analysis_table{where_sql} "
-        f"GROUP BY {_quote_identifier(dimension)} ORDER BY value {sort_order} LIMIT ?",
+        f"SELECT {q_dimension}, {metric_expr} AS value FROM analysis_table{where_sql} "
+        f"GROUP BY {q_dimension} ORDER BY value {sort_order}, {q_dimension} ASC LIMIT ?",
         values + [limit],
     ).fetchall()
     result_rows = [{dimension: row[0], metric_name: row[1]} for row in rows]
@@ -896,6 +1004,8 @@ def _grouped_child_ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> 
         metric_expr = f"{_sql_agg_func(aggregation)}({_quote_identifier(metric_name)})"
     q_parent = _quote_identifier(parent_dimension)
     q_child = _quote_identifier(child_dimension)
+    where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(parent_dimension))
+    where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(child_dimension))
     rows = conn.execute(
         f"""
 WITH grouped AS (
@@ -1129,24 +1239,25 @@ def _grouped_aggregation_sql(
     values: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
     values = values or []
+    q_dimension = _quote_identifier(dimension)
+    where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(dimension))
     if aggregation == "count" or metric is None:
         rows = conn.execute(
-            f"SELECT {_quote_identifier(dimension)}, COUNT(*) AS count FROM analysis_table{where_sql} GROUP BY {_quote_identifier(dimension)}",
+            f"SELECT {q_dimension}, COUNT(*) AS count FROM analysis_table{where_sql} GROUP BY {q_dimension}",
             values,
         ).fetchall()
         return [{dimension: row[0], "count": row[1]} for row in rows]
     if aggregation in {"nunique", "distinct_count"}:
         rows = conn.execute(
-            f"SELECT {_quote_identifier(dimension)}, COUNT(DISTINCT {_quote_identifier(str(metric))}) AS count "
-            f"FROM analysis_table{where_sql} GROUP BY {_quote_identifier(dimension)}",
+            f"SELECT {q_dimension}, COUNT(DISTINCT {_quote_identifier(str(metric))}) AS count "
+            f"FROM analysis_table{where_sql} GROUP BY {q_dimension}",
             values,
         ).fetchall()
         return [{dimension: row[0], "count": row[1]} for row in rows]
-    sql_func = _sql_agg_func(aggregation)
-    q_dimension = _quote_identifier(dimension)
     q_metric = _quote_identifier(str(metric))
+    metric_expr = _sql_metric_agg_expr(str(metric), aggregation)
     rows = conn.execute(
-        f"SELECT {q_dimension}, {sql_func}({q_metric}) AS {q_metric} FROM analysis_table{where_sql} GROUP BY {q_dimension}",
+        f"SELECT {q_dimension}, {metric_expr} AS {q_metric} FROM analysis_table{where_sql} GROUP BY {q_dimension}",
         values,
     ).fetchall()
     return [{dimension: row[0], metric: row[1]} for row in rows]
@@ -1167,21 +1278,54 @@ def _grouped_month_bucket_aggregation_sql(
 ) -> list[dict[str, Any]]:
     values = values or []
     bucket_expr = _month_bucket_sql_expression(params)
+    series_dimension = _month_bucket_series_dimension(params)
+    q_series_dimension = _quote_identifier(series_dimension) if series_dimension else ""
+    if series_dimension:
+        where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(series_dimension))
+        select_series = f", {q_series_dimension}"
+        group_series = f", {q_series_dimension}"
+        order_series = f", {q_series_dimension}"
+    else:
+        select_series = ""
+        group_series = ""
+        order_series = ""
     if aggregation == "count" or metric is None:
         rows = conn.execute(
-            f"SELECT {bucket_expr} AS month, COUNT(*) AS count FROM analysis_table{where_sql} "
-            f"GROUP BY month ORDER BY month",
+            f"SELECT {bucket_expr} AS month{select_series}, COUNT(*) AS count FROM analysis_table{where_sql} "
+            f"GROUP BY month{group_series} ORDER BY month{order_series}",
             values,
         ).fetchall()
-        return [{"month": row[0], "count": row[1]} for row in rows if row[0] not in {None, ""}]
+        result_rows: list[dict[str, Any]] = []
+        for row in rows:
+            if row[0] in {None, ""}:
+                continue
+            item = {"month": row[0]}
+            if series_dimension:
+                item[series_dimension] = row[1]
+                item["count"] = row[2]
+            else:
+                item["count"] = row[1]
+            result_rows.append(item)
+        return result_rows
     q_metric = _quote_identifier(str(metric))
-    sql_func = _sql_agg_func(aggregation)
+    metric_expr = _sql_metric_agg_expr(str(metric), aggregation)
     rows = conn.execute(
-        f"SELECT {bucket_expr} AS month, {sql_func}({q_metric}) AS {q_metric} FROM analysis_table{where_sql} "
-        f"GROUP BY month ORDER BY month",
+        f"SELECT {bucket_expr} AS month{select_series}, {metric_expr} AS {q_metric} FROM analysis_table{where_sql} "
+        f"GROUP BY month{group_series} ORDER BY month{order_series}",
         values,
     ).fetchall()
-    return [{"month": row[0], str(metric): row[1]} for row in rows if row[0] not in {None, ""}]
+    result_rows = []
+    for row in rows:
+        if row[0] in {None, ""}:
+            continue
+        item = {"month": row[0]}
+        if series_dimension:
+            item[series_dimension] = row[1]
+            item[str(metric)] = row[2]
+        else:
+            item[str(metric)] = row[1]
+        result_rows.append(item)
+    return result_rows
 
 
 def _grouped_month_bucket_derived_sql(
@@ -1195,12 +1339,34 @@ def _grouped_month_bucket_derived_sql(
     values = values or []
     metric_name = str(derived_metric.get("name") or "ratio")
     bucket_expr = _month_bucket_sql_expression(params)
+    series_dimension = _month_bucket_series_dimension(params)
+    q_series_dimension = _quote_identifier(series_dimension) if series_dimension else ""
+    if series_dimension:
+        where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(series_dimension))
+        select_series = f", {q_series_dimension}"
+        group_series = f", {q_series_dimension}"
+        order_series = f", {q_series_dimension}"
+    else:
+        select_series = ""
+        group_series = ""
+        order_series = ""
     rows = conn.execute(
-        f"SELECT {bucket_expr} AS month, {_derived_metric_sql_expression(derived_metric)} AS value "
-        f"FROM analysis_table{where_sql} GROUP BY month ORDER BY month",
+        f"SELECT {bucket_expr} AS month{select_series}, {_derived_metric_sql_expression(derived_metric)} AS value "
+        f"FROM analysis_table{where_sql} GROUP BY month{group_series} ORDER BY month{order_series}",
         values,
     ).fetchall()
-    return [{"month": row[0], metric_name: row[1]} for row in rows if row[0] not in {None, ""}]
+    result_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if row[0] in {None, ""}:
+            continue
+        item = {"month": row[0]}
+        if series_dimension:
+            item[series_dimension] = row[1]
+            item[metric_name] = row[2]
+        else:
+            item[metric_name] = row[1]
+        result_rows.append(item)
+    return result_rows
 
 
 def _month_bucket_sql_expression(params: dict[str, Any]) -> str:
@@ -1208,6 +1374,13 @@ def _month_bucket_sql_expression(params: dict[str, Any]) -> str:
     if not source:
         raise ValueError("Month time bucket requires a source time column.")
     return f"strftime('%Y-%m', {_sql_date_expr(source)})"
+
+
+def _month_bucket_series_dimension(params: dict[str, Any]) -> str:
+    series_dimension = str(params.get("series_dimension") or "").strip()
+    if not series_dimension or series_dimension == "month":
+        return ""
+    return series_dimension
 
 
 def _grouped_derived_ratio_sql(
@@ -1276,6 +1449,17 @@ def _sql_agg_func(aggregation: str) -> str:
 
 def _quote_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
+
+
+def _append_where_clause(where_sql: str, clause: str) -> str:
+    if not clause:
+        return where_sql
+    return f"{where_sql} AND {clause}" if where_sql else f" WHERE {clause}"
+
+
+def _dimension_not_null_clause(dimension: str) -> str:
+    q_dimension = _quote_identifier(str(dimension))
+    return f"({q_dimension} IS NOT NULL AND TRIM(CAST({q_dimension} AS TEXT)) != '')"
 
 
 def _where_from_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
@@ -1372,6 +1556,8 @@ def _sql_metric_agg_expr(metric: str, aggregation: str) -> str:
         return f"COUNT(DISTINCT {q_metric})"
     if aggregation == "count":
         return f"COUNT({q_metric})"
+    if aggregation == "sum_abs":
+        return f"SUM(ABS(CAST({q_metric} AS REAL)))"
     return f"{_sql_agg_func(aggregation)}(CAST({q_metric} AS REAL))"
 
 

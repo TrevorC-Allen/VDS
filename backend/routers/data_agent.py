@@ -95,6 +95,11 @@ def _http_status_for_response(response: dict[str, Any]) -> int:
     message_lower = message.lower()
     if "dataset not found" in message_lower or "project not found" in message_lower:
         return 404
+    semantic_status = str(response.get("semantic_status") or "").lower()
+    if semantic_status in {"failed", "warning", "needs_clarification"} and response.get("answer"):
+        return 200
+    if response.get("answer") and not errors:
+        return 200
     if error_type in {"VERIFICATION_FAILED", "PANDAS_EXECUTION_ERROR"} and response.get("answer"):
         return 200
     if error_type in {

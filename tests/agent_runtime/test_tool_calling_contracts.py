@@ -5,10 +5,13 @@ from __future__ import annotations
 import unittest
 import json
 import time
+from unittest.mock import patch
 
 from agent_runtime.agent_role import AgentRole
 from agent_runtime.data_agent_tool_catalog import TOOL_NAMES, build_data_agent_tool_registry
 from agent_runtime.provider_native_tool_adapter import (
+    NativeToolChatConfig,
+    OpenAICompatibleNativeToolChatClient,
     ProviderNativeToolLoopAdapter,
     build_openai_tool_schemas,
     parse_openai_tool_calls,
@@ -139,6 +142,47 @@ class ToolCallingContractTest(unittest.TestCase):
         self.assertEqual("profile_schema", result.trace_events[0]["tool_name"])
         self.assertNotIn("reasoning_content", result.messages[1])
 
+    def test_openai_compatible_native_tool_client_builds_real_smoke_payload(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            captured["timeout"] = timeout
+            captured["authorization"] = request.get_header("Authorization")
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return _FakeHTTPResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "{\"ok\": true}",
+                                "reasoning_content": "must not persist",
+                            }
+                        }
+                    ]
+                }
+            )
+
+        client = OpenAICompatibleNativeToolChatClient(
+            NativeToolChatConfig(
+                provider="openai",
+                api_key="local-provider-key",
+                model="test-model",
+                base_url="https://provider.example/v1",
+                timeout_seconds=7,
+            )
+        )
+        with patch("agent_runtime.provider_native_tool_adapter.urllib.request.urlopen", fake_urlopen):
+            message = client.complete([{"role": "user", "content": "use a tool"}], [{"type": "function", "function": {"name": "x"}}])
+
+        self.assertEqual("https://provider.example/v1/chat/completions", captured["url"])
+        self.assertEqual(7, captured["timeout"])
+        self.assertEqual("Bearer local-provider-key", captured["authorization"])
+        self.assertEqual("test-model", captured["payload"]["model"])
+        self.assertEqual("auto", captured["payload"]["tool_choice"])
+        self.assertNotIn("reasoning_content", message)
+
     def test_dispatcher_enforces_tool_timeout(self) -> None:
         registry = ToolRegistry()
         registry.register(
@@ -160,6 +204,125 @@ class ToolCallingContractTest(unittest.TestCase):
         self.assertEqual("TOOL_DISPATCH_ERROR", result.errors[0]["error_type"])
         self.assertIn("timed out", result.errors[0]["error_message"])
 
+    def test_dispatcher_redacts_sensitive_trace_error_and_output_payload(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="secret_echo",
+                description="Test-only tool with sensitive fields.",
+                input_schema={
+                    "type": "object",
+                    "required": ["dataset_id", "api_key", "analysis_plan"],
+                    "properties": {
+                        "dataset_id": {"type": "string"},
+                        "api_key": {"type": "string"},
+                        "analysis_plan": {
+                            "type": "object",
+                            "required": ["operation"],
+                            "properties": {
+                                "operation": {"type": "string", "enum": ["profile"]},
+                                "expected_answer": {"type": "string"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                allowed_roles=[AgentRole.PLANNER],
+                timeout_seconds=1,
+                callable_ref=lambda _arguments: {
+                    "visible": "ok",
+                    "authorization": "Bearer local-token",
+                    "nested": {"proxy_answer": "42"},
+                },
+            )
+        )
+        result = ToolDispatcher(registry).dispatch(
+            ToolCall(
+                step_id="tool_secret",
+                tool_name="secret_echo",
+                arguments={
+                    "dataset_id": "ds_1",
+                    "api_key": "local-token",
+                    "analysis_plan": {"operation": "profile", "expected_answer": "42"},
+                },
+                requested_by=AgentRole.PLANNER,
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual("[REDACTED]", result.output_payload["authorization"])
+        self.assertEqual("[REDACTED]", result.output_payload["nested"]["proxy_answer"])
+        trace_text = json.dumps(result.trace_event.to_dict(), ensure_ascii=False)
+        self.assertNotIn("local-token", trace_text)
+        self.assertNotIn("expected_answer", trace_text)
+        self.assertNotIn("proxy_answer", trace_text)
+
+        registry.register(
+            ToolDefinition(
+                name="secret_failure",
+                description="Test-only failing tool.",
+                input_schema={"type": "object", "required": [], "properties": {}, "additionalProperties": False},
+                allowed_roles=[AgentRole.PLANNER],
+                timeout_seconds=1,
+                callable_ref=lambda _arguments: (_ for _ in ()).throw(RuntimeError("api key local-token leaked")),
+            )
+        )
+        failure = ToolDispatcher(registry).dispatch(
+            ToolCall(step_id="tool_secret_failure", tool_name="secret_failure", arguments={}, requested_by=AgentRole.PLANNER)
+        )
+        self.assertFalse(failure.success)
+        self.assertEqual("[REDACTED]", failure.errors[0]["error_message"])
+        self.assertEqual("[REDACTED]", failure.trace_event.error)
+
+    def test_dispatcher_rejects_nested_unsafe_arguments_and_schema_enum(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="safe_plan",
+                description="Test-only nested schema validation.",
+                input_schema={
+                    "type": "object",
+                    "required": ["analysis_plan"],
+                    "properties": {
+                        "analysis_plan": {
+                            "type": "object",
+                            "required": ["operation"],
+                            "properties": {"operation": {"type": "string", "enum": ["profile", "aggregate"]}},
+                            "additionalProperties": True,
+                        }
+                    },
+                    "additionalProperties": False,
+                },
+                allowed_roles=[AgentRole.PLANNER],
+                timeout_seconds=1,
+                callable_ref=lambda arguments: {"operation": arguments["analysis_plan"]["operation"]},
+            )
+        )
+        dispatcher = ToolDispatcher(registry)
+
+        unsafe = dispatcher.dispatch(
+            ToolCall(
+                step_id="tool_unsafe",
+                tool_name="safe_plan",
+                arguments={"analysis_plan": {"operation": "profile", "raw_sql": "select * from table"}},
+                requested_by=AgentRole.PLANNER,
+            )
+        )
+        self.assertFalse(unsafe.success)
+        self.assertIn("forbidden unsafe argument keys", unsafe.errors[0]["error_message"])
+
+        invalid_enum = dispatcher.dispatch(
+            ToolCall(
+                step_id="tool_invalid_enum",
+                tool_name="safe_plan",
+                arguments={"analysis_plan": {"operation": "drop"}},
+                requested_by=AgentRole.PLANNER,
+            )
+        )
+        self.assertFalse(invalid_enum.success)
+        self.assertIn("must be one of", invalid_enum.errors[0]["error_message"])
+
 
 class _FakeProviderClient:
     def __init__(self, messages: list[dict[str, object]]) -> None:
@@ -168,6 +331,20 @@ class _FakeProviderClient:
     def complete(self, messages: list[dict[str, object]], tools: list[dict[str, object]]) -> dict[str, object]:
         self.assertion_payload = {"message_count": len(messages), "tool_count": len(tools)}
         return self._messages.pop(0)
+
+
+class _FakeHTTPResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
 
 
 if __name__ == "__main__":

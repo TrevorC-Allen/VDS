@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from data_agent_core.contracts.analysis_contracts import LogicForm, UserQuestion
-from data_agent_core.contracts.execution_contracts import ExecutionResult
+from data_agent_core.contracts.execution_contracts import ExecutionResult, build_actual_execution_trace, prepare_execution_plan_for_backend
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.output.response_builder import build_response
 from data_agent_core.task_execution_contracts import ContractVerificationReport, TaskExecutionContract, semantic_status_from_report
@@ -11,6 +11,19 @@ from data_agent_core.verifier.rule_checker import verify_execution
 
 
 class SemanticStatusDefaultsTest(unittest.TestCase):
+    def _trace_for_plan(self, plan: object) -> dict[str, object]:
+        effective_plan = prepare_execution_plan_for_backend(plan, source="pandas_executor")[0]
+        return build_actual_execution_trace(
+            effective_plan,
+            source="pandas_executor",
+            include_metrics=True,
+            include_aggregation=True,
+            include_formula=True,
+            include_groupby=True,
+            include_filters=True,
+            include_ranking=True,
+        )
+
     def test_no_task_contract_defaults_to_legacy_unverified(self) -> None:
         result = semantic_status_from_report(contract=None, report=None)
 
@@ -74,6 +87,7 @@ class SemanticStatusDefaultsTest(unittest.TestCase):
                 {"city": "上海", "sales": 1200},
                 {"city": "北京", "sales": 900},
             ],
+            execution_trace=self._trace_for_plan(plan),
         )
         verification = verify_execution(
             execution_result,

@@ -43,6 +43,8 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
         value = inherited.get(key)
         if value not in (None, "", [], {}):
             params[key] = value
+    if isinstance(inherited.get("derived_metric"), Mapping) and inherited.get("derived_metric"):
+        params.setdefault("derived_metric", dict(inherited.get("derived_metric") or {}))
     if auto_expand:
         filters.pop(dimension, None)
         preferred_top_n = _positive_int(contract.get("preferred_top_n") or action_parameters.get("preferred_top_n")) or 3
@@ -109,7 +111,33 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
     setattr(logic_form, "candidate_set", candidate_set)
     params.update(
         {
-            **{key: value for key, value in action_parameters.items() if key in {"metric", "dimension", "metrics", "aggregation", "time_column", "time_dimension", "candidate_filter", "limit", "top_n", "sort_order", "requires_gap_comparison"} and value not in (None, "", [], {})},
+            **{
+                key: value
+                for key, value in action_parameters.items()
+                if key
+                in {
+                    "metric",
+                    "dimension",
+                    "metrics",
+                    "aggregation",
+                    "time_column",
+                    "time_dimension",
+                    "source_time_field",
+                    "time_bucket",
+                    "candidate_filter",
+                    "limit",
+                    "top_n",
+                    "sort_order",
+                    "requires_gap_comparison",
+                    "derived_metric",
+                    "ranking_metric",
+                    "share_metric",
+                    "share_column",
+                    "total_metric_column",
+                    "capability_family",
+                }
+                and value not in (None, "", [], {})
+            },
             "requires_previous_artifact": True,
             "referent_artifact_id": str(contract.get("referent_artifact_id") or ""),
             "referent_dimension": dimension,

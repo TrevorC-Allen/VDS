@@ -7,7 +7,7 @@ import unittest
 import pandas as pd
 
 from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm, UserQuestion
-from data_agent_core.contracts.execution_contracts import ExecutionResult
+from data_agent_core.contracts.execution_contracts import ExecutionResult, build_actual_execution_trace, prepare_execution_plan_for_backend
 from data_agent_core.core.analysis_planner import build_analysis_plan
 from data_agent_core.executors import pandas_executor, sql_executor
 from data_agent_core.verifier.result_comparator import compare_results
@@ -15,6 +15,21 @@ from data_agent_core.verifier.rule_checker import verify_execution
 
 
 class SemanticMetricVerificationTest(unittest.TestCase):
+    def _trace_for_plan(self, plan: AnalysisPlan) -> dict[str, object]:
+        effective_plan = prepare_execution_plan_for_backend(plan, source="pandas_executor")[0]
+        return build_actual_execution_trace(
+            effective_plan,
+            source="pandas_executor",
+            include_metrics=True,
+            include_aggregation=True,
+            include_formula=True,
+            include_groupby=True,
+            include_filters=True,
+            include_comparison=True,
+            include_time=True,
+            include_ranking=True,
+        )
+
     def test_fraud_ranking_uses_volume_rate_not_raw_count(self) -> None:
         payments = pd.DataFrame(
             [
@@ -228,7 +243,7 @@ class SemanticMetricVerificationTest(unittest.TestCase):
                 output_format={"answer_type": "number"},
             )
         )
-        primary = ExecutionResult(backend="pandas", success=True, value=46284)
+        primary = ExecutionResult(backend="pandas", success=True, value=46284, execution_trace=self._trace_for_plan(plan))
 
         verification = verify_execution(
             primary,
@@ -310,6 +325,7 @@ class SemanticMetricVerificationTest(unittest.TestCase):
             backend="pandas",
             success=True,
             value={"answer": "2, 66.67%", "count": 2, "share": 66.6667, "total": 3},
+            execution_trace=self._trace_for_plan(plan),
         )
 
         verification = verify_execution(
@@ -330,7 +346,7 @@ class SemanticMetricVerificationTest(unittest.TestCase):
                 output_format={"answer_type": "text"},
             )
         )
-        primary = ExecutionResult(backend="pandas", success=True, value="水堆")
+        primary = ExecutionResult(backend="pandas", success=True, value="水堆", execution_trace=self._trace_for_plan(plan))
 
         verification = verify_execution(
             primary,
@@ -351,7 +367,7 @@ class SemanticMetricVerificationTest(unittest.TestCase):
                 output_format={"answer_type": "number"},
             )
         )
-        primary = ExecutionResult(backend="pandas", success=True, value=12.789)
+        primary = ExecutionResult(backend="pandas", success=True, value=12.789, execution_trace=self._trace_for_plan(plan))
 
         verification = verify_execution(
             primary,
@@ -374,7 +390,7 @@ class SemanticMetricVerificationTest(unittest.TestCase):
                 output_format={"answer_type": "percentage"},
             )
         )
-        primary = ExecutionResult(backend="pandas", success=True, value=102.06)
+        primary = ExecutionResult(backend="pandas", success=True, value=102.06, execution_trace=self._trace_for_plan(plan))
 
         verification = verify_execution(
             primary,
