@@ -818,6 +818,214 @@ def test_gap_followup_with_two_ordinals_uses_previous_ranking_not_single_rank(
     assert gap_rows[1].get("gap_to_leader") is not None
 
 
+def test_invoice_no_detail_lookup_strictly_applies_semantic_condition(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "提供invoice no 1007的所有数据行")
+    rows = _rows(response)
+    trace = ((response.get("debug") or {}).get("execution_trace") or {})
+
+    assert response.get("success") is True, response.get("answer")
+    assert response.get("semantic_status") == "passed"
+    assert rows
+    assert {str(row.get("InvoiceNo")) for row in rows} == {"1007"}
+    assert any(
+        item.get("column") == "InvoiceNo" and "1007" in {str(value) for value in item.get("values") or []}
+        for item in trace.get("filters_applied") or []
+    )
+
+
+def test_customer_typo_id_consumption_total_uses_sales_formula_and_filter(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "提供custom id为C1的消费总数")
+    params = _params(response)
+    trace = ((response.get("debug") or {}).get("execution_trace") or {})
+    rows = _rows(response)
+
+    assert response.get("success") is True, response.get("answer")
+    assert response.get("semantic_status") == "passed"
+    assert params.get("metric") == "Sales"
+    assert params.get("derived_metric", {}).get("formula") == "Quantity * UnitPrice"
+    assert trace.get("formula") == "Quantity * UnitPrice"
+    assert any(
+        item.get("column") == "CustomerID" and "C1" in {str(value) for value in item.get("values") or []}
+        for item in trace.get("filters_applied") or []
+    )
+    assert rows[0].get("Sales") == pytest.approx(97.5)
+
+
+def test_customer_spend_followup_inherits_previous_customer_filter(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_customer_spend_filter"
+
+    first = _ask(service, dataset_id, "提供custom id为C1的消费总数", conversation_id=conversation_id)
+    second = _ask(
+        service,
+        dataset_id,
+        "这个客户一共消费多少？",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    trace = ((second.get("debug") or {}).get("execution_trace") or {})
+    rows = _rows(second)
+
+    assert first.get("semantic_status") == "passed", first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert second.get("semantic_status") == "passed"
+    assert _params(second).get("metric") == "Sales"
+    assert trace.get("formula") == "Quantity * UnitPrice"
+    assert any(
+        item.get("column") == "CustomerID" and "C1" in {str(value) for value in item.get("values") or []}
+        for item in trace.get("filters_applied") or []
+    )
+    assert rows[0].get("Sales") == pytest.approx(97.5)
+
+
+def test_country_quantity_gap_followup_accepts_chinese_difference_value_word(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_country_quantity_gap_value"
+
+    first = _ask(service, dataset_id, "按 Country 看 Quantity 的 Top 排名", conversation_id=conversation_id)
+    second = _ask(
+        service,
+        dataset_id,
+        "这些国家差值是多少",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    gap_rows = ((second.get("debug") or {}).get("result_artifacts") or {}).get("gap_rows") or []
+
+    assert first.get("semantic_status") == "passed", first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert second.get("semantic_status") == "passed"
+    assert _params(second).get("dimension") == "Country"
+    assert _params(second).get("metric") == "Quantity"
+    assert len(gap_rows) >= 2
+    assert "adjacent_gap" in gap_rows[1]
+
+
+def test_self_contained_country_quantity_recommendation_keeps_explicit_country_dimension(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_country_recommendation_dimension"
+
+    first = _ask(service, dataset_id, "按 Country 看 Quantity 的 Top 排名", conversation_id=conversation_id)
+    second = _ask(
+        service,
+        dataset_id,
+        "按 Country 拆分 Quantity 的构成和集中度",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+
+    assert first.get("semantic_status") == "passed", first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert second.get("semantic_status") == "passed"
+    assert _params(second).get("dimension") == "Country"
+    assert _params(second).get("metric") == "Quantity"
+    assert "InvoiceNo" not in ((second.get("result") or {}).get("columns") or [])
+
+
+def test_country_quantity_grouped_recommendation_preserves_focus_dimension(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_country_grouped_recommendation"
+
+    first = _ask(service, dataset_id, "按 Country 看 Quantity 的 Top 排名", conversation_id=conversation_id)
+    second = _ask(
+        service,
+        dataset_id,
+        "按 Country 分组，计算 Quantity 的总和并返回前5个 Country",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+
+    assert first.get("semantic_status") == "passed", first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert second.get("semantic_status") == "passed"
+    assert _params(second).get("dimension") == "Country"
+    assert _params(second).get("metric") == "Quantity"
+    assert (second.get("result") or {}).get("columns") == ["Country", "Quantity"]
+
+
+def test_country_topn_invoice_date_drilldown_keeps_country_filter_and_month_bucket(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_country_invoice_date_drilldown"
+
+    first = _ask(service, dataset_id, "按 Country 看 Quantity 的 Top 排名", conversation_id=conversation_id)
+    second = _ask(
+        service,
+        dataset_id,
+        "把排名靠前的Country按InvoiceDate继续下钻",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    params = _params(second)
+    trace = ((second.get("debug") or {}).get("execution_trace") or {})
+    columns = (second.get("result") or {}).get("columns") or []
+
+    assert first.get("semantic_status") == "passed", first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert second.get("semantic_status") == "passed"
+    assert params.get("dimension") == "month"
+    assert params.get("series_dimension") == "Country"
+    assert params.get("time_column") == "InvoiceDate"
+    assert "InvoiceNo" not in columns
+    assert trace.get("time_grain") == "month"
+    assert trace.get("groupby_columns") == ["month", "Country"]
+    assert any(item.get("column") == "Country" and item.get("operator") == "in" for item in trace.get("filters_applied") or [])
+
+
+def test_missing_store_dimension_safe_fails_without_invoice_no_fallback(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "销售额最大的店家")
+    params = _params(response)
+
+    assert response.get("success") is False
+    assert response.get("semantic_status") in {"failed", "warning", "needs_clarification"}
+    assert params.get("dimension") != "InvoiceNo"
+    assert "InvoiceNo" not in ((response.get("result") or {}).get("columns") or [])
+
+
+def test_safe_failure_does_not_overwrite_previous_country_focus(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_focus_not_poisoned"
+
+    first = _ask(service, dataset_id, "按 Country 看 Quantity 的 Top 排名", conversation_id=conversation_id)
+    second = _ask(
+        service,
+        dataset_id,
+        "销售额最大的店家",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    third = _ask(
+        service,
+        dataset_id,
+        "这些国家差值是多少",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+
+    assert first.get("semantic_status") == "passed", first.get("answer")
+    assert second.get("semantic_status") in {"failed", "warning", "needs_clarification"}
+    assert third.get("success") is True, third.get("answer")
+    assert third.get("semantic_status") == "passed"
+    assert _params(third).get("dimension") == "Country"
+    assert _params(third).get("metric") == "Quantity"
+
+
 def test_followup_top_products_short_reference_drills_down_to_country_sales(
     generic_order_service: tuple[DataAgentService, str],
 ) -> None:
@@ -967,6 +1175,51 @@ def test_followup_top_customers_drills_down_to_product_quantity(
     assert filters.get("CustomerID") == ["C1", "C2", "C3", "C4", "C5"]
     assert (third.get("result") or {}).get("columns") == ["Description", "Quantity"]
     assert trace.get("groupby_columns") == ["Description"]
+
+
+def test_customer_sales_followup_does_not_poison_purchase_quantity_drilldown(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_customer_sales_then_purchase_quantity"
+
+    first = _ask(
+        service,
+        dataset_id,
+        "订单数量最多的前5个客户是谁？",
+        conversation_id=conversation_id,
+    )
+    second = _ask(
+        service,
+        dataset_id,
+        "这些客户的销售额分别是多少？销售额按 Quantity * UnitPrice 算。",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    third = _ask(
+        service,
+        dataset_id,
+        "这5个客户里谁买得最多？",
+        conversation_id=str(second.get("conversation_id") or conversation_id),
+    )
+    fourth = _ask(
+        service,
+        dataset_id,
+        "列出这5个客户买最多的前5个商品。",
+        conversation_id=str(third.get("conversation_id") or conversation_id),
+    )
+
+    assert first.get("semantic_status") == "passed", first.get("answer")
+    assert second.get("semantic_status") == "passed", second.get("answer")
+    assert third.get("success") is True, third.get("answer")
+    assert third.get("semantic_status") == "passed"
+    assert _params(third).get("dimension") == "CustomerID"
+    assert _params(third).get("metric") == "Quantity"
+    assert "Sales" not in ((third.get("result") or {}).get("columns") or [])
+    assert fourth.get("success") is True, fourth.get("answer")
+    assert fourth.get("semantic_status") == "passed"
+    assert _params(fourth).get("dimension") == "Description"
+    assert _params(fourth).get("metric") == "Quantity"
+    assert (fourth.get("result") or {}).get("columns") == ["Description", "Quantity"]
 
 
 def test_followup_stockcode_monthly_trend_keeps_stockcode_series(

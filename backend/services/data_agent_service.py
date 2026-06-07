@@ -3914,7 +3914,10 @@ def _build_turn_followup_context(record: dict[str, Any] | None, *, question: str
             previous = prior
             payload = prior["payload"]
             analysis_context = build_analysis_context(payload, original_question=str(prior.get("question") or ""))
-    if self_contained and _references_analysis_focus_set(question, analysis_context):
+    references_focus_set = _references_analysis_focus_set(question, analysis_context)
+    if _looks_like_store_dimension_request(question) and not references_focus_set:
+        return {"is_followup": False}
+    if self_contained and references_focus_set:
         self_contained = False
     contextual_extreme_rewrite = _rewrite_contextual_extreme_time_reference(
         record,
@@ -4011,6 +4014,23 @@ def _looks_like_quality_followup_request(question: str) -> bool:
     return any(token in compact for token in ("数据质量", "质量", "缺失", "重复", "异常", "清洗", "异常值", "质量问题"))
 
 
+def _looks_like_store_dimension_request(question: str) -> bool:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    lowered = str(question or "").lower()
+    store_signal = any(token in compact for token in ("店家", "商家", "商户", "卖家", "店铺", "门店")) or any(
+        token in lowered for token in ("seller", "merchant", "shop", "store")
+    )
+    if not store_signal:
+        return False
+    metric_signal = any(token in compact for token in ("销售额", "金额", "数量", "订单数", "收入", "营收")) or any(
+        token in lowered for token in ("sales", "amount", "quantity", "revenue", "orders")
+    )
+    ranking_signal = any(token in compact for token in ("最大", "最高", "最多", "排名", "排行", "Top", "top", "前")) or any(
+        token in lowered for token in ("top", "highest", "largest", "most", "rank", "ranking")
+    )
+    return metric_signal or ranking_signal
+
+
 def _references_analysis_focus_set(question: str, context: dict[str, Any]) -> bool:
     compact = re.sub(r"\s+", "", str(question or ""))
     focus_sets = context.get("focus_sets") if isinstance(context, dict) else []
@@ -4073,6 +4093,7 @@ def _references_analysis_focus_set(question: str, context: dict[str, Any]) -> bo
 def _context_dimension_label(dimension: str) -> str:
     mapping = {
         "city": "城市",
+        "country": "国家",
         "product": "产品",
         "customer": "客户",
         "customer_id": "客户",
@@ -4500,6 +4521,16 @@ def _looks_like_self_contained_analysis_request(question: str) -> bool:
             "产品",
             "商品",
             "货品",
+            "店家",
+            "商家",
+            "商户",
+            "卖家",
+            "店铺",
+            "门店",
+            "seller",
+            "merchant",
+            "shop",
+            "store",
             "item",
             "product",
             "sku",
@@ -4525,6 +4556,10 @@ def _looks_like_self_contained_analysis_request(question: str) -> bool:
             "最多",
             "最少",
             "排名",
+            "分组",
+            "拆分",
+            "构成",
+            "集中度",
             "第二高",
             "第三高",
             "第",

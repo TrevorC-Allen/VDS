@@ -561,6 +561,9 @@ def _actual_dataframe_filter_trace(plan: AnalysisPlan, context: dict[str, Any] |
         if expected is None:
             continue
         column_text = str(column)
+        if column_text == "conditions" and isinstance(expected, list):
+            output.extend(_condition_trace_filters({"conditions": expected}, data))
+            continue
         if column_text == "month_range" and "month" not in data.columns and {"year", "day_of_year"}.issubset(data.columns):
             start, end = expected
             output.append({"column": column_text, "operator": "between", "values": [start, end]})
@@ -575,6 +578,16 @@ def _actual_dataframe_filter_trace(plan: AnalysisPlan, context: dict[str, Any] |
         actual_column = _resolve_filter_column(data, column_text)
         if actual_column not in data.columns:
             continue
+        output.extend(_filter_trace_entries_for_value(str(actual_column), expected))
+    params = dict(plan.logic_form.parameters or {})
+    merged_filters = params.get("merged_filters") if isinstance(params.get("merged_filters"), dict) else {}
+    for column, expected in dict(merged_filters or {}).items():
+        if expected is None:
+            continue
+        actual_column = _resolve_filter_column(data, str(column))
+        if actual_column not in data.columns:
+            continue
+        output = [item for item in output if str(item.get("column") or "") != str(actual_column)]
         output.extend(_filter_trace_entries_for_value(str(actual_column), expected))
     return output
 
@@ -602,19 +615,14 @@ def _filter_trace_entries_for_value(column: str, expected: Any) -> list[dict[str
 
 def _condition_trace_filters(params: dict[str, Any], data: pd.DataFrame | None = None) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
-    for condition in params.get("conditions") or []:
+    for condition in _normalized_filter_conditions(params.get("conditions"), data):
         if not isinstance(condition, dict):
-            continue
-        column = str(condition.get("column") or "").strip()
-        if not column:
-            continue
-        if data is not None and column not in data.columns:
             continue
         output.append(
             {
-                "column": column,
+                "column": str(condition.get("column") or ""),
                 "operator": str(condition.get("operator") or "="),
-                "values": [condition.get("value")],
+                "values": list(condition.get("values") or [condition.get("value")]),
             }
         )
     return output
@@ -975,16 +983,13 @@ def _quality_execution_summary(debug: dict[str, Any]) -> str:
 
 def _detail_lookup(data: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:
     data = _apply_dataframe_filters(data, filters)
+    data = _apply_dataframe_conditions(data, params.get("conditions"))
     return data.head(int(params.get("limit") or 20)).to_dict(orient="records")
 
 
 def _filtering(data: pd.DataFrame, filters: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:
     data = _apply_dataframe_filters(data, filters)
-    for condition in params.get("conditions") or []:
-        column = condition.get("column")
-        if column not in data.columns:
-            continue
-        data = _apply_condition(data, str(column), str(condition.get("operator") or "="), condition.get("value"))
+    data = _apply_dataframe_conditions(data, params.get("conditions"))
     return data.head(int(params.get("limit") or 20)).to_dict(orient="records")
 
 
@@ -1499,16 +1504,27 @@ def _aggregate_series(data: pd.DataFrame, metric: str | None, aggregation: str) 
 
 def _apply_condition(data: pd.DataFrame, column: str, operator: str, raw_value: Any) -> pd.DataFrame:
     series = data[column]
+    normalized_operator = str(operator or "=").strip().lower()
+    if normalized_operator in {"=", "==", "eq", "equals", "is"}:
+        return data[_series_equals(series, raw_value)]
+    if normalized_operator in {"!=", "<>", "ne", "not_equals", "not equals"}:
+        return data[~_series_equals(series, raw_value)]
+    if normalized_operator in {"in", "one_of", "one of"}:
+        values = raw_value if isinstance(raw_value, (list, tuple, set)) else [raw_value]
+        return data[_series_equals(series, list(values))]
+    if normalized_operator in {"not in", "not_in"}:
+        values = raw_value if isinstance(raw_value, (list, tuple, set)) else [raw_value]
+        return data[~_series_equals(series, list(values))]
     value = _coerce_filter_value(raw_value, series)
-    if operator == ">":
+    if normalized_operator == ">":
         return data[series > value]
-    if operator == "<":
+    if normalized_operator == "<":
         return data[series < value]
-    if operator == ">=":
+    if normalized_operator == ">=":
         return data[series >= value]
-    if operator == "<=":
+    if normalized_operator == "<=":
         return data[series <= value]
-    return data[series.astype(str) == str(value)]
+    return data[_series_equals(series, value)]
 
 
 def _coerce_filter_value(value: Any, series: pd.Series) -> Any:
@@ -2452,6 +2468,9 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
     for column, expected in filters.items():
         if expected is None:
             continue
+        if str(column) == "conditions" and isinstance(expected, list):
+            data = _apply_dataframe_conditions(data, expected)
+            continue
         if column == "month_range" and "month" not in data.columns and {"year", "day_of_year"}.issubset(data.columns):
             start_month, end_month = expected
             months = pd.to_datetime(
@@ -2506,6 +2525,47 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
             continue
         data = data[_series_equals(data[actual_column], expected)]
     return data
+
+
+def _apply_dataframe_conditions(data: pd.DataFrame, raw_conditions: Any) -> pd.DataFrame:
+    filtered = data
+    for condition in _normalized_filter_conditions(raw_conditions, filtered):
+        column = str(condition.get("column") or "")
+        if column not in filtered.columns:
+            continue
+        filtered = _apply_condition(filtered, column, str(condition.get("operator") or "="), condition.get("value"))
+    return filtered
+
+
+def _normalized_filter_conditions(raw_conditions: Any, data: pd.DataFrame | None = None) -> list[dict[str, Any]]:
+    if isinstance(raw_conditions, dict):
+        conditions = raw_conditions.get("conditions")
+    else:
+        conditions = raw_conditions
+    if not isinstance(conditions, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            continue
+        raw_column = str(condition.get("column") or condition.get("field") or "").strip()
+        if not raw_column:
+            continue
+        column = _resolve_filter_column(data, raw_column) if data is not None else raw_column
+        if data is not None and column not in data.columns:
+            continue
+        operator = str(condition.get("operator") or "=").strip()
+        values = condition.get("values") if isinstance(condition.get("values"), list) else None
+        value = values if operator.lower() in {"in", "not in", "not_in", "one_of", "one of"} and values is not None else condition.get("value")
+        output.append(
+            {
+                "column": column,
+                "operator": operator,
+                "value": value,
+                "values": list(values if values is not None else (value if isinstance(value, (list, tuple, set)) else [value])),
+            }
+        )
+    return output
 
 
 def _virtual_month_labels(data: pd.DataFrame) -> pd.Series | None:
@@ -2588,7 +2648,10 @@ def _series_equals(series: pd.Series, expected: Any) -> pd.Series:
         expected_values = {str(value) for value in expected}
         return series.astype(str).isin(expected_values)
     if pd.api.types.is_numeric_dtype(series):
-        return pd.to_numeric(series, errors="coerce") == float(expected)
+        try:
+            return pd.to_numeric(series, errors="coerce") == float(expected)
+        except (TypeError, ValueError):
+            return series.astype(str) == str(expected)
     return series.astype(str) == str(expected)
 
 

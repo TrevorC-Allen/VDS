@@ -39,6 +39,9 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
     action_parameters = _mapping(contract.get("action_parameters"))
     auto_expand = bool(contract.get("auto_expand_topn_if_needed") or action_parameters.get("auto_expand_topn_if_needed"))
     requires_gap_comparison = bool(contract.get("requires_gap_comparison") or action_parameters.get("requires_gap_comparison"))
+    drilldown_followup = str(contract.get("capability_family") or action_parameters.get("capability_family") or "") == "drilldown_followup"
+    action_dimension = str(action_parameters.get("dimension") or params.get("dimension") or getattr(logic_form, "group_by", "") or "")
+    preserve_referent_list = drilldown_followup and any(token in action_dimension.lower() for token in ("time", "date", "day", "month", "year"))
     for key in ("table", "join_plan", "table_selection_reason", "available_columns", "source_tables"):
         value = inherited.get(key)
         if value not in (None, "", [], {}):
@@ -79,11 +82,11 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
         if share_same_dimension:
             filters.pop(dimension, None)
         elif same_dimension_grouping:
-            filters[dimension] = values[0] if len(values) == 1 else values
+            filters[dimension] = values if preserve_referent_list else (values[0] if len(values) == 1 else values)
             if "candidate_filter" not in action_parameters:
                 params.pop("candidate_filter", None)
         else:
-            filters[dimension] = values[0] if len(values) == 1 else values
+            filters[dimension] = values if preserve_referent_list else (values[0] if len(values) == 1 else values)
         if str(getattr(logic_form, "operation", "") or "") == "top_k_share":
             output_format = dict(getattr(logic_form, "output_format", {}) or {})
             output_format["answer_type"] = "table"
@@ -160,7 +163,6 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
     derived_metadata = _derived_metric_metadata(params)
     if derived_metadata:
         params.update(derived_metadata)
-    drilldown_followup = str(contract.get("capability_family") or action_parameters.get("capability_family") or "") == "drilldown_followup"
     if drilldown_followup:
         params["capability_family"] = "drilldown_followup"
         params["merged_filters"] = dict(filters)

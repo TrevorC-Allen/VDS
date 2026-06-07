@@ -9534,6 +9534,109 @@ YYYY-MM-DD HH:MM TZ
 
 否。本轮是即时 UI 修正，未改变公开产品契约；已同步 CHANGELOG_AI。
 
+2026-06-08 01:18 CST
+
+### 本次目标
+
+暂停多数据集推进，修复 UK Retail 前端真实手测暴露的上下文继承、明细过滤、CustomerID alias、客户消费总额、店家/商家安全失败和 semantic_status 一致性问题；新增真实 HTTP `UK Retail Frontend Manual Gate`，最终要求 Frontend Manual Gate 连续 3 轮全绿，UK Retail random gate 至少 1 轮无倒退。
+
+### 修改文件
+
+- backend/services/data_agent_service.py
+- data_agent_core/core/conversation_actions.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/core/semantic_contract.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/task_contract_builder.py
+- scripts/run_uk_retail_frontend_manual_gate.py
+- tests/test_generic_business_semantic_binding.py
+- tests/test_uk_retail_frontend_manual_gate.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `scripts/run_uk_retail_frontend_manual_gate.py`，通过真实 `/api/data-agent/upload-batch` 和 `/api/data-agent/message` HTTP path 跑 UK Retail 前端手测 Gate A/B/C/D，不使用离线 runner 替代 service。
+- 修复 InvoiceNo / order no 和 CustomerID / custom id / cust id 等 schema-aware identifier alias 识别；过滤类问题会把 `conditions` 同步进 `logic_form.filters`，避免明细查询已正确过滤却被 verifier 判为缺 filter。
+- 修复 Pandas executor 对 filtering/detail_lookup 的 `conditions` 实际过滤与 `filters_applied` trace，支持数值/字符串等值比较和 referent merged filters。
+- 修复 filter sanity 与 semantic trace 对 `536365`、`536365.0` 这类数值等价的比较，避免正确过滤被误判 mismatch。
+- 修复 Country TopN 后续差值、Country + InvoiceDate/month 下钻、推荐问题中的 `按 Country 分组/拆分 Quantity` 不再被上下文错误改写到 InvoiceNo。
+- 修复失败/clarification/detail_lookup/filtering 和带 series_dimension 的时间下钻不污染 primary focus；保留独立 month 趋势作为可继承上下文。
+- 修复店家/商家/商户/店铺/门店在无 store/seller/shop 字段时 safe fail，不再 fallback 到 InvoiceNo 并标记 passed。
+- 修复 customer spend：`custom id` 等 alias 映射到 CustomerID，`消费总数/消费总额` 默认按 `Sales = Quantity * UnitPrice` 并保留 CustomerID filter。
+- 修复 random gate 暴露的 customer focus 链路：客户 TopN -> 这些客户 Sales -> 谁买得最多 -> 买最多商品时，购买数量/商品下钻不再继承上一轮 Sales 派生口径导致 semantic contract false fail。
+- 新增 focused regression 覆盖 strict InvoiceNo lookup、CustomerID alias spend、Country gap/drilldown、store safe fail、focus artifact 防污染、frontend manual gate scoring 和 customer purchase drilldown 非回归。
+
+### 测试方式
+
+- 失败前 1-cycle Frontend Manual Gate：`/tmp/vds-uk-retail-frontend-manual-initial-20260608-001619`
+- 修复中 1-cycle Frontend Manual Gate：`/tmp/vds-uk-retail-frontend-manual-afterfix-20260608-002901`
+- 修复后 1-cycle Frontend Manual Gate：`/tmp/vds-uk-retail-frontend-manual-afterfix2-20260608-003307`
+- 中间 3-cycle Frontend Manual Gate：`/tmp/vds-uk-retail-frontend-manual-20260608-003621`
+- random gate 失败证据：`/tmp/vds-uk-retail-random-after-manual-20260608-004611`
+- 修复后 random gate：`/tmp/vds-uk-retail-random-after-customerfix-20260608-005800`
+- 最终 Frontend Manual Gate 三连：`VDS_LLM_PROVIDER=mock python3 scripts/run_uk_retail_frontend_manual_gate.py --cycles 3 --base-url http://127.0.0.1:8879 --start-service always --stop-on-failure --output-dir /tmp/vds-uk-retail-frontend-manual-final-20260608-010648 --print-summary`
+- Focused semantic：`python3 -m pytest -q tests/test_topn_filter_drilldown_followup.py tests/test_generic_business_semantic_binding.py tests/test_semantic_contract_instrumentation.py tests/test_uk_retail_frontend_manual_gate.py --tb=short`
+- Recommendation/correction/scoring：`python3 -m pytest -q tests/test_recommendation_answerability_gate.py tests/test_correction_node_recovery.py tests/test_multi_dataset_real_user_gate_scoring.py tests/test_uk_retail_random_gate_scoring.py --tb=short`
+- Semantic selector：`python3 -m pytest -q tests -k 'semantic_contract or verifier or execution_trace' --tb=short`
+- Retail Product Floor：`python3 -m pytest -q -rxX tests/test_retail_cli_product_floor.py --tb=short`
+- py_compile touched modules：`python3 -m py_compile ... scripts/run_uk_retail_frontend_manual_gate.py`
+- `git diff --check`
+
+### 测试结果
+
+- 最终 Frontend Manual Gate 输出目录：`/tmp/vds-uk-retail-frontend-manual-final-20260608-010648`，`stability_report.md` / `stability_report.json` 显示 passed=True、cycles `3/3`。
+- 最终 cycle 1：total/pass/soft/hard `28/28/0/0`，Gate A `6/6`、Gate B `3/3`、Gate C `4/4`、Gate D recommendation `15/15`，HTTP5xx=0，false_semantic_passed=0。
+- 最终 cycle 2：total/pass/soft/hard `28/28/0/0`，Gate A `6/6`、Gate B `3/3`、Gate C `4/4`、Gate D recommendation `15/15`，HTTP5xx=0，false_semantic_passed=0。
+- 最终 cycle 3：total/pass/soft/hard `28/28/0/0`，Gate A `6/6`、Gate B `3/3`、Gate C `4/4`、Gate D recommendation `15/15`，HTTP5xx=0，false_semantic_passed=0。
+- 修复后 random gate 输出目录：`/tmp/vds-uk-retail-random-after-customerfix-20260608-005800`，passed=True、cycles `1/1`；fixed `16/16/0/0`，random `80/72/8/0`，pass_rate=0.900，pass_plus_soft_rate=1.000，HTTP5xx=0，false_semantic_passed=0；8 个 soft_fail 均为 expected_safe_failure。
+- Focused semantic 通过：`96 passed, 262 warnings`。
+- Recommendation/correction/scoring 通过：`28 passed, 24 warnings`。
+- Semantic selector 通过：`59 passed, 983 deselected, 32 warnings`。`rtk test` 对 `-k "semantic_contract or verifier or execution_trace"` 引号处理失败，已用原始 pytest 命令复跑通过。
+- Retail Product Floor 通过：`48 passed, 5 xfailed, 222 warnings`；既有 xfailed 未扩大。
+- py_compile touched modules 通过。
+- `git diff --check` 通过。
+
+### 遗留问题
+
+- random gate 中 8 个 soft_fail 是预期 safe failure，例如不存在字段、FooBar 字段、最有意义客户等不可安全回答问题；当前 gate 按 expected_safe_failure 接受。
+- 本轮未运行完整 pytest、真实 LLM provider gate、浏览器 UI smoke 或后续多数据集 gate。
+
+### 是否影响主流程
+
+是。影响真实上传 UK Retail / 通用单表后的 identifier lookup、filtering/detail lookup、CustomerID alias、消费金额口径、follow-up context、referent drilldown、semantic verification 和真实 HTTP gate。
+
+### 是否涉及 Benchmark
+
+不涉及 benchmark 标准答案、runner 或 official scorer。涉及真实 HTTP UK Retail frontend manual gate 和 UK Retail random real-user gate。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。修复保持在 core parser、conversation action、executor、semantic verification 与 service context 层，仍通过当前 multi_agent HTTP path 验证，不把核心算法写入 adapter。
+
+### 是否修改核心数据契约
+
+否。未新增或删除核心 contract class / API 字段；调整的是现有 LogicForm filters、referent contract 注入和 semantic contract 校验使用方式。
+
+### 是否修改 API 契约
+
+否。没有新增、删除或修改 HTTP endpoint 或请求/响应 schema。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+是。`filters_applied` 现在覆盖 filtering/detail_lookup 的 `conditions`、referent `merged_filters` 和数值等价过滤值，用于真实 filter sanity 与 manual gate 证据。
+
+### 是否已同步 README
+
+否。本轮是内部语义修复、真实 HTTP gate 和 regression 增强，不改变公开启动方式、安装方式、API 端点或前端入口；README 暂不需要同步。
+
 2026-06-05 17:10 CST
 
 ### 本次目标

@@ -1977,6 +1977,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
     if explicit_time_dimension and any(concept not in {"month", "time"} for concept in target_dimension_concepts):
         explicit_time_dimension = None
     override_target_concepts = direct_target_dimension_concepts or target_dimension_concepts
+    missing_dimension_concepts = list(table_context.get("missing_dimension_concepts") or [])
     explicit_dimension_override = (
         explicit_group_by
         if (
@@ -1996,7 +1997,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         or explicit_dimension_override
         or context_dimension
         or explicit_group_by
-        or _find_dimension_column(question, df, metric, exclude=set(filters))
+        or (None if missing_dimension_concepts else _find_dimension_column(question, df, metric, exclude=set(filters)))
     )
     if (
         _question_requests_time_series(question)
@@ -2023,7 +2024,6 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             else _metric_specs_for_aggregation_question(question, df, metric, requested_metrics)
         )
     )
-    missing_dimension_concepts = list(table_context.get("missing_dimension_concepts") or [])
     if dimension != table_context.get("dimension") and not table_context.get("join_plan"):
         table_context["dimension"] = dimension
         table_context["table_selection_reason"] = _table_selection_reason(
@@ -2060,8 +2060,8 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
 
     if missing_dimension_concepts and (_is_ranking_question(lowered) or _is_grouped_metric_display_question(lowered)):
         return make_logic_form(
-            task_type="schema_query",
-            operation="detail_lookup",
+            task_type="unsupported",
+            operation="not_applicable",
             filters=filters,
             parameters=_with_table_context(
                 {
@@ -2071,11 +2071,12 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                     "missing_dimension_concepts": missing_dimension_concepts,
                     "strict_missing_dimension_guard": _strict_missing_dimension_guard(question),
                     "available_columns": [str(column) for column in df.columns],
+                    "reason": _missing_dimension_reason(missing_dimension_concepts, df),
                     "limit": 1,
                 },
                 table_context,
             ),
-            output_format=output_format | {"answer_type": "clarification"},
+            output_format=output_format | {"answer_type": "clarification", "not_applicable_type": "true_unsupported"},
         )
 
     return_quantity_spec = _return_quantity_ranking_spec(question, df, dimension=dimension)
@@ -2703,13 +2704,16 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             | ({"decimals": decimals} if decimals is not None else {}),
         )
 
-    if _is_filtering_question(lowered):
+    simple_conditions = _extract_simple_conditions(question, df)
+    if _is_filtering_question(lowered) or simple_conditions:
+        condition_filters = _filters_from_simple_conditions(simple_conditions)
         return make_logic_form(
             task_type="filtering",
             operation="filtering",
+            filters={**filters, **condition_filters},
             parameters=_with_table_context({
                 "table": table_name,
-                "conditions": _extract_simple_conditions(question, df),
+                "conditions": simple_conditions,
                 "limit": _extract_limit(question, default=20),
             }, table_context),
             output_format=output_format | {"answer_type": "table"},
@@ -3515,7 +3519,20 @@ SEMANTIC_COLUMN_ALIASES = {
         "类目名称",
         "分类",
     ),
-    "store": ("store", "shop", "branch", "门店", "店铺", "门店名称"),
+    "store": (
+        "store",
+        "shop",
+        "seller",
+        "merchant",
+        "branch",
+        "店家",
+        "商家",
+        "商户",
+        "卖家",
+        "门店",
+        "店铺",
+        "门店名称",
+    ),
     "city": ("city", "city_name", "cityname", "city_nm", "citynm", "cust_city", "dist_city", "城市", "城市名称", "地市", "市"),
     "country": ("country", "country_name", "countryname", "country_code", "countrycode", "国家", "国家名称", "国家代码"),
     "region": (
@@ -3543,9 +3560,14 @@ SEMANTIC_COLUMN_ALIASES = {
     "channel": ("channel", "channel_name", "sale_channel", "sales_channel", "source_channel", "source", "origin", "来源", "渠道", "渠道名称", "销售渠道", "来源渠道", "获客渠道", "通路", "通路名称"),
     "customer": (
         "customer",
+        "customer id",
         "customerid",
         "customer_id",
+        "custom id",
+        "customid",
+        "custom_id",
         "cust",
+        "cust id",
         "cust_id",
         "client",
         "client_id",
@@ -3555,6 +3577,11 @@ SEMANTIC_COLUMN_ALIASES = {
         "buyer_id",
         "shopper",
         "客户",
+        "客户id",
+        "客户 id",
+        "客户ID",
+        "客户 ID",
+        "客户编号",
         "顾客",
         "用户",
         "买家",
@@ -3562,10 +3589,14 @@ SEMANTIC_COLUMN_ALIASES = {
     ),
     "order": (
         "invoice",
+        "invoice no",
+        "invoice number",
         "invoiceno",
         "invoice_no",
         "invoice_id",
         "order",
+        "order no",
+        "order number",
         "orderid",
         "order_id",
         "transaction",
@@ -3666,6 +3697,7 @@ def _direct_target_dimension_concepts(question: str) -> list[str]:
         return ["city"]
     direct_patterns = (
         ("segment", ("哪个客户细分", "哪些客户细分", "哪个客户群体", "哪些客户群体", "哪个客户分段", "哪些客户分段", "哪个客户段", "哪些客户段", "哪个客群", "哪些客群", "客户分段排名", "客户段排名", "segment ranking", "which segment")),
+        ("store", ("哪个店家", "哪些店家", "哪个商家", "哪些商家", "哪个商户", "哪些商户", "哪个店铺", "哪些店铺", "哪个门店", "哪些门店", "店家排名", "商家排名", "商户排名", "店铺排名", "门店排名", "which seller", "which merchant", "which shop", "seller ranking", "merchant ranking", "shop ranking")),
         ("product", ("哪个产品", "哪种产品", "哪些产品", "产品是哪个", "产品是哪", "产品是什么", "产品有哪些", "产品是哪些", "产品排名", "which product", "product ranking")),
         ("customer", ("哪个客户", "哪些客户", "哪几个客户", "客户是哪个", "客户是哪", "客户是谁", "客户是什么", "客户有哪些", "客户是哪些", "客户排名", "前3个客户", "前三个客户", "前5个客户", "前五个客户", "which customer", "customer ranking")),
         ("employee", ("这几个销售", "这几位销售", "销售的表现", "哪个销售", "哪些销售", "哪几个销售", "销售员", "销售人员", "销售代表", "业务员", "业代", "员工排名", "salesperson", "sales rep", "employee ranking")),
@@ -3690,11 +3722,13 @@ def _direct_target_dimension_concepts(question: str) -> list[str]:
         ("city", r"哪(?:\d+|[一二两三四五六七八九十]+)?个城市"),
         ("country", r"哪(?:\d+|[一二两三四五六七八九十]+)?个国家"),
         ("customer", r"哪(?:\d+|[一二两三四五六七八九十]+)?个客户"),
+        ("store", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|家)?(?:店家|商家|商户|店铺|门店)"),
         ("product", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|种)?产品"),
         ("service_line", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|条)?(?:服务线|业务线)"),
         ("city", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?)(?:的)?城市"),
         ("country", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?)(?:的)?国家"),
         ("customer", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?)(?:的)?(?:客户|顾客|用户|买家)"),
+        ("store", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|家)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|家)?)(?:的)?(?:店家|商家|商户|店铺|门店)"),
         ("product", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|种)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|种)?)(?:的)?(?:产品|商品|货品|物料|SKU|sku)"),
         ("service_line", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|条)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|条)?)(?:的)?(?:服务线|业务线)"),
     )
@@ -3718,6 +3752,7 @@ def _target_dimension_concepts(question: str) -> list[str]:
         return ["city"]
     ordered_patterns = (
         ("segment", ("客户细分", "客户群体", "客户分区", "客户分段", "客户段", "细分市场", "哪个客群", "哪些客群", "客群是什么", "客群是哪", "按客群", "客群排名", "segment")),
+        ("store", ("店家", "商家", "商户", "卖家", "店铺", "门店", "按店家", "按商家", "按商户", "按店铺", "按门店", "店家排名", "商家排名", "商户排名", "店铺排名", "门店排名", "seller", "merchant", "shop", "by seller", "by merchant", "by shop")),
         ("product", ("哪个产品", "哪种产品", "哪些产品", "产品是哪个", "产品是哪", "产品是什么", "产品有哪些", "产品是哪些", "按产品", "产品排名", "which product", "by product")),
         ("customer", ("哪个客户", "哪些客户", "客户是哪个", "客户是哪", "客户是谁", "客户是什么", "客户有哪些", "客户是哪些", "按客户", "客户排名", "which customer", "by customer")),
         ("employee", ("这几个销售", "这几位销售", "销售的表现", "哪个销售", "哪些销售", "哪几个销售", "按销售", "按销售员", "销售员", "销售人员", "销售代表", "业务员", "业代", "员工排名", "salesperson", "sales rep", "by employee")),
@@ -3761,11 +3796,13 @@ def _target_dimension_concepts(question: str) -> list[str]:
         ("city", r"哪(?:\d+|[一二两三四五六七八九十]+)?个城市"),
         ("country", r"哪(?:\d+|[一二两三四五六七八九十]+)?个国家"),
         ("customer", r"哪(?:\d+|[一二两三四五六七八九十]+)?个客户"),
+        ("store", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|家)?(?:店家|商家|商户|店铺|门店)"),
         ("product", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|种)?产品"),
         ("service_line", r"哪(?:\d+|[一二两三四五六七八九十]+)?(?:个|条)?(?:服务线|业务线)"),
         ("city", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?)(?:的)?城市"),
         ("country", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?)(?:的)?国家"),
         ("customer", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位)?)(?:的)?(?:客户|顾客|用户|买家)"),
+        ("store", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|家)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|家)?)(?:的)?(?:店家|商家|商户|店铺|门店)"),
         ("product", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|种)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|种)?)(?:的)?(?:产品|商品|货品|物料|SKU|sku)"),
         ("service_line", r"(?:前(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|条)?|(?:\d+|[一二两三四五六七八九十]+)(?:个|大|名|位|条)?)(?:的)?(?:服务线|业务线)"),
     )
@@ -3867,8 +3904,29 @@ def _target_metric_concepts(question: str) -> list[str]:
     ):
         targets.append("quantity")
         return targets
-    if any(token in target_clause for token in ("订单总金额", "订单总额", "订单金额", "订单额", "总金额", "总额", "收入", "营收", "销售额", "销售金额", "销售总额", "总销售额")) or any(
-        token in lowered for token in ("amount", "revenue", "sales", "sale amount")
+    if any(
+        token in target_clause
+        for token in (
+            "订单总金额",
+            "订单总额",
+            "订单金额",
+            "订单额",
+            "总金额",
+            "总额",
+            "收入",
+            "营收",
+            "销售额",
+            "销售金额",
+            "销售总额",
+            "总销售额",
+            "消费总额",
+            "消费金额",
+            "消费总数",
+            "消费合计",
+            "消费多少",
+        )
+    ) or any(
+        token in lowered for token in ("amount", "revenue", "sales", "sale amount", "spend", "total spend", "consumption")
     ):
         targets.append("sales")
         return targets
@@ -4578,6 +4636,28 @@ def _strict_missing_dimension_guard(question: str) -> bool:
     return _is_ranking_question(lowered) or _is_grouped_metric_display_question(lowered)
 
 
+def _missing_dimension_reason(concepts: list[str], df: pd.DataFrame) -> str:
+    labels = {
+        "store": "store/seller/shop",
+        "customer": "customer",
+        "product": "product",
+        "category": "category",
+        "city": "city",
+        "channel": "channel",
+    }
+    requested = "、".join(labels.get(str(concept), str(concept)) for concept in concepts if str(concept)) or "requested"
+    alternatives = [
+        str(column)
+        for column in df.columns
+        if not pd.api.types.is_numeric_dtype(df[column])
+    ][:6]
+    alternative_text = "、".join(alternatives) if alternatives else "当前可用字段"
+    return (
+        f"当前上传表结构里没有可识别的 {requested} 维度，不能用其他 ID 或编号字段替代。"
+        f"可以改按 {alternative_text} 等当前字段分析。"
+    )
+
+
 def _should_attempt_generic_join(question: str) -> bool:
     lowered = question.lower()
     if any(token in lowered for token in ("join", "merge", "关联", "连接", "结合", "映射", "多表")):
@@ -4693,11 +4773,34 @@ def _asks_retail_sales_amount_metric(question: str) -> bool:
     )
     if explicit_multiply:
         return True
-    if any(token in compact for token in ("销售额", "销售金额", "销售总额", "销售趋势", "销售变化", "销售走势", "收入", "营收", "金额", "订单金额", "订单总金额", "订单总额", "订单额", "总金额")):
+    if any(
+        token in compact
+        for token in (
+            "销售额",
+            "销售金额",
+            "销售总额",
+            "销售趋势",
+            "销售变化",
+            "销售走势",
+            "收入",
+            "营收",
+            "金额",
+            "订单金额",
+            "订单总金额",
+            "订单总额",
+            "订单额",
+            "总金额",
+            "消费总额",
+            "消费金额",
+            "消费总数",
+            "消费合计",
+            "消费多少",
+        )
+    ):
         return True
     if re.search(r"(?<![a-z0-9_])(?:sales|total_sales|sales_share)(?![a-z0-9_])", lowered):
         return True
-    if any(token in lowered for token in ("revenue", "sales by", "sales ranking", "sales top", "top countries by sales", "rank countries by sales")):
+    if any(token in lowered for token in ("revenue", "sales by", "sales ranking", "sales top", "top countries by sales", "rank countries by sales", "spend", "total spend", "consumption")):
         return True
     return False
 
@@ -6696,9 +6799,10 @@ def _infer_value_filters(question: str, df: pd.DataFrame, exclude: set[str | Non
     lowered = question.lower()
     excluded = {str(item) for item in (exclude or set()) if item}
     numeric_filters = _explicit_numeric_value_filters(question, df)
+    identifier_filters = _explicit_semantic_identifier_filters(question, df, exclude=excluded)
     explicit_filters = _explicit_semantic_value_filters(question, df, exclude=excluded)
-    if numeric_filters or explicit_filters:
-        return {**numeric_filters, **explicit_filters}
+    if numeric_filters or identifier_filters or explicit_filters:
+        return {**numeric_filters, **identifier_filters, **explicit_filters}
     filters: dict[str, Any] = {}
     implicit_matches: list[tuple[int, str, Any]] = []
     for column in df.columns:
@@ -6905,6 +7009,61 @@ def _explicit_semantic_value_filters(question: str, df: pd.DataFrame, *, exclude
     return {}
 
 
+def _explicit_semantic_identifier_filters(question: str, df: pd.DataFrame, *, exclude: set[str]) -> dict[str, Any]:
+    question_text = str(question or "")
+    compact = re.sub(r"\s+", "", question_text)
+    if not compact and not question_text:
+        return {}
+    specs = (
+        (
+            "order",
+            (
+                r"\binvoice\s*(?:no\.?|number|id)\s*(?:=|:|is|为|是)?\s*([A-Za-z0-9_.-]+)",
+                r"\border\s*(?:no\.?|number|id)\s*(?:=|:|is|为|是)?\s*([A-Za-z0-9_.-]+)",
+                r"\border\s+([0-9][A-Za-z0-9_.-]*)",
+            ),
+            (
+                r"(?:invoiceno|invoice_no|invoiceid|invoice_id|订单号|订单编号|订单id|发票号|发票编号|单号)(?:=|:|为|是)?([A-Za-z0-9_.-]+)",
+                r"(?:订单|发票)(?:=|:|为|是)([A-Za-z0-9_.-]+)",
+            ),
+        ),
+        (
+            "customer",
+            (
+                r"\b(?:customer|custom|cust)\s*(?:id|no\.?|number)\s*(?:=|:|is|为|是)?\s*([A-Za-z0-9_.-]+)",
+                r"\b(?:customer|custom|cust)\s+([0-9][A-Za-z0-9_.-]*)",
+            ),
+            (
+                r"(?:customerid|customer_id|customid|custom_id|custid|cust_id|客户id|客户编号|客户号)(?:=|:|为|是)?([A-Za-z0-9_.-]+)",
+                r"(?:客户|顾客)(?:=|:|为|是)([A-Za-z0-9_.-]+)",
+            ),
+        ),
+    )
+    filters: dict[str, Any] = {}
+    for concept, english_patterns, compact_patterns in specs:
+        column = _find_semantic_column(df, concept)
+        if not column or column in exclude:
+            continue
+        raw_value = ""
+        for pattern in english_patterns:
+            match = re.search(pattern, question_text, flags=re.I)
+            if match:
+                raw_value = match.group(1)
+                break
+        if not raw_value:
+            for pattern in compact_patterns:
+                match = re.search(pattern, compact, flags=re.I)
+                if match:
+                    raw_value = match.group(1)
+                    break
+        if not raw_value:
+            continue
+        value = _coerce_explicit_filter_value(raw_value, df[column])
+        if value is not None:
+            filters[column] = value
+    return filters
+
+
 def _semantic_filter_columns_for_label(
     label: str,
     df: pd.DataFrame,
@@ -7002,7 +7161,26 @@ def _extract_simple_conditions(question: str, df: pd.DataFrame) -> list[dict[str
     conditions: list[dict[str, Any]] = []
     for column in df.columns:
         name = str(column)
-        pattern = rf"{re.escape(name)}\s*(>=|<=|=|>|<)\s*([\w.\-\u4e00-\u9fff]+)"
+        pattern = rf"{re.escape(name)}\s*(>=|<=|==|=|>|<|为|是)\s*([\w.\-\u4e00-\u9fff]+)"
         for op, value in re.findall(pattern, question):
-            conditions.append({"column": name, "operator": op, "value": value})
+            conditions.append({"column": name, "operator": "=" if op in {"为", "是"} else op, "value": value})
+    for column, value in _explicit_semantic_identifier_filters(question, df, exclude=set()).items():
+        if any(str(condition.get("column") or "") == str(column) and str(condition.get("value") or "") == str(value) for condition in conditions):
+            continue
+        conditions.append({"column": column, "operator": "=", "value": value})
     return conditions
+
+
+def _filters_from_simple_conditions(conditions: list[dict[str, Any]]) -> dict[str, Any]:
+    filters: dict[str, Any] = {}
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            continue
+        operator = str(condition.get("operator") or "=").strip().lower()
+        if operator not in {"=", "==", "eq", "equals", "is"}:
+            continue
+        column = str(condition.get("column") or "").strip()
+        if not column:
+            continue
+        filters[column] = condition.get("value")
+    return filters

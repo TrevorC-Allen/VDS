@@ -8,6 +8,7 @@ LogicForm, AnalysisPlan, verifier debug, and traces.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
+import math
 import re
 from typing import Any, Mapping
 
@@ -694,7 +695,7 @@ def _month_bucket_covers_dimension(expected: str, available_columns: set[str], t
 
 def _trace_filter_covered(item: ResolvedFilter, trace: Mapping[str, Any]) -> bool:
     expected_column = _normalize_name(str(item.resolved_column or ""))
-    expected_values = {str(value) for value in item.values}
+    expected_values = {_filter_value_key(value) for value in item.values}
     for applied in trace.get("filters_applied") or []:
         if not isinstance(applied, Mapping):
             continue
@@ -702,9 +703,20 @@ def _trace_filter_covered(item: ResolvedFilter, trace: Mapping[str, Any]) -> boo
             continue
         values = applied.get("values")
         actual_values = values if isinstance(values, (list, tuple, set)) else [values]
-        if expected_values.issubset({str(value) for value in actual_values}):
+        if expected_values.issubset({_filter_value_key(value) for value in actual_values}):
             return True
     return False
+
+
+def _filter_value_key(value: Any) -> str:
+    text = str(value).strip()
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return f"str:{text}"
+    if math.isfinite(number):
+        return f"num:{number:.12g}"
+    return f"str:{text}"
 
 
 def _trace_filter_result_sanity_issues(trace: Mapping[str, Any], execution_result: Any) -> list[dict[str, Any]]:
@@ -722,13 +734,13 @@ def _trace_filter_result_sanity_issues(trace: Mapping[str, Any], execution_resul
         if operator not in {"eq", "=", "in"}:
             continue
         values = applied.get("values")
-        expected_values = {str(value) for value in (values if isinstance(values, (list, tuple, set)) else [values])}
+        expected_values = {_filter_value_key(value) for value in (values if isinstance(values, (list, tuple, set)) else [values])}
         if not expected_values:
             continue
         mismatches = [
             row.get(column)
             for row in rows
-            if isinstance(row, Mapping) and column in row and str(row.get(column)) not in expected_values
+            if isinstance(row, Mapping) and column in row and _filter_value_key(row.get(column)) not in expected_values
         ]
         if mismatches:
             issues.append(

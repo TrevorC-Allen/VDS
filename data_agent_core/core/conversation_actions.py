@@ -10,6 +10,10 @@ from data_agent_core.core.capability_registry import capability_for_operation
 from data_agent_core.result_artifacts import build_result_artifacts, merge_result_artifacts, resolve_followup_referent
 
 
+_CONTEXT_PASS_STATUSES = {"passed", "corrected_passed", "passed_with_insufficient_data"}
+_NON_FOCUS_OPERATIONS = {"detail_lookup", "filtering"}
+
+
 def build_analysis_context(
     response: Mapping[str, Any] | None,
     *,
@@ -42,6 +46,13 @@ def build_analysis_context(
 
     operation = str(logic.get("operation") or logic.get("task_type") or "")
     params = logic.get("parameters") if isinstance(logic.get("parameters"), dict) else {}
+    if not _payload_can_update_primary_focus(active_payload, operation):
+        return _preserve_previous_analysis_context(
+            previous,
+            active_payload=active_payload,
+            operation=operation,
+            original_question=original_question,
+        )
     time_window = logic.get("time_window") if isinstance(logic.get("time_window"), dict) else {}
     result = active_payload.get("result") if isinstance(active_payload.get("result"), dict) else {}
     rows = [row for row in result.get("rows") or [] if isinstance(row, dict)]
@@ -107,6 +118,69 @@ def build_analysis_context(
     if completed:
         context["last_completed_actions"] = completed
     return context
+
+
+def _payload_can_update_primary_focus(payload: Mapping[str, Any], operation: str) -> bool:
+    if payload.get("success") is False:
+        return False
+    semantic_status = _payload_semantic_status(payload)
+    if semantic_status and semantic_status not in _CONTEXT_PASS_STATUSES:
+        return False
+    answer_type = str(payload.get("answer_type") or "").strip().lower()
+    if answer_type == "clarification":
+        return False
+    if operation in _NON_FOCUS_OPERATIONS:
+        return False
+    logic = _logic_form_dict(payload)
+    params = logic.get("parameters") if isinstance(logic.get("parameters"), Mapping) else {}
+    if (
+        operation in {"aggregation", "trend", "time_series"}
+        and str(params.get("dimension") or "") == "month"
+        and (
+            str(params.get("capability_family") or "") == "drilldown_followup"
+            or bool(params.get("series_dimension"))
+        )
+    ):
+        return False
+    return True
+
+
+def _payload_semantic_status(payload: Mapping[str, Any]) -> str:
+    verification = payload.get("verification") if isinstance(payload.get("verification"), Mapping) else {}
+    debug = payload.get("debug") if isinstance(payload.get("debug"), Mapping) else {}
+    return str(payload.get("semantic_status") or verification.get("semantic_status") or debug.get("semantic_status") or "").strip()
+
+
+def _preserve_previous_analysis_context(
+    previous: Mapping[str, Any],
+    *,
+    active_payload: Mapping[str, Any],
+    operation: str,
+    original_question: str,
+) -> dict[str, Any]:
+    preserved = dict(previous or {})
+    if not preserved:
+        return {
+            "state_version": "v1",
+            "state_name": "analysis_failed" if active_payload.get("success") is False else "chat_only",
+            "dataset_id": str(active_payload.get("dataset_id") or ""),
+            "run_id": str(active_payload.get("run_id") or ""),
+            "question": str(original_question or active_payload.get("question") or ""),
+            "previous_run_id": "",
+            "active": False,
+            "history_depth": 0,
+            "available_followup_actions": [],
+            "last_result_artifact_id": "",
+            "active_result_artifacts": [],
+            "last_ranking_artifact_id": "",
+            "referent_resolution_trace": [],
+        }
+    preserved["last_non_focus_run_id"] = str(active_payload.get("run_id") or "")
+    preserved["last_non_focus_question"] = str(original_question or active_payload.get("question") or "")
+    preserved["last_non_focus_operation"] = operation
+    preserved["last_non_focus_semantic_status"] = _payload_semantic_status(active_payload)
+    preserved["history_depth"] = int(preserved.get("history_depth") or 0) + 1
+    return preserved
 
 
 def build_next_actions(
@@ -472,6 +546,10 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
         action = _generic_time_trend_action(context, compact)
         if action:
             actions.append(action)
+    if not actions and bool(referent_resolution.get("resolved")) and _asks_scalar_metric_followup(compact):
+        action = _generic_focus_set_metric_aggregation_action(context, compact)
+        if action:
+            actions.append(action)
     if not actions and _asks_focus_set_metric_scalar(compact, context):
         action = _generic_focus_set_metric_aggregation_action(context, compact)
         if action:
@@ -681,7 +759,7 @@ def _should_auto_expand_gap_followup(*, compact: str, values: list[Any], ranking
 
 def _asks_gap_comparison(compact: str) -> bool:
     lowered = str(compact or "").lower()
-    return any(token in compact for token in ("差距", "差多少", "少多少", "多多少", "相差", "差额", "比较Top", "比较top", "前N名", "第一名和第二名")) or any(
+    return any(token in compact for token in ("差距", "差值", "差多少", "少多少", "多多少", "相差", "差额", "比较Top", "比较top", "前N名", "第一名和第二名")) or any(
         token in lowered for token in ("gap", "difference", "compare top")
     )
 
@@ -1108,7 +1186,8 @@ def _generic_dimension_switch_action(context: Mapping[str, Any], compact: str) -
     dimension = _generic_followup_dimension(compact, available, current_dimension=current_dimension)
     if not dimension:
         return {}
-    metric = _first_text(_explicit_answer_metric_column(compact, available), scope.get("metric"), params.get("metric"), logic.get("metric"), "核心指标")
+    purchase_quantity_metric = _purchase_quantity_metric(compact, available)
+    metric = _first_text(purchase_quantity_metric, _explicit_answer_metric_column(compact, available), scope.get("metric"), params.get("metric"), logic.get("metric"), "核心指标")
     filter_prefix = _combined_filter_question_prefix(context, compact)
     time_prefix = _combined_time_question_prefix(context, compact)
     time_prefix = _dedupe_time_prefix(time_prefix, filter_prefix)
@@ -1120,14 +1199,19 @@ def _generic_dimension_switch_action(context: Mapping[str, Any], compact: str) -
         else f"{scope_prefix}按{_dimension_question_label(dimension)}看{_metric_question_label(metric)}排名前3。"
     )
     action_parameters = {"metric": metric, "dimension": dimension}
-    if isinstance(params.get("derived_metric"), Mapping) and params.get("derived_metric"):
+    if purchase_quantity_metric:
+        action_parameters["aggregation"] = "sum"
+    if not purchase_quantity_metric and isinstance(params.get("derived_metric"), Mapping) and params.get("derived_metric"):
         action_parameters["derived_metric"] = dict(params.get("derived_metric") or {})
+    inherited_parameters = _generic_inherited_parameters_for_question(logic, params, compact)
+    if purchase_quantity_metric:
+        inherited_parameters.pop("derived_metric", None)
     return _action(
         action_id="switch_generic_dimension",
         label=f"按{_dimension_question_label(dimension)}切换维度",
         operation="ranking",
         question=question,
-        inherited_parameters=_generic_inherited_parameters_for_question(logic, params, compact),
+        inherited_parameters=inherited_parameters,
         parameters=action_parameters,
         dimension=dimension,
     )
@@ -1310,15 +1394,28 @@ def _generic_time_trend_action(context: Mapping[str, Any], compact: str = "") ->
     time_prefix = _combined_time_question_prefix(context, compact)
     time_prefix = _dedupe_time_prefix(time_prefix, filter_prefix)
     scope_prefix = _combined_scope_question_prefix(time_prefix, filter_prefix)
-    month_bucket = _has_multiple_month_reference(compact) or any(
+    explicit_time_drilldown = _explicit_time_drilldown(compact)
+    month_bucket = _has_multiple_month_reference(compact) or explicit_time_drilldown or any(
         token in compact
         for token in ("每月", "每个月", "各月", "各月份", "按月", "按月份", "月份", "月度", "月粒度", "月粒", "哪些月份", "哪个月份")
     )
     series_dimension = ""
+    focus_set_for_time: Mapping[str, Any] | None = None
     if month_bucket:
         explicit_dimension = _explicit_grouped_dimension_column(compact, available) or _explicit_dimension_column(compact, available) or _explicit_dimension_concept(compact)
         if explicit_dimension and explicit_dimension != "month":
             series_dimension = explicit_dimension
+        focus_set_for_time = next(
+            (
+                focus_set
+                for focus_set in _context_focus_sets(context)
+                if str(focus_set.get("dimension") or "")
+                and _question_references_focus_set(compact, str(focus_set.get("dimension") or ""))
+            ),
+            None,
+        )
+        if not series_dimension and focus_set_for_time:
+            series_dimension = str(focus_set_for_time.get("dimension") or "")
     action_parameters = {
         "metric": metric,
         **({"metrics": explicit_metrics} if len(explicit_metrics) > 1 else {}),
@@ -1345,15 +1442,45 @@ def _generic_time_trend_action(context: Mapping[str, Any], compact: str = "") ->
     )
     if isinstance(params.get("derived_metric"), Mapping) and params.get("derived_metric"):
         action_parameters["derived_metric"] = dict(params.get("derived_metric") or {})
-    return _action(
+    inherited_parameters = _generic_inherited_parameters(logic, params)
+    action = _action(
         action_id="switch_to_time_trend",
         label="按时间查看趋势",
         operation="aggregation",
         question=trend_question,
-        inherited_parameters=_generic_inherited_parameters(logic, params),
+        inherited_parameters=inherited_parameters,
         parameters=action_parameters,
         dimension=str(action_parameters.get("dimension") or time_column),
     )
+    if month_bucket and focus_set_for_time and series_dimension:
+        values = [value for value in focus_set_for_time.get("values") or [] if value not in (None, "")]
+        if values:
+            referent_artifact_id = _focus_set_artifact_id(context, focus_set_for_time)
+            action_parameters = dict(action.get("parameters") or {})
+            action_parameters.update(
+                {
+                    "requires_previous_artifact": True,
+                    "referent_artifact_id": referent_artifact_id,
+                    "referent_dimension": series_dimension,
+                    "referent_values": values,
+                    "referent_policy": "must_filter_to_previous_result_objects",
+                    "referent_source": str(focus_set_for_time.get("source") or "focus_set"),
+                }
+            )
+            action["parameters"] = action_parameters
+            action["referent_contract"] = {
+                "requires_previous_artifact": True,
+                "referent_artifact_id": referent_artifact_id,
+                "referent_values": values,
+                "referent_dimension": series_dimension,
+                "referent_policy": "must_filter_to_previous_result_objects",
+                "referent_source": str(focus_set_for_time.get("source") or "focus_set"),
+                "inherited_parameters": inherited_parameters,
+                "action_parameters": action_parameters,
+                "capability_family": "drilldown_followup",
+                "merged_filters": {series_dimension: values},
+            }
+    return action
 
 
 def _generic_same_metric_adjacent_comparison_action(context: Mapping[str, Any], compact: str = "") -> dict[str, Any]:
@@ -1527,7 +1654,7 @@ def _generic_focus_set_metric_aggregation_action(context: Mapping[str, Any], com
             },
             dimension=focus_dimension,
         )
-    if focus_dimension and any(token in compact for token in ("分别", "各自", "每个", "各个")):
+    if focus_dimension and any(token in compact for token in ("分别", "各自", "每个", "各个", "分组", "按", "返回前", "前5", "前五", "top")):
         return _action(
             action_id="aggregate_focus_set_metric",
             label="按当前对象集合汇总指标",
@@ -1593,12 +1720,15 @@ def _generic_grouped_child_ranking_action(context: Mapping[str, Any], compact: s
     purchase_quantity_metric = _purchase_quantity_metric(compact, available)
     metric = _first_text(purchase_quantity_metric, _explicit_metric_column(compact, available), scope.get("metric"), params.get("metric"), logic.get("metric"), "核心指标")
     aggregation = "sum" if purchase_quantity_metric else str(params.get("aggregation") or "sum")
+    inherited_parameters = _generic_inherited_parameters_for_question(logic, params, compact)
+    if purchase_quantity_metric:
+        inherited_parameters.pop("derived_metric", None)
     action = _action(
         action_id="grouped_child_ranking",
         label="在父级集合内查找子项 Top",
         operation="filtered_metric_ranking",
         question=f"{compact}？" if compact and not compact.endswith(("?", "？")) else compact,
-        inherited_parameters=_generic_inherited_parameters_for_question(logic, params, compact),
+        inherited_parameters=inherited_parameters,
         parameters={"metric": metric, "dimension": child_dimension, "aggregation": aggregation, "sort_order": "desc", "limit": _extract_limit_from_compact(compact, default=5)},
         dimension=child_dimension,
     )
@@ -1624,7 +1754,7 @@ def _explicit_child_drilldown_dimension(compact: str, available_columns: list[st
 
 
 def _purchase_quantity_metric(compact: str, available_columns: list[str]) -> str:
-    if not any(token in compact for token in ("买最多", "购买最多", "卖最多", "销量", "销售数量", "购买数量", "数量最多", "卖得最多")):
+    if not any(token in compact for token in ("买最多", "买得最多", "购买最多", "卖最多", "销量", "销售数量", "购买数量", "数量最多", "卖得最多")):
         return ""
     return _pick_column_by_aliases([str(column) for column in available_columns], ("quantity", "qty", "数量", "件数", "volume"))
 
@@ -1806,6 +1936,7 @@ def _asks_top_or_gap_followup(compact: str) -> bool:
             "最集中",
             "集中",
             "差距",
+            "差值",
             "差多少",
             "少多少",
             "多多少",
@@ -1986,6 +2117,8 @@ def _asks_time_trend_followup(compact: str) -> bool:
         return False
     if any(token in compact for token in ("趋势", "按月份", "按月", "按时间", "时间变化", "月度变化", "如何变化", "怎么变化", "怎样变化", "每月", "每个月", "各月", "各月份")):
         return True
+    if _explicit_time_drilldown(compact):
+        return True
     if any(token in compact for token in ("哪些月份", "哪个月份", "哪几个月", "哪些月")) and any(token in compact for token in ("最高", "最多", "最活跃", "活跃")):
         return True
     if "逐月" in compact and any(token in compact for token in ("增长", "下降", "上升", "变化")):
@@ -1995,6 +2128,14 @@ def _asks_time_trend_followup(compact: str) -> bool:
     if _has_multiple_month_reference(compact) and any(token in compact for token in ("分别", "变化", "走势", "趋势")):
         return True
     return "变化" in compact and any(token in compact for token in ("月", "季度", "时间", "期间", "这几个月", "这三个月", "这两个月"))
+
+
+def _explicit_time_drilldown(compact: str) -> bool:
+    lowered = str(compact or "").lower()
+    has_time_target = any(token in lowered for token in ("invoicedate", "date", "time")) or any(token in compact for token in ("日期", "时间"))
+    if not has_time_target:
+        return False
+    return any(token in compact for token in ("下钻", "拆分", "继续", "按"))
 
 
 def _asks_grouped_time_comparison_followup(compact: str) -> bool:
@@ -2403,7 +2544,7 @@ def _generic_followup_dimension(compact: str, available_columns: list[str], *, c
         (("服务线", "业务线", "渠道"), ("service_line", "line", "channel", "渠道", "服务线", "业务线"), "service_line"),
     ]
     for triggers, aliases, fallback_concept in alias_groups:
-        if any(trigger in compact for trigger in triggers):
+        if _contains_any_token(compact, triggers):
             column = _pick_column_by_aliases(available, aliases)
             if column:
                 return column
@@ -2603,6 +2744,27 @@ def _context_focus_sets(context: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     if not isinstance(focus_sets, list):
         return []
     return [item for item in focus_sets if isinstance(item, Mapping)]
+
+
+def _focus_set_artifact_id(context: Mapping[str, Any], focus_set: Mapping[str, Any]) -> str:
+    dimension = str(focus_set.get("dimension") or "")
+    metric = str(focus_set.get("metric") or "")
+    values = [str(value) for value in focus_set.get("values") or [] if value not in (None, "")]
+    artifacts = context.get("active_result_artifacts") if isinstance(context.get("active_result_artifacts"), list) else []
+    for artifact in artifacts:
+        if not isinstance(artifact, Mapping):
+            continue
+        if str(artifact.get("dimension") or "") != dimension:
+            continue
+        if metric and str(artifact.get("metric") or "") != metric:
+            continue
+        artifact_values = [str(value) for value in artifact.get("values") or [] if value not in (None, "")]
+        if values and artifact_values and values != artifact_values:
+            continue
+        artifact_id = str(artifact.get("artifact_id") or "")
+        if artifact_id:
+            return artifact_id
+    return str(context.get("last_ranking_artifact_id") or context.get("last_result_artifact_id") or "")
 
 
 def _focus_set_question_prefix(focus_set: Mapping[str, Any], *, compact: str = "") -> str:
@@ -2805,6 +2967,10 @@ def _question_references_focus_set(compact: str, column: str) -> bool:
         if any(
             token in compact
             for token in (
+                f"排名靠前的{alias}",
+                f"排名靠前{alias}",
+                f"靠前的{alias}",
+                f"靠前{alias}",
                 f"这些Top{alias}",
                 f"这些top{alias}",
                 f"这些TOP{alias}",
@@ -3052,7 +3218,7 @@ def _explicit_dimension_column(compact: str, available_columns: list[str]) -> st
         (("服务线", "业务线", "渠道"), ("service_line", "line", "channel", "渠道", "服务线", "业务线")),
     ]
     for triggers, aliases in alias_groups:
-        if any(trigger in compact for trigger in triggers):
+        if _contains_any_token(compact, triggers):
             column = _pick_column_by_aliases(available, aliases)
             if column:
                 return column
@@ -3082,12 +3248,17 @@ def _explicit_grouped_dimension_column(compact: str, available_columns: list[str
         (("各月", "每月", "每个月", "按月", "按月份"), ("month", "月份", "月度")),
     ]
     for triggers, aliases in alias_groups:
-        if any(trigger in compact for trigger in triggers):
+        if _contains_any_token(compact, triggers):
             column = _pick_column_by_aliases(available, aliases)
             if column:
                 return column
             return aliases[0]
     return ""
+
+
+def _contains_any_token(text: str, tokens: tuple[str, ...]) -> bool:
+    lowered = str(text or "").lower()
+    return any(token in text or str(token).lower() in lowered for token in tokens)
 
 
 def _explicit_rank_target_dimension_column(compact: str, available_columns: list[str]) -> str:
@@ -3199,7 +3370,7 @@ def _explicit_dimension_concept(compact: str) -> str:
 
 def _explicit_metric_concept(compact: str) -> str:
     alias_groups = [
-        (("订单总金额", "订单总额", "订单金额", "订单额", "总金额", "总额", "销售额", "收入", "营收", "amount", "sales", "revenue"), "amount"),
+        (("订单总金额", "订单总额", "订单金额", "订单额", "总金额", "总额", "销售额", "收入", "营收", "消费总额", "消费金额", "消费总数", "消费合计", "消费多少", "amount", "sales", "revenue", "spend", "totalspend", "consumption"), "amount"),
         (("总利润", "利润", "profit"), "profit"),
         (("工单量", "工单数", "工单", "tickets", "ticket"), "tickets"),
         (("订单数", "数量", "件数", "count", "cnt"), "count"),
