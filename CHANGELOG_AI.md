@@ -70,6 +70,101 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-06-07 21:13 CST
+
+### 本次目标
+
+在隔离 worktree `/Users/trevorcui/Documents/VDS-real-user-random-stability`、分支 `codex/vds-real-user-random-stability` 中，按追加 steering 指令把 UK Retail random real user gate 扩展为包含 Recommendation Answerability Gate、Correction Gate 和统一 multi-dataset runner 的当前阶段验收；要求 UK Retail source / recommendation / correction / random 连续 3 轮通过，推荐问题 answerability=100%，HTTP5xx=0，false semantic passed=0，并补回归测试。
+
+### 修改文件
+
+- backend/services/data_agent_service.py
+- data_agent_core/output/text_answer_framework.py
+- scripts/run_multi_dataset_real_user_gate.py
+- tests/test_recommendation_answerability_gate.py
+- tests/test_correction_node_recovery.py
+- tests/test_multi_dataset_real_user_gate_scoring.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `scripts/run_multi_dataset_real_user_gate.py`，复用 UK Retail HTTP client / scoring contract，支持 `--dataset-path` / `--dataset-dir`、dataset manifest、source gate、recommendation answerability gate、correction gate、random gate、`--cycles`、`--stop-on-failure`、JSON/Markdown 报告和 failure report。
+- 修复 runner 直接执行时 repo root 未进入 `sys.path` 导致无法导入 `scripts.run_uk_retail_random_user_gate` 的问题。
+- 修复 manifest measure 识别中 `country` 被 `count` 子串误判为数值指标的问题，并修复推荐问题编号清理正则。
+- 输出层为 direct answer 同步 `structured_answer_sections.next_questions` 到 `insight.next_questions`，避免真实 HTTP 成功答案没有可追问推荐。
+- 收窄推荐生成逻辑：不再输出 `按Description拆分Sales`、`按Country拆分Sales`、`检查最近一个周期是否为完整周期` 等当前系统不能稳定执行的问题；TopN / gap / trend / customer / quantity-return 场景改成带上下文、口径和字段语义的自然语言推荐。
+- 修复 correction 判定：支持用户明确修正时抽取 `A * B` 乘法公式，但普通带公式的 follow-up 不再被误判为 correction。
+- 新增 recommendation / correction / multi-dataset scoring 回归，覆盖推荐 TopN 差距、时间下钻、维度拆分、占比、focus set 继承、退货数量推荐不切到销售额、missing recommendation hard fail、manifest 识别、推荐 contract inference 和乘法公式 correction rerun。
+
+### 测试方式
+
+- 新增 + focused semantic：`python3 -m pytest tests/test_topn_filter_drilldown_followup.py tests/test_generic_business_semantic_binding.py tests/test_semantic_contract_instrumentation.py tests/test_recommendation_answerability_gate.py tests/test_correction_node_recovery.py tests/test_multi_dataset_real_user_gate_scoring.py --tb=short`
+- semantic selector：`python3 -m pytest tests -k "semantic_contract or verifier or execution_trace" --tb=short`
+- Retail Product Floor：`python3 -m pytest -rxX tests/test_retail_cli_product_floor.py --tb=short`
+- py_compile：按 steering 指定模块清单执行，并额外包含 `scripts/run_uk_retail_random_user_gate.py`、`scripts/run_multi_dataset_real_user_gate.py`
+- `git diff --check`
+- 失败前真实 HTTP 1-cycle gate：`/tmp/vds-real-user-gates-20260607-201334-uk_retail`
+- 修复后真实 HTTP 1-cycle source + recommendation + correction gate：`/tmp/vds-real-user-gates-20260607-202322-uk_retail`
+- 最终真实 HTTP 3-cycle multi gate：`VDS_LLM_PROVIDER=mock python3 scripts/run_multi_dataset_real_user_gate.py --dataset-path "/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx" --dataset-name uk_retail --base-url http://127.0.0.1:8878 --cycles 3 --random-questions 80 --seeds 2026060701 2026060702 2026060703 --start-service always --stop-on-failure --print-summary`
+
+### 测试结果
+
+- 首次 1-cycle recommendation gate 失败：`/tmp/vds-real-user-gates-20260607-201334-uk_retail/cycle_1_recommendation_gate.json` 显示 `45 total / 36 pass / 0 soft / 9 hard`，source `16/16`、correction `4/4` 均通过；失败层集中在 recommendation_generation / execution_contract / semantic_verifier，代表系统推荐了自己不能稳定回答的问题。
+- 修复后 1-cycle gate 通过：`/tmp/vds-real-user-gates-20260607-202322-uk_retail`，source `16/16`，recommendation `41/41`，correction `4/4`，HTTP5xx=0，false semantic passed=0。
+- 新增 + focused semantic 通过：`81 passed, 230 warnings`。
+- semantic selector 通过：`58 passed, 949 deselected, 32 warnings`。
+- Retail Product Floor 通过：`48 passed, 5 xfailed, 222 warnings`；既有 xfailed 未扩大。
+- py_compile 通过。
+- `git diff --check` 通过。
+- 最终真实 HTTP 3-cycle multi gate 输出目录：`/tmp/vds-real-user-gates-20260607-203110-uk_retail`，`dataset_stability_report.md` 显示 `passed=True`、`cycles=3/3`。
+- 最终 cycle 1：source `16/16/0/0`，recommendation `41/41/0/0`，correction `4/4/0/0`，random `80/72/8/0`，random pass_rate `0.900`，pass+soft `1.000`，HTTP5xx=0，false semantic passed=0。
+- 最终 cycle 2：source `16/16/0/0`，recommendation `41/41/0/0`，correction `4/4/0/0`，random `80/72/8/0`，random pass_rate `0.900`，pass+soft `1.000`，HTTP5xx=0，false semantic passed=0。
+- 最终 cycle 3：source `16/16/0/0`，recommendation `41/41/0/0`，correction `4/4/0/0`，random `80/76/4/0`，random pass_rate `0.950`，pass+soft `1.000`，HTTP5xx=0，false semantic passed=0。
+- 8878 为本轮 runner 启动服务端口；运行结束后确认无 8878 监听进程。
+
+### 遗留问题
+
+- 多数据集 Stage 1 尚未完成；本轮只完成 UK Retail + recommendation/correction/current multi runner 阶段。
+- 当前 correction gate 记录 final corrected behavior 和 rerun context，但尚未把 `initial_contract / verifier_issue / correction_action / corrected_contract` 全量展开到 runner report 的独立字段。
+- 本轮未扩大修复 Retail Product Floor 既有 `5 xfailed`。
+- 本轮未运行完整 pytest、真实 LLM provider gate 或前端浏览器 smoke。
+
+### 是否影响主流程
+
+是。影响真实上传 CSV / Excel 后连续自然语言数据分析中的推荐问题生成、推荐问题可答性、correction 公式修正判定、真实 HTTP gate 评分与报告。
+
+### 是否涉及 Benchmark
+
+涉及评测 gate 和真实用户随机问题 gate，但不修改 benchmark 标准答案、固定题答案或既有 benchmark scorer 断言；新增 runner 用于真实服务路径的泛化验证。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。变更保持在 backend service、output contract 和 runner/test 层，增强 provider-neutral 多 Agent 默认链路未来迁移时的可验证推荐、correction 和 semantic evidence。
+
+### 是否修改核心数据契约
+
+否。未新增核心 contract class 或字段；但收紧了输出层推荐问题与 runner scoring 的行为契约。
+
+### 是否修改 API 契约
+
+否。没有新增、删除或修改 HTTP endpoint；`insight.next_questions` 在 direct answer 场景更稳定填充，属于既有响应字段的质量增强。
+
+### 是否新增或修改错误类型
+
+否。未新增核心错误类型；新增的是 runner failure_layer / hard_reasons 归因和 focused regression。
+
+### 是否新增或修改运行追踪逻辑
+
+是，限于 runner 证据采集与 correction context 验证；核心 trace schema 未变。
+
+### 是否已同步 README
+
+否。本轮是内部真实 HTTP gate、推荐可答性、correction 和多数据集 runner 增强；未改变公开安装方式、启动方式、API 端点或前端入口，README 暂不需要同步。
+
 2026-06-07 19:48 CST
 
 ### 本次目标

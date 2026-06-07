@@ -74,8 +74,13 @@ def apply_text_answer_framework(response: dict[str, Any], *, question: str) -> d
         response["answer"] = direct_answer
         response["structured_answer_sections"] = _compose_direct_answer_sections(context, direct_answer)
         insight = response.get("insight")
-        if isinstance(insight, dict) and not str(insight.get("summary") or "").strip():
-            insight["summary"] = _first_sentence(direct_answer, limit=180)
+        if isinstance(insight, dict):
+            if not str(insight.get("summary") or "").strip():
+                insight["summary"] = _first_sentence(direct_answer, limit=180)
+            next_questions = response["structured_answer_sections"].get("next_questions") or _next_questions(context)
+            if next_questions and not insight.get("next_questions"):
+                insight["next_questions"] = next_questions[:3]
+            insight["confidence"] = max(float(insight.get("confidence") or 0.0), 0.82)
         _mark_debug(response, applied=True, reason=f"direct_kind={kind}")
         _attach_process_note(response, direct=True)
         return response
@@ -2404,16 +2409,11 @@ def _next_questions(context: _FrameContext) -> list[str]:
     ):
         existing = []
         generated = [
-            "按关键维度拆解这个数值",
-            "对比相邻时间段或相关对象的同一指标",
-            "检查异常值、缺失值或规则口径是否影响该数值",
+            *_schema_aware_followups(context),
+            "检查异常值、缺失值或规则口径是否影响这个结果",
         ]
     elif context.kind == "overview":
-        generated = [
-            "按核心指标做一次 TopN 排名",
-            "看时间趋势和最大波动月份",
-            "检查缺失、重复和异常值对分析的影响",
-        ]
+        generated = _overview_followups(context)
     elif context.kind == "target_actual":
         generated = [
             "把完成率最低的对象拆到产品、区域或负责人",
@@ -2421,17 +2421,17 @@ def _next_questions(context: _FrameContext) -> list[str]:
             "按月份看完成率趋势和拐点",
         ]
     elif context.kind == "trend":
-        generated = [
-            "找出峰值、低点和最大环比变化的原因",
-            "按区域或产品拆分同一趋势",
-            "检查最近一个周期是否为完整周期",
-        ]
+        generated = _trend_followups(context)
     elif context.kind == "ranking":
+        generated = _ranking_followups(context)
+    elif context.kind == "contribution":
         generated = [
-            "把 Top 项继续按时间或区域拆分",
-            "比较第一名和第二名的差距",
-            "查看低排名项是否有异常或缺失影响",
+            "第一名和第二名差多少？",
+            *_schema_aware_followups(context),
+            "把这些对象继续按月份趋势查看",
         ]
+    elif context.kind == "gap":
+        generated = _gap_followups(context)
     elif context.kind in {"cleaning", "quality"}:
         generated = [
             "按缺失率或异常值数排序查看高风险字段",
@@ -2446,9 +2446,8 @@ def _next_questions(context: _FrameContext) -> list[str]:
         ]
     else:
         generated = [
-            "把这个结论按关键维度下钻",
+            *_schema_aware_followups(context),
             "检查是否存在异常值或质量问题影响结果",
-            "生成可复核的结果表和图表",
         ]
     result: list[str] = []
     for item in [*existing, *generated]:
@@ -2458,6 +2457,137 @@ def _next_questions(context: _FrameContext) -> list[str]:
         if len(result) >= 3:
             break
     return result
+
+
+def _overview_followups(context: _FrameContext) -> list[str]:
+    columns = set(context.columns)
+    questions: list[str] = []
+    if {"Quantity", "UnitPrice", "Description"}.issubset(columns):
+        questions.append("销售额最高的前5个商品是什么？销售额按 Quantity * UnitPrice 算。")
+    if {"Quantity", "UnitPrice", "InvoiceDate"}.issubset(columns):
+        questions.append("按月份看整体销售额趋势，销售额按 Quantity * UnitPrice 算。")
+    if {"Quantity", "UnitPrice", "Country"}.issubset(columns):
+        questions.append("Country 销售额占比是多少？销售额按 Quantity * UnitPrice 算。")
+    if not questions:
+        questions.extend(_schema_aware_followups(context))
+    questions.append("检查缺失、重复和异常值对分析的影响")
+    return questions
+
+
+def _ranking_followups(context: _FrameContext) -> list[str]:
+    metric = _preferred_metric_column(context.columns, context.rows) or str(_as_dict(context.logic_form.get("parameters")).get("metric") or "")
+    label = _preferred_label_column(context.columns, metric) or str(_as_dict(context.logic_form.get("parameters")).get("dimension") or context.logic_form.get("group_by") or "")
+    label_lower = label.lower()
+    metric_lower = metric.lower()
+    if label in {"Description", "StockCode"} or any(token in label_lower for token in ("product", "sku", "商品", "产品")):
+        if metric == "Quantity" or "quantity" in metric_lower or "数量" in metric:
+            return [
+                "第一名和第二名数量差多少？",
+            ]
+        return [
+            "第一名和第二名差多少？",
+            "这些 Top 商品按月份趋势怎么看？",
+            "这些 Top 商品主要卖给哪些国家？分别列出主要国家和销售额。",
+        ]
+    if label == "Country" or "country" in label_lower or "国家" in label:
+        return [
+            "这些国家分别占总销售额的比例是多少？",
+            "按这些国家看月份销售趋势。",
+            "第一名和第二名差多少？",
+        ]
+    if label == "CustomerID" or "customer" in label_lower or "客户" in label:
+        return [
+            "这些客户的销售额分别是多少？销售额按 Quantity * UnitPrice 算。",
+            "这5个客户在哪些月份最活跃？",
+        ]
+    generic = _schema_aware_followups(context)
+    return [*generic, "第一名和第二名差多少？"]
+
+
+def _trend_followups(context: _FrameContext) -> list[str]:
+    metric = _preferred_metric_column(context.columns, context.rows) or str(_as_dict(context.logic_form.get("parameters")).get("metric") or "")
+    metric_lower = metric.lower()
+    if metric == "Sales" or "sales" in metric_lower or "销售" in metric:
+        return [
+            "哪些月份最高？",
+            "销售额最高的前5个商品是什么？销售额按 Quantity * UnitPrice 算。",
+            "Country 销售额占比是多少？销售额按 Quantity * UnitPrice 算。",
+        ]
+    if metric == "Quantity" or "quantity" in metric_lower or "数量" in metric:
+        return [
+            "哪些月份最高？",
+            "按月份看退货数量趋势，退货按 Quantity<0 统计。",
+        ]
+    generated = ["哪些月份最高?", *_schema_aware_followups(context)]
+    return generated
+
+
+def _gap_followups(context: _FrameContext) -> list[str]:
+    metric = _preferred_metric_column(context.columns, context.rows) or str(_as_dict(context.logic_form.get("parameters")).get("metric") or "")
+    label = _preferred_label_column(context.columns, metric) or str(_as_dict(context.logic_form.get("parameters")).get("dimension") or context.logic_form.get("group_by") or "")
+    label_lower = label.lower()
+    metric_lower = metric.lower()
+    if label in {"Description", "StockCode"} or any(token in label_lower for token in ("product", "sku", "商品", "产品")):
+        if metric == "Quantity" or "quantity" in metric_lower or "数量" in metric:
+            return [
+                "按月份看退货数量趋势，退货按 Quantity<0 统计。",
+            ]
+        return [
+            "这些 Top 商品按月份趋势怎么看？",
+            "这些 Top 商品主要卖给哪些国家？分别列出主要国家和销售额。",
+        ]
+    if label == "Country" or "country" in label_lower or "国家" in label:
+        return [
+            "这些国家分别占总销售额的比例是多少？",
+            "按这些国家看月份销售趋势。",
+        ]
+    if label == "CustomerID" or "customer" in label_lower or "客户" in label:
+        return [
+            "这些客户的销售额分别是多少？销售额按 Quantity * UnitPrice 算。",
+            "这5个客户在哪些月份最活跃？",
+        ]
+    return _schema_aware_followups(context)
+
+
+def _schema_aware_followups(context: _FrameContext) -> list[str]:
+    columns = set(context.columns)
+    params = _as_dict(context.logic_form.get("parameters"))
+    metric = str(params.get("metric") or _preferred_metric_column(context.columns, context.rows) or "")
+    dimension = str(params.get("dimension") or context.logic_form.get("group_by") or _preferred_label_column(context.columns, metric) or "")
+    questions: list[str] = []
+    if {"Quantity", "UnitPrice"}.issubset(columns):
+        if "Country" in columns:
+            questions.append("按国家看销售额最高的前5项，销售额按 Quantity * UnitPrice 算。")
+        if "InvoiceDate" in columns:
+            questions.append("按月份看整体销售额趋势，销售额按 Quantity * UnitPrice 算。")
+        if "Description" in columns:
+            questions.append("销售额最高的前5个商品是什么？销售额按 Quantity * UnitPrice 算。")
+    if metric and dimension:
+        questions.extend(_metric_dimension_followups(metric=metric, dimension=dimension))
+    elif metric:
+        questions.append(f"按主要维度拆分{metric}，看排名前5。")
+    return questions
+
+
+def _metric_dimension_followups(*, metric: str, dimension: str) -> list[str]:
+    metric_lower = metric.lower()
+    dimension_lower = dimension.lower()
+    if (metric == "Sales" or "sales" in metric_lower or "销售" in metric) and dimension == "Description":
+        return ["销售额最高的前5个商品是什么？销售额按 Quantity * UnitPrice 算。"]
+    if (metric == "Sales" or "sales" in metric_lower or "销售" in metric) and dimension == "StockCode":
+        return ["按 StockCode 查看销售额最高的前5个商品。"]
+    if (metric == "Sales" or "sales" in metric_lower or "销售" in metric) and (dimension == "Country" or "country" in dimension_lower or "国家" in dimension):
+        return ["销售额最高的前5个国家是什么？销售额按 Quantity * UnitPrice 算。"]
+    if (metric == "Sales" or "sales" in metric_lower or "销售" in metric) and (dimension == "CustomerID" or "customer" in dimension_lower or "客户" in dimension):
+        return ["销售额最高的前5个客户是谁？销售额按 Quantity * UnitPrice 算。"]
+    if metric == "Quantity" or "quantity" in metric_lower or "数量" in metric:
+        if dimension == "Description" or dimension == "StockCode":
+            return ["卖得最多的前5个商品是什么？"]
+        if dimension == "CustomerID" or "customer" in dimension_lower or "客户" in dimension:
+            return ["订单数量最多的前5个客户是谁？"]
+    if dimension == "month":
+        return [f"哪些月份{metric}最高？"]
+    return [f"按 {dimension} 分组，计算 {metric} 的总和并返回前5个 {dimension}。"]
 
 
 def _missing_information(context: _FrameContext) -> str:

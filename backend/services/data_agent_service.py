@@ -3851,29 +3851,28 @@ def _build_turn_correction_context(record: dict[str, Any] | None, *, question: s
 
 
 def _looks_like_correction_request(question: str) -> bool:
-    if _extract_explicit_formula_text(question):
-        return True
     lowered = question.lower()
-    if "口径" in question and any(token in lowered for token in ("不是", "不对", "改", "重新", "重算", "rerun", "recalculate")):
-        return True
-    if not _has_formula_like_expression(question):
-        return False
-    return any(
+    correction_signal = any(
         token in lowered
         for token in (
-            "不是这个口径",
-            "口径不对",
-            "改成",
-            "用",
-            "重新算",
+            "不是",
+            "不对",
+            "改",
+            "重新",
             "重算",
             "重跑",
             "recalculate",
             "rerun",
-            "use ",
             "instead",
         )
     )
+    if _extract_explicit_formula_text(question) and correction_signal:
+        return True
+    if "口径" in question and any(token in lowered for token in ("不是", "不对", "改", "重新", "重算", "rerun", "recalculate")):
+        return True
+    if not _has_formula_like_expression(question):
+        return False
+    return correction_signal or any(token in lowered for token in ("不是这个口径", "口径不对", "改成", "use "))
 
 
 def _has_formula_like_expression(question: str) -> bool:
@@ -4745,6 +4744,8 @@ def _extract_explicit_formula_text(question: str) -> str:
     patterns = (
         r"[\w\u4e00-\u9fff]{1,20}\s*=\s*sum\s*\(?\s*[\w\u4e00-\u9fff_ -]{1,40}\s*\)?\s*/\s*sum\s*\(?\s*[\w\u4e00-\u9fff_ -]{1,40}\s*\)?",
         r"[\w\u4e00-\u9fff]{1,20}\s*=\s*[\w\u4e00-\u9fff_ -]{1,40}\s*/\s*[\w\u4e00-\u9fff_ -]{1,40}",
+        r"[\w\u4e00-\u9fff]{1,20}\s*=\s*[\w\u4e00-\u9fff_ -]{1,40}\s*\*\s*[\w\u4e00-\u9fff_ -]{1,40}",
+        r"[\w\u4e00-\u9fff_ -]{1,40}\s*\*\s*[\w\u4e00-\u9fff_ -]{1,40}",
     )
     for pattern in patterns:
         match = re.search(pattern, question, re.I)
