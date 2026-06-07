@@ -135,6 +135,21 @@ def test_total_explicit_formula_does_not_require_dimension(
     assert trace.get("groupby_columns") == []
 
 
+def test_english_revenue_formula_is_not_treated_as_filter(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "total revenue 是多少？revenue = quantity times unit price。")
+    trace = ((response.get("debug") or {}).get("execution_trace") or {})
+
+    assert response.get("success") is True, response.get("answer")
+    assert response.get("semantic_status") == "passed"
+    assert (response.get("result") or {}).get("columns") == ["Sales"]
+    assert (response.get("result") or {}).get("value", {}).get("Sales") == pytest.approx(100.0)
+    assert trace.get("formula") == "Quantity * UnitPrice"
+
+
 def test_customer_order_count_uses_distinct_order_key(
     generic_order_service: tuple[DataAgentService, str],
 ) -> None:
@@ -151,6 +166,37 @@ def test_customer_order_count_uses_distinct_order_key(
     rows = _rows(response)
     assert rows[0]["CustomerID"] == "C1"
     assert rows[0]["count"] == 3
+
+
+def test_grouped_customer_distinct_count_by_country_passes(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "按国家看客户数，客户按 CustomerID 去重。")
+    trace = ((response.get("debug") or {}).get("execution_trace") or {})
+
+    assert response.get("success") is True, response.get("answer")
+    assert response.get("semantic_status") == "passed"
+    assert (response.get("result") or {}).get("columns") == ["Country", "count"]
+    assert trace.get("aggregation") == "nunique"
+    assert "CustomerID" in (trace.get("metric_columns") or [])
+
+
+def test_customer_sales_topn_ignores_planner_metadata_conditions(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "销售额最高的前10个客户是谁？销售额按 Quantity * UnitPrice 算。")
+    trace = ((response.get("debug") or {}).get("execution_trace") or {})
+
+    assert response.get("success") is True, response.get("answer")
+    assert response.get("semantic_status") == "passed"
+    assert _params(response).get("dimension") == "CustomerID"
+    assert _params(response).get("derived_metric", {}).get("formula") == "Quantity * UnitPrice"
+    assert trace.get("formula") == "Quantity * UnitPrice"
+    assert not any(item.get("column") == "conditions" for item in trace.get("filters_applied") or [])
 
 
 def test_returns_by_product_uses_negative_quantity_evidence(
@@ -418,6 +464,402 @@ def test_country_sales_share_explicit_formula_uses_derived_metric(
     assert trace.get("groupby_columns") == ["Country"]
     assert rows
     assert all("Sales_share" in row for row in rows)
+
+
+def test_country_sales_share_named_sales_columns_infer_derived_metric(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "Country, Sales, total_Sales, Sales_share 分别是多少？")
+    params = _params(response)
+    rows = _rows(response)
+
+    assert response.get("success") is True, response.get("answer")
+    assert response.get("semantic_status") == "passed"
+    assert params.get("dimension") == "Country"
+    assert params.get("derived_metric", {}).get("formula") == "Quantity * UnitPrice"
+    assert (response.get("result") or {}).get("columns") == ["Country", "Sales", "total_Sales", "Sales_share"]
+    assert rows
+    assert all("Sales_share" in row and "total_Sales" in row for row in rows)
+
+
+def test_product_sales_share_explicit_formula_uses_description_denominator_and_share(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "各商品销售额占比是多少？销售额按 Quantity * UnitPrice 算。")
+    params = _params(response)
+    rows = _rows(response)
+
+    assert response.get("success") is True, response.get("answer")
+    assert response.get("semantic_status") == "passed"
+    assert params.get("dimension") == "Description"
+    assert params.get("derived_metric", {}).get("formula") == "Quantity * UnitPrice"
+    assert (response.get("result") or {}).get("columns") == ["Description", "Sales", "total_Sales", "Sales_share"]
+    assert rows
+    assert all("Sales_share" in row for row in rows)
+    assert all(row.get("total_Sales") == pytest.approx(100.0) for row in rows)
+
+
+def test_scalar_distinct_count_does_not_require_groupby(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "有多少个客户？按 CustomerID 去重算。")
+    trace = ((response.get("debug") or {}).get("execution_trace") or {})
+
+    assert response.get("success") is True, response.get("answer")
+    assert response.get("semantic_status") == "passed"
+    assert _params(response).get("field") == "CustomerID"
+    assert trace.get("operation") == "distinct_count"
+    assert trace.get("groupby_columns") == []
+    assert (response.get("result") or {}).get("value") == 6
+
+
+def test_return_quantity_monthly_trend_uses_month_bucket(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "按月看退货数量趋势，退货按 Quantity<0 统计。")
+    columns = (response.get("result") or {}).get("columns") or []
+    trace = ((response.get("debug") or {}).get("execution_trace") or {})
+
+    assert response.get("success") is True, response.get("answer")
+    assert response.get("semantic_status") == "passed"
+    assert columns == ["month", "Quantity"]
+    assert "InvoiceDate" not in columns
+    assert trace.get("time_grain") == "month"
+    assert trace.get("groupby_columns") == ["month"]
+
+
+def test_unknown_named_field_fails_safely_without_default_ranking(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "按 FooBar 看销售额。")
+
+    assert response.get("success") is False
+    assert response.get("semantic_status") in {"failed", "needs_clarification"}
+    assert (response.get("logic_form") or {}).get("operation") == "not_applicable"
+    params = _params(response)
+    assert params.get("dimension") != "FooBar"
+    assert params.get("metric") != "Sales"
+    assert (response.get("result") or {}).get("columns") == ["answer"]
+
+
+def test_ambiguous_meaningful_customer_ranking_fails_safely(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "找最有意义的5个客户。")
+
+    assert response.get("success") is False
+    assert response.get("semantic_status") in {"failed", "needs_clarification"}
+    assert (response.get("logic_form") or {}).get("operation") == "not_applicable"
+    assert (response.get("result") or {}).get("columns") == ["answer"]
+
+
+def test_grouped_product_order_count_uses_distinct_order_key(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "每个商品被多少订单购买过？按 InvoiceNo 去重。")
+    trace = ((response.get("debug") or {}).get("execution_trace") or {})
+
+    assert response.get("success") is True, response.get("answer")
+    assert response.get("semantic_status") == "passed"
+    assert _params(response).get("dimension") == "Description"
+    assert _params(response).get("metric") == "InvoiceNo"
+    assert _params(response).get("aggregation") in {"nunique", "distinct_count"}
+    assert (response.get("result") or {}).get("columns") == ["Description", "count"]
+    assert trace.get("aggregation") == "nunique"
+    assert "InvoiceNo" in (trace.get("metric_columns") or [])
+    assert "Description" in (trace.get("groupby_columns") or [])
+
+
+def test_customer_purchase_count_plural_defaults_to_top5_distinct_orders(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "客户购买次数最多的是哪些？购买次数按 InvoiceNo 去重。")
+    trace = ((response.get("debug") or {}).get("execution_trace") or {})
+
+    assert response.get("success") is True, response.get("answer")
+    assert response.get("semantic_status") == "passed"
+    assert _params(response).get("dimension") == "CustomerID"
+    assert _params(response).get("metric") == "InvoiceNo"
+    assert _params(response).get("aggregation") in {"nunique", "distinct_count"}
+    assert _params(response).get("limit") == 5
+    assert len(_rows(response)) == 5
+    assert trace.get("aggregation") == "nunique"
+    assert "InvoiceNo" in (trace.get("metric_columns") or [])
+
+
+def test_country_monthly_sales_trend_uses_month_bucket_and_country_series(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+
+    response = _ask(service, dataset_id, "按国家再看销售趋势，月粒度。")
+    trace = ((response.get("debug") or {}).get("execution_trace") or {})
+    columns = (response.get("result") or {}).get("columns") or []
+
+    assert response.get("success") is True, response.get("answer")
+    assert response.get("semantic_status") == "passed"
+    assert _params(response).get("dimension") == "month"
+    assert _params(response).get("series_dimension") == "Country"
+    assert _params(response).get("time_bucket") == "month"
+    assert columns == ["month", "Country", "Sales"]
+    assert trace.get("time_grain") == "month"
+    assert trace.get("groupby_columns") == ["month", "Country"]
+
+
+def test_month_ranking_followup_keeps_month_bucket_context(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_month_ranking_followup"
+
+    first = _ask(
+        service,
+        dataset_id,
+        "按月份看整体销售额趋势，销售额按 Quantity * UnitPrice 算。",
+        conversation_id=conversation_id,
+    )
+    second = _ask(
+        service,
+        dataset_id,
+        "哪些月份最高？",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    trace = ((second.get("debug") or {}).get("execution_trace") or {})
+
+    assert first.get("success") is True, first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert second.get("semantic_status") == "passed"
+    assert _params(second).get("dimension") == "month"
+    assert (second.get("result") or {}).get("columns") == ["month", "Sales"]
+    assert trace.get("time_grain") == "month"
+    assert trace.get("groupby_columns") == ["month"]
+
+
+def test_gap_followup_with_two_ordinals_uses_previous_ranking_not_single_rank(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_two_ordinal_gap"
+
+    first = _ask(
+        service,
+        dataset_id,
+        "销售额最高的前3个国家是什么？销售额按 Quantity * UnitPrice 算。",
+        conversation_id=conversation_id,
+    )
+    second = _ask(
+        service,
+        dataset_id,
+        "第二名比第一名少多少？",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    gap_rows = ((second.get("debug") or {}).get("result_artifacts") or {}).get("gap_rows") or []
+
+    assert first.get("success") is True, first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert second.get("semantic_status") == "passed"
+    assert _params(second).get("dimension") == "Country"
+    assert len(gap_rows) >= 2
+    assert gap_rows[1].get("gap_to_leader") is not None
+
+
+def test_followup_top_products_short_reference_drills_down_to_country_sales(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_top_products_short_ref_country"
+
+    first = _ask(
+        service,
+        dataset_id,
+        "销售额最高的前5个商品是什么？销售额按 Quantity * UnitPrice 算。",
+        conversation_id=conversation_id,
+    )
+    second = _ask(
+        service,
+        dataset_id,
+        "这前5商品主要卖给哪些国家？",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    params = _params(second)
+    filters = (second.get("logic_form") or {}).get("filters") or {}
+    trace = ((second.get("debug") or {}).get("execution_trace") or {})
+
+    assert first.get("success") is True, first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert second.get("semantic_status") == "passed"
+    assert params.get("dimension") == "Country"
+    assert params.get("metric") == "Sales"
+    assert params.get("derived_metric", {}).get("formula") == "Quantity * UnitPrice"
+    assert params.get("capability_family") == "drilldown_followup"
+    assert filters.get("Description") == ["Alpha Lamp", "Gamma Mug", "Beta Bowl", "Delta Pen", "Epsilon Vase"]
+    assert (second.get("result") or {}).get("columns") == ["Country", "Sales"]
+    assert trace.get("formula") == "Quantity * UnitPrice"
+    assert trace.get("groupby_columns") == ["Country"]
+
+
+def test_followup_country_order_count_uses_distinct_invoice_not_quantity(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_country_order_count_after_share"
+
+    first = _ask(
+        service,
+        dataset_id,
+        "销售额最高的前5个国家是什么？销售额按 Quantity * UnitPrice 算。",
+        conversation_id=conversation_id,
+    )
+    second = _ask(
+        service,
+        dataset_id,
+        "这些国家分别占总销售额的比例是多少？",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    third = _ask(
+        service,
+        dataset_id,
+        "按这些国家看订单数量前5。",
+        conversation_id=str(second.get("conversation_id") or conversation_id),
+    )
+    trace = ((third.get("debug") or {}).get("execution_trace") or {})
+
+    assert first.get("success") is True, first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert third.get("success") is True, third.get("answer")
+    assert third.get("semantic_status") == "passed"
+    assert _params(third).get("dimension") == "Country"
+    assert _params(third).get("metric") == "InvoiceNo"
+    assert _params(third).get("aggregation") in {"nunique", "distinct_count"}
+    assert (third.get("result") or {}).get("columns") == ["Country", "count"]
+    assert "Quantity" not in (third.get("result") or {}).get("columns", [])
+    assert trace.get("aggregation") == "nunique"
+    assert trace.get("metric_columns") == ["InvoiceNo"]
+
+
+def test_month_referent_country_ranking_uses_virtual_month_filter_only(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_month_referent_country"
+
+    first = _ask(
+        service,
+        dataset_id,
+        "按月份看整体销售额趋势，销售额按 Quantity * UnitPrice 算。",
+        conversation_id=conversation_id,
+    )
+    second = _ask(
+        service,
+        dataset_id,
+        "哪些月份最高？",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    third = _ask(
+        service,
+        dataset_id,
+        "这些高月份里销售额最高的国家是哪些？",
+        conversation_id=str(second.get("conversation_id") or conversation_id),
+    )
+    filters = (third.get("logic_form") or {}).get("filters") or {}
+    trace = ((third.get("debug") or {}).get("execution_trace") or {})
+
+    assert first.get("success") is True, first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert third.get("success") is True, third.get("answer")
+    assert third.get("semantic_status") == "passed"
+    assert _params(third).get("dimension") == "Country"
+    assert filters.get("month") == ["2024-01", "2024-02", "2024-03"]
+    assert "InvoiceDate" not in filters
+    assert (third.get("result") or {}).get("columns") == ["Country", "Sales"]
+    assert not any(item.get("operator") == "date_part" for item in trace.get("filters_applied") or [])
+    assert any(item.get("column") == "month" and item.get("operator") == "in" for item in trace.get("filters_applied") or [])
+
+
+def test_followup_top_customers_drills_down_to_product_quantity(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_top_customers_product_drilldown"
+
+    first = _ask(
+        service,
+        dataset_id,
+        "订单数量最多的前5个客户是谁？",
+        conversation_id=conversation_id,
+    )
+    second = _ask(
+        service,
+        dataset_id,
+        "这5个客户在哪些月份最活跃？",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    third = _ask(
+        service,
+        dataset_id,
+        "列出这5个客户买最多的前5个商品。",
+        conversation_id=str(second.get("conversation_id") or conversation_id),
+    )
+    filters = (third.get("logic_form") or {}).get("filters") or {}
+    trace = ((third.get("debug") or {}).get("execution_trace") or {})
+
+    assert first.get("success") is True, first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert third.get("success") is True, third.get("answer")
+    assert third.get("semantic_status") == "passed"
+    assert _params(third).get("dimension") == "Description"
+    assert _params(third).get("metric") == "Quantity"
+    assert filters.get("CustomerID") == ["C1", "C2", "C3", "C4", "C5"]
+    assert (third.get("result") or {}).get("columns") == ["Description", "Quantity"]
+    assert trace.get("groupby_columns") == ["Description"]
+
+
+def test_followup_stockcode_monthly_trend_keeps_stockcode_series(
+    generic_order_service: tuple[DataAgentService, str],
+) -> None:
+    service, dataset_id = generic_order_service
+    conversation_id = "conv_generic_business_stockcode_monthly_trend"
+
+    first = _ask(
+        service,
+        dataset_id,
+        "按 StockCode 查看销售额最高的前5个商品。",
+        conversation_id=conversation_id,
+    )
+    second = _ask(
+        service,
+        dataset_id,
+        "这些 StockCode 按月份趋势怎么看？",
+        conversation_id=str(first.get("conversation_id") or conversation_id),
+    )
+    filters = (second.get("logic_form") or {}).get("filters") or {}
+    trace = ((second.get("debug") or {}).get("execution_trace") or {})
+
+    assert first.get("success") is True, first.get("answer")
+    assert second.get("success") is True, second.get("answer")
+    assert second.get("semantic_status") == "passed"
+    assert _params(second).get("dimension") == "month"
+    assert _params(second).get("series_dimension") == "StockCode"
+    assert _params(second).get("derived_metric", {}).get("formula") == "Quantity * UnitPrice"
+    assert filters.get("StockCode") == ["S1", "S3", "S2", "S4", "S5"]
+    assert (second.get("result") or {}).get("columns") == ["month", "StockCode", "Sales"]
+    assert trace.get("groupby_columns") == ["month", "StockCode"]
 
 
 def test_contribution_contract_rejects_share_result_without_share_column() -> None:

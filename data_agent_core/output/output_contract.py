@@ -445,18 +445,20 @@ def _looks_like_debug_or_trace_leak(text: str) -> bool:
 
 def _looks_like_sql_or_markdown_leak(text: str) -> bool:
     lowered = text.lower()
-    return any(
+    if any(
         token in lowered
         for token in (
             "```",
             "|---",
             "| ---",
-            "select ",
-            " from ",
-            " where ",
             "group by",
             "order by",
         )
+    ):
+        return True
+    return bool(
+        re.search(r"\bselect\b[\s\S]{0,500}\bfrom\b", lowered)
+        or re.search(r"\bfrom\b[\s\S]{0,300}\bwhere\b", lowered)
     )
 
 

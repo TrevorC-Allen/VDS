@@ -128,8 +128,8 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
     if family == "unknown":
         return None
     if family == "trend":
-        if str(params.get("time_bucket") or "") == "month":
-            dimension = _first_text(params.get("time_dimension"), dimension, params.get("time_column"))
+        if str(params.get("time_bucket") or params.get("time_grain") or "") == "month":
+            dimension = "month"
         else:
             dimension = _first_text(params.get("time_column"), params.get("time_dimension"), dimension)
     time_dimension = dimension if family == "trend" else None
@@ -196,6 +196,9 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
         for element in ("derived_metric_name", "metric_formula", "numerator_column", "denominator_column"):
             if element not in required_answer_elements:
                 required_answer_elements.append(element)
+    family_rules = _family_verification_rules(family)
+    if family in {"overview", "multi_file_overview"} and not _overview_quality_requested(question):
+        family_rules["must_include_quality_summary"] = False
     return TaskExecutionContract(
         contract_id=contract_id,
         task_family=family,
@@ -276,7 +279,7 @@ def build_task_execution_contract(logic_form: Any, *, question: str = "") -> Tas
                 if family in {"contribution", "share", "contribution_followup"}
                 else {}
             ),
-            **_family_verification_rules(family),
+            **family_rules,
         },
         insufficiency_policy="needs_clarification" if requires_previous else "fail_closed",
     )
@@ -495,6 +498,28 @@ def _task_family(*, operation: str, task_type: str, question: str, source_tables
     return "unknown"
 
 
+def _overview_quality_requested(question: str) -> bool:
+    compact = "".join(str(question or "").split()).lower()
+    return any(
+        token in compact
+        for token in (
+            "数据质量",
+            "质量问题",
+            "明显质量",
+            "缺失",
+            "异常",
+            "异常值",
+            "重复",
+            "清洗",
+            "quality",
+            "missing",
+            "duplicate",
+            "outlier",
+            "clean",
+        )
+    )
+
+
 def _required_columns(
     *,
     family: TaskFamily,
@@ -532,6 +557,8 @@ def _required_columns(
         return columns
     if family == "gap":
         required_values = (dimension, required_metric or output_format.get("metric"))
+    elif family == "drilldown_followup":
+        required_values = (dimension, required_metric)
     else:
         required_values = (dimension, required_metric, output_format.get("entity_field"), output_format.get("metric"))
     for value in required_values:
@@ -936,9 +963,15 @@ def _verify_overview_contract(contract: TaskExecutionContract, result: Execution
             violations.append(_violation("OVERVIEW_JOIN_KEY_MISSING", "Multi-file overview did not include candidate join keys.", {}))
     if contract.verification_rules.get("must_include_analysis_directions"):
         field_names = [str(field.get("field") or field.get("name") or "") for table in tables for field in table["fields"]]
-        if "分析方向" not in answer_text or not any(field and field in answer_text for field in field_names):
+        direction_text = answer_text + " " + str(report.get("answerable_questions") or "")
+        structured_directions = report.get("answerable_questions")
+        has_direction_marker = any(token in answer_text for token in ("分析方向", "可分析方向", "可继续提问", "下一步可继续分析")) or (
+            isinstance(structured_directions, list) and any(str(item).strip() for item in structured_directions)
+        )
+        if not has_direction_marker or not any(field and field in direction_text for field in field_names):
             violations.append(_violation("OVERVIEW_ANALYSIS_DIRECTION_TOO_GENERIC", "Analysis directions must reference concrete field names.", {}))
-    if contract.verification_rules.get("must_include_quality_summary") and "质量" not in answer_text:
+    quality_markers = ("质量", "缺失", "缺失率", "异常", "离群", "重复", "不可解析")
+    if contract.verification_rules.get("must_include_quality_summary") and not any(marker in answer_text for marker in quality_markers):
         violations.append(_violation("QUALITY_FIELD_LEVEL_MISSING", "Overview answer must include a quality summary.", {}))
     return violations
 

@@ -354,7 +354,7 @@ def plan_followup_actions(question: str, context: Mapping[str, Any] | None) -> l
         action = _generic_grouped_distribution_action(context, compact)
         if action:
             actions.append(action)
-    if not actions and bool(referent_resolution.get("resolved")) and _asks_referent_child_dimension_breakdown(compact):
+    if not actions and bool(referent_resolution.get("resolved")) and _asks_referent_child_dimension_breakdown(compact) and not _asks_share_followup(compact):
         available_columns = [str(column) for column in params.get("available_columns") or []]
         child_dimension = _explicit_child_drilldown_dimension(compact, available_columns)
         referent_dimension = str(referent_resolution.get("referent_dimension") or "")
@@ -681,7 +681,7 @@ def _should_auto_expand_gap_followup(*, compact: str, values: list[Any], ranking
 
 def _asks_gap_comparison(compact: str) -> bool:
     lowered = str(compact or "").lower()
-    return any(token in compact for token in ("差距", "差多少", "相差", "差额", "比较Top", "比较top", "前N名", "第一名和第二名")) or any(
+    return any(token in compact for token in ("差距", "差多少", "少多少", "多多少", "相差", "差额", "比较Top", "比较top", "前N名", "第一名和第二名")) or any(
         token in lowered for token in ("gap", "difference", "compare top")
     )
 
@@ -1310,7 +1310,15 @@ def _generic_time_trend_action(context: Mapping[str, Any], compact: str = "") ->
     time_prefix = _combined_time_question_prefix(context, compact)
     time_prefix = _dedupe_time_prefix(time_prefix, filter_prefix)
     scope_prefix = _combined_scope_question_prefix(time_prefix, filter_prefix)
-    month_bucket = _has_multiple_month_reference(compact) or any(token in compact for token in ("每月", "每个月", "各月", "各月份", "按月", "按月份", "月度"))
+    month_bucket = _has_multiple_month_reference(compact) or any(
+        token in compact
+        for token in ("每月", "每个月", "各月", "各月份", "按月", "按月份", "月份", "月度", "月粒度", "月粒", "哪些月份", "哪个月份")
+    )
+    series_dimension = ""
+    if month_bucket:
+        explicit_dimension = _explicit_grouped_dimension_column(compact, available) or _explicit_dimension_column(compact, available) or _explicit_dimension_concept(compact)
+        if explicit_dimension and explicit_dimension != "month":
+            series_dimension = explicit_dimension
     action_parameters = {
         "metric": metric,
         **({"metrics": explicit_metrics} if len(explicit_metrics) > 1 else {}),
@@ -1322,18 +1330,26 @@ def _generic_time_trend_action(context: Mapping[str, Any], compact: str = "") ->
                 "source_time_field": time_column,
                 "time_bucket": "month",
                 "capability_family": "time_series",
+                **({"series_dimension": series_dimension} if series_dimension else {}),
             }
             if month_bucket
             else {}
         ),
     }
+    time_label = _time_question_label(str(action_parameters.get("dimension") or time_column))
+    series_label = _dimension_question_label(series_dimension) if series_dimension else ""
+    trend_question = (
+        f"{scope_prefix}按{series_label}和{time_label}展示{metric_label}趋势，生成折线图。"
+        if series_label and month_bucket
+        else f"{scope_prefix}按{time_label}展示{metric_label}趋势，生成折线图。"
+    )
     if isinstance(params.get("derived_metric"), Mapping) and params.get("derived_metric"):
         action_parameters["derived_metric"] = dict(params.get("derived_metric") or {})
     return _action(
         action_id="switch_to_time_trend",
         label="按时间查看趋势",
         operation="aggregation",
-        question=f"{scope_prefix}按{_time_question_label(str(action_parameters.get('dimension') or time_column))}展示{metric_label}趋势，生成折线图。",
+        question=trend_question,
         inherited_parameters=_generic_inherited_parameters(logic, params),
         parameters=action_parameters,
         dimension=str(action_parameters.get("dimension") or time_column),
@@ -1447,15 +1463,37 @@ def _generic_focus_set_metric_aggregation_action(context: Mapping[str, Any], com
     time_prefix = _combined_time_question_prefix(context, compact)
     time_prefix = _dedupe_time_prefix(time_prefix, filter_prefix)
     scope_prefix = _combined_scope_question_prefix(time_prefix, filter_prefix)
+    focus_dimension_for_time = next(
+        (
+            str(focus_set.get("dimension") or "")
+            for focus_set in _context_focus_sets(context)
+            if str(focus_set.get("dimension") or "") and _question_references_focus_set(compact, str(focus_set.get("dimension") or ""))
+        ),
+        "",
+    )
     if time_column and (_has_multiple_month_reference(compact) or any(token in compact for token in ("每月", "每个月", "各月", "各月份", "按月", "按月份"))):
+        series_label = _dimension_question_label(focus_dimension_for_time) if focus_dimension_for_time else ""
         return _action(
             action_id="aggregate_focus_set_metric",
             label="按时间汇总当前对象集合指标",
             operation="aggregation",
-            question=f"{scope_prefix}按{_time_question_label(time_column)}展示{metric_label}。",
+            question=(
+                f"{scope_prefix}按{series_label}和月份展示{metric_label}。"
+                if series_label
+                else f"{scope_prefix}按月份展示{metric_label}。"
+            ),
             inherited_parameters=_generic_inherited_parameters(logic, params),
-            parameters={**metric_params, "dimension": time_column},
-            dimension=time_column,
+            parameters={
+                **metric_params,
+                "dimension": "month",
+                "time_column": time_column,
+                "time_dimension": "month",
+                "source_time_field": time_column,
+                "time_bucket": "month",
+                "capability_family": "time_series",
+                **({"series_dimension": focus_dimension_for_time} if focus_dimension_for_time else {}),
+            },
+            dimension="month",
         )
     focus_dimension = next(
         (
@@ -1552,14 +1590,16 @@ def _generic_grouped_child_ranking_action(context: Mapping[str, Any], compact: s
     scope = context.get("scope") if isinstance(context.get("scope"), Mapping) else {}
     available = [str(column) for column in params.get("available_columns") or []]
     child_dimension = _explicit_child_drilldown_dimension(compact, available)
-    metric = _first_text(_explicit_metric_column(compact, available), scope.get("metric"), params.get("metric"), logic.get("metric"), "核心指标")
+    purchase_quantity_metric = _purchase_quantity_metric(compact, available)
+    metric = _first_text(purchase_quantity_metric, _explicit_metric_column(compact, available), scope.get("metric"), params.get("metric"), logic.get("metric"), "核心指标")
+    aggregation = "sum" if purchase_quantity_metric else str(params.get("aggregation") or "sum")
     action = _action(
         action_id="grouped_child_ranking",
         label="在父级集合内查找子项 Top",
         operation="filtered_metric_ranking",
         question=f"{compact}？" if compact and not compact.endswith(("?", "？")) else compact,
         inherited_parameters=_generic_inherited_parameters_for_question(logic, params, compact),
-        parameters={"metric": metric, "dimension": child_dimension, "sort_order": "desc", "limit": _extract_limit_from_compact(compact, default=5)},
+        parameters={"metric": metric, "dimension": child_dimension, "aggregation": aggregation, "sort_order": "desc", "limit": _extract_limit_from_compact(compact, default=5)},
         dimension=child_dimension,
     )
     action["capability_family"] = "drilldown_followup"
@@ -1568,12 +1608,25 @@ def _generic_grouped_child_ranking_action(context: Mapping[str, Any], compact: s
 
 def _explicit_child_drilldown_dimension(compact: str, available_columns: list[str]) -> str:
     available = [str(column) for column in available_columns if str(column or "").strip()]
+    if any(token in compact for token in ("主要国家", "哪些国家", "哪个国家", "按国家", "国家")):
+        column = _pick_column_by_aliases(available, ("country", "nation", "region", "area", "province", "city", "国家", "地区", "区域", "城市"))
+        if column:
+            return column
+        return "country"
     explicit = _explicit_rank_target_dimension_column(compact, available) or _explicit_grouped_dimension_column(compact, available) or _explicit_dimension_column(compact, available)
     if explicit:
         return explicit
-    if any(token in compact for token in ("产品", "商品", "sku", "SKU")):
-        return _pick_column_by_aliases(available, ("product", "product_name", "product_label", "description", "desc", "stockcode", "stock_code", "sku", "sku_name", "item", "goods", "产品", "商品", "品名", "描述")) or "product"
+    if _explicit_stockcode_reference(compact):
+        return _pick_column_by_aliases(available, ("stockcode", "stock_code", "sku", "sku_name")) or "stockcode"
+    if any(token in compact for token in ("产品", "商品", "货品", "item", "product", "goods")):
+        return _product_label_column(available) or "product"
     return _explicit_dimension_concept(compact)
+
+
+def _purchase_quantity_metric(compact: str, available_columns: list[str]) -> str:
+    if not any(token in compact for token in ("买最多", "购买最多", "卖最多", "销量", "销售数量", "购买数量", "数量最多", "卖得最多")):
+        return ""
+    return _pick_column_by_aliases([str(column) for column in available_columns], ("quantity", "qty", "数量", "件数", "volume"))
 
 
 def _generic_ranked_entity_share_action(context: Mapping[str, Any], compact: str = "") -> dict[str, Any]:
@@ -1582,7 +1635,20 @@ def _generic_ranked_entity_share_action(context: Mapping[str, Any], compact: str
     scope = context.get("scope") if isinstance(context.get("scope"), Mapping) else {}
     available = [str(column) for column in params.get("available_columns") or []]
     explicit_derived_metric = _explicit_sales_derived_metric(compact, available)
+    focus_dimension = next(
+        (
+            str(focus_set.get("dimension") or "")
+            for focus_set in _context_focus_sets(context)
+            if str(focus_set.get("dimension") or "")
+            and (
+                _question_has_specific_focus_reference(compact, str(focus_set.get("dimension") or ""))
+                or _question_references_focus_set(compact, str(focus_set.get("dimension") or ""))
+            )
+        ),
+        "",
+    )
     dimension = _first_text(
+        focus_dimension,
         _explicit_rank_target_dimension_column(compact, available),
         _explicit_dimension_column(compact, available),
         _explicit_dimension_concept(compact),
@@ -1590,13 +1656,18 @@ def _generic_ranked_entity_share_action(context: Mapping[str, Any], compact: str
         params.get("dimension"),
         logic.get("group_by"),
     )
+    inherited_metric = _first_text(scope.get("metric"), params.get("metric"), logic.get("metric"))
+    explicit_metric = _explicit_metric_column(compact, available) or _explicit_metric_concept(compact)
+    prefer_inherited_metric = bool(
+        focus_dimension
+        and inherited_metric
+        and _compact_mentions_derived_metric(compact, {"derived_metric_name": inherited_metric})
+    )
     metric = _first_text(
         explicit_derived_metric.get("name") if explicit_derived_metric else "",
-        _explicit_metric_column(compact, available),
-        _explicit_metric_concept(compact),
-        scope.get("metric"),
-        params.get("metric"),
-        logic.get("metric"),
+        inherited_metric if prefer_inherited_metric else "",
+        explicit_metric,
+        inherited_metric,
         "核心指标",
     )
     if not dimension or not metric:
@@ -1736,6 +1807,8 @@ def _asks_top_or_gap_followup(compact: str) -> bool:
             "集中",
             "差距",
             "差多少",
+            "少多少",
+            "多多少",
             "比较",
             "继续看",
         )
@@ -1812,6 +1885,10 @@ def _asks_grouped_child_ranking_followup(compact: str) -> bool:
 
 def _asks_referent_child_dimension_breakdown(compact: str) -> bool:
     references_previous_set = any(token in compact for token in ("这些", "这几个", "上述", "它们", "Top", "top", "TOP", "前几个"))
+    references_previous_set = references_previous_set or bool(
+        re.search(r"(?:这|这些|上述)?前(?:\d+|[一二两三四五六七八九十]+)", compact)
+    )
+    references_previous_set = references_previous_set or bool(re.search(r"这(?:\d+|[一二两三四五六七八九十]+)个", compact))
     if not references_previous_set:
         return False
     child_question = any(token in compact for token in ("哪个", "哪些", "哪几个", "主要", "分别", "各自", "每个", "各个", "列出", "拆分", "分布"))
@@ -1908,6 +1985,8 @@ def _asks_time_trend_followup(compact: str) -> bool:
     if "排名" in compact and any(token in compact for token in ("各月", "每月", "每个月", "按月", "按月份", "各月份")) and not _asks_explicit_trend_language(compact):
         return False
     if any(token in compact for token in ("趋势", "按月份", "按月", "按时间", "时间变化", "月度变化", "如何变化", "怎么变化", "怎样变化", "每月", "每个月", "各月", "各月份")):
+        return True
+    if any(token in compact for token in ("哪些月份", "哪个月份", "哪几个月", "哪些月")) and any(token in compact for token in ("最高", "最多", "最活跃", "活跃")):
         return True
     if "逐月" in compact and any(token in compact for token in ("增长", "下降", "上升", "变化")):
         return True
@@ -2180,9 +2259,9 @@ def _asks_ranked_set_metric_display_followup(compact: str) -> bool:
 def _asks_topn_entity_count_ranking_display(compact: str) -> bool:
     if not any(token in compact for token in ("排名前", "前3", "前三", "前5", "前五", "Top", "top")):
         return False
-    if not any(token in compact for token in ("客户数量", "客户数", "客户总数", "总客户数", "客户个数")):
+    if not any(token in compact for token in ("客户数量", "客户数", "客户总数", "总客户数", "客户个数", "订单数量", "订单数", "订单量", "购买次数", "下单次数")):
         return False
-    return any(token in compact for token in ("城市", "客户", "产品", "服务线", "业务线", "地区", "区域"))
+    return any(token in compact for token in ("城市", "客户", "产品", "商品", "服务线", "业务线", "地区", "区域", "国家"))
 
 
 def _extract_limit_from_compact(compact: str, *, default: int = 3) -> int:
@@ -2232,11 +2311,36 @@ def _is_self_contained_ranking_request(compact: str, context: Mapping[str, Any])
     scope = context.get("scope") if isinstance(context.get("scope"), Mapping) else {}
     current_dimension = _first_text(scope.get("dimension"), params.get("dimension"), logic.get("group_by"))
     current_label = _dimension_question_label(current_dimension)
+    available = [str(column) for column in params.get("available_columns") or []]
+    explicit_dimension = _explicit_dimension_column(compact, available) or _explicit_dimension_concept(compact)
+    explicit_metric = _explicit_metric_column(compact, available) or _explicit_metric_concept(compact)
+    has_contextual_scope_reference = _question_has_specific_focus_reference(compact, current_dimension)
+    filters = scope.get("filters") if isinstance(scope.get("filters"), Mapping) else {}
+    for column, value in filters.items():
+        if value in (None, "", [], {}) or not _looks_like_entity_filter_column(str(column)):
+            continue
+        if _question_has_specific_focus_reference(compact, str(column)) or _question_references_focus_set(compact, str(column)):
+            has_contextual_scope_reference = True
+            break
+    if not has_contextual_scope_reference:
+        for focus_set in _context_focus_sets(context):
+            dimension = str(focus_set.get("dimension") or "")
+            if dimension and (
+                _question_has_specific_focus_reference(compact, dimension)
+                or _question_references_focus_set(compact, dimension)
+            ):
+                has_contextual_scope_reference = True
+                break
+    if explicit_dimension and explicit_metric and (
+        not current_dimension
+        or explicit_dimension != current_dimension
+        and not has_contextual_scope_reference
+    ):
+        return True
     if current_label and any(token in compact for token in (f"这些{current_label}", f"这几个{current_label}", f"上述{current_label}")):
         return False
     if _question_references_focus_entity(compact, current_dimension):
         return False
-    filters = scope.get("filters") if isinstance(scope.get("filters"), Mapping) else {}
     for column, value in filters.items():
         if (
             value not in (None, "", [], {})
@@ -2253,9 +2357,6 @@ def _is_self_contained_ranking_request(compact: str, context: Mapping[str, Any])
             return False
         if dimension and demonstrative_focus_reference and _question_references_focus_set(compact, dimension):
             return False
-    available = [str(column) for column in params.get("available_columns") or []]
-    explicit_dimension = _explicit_dimension_column(compact, available) or _explicit_dimension_concept(compact)
-    explicit_metric = _explicit_metric_column(compact, available) or _explicit_metric_concept(compact)
     if explicit_dimension and explicit_metric:
         return True
     return bool(explicit_dimension and current_dimension and explicit_dimension != current_dimension)
@@ -2283,13 +2384,17 @@ def _generic_followup_dimension(compact: str, available_columns: list[str], *, c
     grouped_dimension = _explicit_grouped_dimension_column(compact, available)
     if grouped_dimension:
         return grouped_dimension
-    if any(token in compact for token in ("哪个月", "哪月", "几月", "哪个月份", "月份是", "月度排名", "各月", "每月", "每个月")):
+    if any(token in compact for token in ("哪个月", "哪月", "几月", "哪个月份", "哪些月份", "月份最高", "月份最低", "月份最多", "月份最少", "月份是", "月度排名", "各月", "每月", "每个月")):
+        if str(current_dimension or "") == "month":
+            return "month"
         column = _pick_column_by_aliases(available, ("month", "月份", "月度", "date", "time", "日期", "时间"))
         if column:
             return column
+        return "month"
     alias_groups = [
         (("客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "segment", "细分", "分段"), ("segment", "customer_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分", "分段"), "segment"),
-        (("产品", "商品", "sku", "SKU"), ("product", "sku", "item", "goods", "产品", "商品"), "product"),
+        (("StockCode", "stockcode"), ("stockcode", "stock_code", "sku", "sku_name"), "stockcode"),
+        (("产品", "商品", "货品", "item", "product", "goods"), ("description", "desc", "product_name", "product_label", "item_name", "goods_name", "product", "item", "goods", "产品", "商品", "品名", "描述", "stockcode", "stock_code", "sku", "sku_name"), "product"),
         (("客户", "顾客"), ("customer", "cust", "client", "buyer", "客户", "顾客"), "customer"),
         (("国家", "城市", "地区", "区域", "地域", "country", "region"), ("country", "nation", "region", "area", "province", "city", "国家", "地区", "区域", "城市"), "country"),
         (("门店", "店铺", "门店"), ("store", "shop", "门店", "店铺"), "store"),
@@ -2566,6 +2671,9 @@ def _question_references_focus_entity(compact: str, column: str) -> bool:
         token in compact
         for token in (
             f"这些{label}",
+            f"这些Top{label}",
+            f"这些top{label}",
+            f"这些TOP{label}",
             f"这几个{label}",
             f"上述{label}",
             f"这3个{label}",
@@ -2592,6 +2700,46 @@ def _question_references_focus_entity(compact: str, column: str) -> bool:
     if any(token in compact for token in generic_refs):
         return True
     return any(token in compact for token in (f"这个{label}", f"这款{label}", f"那款{label}", f"该{label}", f"{label}中", f"{label}里"))
+
+
+def _question_has_specific_focus_reference(compact: str, column: str) -> bool:
+    label = _dimension_question_label(column)
+    if not label or _question_references_all_scope(compact, column):
+        return False
+    for alias in _focus_label_aliases(label):
+        if any(
+            token in compact
+            for token in (
+                f"这些{alias}",
+                f"这些Top{alias}",
+                f"这些top{alias}",
+                f"这些TOP{alias}",
+                f"这几个{alias}",
+                f"上述{alias}",
+                f"这个{alias}",
+                f"那个{alias}",
+                f"该{alias}",
+                f"这款{alias}",
+                f"那款{alias}",
+                f"{alias}中",
+                f"{alias}里",
+                f"最高的{alias}",
+                f"最低的{alias}",
+                f"最多的{alias}",
+                f"最少的{alias}",
+                f"排名第一的{alias}",
+                f"排名第1的{alias}",
+            )
+        ):
+            return True
+        if re.search(
+            rf"(?:这|这些|上述)?(?:排名|排行)?前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:大)?的?{alias}",
+            compact,
+        ):
+            return True
+        if re.search(rf"这(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?{alias}", compact):
+            return True
+    return False
 
 
 def _question_references_rank_target_focus_entity(compact: str, column: str) -> bool:
@@ -2646,11 +2794,26 @@ def _question_references_focus_set(compact: str, column: str) -> bool:
     explicit_label = _explicit_focus_label(compact)
     if explicit_label and explicit_label != label:
         return False
-    if label and re.search(
-        rf"(?:这|这些)?(?:排名|排行)?前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:大)?的?{label}",
-        compact,
-    ):
-        return True
+    for alias in _focus_label_aliases(label):
+        if re.search(
+            rf"(?:这|这些)?(?:排名|排行)?前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:大)?的?{alias}",
+            compact,
+        ):
+            return True
+        if re.search(rf"这(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?{alias}", compact):
+            return True
+        if any(
+            token in compact
+            for token in (
+                f"这些Top{alias}",
+                f"这些top{alias}",
+                f"这些TOP{alias}",
+                f"这些{alias}",
+                f"这几个{alias}",
+                f"上述{alias}",
+            )
+        ):
+            return True
     return any(
         token in compact
         for token in (
@@ -2676,6 +2839,26 @@ def _question_references_focus_set(compact: str, column: str) -> bool:
             f"前三名{label}",
         )
     )
+
+
+def _focus_label_aliases(label: str) -> list[str]:
+    aliases = [str(label or "")]
+    if label == "产品":
+        aliases.extend(["商品", "货品", "item", "product", "sku", "SKU", "StockCode", "stockcode"])
+    elif label == "客户":
+        aliases.extend(["顾客", "CustomerID", "customer", "customerid"])
+    elif label == "国家":
+        aliases.extend(["Country", "country"])
+    elif label == "月份":
+        aliases.extend(["月度", "高月份", "month", "Month"])
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for alias in aliases:
+        if not alias or alias in seen:
+            continue
+        seen.add(alias)
+        deduped.append(alias)
+    return deduped
 
 
 def _explicit_focus_label(compact: str) -> str:
@@ -2812,15 +2995,53 @@ def _pick_column_by_aliases(columns: list[str], aliases: tuple[str, ...]) -> str
     return ""
 
 
+def _explicit_stockcode_reference(compact: str) -> bool:
+    lowered = str(compact or "").lower()
+    return "stockcode" in lowered or "stock_code" in lowered
+
+
+def _product_label_column(columns: list[str]) -> str:
+    return _pick_column_by_aliases(
+        [str(column) for column in columns],
+        (
+            "description",
+            "desc",
+            "product_name",
+            "product_label",
+            "item_name",
+            "goods_name",
+            "product",
+            "item",
+            "goods",
+            "产品",
+            "商品",
+            "品名",
+            "描述",
+            "stockcode",
+            "stock_code",
+            "sku",
+            "sku_name",
+        ),
+    )
+
+
 def _explicit_dimension_column(compact: str, available_columns: list[str]) -> str:
     available = [str(column) for column in available_columns if str(column or "").strip()]
+    if _explicit_stockcode_reference(compact):
+        column = _pick_column_by_aliases(available, ("stockcode", "stock_code", "sku", "sku_name"))
+        if column:
+            return column
+    if any(token in compact for token in ("产品", "商品", "货品", "item", "product", "goods")):
+        column = _product_label_column(available)
+        if column:
+            return column
     if any(token in compact for token in ("哪个月", "哪月", "几月", "哪个月份", "各月", "每月", "每个月", "按月", "月度")):
         column = _pick_column_by_aliases(available, ("month", "月份", "月度"))
         if column:
             return column
     alias_groups = [
         (("客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "segment", "细分", "分段"), ("segment", "customer_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分", "分段")),
-        (("产品", "商品", "sku", "SKU"), ("product", "sku", "item", "goods", "产品", "商品")),
+        (("产品", "商品", "sku", "SKU", "StockCode", "stockcode"), ("product", "sku", "stockcode", "stock_code", "item", "goods", "产品", "商品")),
         (("客户", "顾客"), ("customer", "cust", "client", "buyer", "客户", "顾客")),
         (("国家", "城市", "地区", "区域", "地域", "country", "region"), ("country", "nation", "region", "area", "province", "city", "国家", "地区", "区域", "城市")),
         (("门店", "店铺", "门店"), ("store", "shop", "门店", "店铺")),
@@ -2840,6 +3061,10 @@ def _explicit_dimension_column(compact: str, available_columns: list[str]) -> st
 
 def _explicit_grouped_dimension_column(compact: str, available_columns: list[str]) -> str:
     available = [str(column) for column in available_columns if str(column or "").strip()]
+    if _explicit_stockcode_reference(compact):
+        column = _pick_column_by_aliases(available, ("stockcode", "stock_code", "sku", "sku_name"))
+        if column:
+            return column
     alias_groups = [
         (
             ("各服务线", "每个服务线", "各条服务线", "每条服务线", "按服务线", "服务线分布", "各业务线", "每个业务线", "各条业务线", "每条业务线", "按业务线", "业务线分布"),
@@ -2851,7 +3076,7 @@ def _explicit_grouped_dimension_column(compact: str, available_columns: list[str
             ("segment", "customer_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分", "分段"),
         ),
         (("各客户", "每个客户", "按客户", "各顾客", "每个顾客", "按顾客"), ("customer", "cust", "client", "buyer", "客户", "顾客")),
-        (("各产品", "每个产品", "按产品", "各商品", "每个商品", "按商品"), ("product", "sku", "item", "goods", "产品", "商品")),
+        (("各产品", "每个产品", "按产品", "各商品", "每个商品", "按商品"), ("description", "desc", "product_name", "product_label", "item_name", "goods_name", "product", "item", "goods", "产品", "商品", "品名", "描述", "stockcode", "stock_code", "sku", "sku_name")),
         (("各容量", "每个容量", "按容量", "各规格", "每个规格", "按规格"), ("capacity", "volume", "size", "规格", "容量")),
         (("各品类", "每个品类", "按品类", "各类别", "每个类别", "按类别"), ("category", "ctg", "type", "品类", "类别")),
         (("各月", "每月", "每个月", "按月", "按月份"), ("month", "月份", "月度")),
@@ -2872,7 +3097,7 @@ def _explicit_rank_target_dimension_column(compact: str, available_columns: list
         ("country", ("国家", "城市", "地区", "区域"), ("country", "nation", "region", "area", "province", "city", "国家", "地区", "区域", "城市")),
         ("segment", ("客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分市场"), ("segment", "customer_segment", "客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "细分", "分段")),
         ("customer", ("客户", "顾客"), ("customer", "cust", "client", "buyer", "客户", "顾客")),
-        ("product", ("产品", "商品", "sku", "SKU"), ("product", "sku", "item", "goods", "产品", "商品")),
+        ("product", ("产品", "商品", "sku", "SKU"), ("description", "desc", "product_name", "product_label", "item_name", "goods_name", "product", "item", "goods", "产品", "商品", "品名", "描述", "stockcode", "stock_code", "sku", "sku_name")),
         ("category", ("品类", "类别", "类目"), ("category", "ctg", "type", "品类", "类别")),
         ("store", ("门店", "店铺"), ("store", "shop", "门店", "店铺")),
         ("capacity", ("容量", "规格", "包装规格"), ("capacity", "volume", "size", "规格", "容量")),
@@ -2959,7 +3184,7 @@ def _explicit_dimension_concept(compact: str) -> str:
         (("客户细分", "客户群", "客户群体", "客户分区", "客户分段", "客户段", "客群", "segment", "细分"), "segment"),
         (("国家", "城市", "地区", "区域", "地域", "country", "region"), "country"),
         (("客户", "顾客"), "customer"),
-        (("产品", "商品", "sku", "SKU"), "product"),
+        (("产品", "商品", "sku", "SKU", "StockCode", "stockcode"), "product"),
         (("容量", "规格", "包装规格"), "capacity"),
         (("品类", "类别", "类目"), "category"),
         (("月份", "月度", "按月", "各月", "每月", "每个月"), "month"),

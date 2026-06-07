@@ -1597,6 +1597,22 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         )
     table_context = _select_table_context(question, tables)
     table_name, df = table_context["table_name"], table_context["df"]
+    unknown_field = _unknown_schema_field_request(question, df)
+    if unknown_field:
+        return make_logic_form(
+            task_type="unsupported",
+            operation="not_applicable",
+            parameters={"reason": f"当前上传表结构里没有 {unknown_field} 字段，不能编造结果。"},
+            output_format=output_format | {"answer_type": "text", "not_applicable_type": "true_unsupported"},
+        )
+    ambiguous_ranking_reason = _ambiguous_ranking_request_reason(question)
+    if ambiguous_ranking_reason:
+        return make_logic_form(
+            task_type="unsupported",
+            operation="not_applicable",
+            parameters={"reason": ambiguous_ranking_reason},
+            output_format=output_format | {"answer_type": "text", "not_applicable_type": "needs_metric_or_definition"},
+        )
     record_count_requested = _is_record_count_metric_question(lowered)
     metric_question = _metric_target_question(question)
     derived_metric = None if record_count_requested else (
@@ -1644,7 +1660,9 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
     filter_excludes = set(metric_excludes)
     if isinstance(rank_position_target, dict) and rank_position_target.get("dimension"):
         filter_excludes.add(str(rank_position_target["dimension"]))
-    filters = {**_infer_value_filters(question, df, exclude=filter_excludes), **dict(table_context.get("filters") or {})}
+    filters = _normalize_referent_month_filters(
+        {**_infer_value_filters(question, df, exclude=filter_excludes), **dict(table_context.get("filters") or {})}
+    )
     explicit_group_by = _find_group_by_column(question, df)
     if explicit_group_by == metric:
         explicit_group_by = None
@@ -1719,6 +1737,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         )
     time_filter_column = dimension if dimension and _is_time_like_column(dimension) else _find_time_column(df)
     filters.update(_infer_time_filters(question, time_filter_column))
+    filters = _normalize_referent_month_filters(filters)
     candidate_filter = _candidate_topn_filter_from_question(
         question,
         df,
@@ -1924,16 +1943,6 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             output_format=output_format | {"answer_type": "percentage", "decimals": _decimal_places(guidelines, 2)},
         )
 
-    if _is_distinct_count_question(lowered):
-        field = _find_distinct_target_column(question, df) or _find_named_column(question, df) or _find_entity_column(question, df) or dimension
-        return make_logic_form(
-            task_type="schema_query",
-            operation="distinct_count",
-            filters=filters,
-            parameters=_with_table_context({"table": table_name, "field": field}, table_context),
-            output_format=output_format | {"answer_type": "number"},
-        )
-
     if _is_outlier_count_question(lowered):
         return make_logic_form(
             task_type="data_quality",
@@ -1999,6 +2008,35 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             count_target=count_target,
             available_columns=[str(column) for column in table_context.get("available_columns") or []],
         )
+        if not count_dimension and count_target:
+            count_metric_name = _entity_count_output_metric_name(question, count_target)
+            metric_spec = {
+                "name": count_metric_name,
+                "field": count_target,
+                "aggregation": "nunique",
+            }
+            return make_logic_form(
+                task_type="aggregation",
+                operation="aggregation",
+                metric=count_target,
+                filters=filters,
+                metric_definition={
+                    "name": _count_metric_label(question, count_target),
+                    "capability_family": "entity_count",
+                    "aggregation": "nunique",
+                    "business_definition": f"Count distinct {count_target} values after filters.",
+                },
+                numerator={"aggregation": "nunique", "field": count_target, "scope": "filtered_rows"},
+                denominator={"scope": "not_required"},
+                parameters=_with_table_context({
+                    "table": table_name,
+                    "metric": count_target,
+                    "metrics": [count_metric_name],
+                    "metric_specs": [metric_spec],
+                    "aggregation": "nunique",
+                }, table_context),
+                output_format=output_format | {"answer_type": "number"},
+            )
         if count_dimension:
             count_metric = count_target if count_target and count_target != count_dimension else None
             count_aggregation = "nunique" if count_metric else "count"
@@ -2052,6 +2090,16 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 output_format=output_format | {"answer_type": "table"},
             )
 
+    if _is_distinct_count_question(lowered):
+        field = _find_distinct_target_column(question, df) or _find_named_column(question, df) or _find_entity_column(question, df) or dimension
+        return make_logic_form(
+            task_type="schema_query",
+            operation="distinct_count",
+            filters=filters,
+            parameters=_with_table_context({"table": table_name, "field": field}, table_context),
+            output_format=output_format | {"answer_type": "number"},
+        )
+
     if _is_top_k_share_question(lowered) and dimension:
         aggregation = "count" if record_count_requested else _infer_aggregation(lowered, default="sum" if metric else "count")
         share_metric = "__row_count__" if _asks_for_transaction_share(lowered) or aggregation == "count" else metric
@@ -2104,6 +2152,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
         count_metric = count_target if count_target and count_target != dimension else None
         count_aggregation = "nunique" if count_metric else "count"
         metric_label = _count_metric_label(question, count_metric)
+        default_limit = 5 if _plural_topn_request_without_explicit_limit(question) else 1
         return make_logic_form(
             task_type="ranking",
             operation="filtered_metric_ranking" if filters else "ranking",
@@ -2133,7 +2182,7 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                 "aggregation": count_aggregation,
                 "metric_label": metric_label,
                 "sort_order": "asc" if _is_bottom_question(lowered) else "desc",
-                "limit": _extract_limit(question, default=1),
+                "limit": _extract_limit(question, default=default_limit),
             }, table_context),
             output_format=output_format | {"answer_type": "table"},
         )
@@ -2144,18 +2193,30 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
             not _is_ranking_question(lowered)
             or _asks_result_ranking_question(question, lowered)
             or set(_target_dimension_concepts(question)).issubset({"month", "time"})
+            or (dimension and str(dimension) != "month" and not _is_time_like_column(str(dimension)))
         )
         and not _is_growth_ranking_question(question, lowered)
     ):
         time_column = _find_time_column(df)
         if time_column and metric and time_column not in set(filters):
             aggregation = "count" if record_count_requested else _infer_aggregation(lowered, default="sum")
+            series_dimension = (
+                str(dimension)
+                if dimension and str(dimension) != "month" and not _is_time_like_column(str(dimension))
+                else ""
+            )
+            month_candidate_filter = dict(candidate_filter) if isinstance(candidate_filter, dict) and series_dimension else {}
+            if month_candidate_filter:
+                month_candidate_filter["metric"] = metric
+                if isinstance(derived_metric, dict) and derived_metric:
+                    month_candidate_filter["derived_metric"] = derived_metric
             return make_logic_form(
                 task_type="trend",
                 operation="aggregation",
                 metric=metric,
                 group_by="month",
                 filters=filters,
+                candidate_set=_candidate_set_from_topn_filter(month_candidate_filter, series_dimension) if month_candidate_filter else {},
                 metric_definition={
                     "name": metric,
                     "capability_family": "time_series",
@@ -2176,7 +2237,9 @@ def parse_generic_table_question(question: str, tables: dict[str, pd.DataFrame],
                     "time_bucket": "month",
                     "aggregation": aggregation,
                     "capability_family": "time_series",
+                    **({"series_dimension": series_dimension} if series_dimension else {}),
                     **({"derived_metric": derived_metric} if derived_metric else {}),
+                    **({"candidate_filter": month_candidate_filter} if month_candidate_filter else {}),
                 }, table_context),
                 output_format=output_format | {"answer_type": "table", "chart_type": "line"},
                 output_contract={
@@ -3482,7 +3545,7 @@ def _question_requests_time_series(question: str) -> bool:
 def _question_requests_month_bucket(question: str) -> bool:
     compact = re.sub(r"\s+", "", str(question or ""))
     lowered = str(question or "").lower()
-    return any(token in compact for token in ("按月", "月度", "每月", "每个月", "各月", "月份")) or any(
+    return any(token in compact for token in ("按月", "月度", "月粒度", "月粒", "每月", "每个月", "各月", "月份")) or any(
         token in lowered for token in ("monthly", "by month", "month by month", "per month")
     )
 
@@ -3791,6 +3854,21 @@ def _find_candidate_dimension_from_phrase(phrase: str, df: pd.DataFrame) -> str 
         if semantic_column:
             return semantic_column
     return None
+
+
+def _normalize_referent_month_filters(filters: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(filters.get("month"), (list, tuple, set)):
+        return filters
+    month_values = [str(value) for value in filters.get("month") or [] if str(value)]
+    if not month_values or not all(re.fullmatch(r"\d{4}-\d{1,2}", value) for value in month_values):
+        return filters
+    normalized = dict(filters)
+    for column, expected in list(normalized.items()):
+        if column == "month" or not isinstance(expected, dict):
+            continue
+        if set(expected).issubset({"month", "month_range"}) and expected.get("year") is None:
+            normalized.pop(column, None)
+    return normalized
 
 
 def _find_candidate_dimension_from_column_names(phrase: str, columns: list[str]) -> str | None:
@@ -4316,11 +4394,54 @@ def _asks_retail_sales_amount_metric(question: str) -> bool:
     )
     if explicit_multiply:
         return True
-    if any(token in compact for token in ("销售额", "销售金额", "销售总额", "收入", "营收", "金额", "订单金额", "订单总金额", "订单总额", "订单额", "总金额")):
+    if any(token in compact for token in ("销售额", "销售金额", "销售总额", "销售趋势", "销售变化", "销售走势", "收入", "营收", "金额", "订单金额", "订单总金额", "订单总额", "订单额", "总金额")):
+        return True
+    if re.search(r"(?<![a-z0-9_])(?:sales|total_sales|sales_share)(?![a-z0-9_])", lowered):
         return True
     if any(token in lowered for token in ("revenue", "sales by", "sales ranking", "sales top", "top countries by sales", "rank countries by sales")):
         return True
     return False
+
+
+def _unknown_schema_field_request(question: str, df: pd.DataFrame) -> str:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    if any(token in compact for token in ("不存在字段", "不存在的字段", "不存在列", "不存在的列")):
+        return "不存在字段"
+    normalized_columns = {_normalize_column_token(str(column)) for column in df.columns}
+    allowed_concepts = {
+        "sales",
+        "totalsales",
+        "salesamount",
+        "salesshare",
+        "revenue",
+        "amount",
+        "quantity",
+        "qty",
+        "unitprice",
+        "price",
+        "top",
+    }
+    for match in re.finditer(r"(?:按|by)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:看|分组|group|rank|ranking|top|$)", str(question or ""), re.IGNORECASE):
+        token = str(match.group(1) or "").strip()
+        normalized = _normalize_column_token(token)
+        if normalized in {"month", "months", "monthly"} and _find_time_column(df):
+            continue
+        if normalized and normalized not in normalized_columns and normalized not in allowed_concepts:
+            return token
+    return ""
+
+
+def _ambiguous_ranking_request_reason(question: str) -> str:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    lowered = str(question or "").lower()
+    if any(token in compact for token in ("最有意义", "最重要", "最值得关注", "表现最好")) or any(
+        token in lowered for token in ("most meaningful", "most important", "best customers", "best products")
+    ):
+        if not _has_explicit_business_metric_request(question) and not _target_metric_concepts_all(question):
+            return "这个排名缺少明确指标口径；需要先说明按销售额、订单数、数量、利润或其他指标衡量。"
+    if any(token in compact for token in ("变化最好", "表现最好")) and not _target_dimension_concepts(question):
+        return "这个变化类排名缺少对象维度；需要先说明按月份、国家、客户、商品或其他维度比较。"
+    return ""
 
 
 def _find_retail_unit_price_column(df: pd.DataFrame) -> str | None:
@@ -4713,6 +4834,7 @@ def _entity_count_metric_spec(question: str, df: pd.DataFrame) -> dict[str, str]
     candidates = (
         ("customer", "customer_count", ("客户数量", "客户数", "客户总数", "总客户数", "客户个数", "多少客户", "有多少客户", "顾客数量", "顾客数", "多少顾客", "有多少顾客", "number of customers", "customer count", "customers count")),
         ("product", "product_count", ("产品数量", "产品数", "商品数量", "商品数", "多少产品", "有多少产品", "多少商品", "有多少商品", "number of products", "product count")),
+        ("order", "order_count", ("订单数量", "订单数", "订单量", "交易数量", "交易数", "发票数量", "发票数", "购买次数", "下单次数", "被多少订单", "多少订单", "order count", "number of orders", "transaction count", "invoice count")),
         ("store", "store_count", ("门店数量", "门店数", "店铺数量", "店铺数", "store count")),
     )
     for concept, metric_name, aliases in candidates:
@@ -5555,10 +5677,20 @@ def _is_grouped_entity_count_ranking_question(question: str, lowered: str) -> bo
         "有多少产品",
         "多少商品",
         "有多少商品",
+        "订单数量",
         "订单数",
+        "订单量",
+        "交易数量",
+        "交易数",
+        "发票数量",
+        "发票数",
         "记录数",
         "工单数",
         "票据数",
+        "购买次数",
+        "下单次数",
+        "被多少订单",
+        "多少订单",
         "数量最多",
         "数量最少",
         "number of customers",
@@ -5566,9 +5698,15 @@ def _is_grouped_entity_count_ranking_question(question: str, lowered: str) -> bo
         "number of products",
         "product count",
         "order count",
+        "number of orders",
+        "transaction count",
+        "invoice count",
         "record count",
     )
-    if not (_is_ranking_question(lowered) and any(_entity_count_alias_matches(token, compact, lowered) for token in count_tokens)):
+    ranking_requested = _is_ranking_question(lowered) or bool(
+        re.search(r"(?:排名|排行)?前(?:\d+|[一二两三四五六七八九十]+)", compact)
+    )
+    if not (ranking_requested and any(_entity_count_alias_matches(token, compact, lowered) for token in count_tokens)):
         return False
     if _entity_count_is_secondary_ranking_metric(question, lowered):
         return False
@@ -5612,11 +5750,23 @@ def _entity_count_question_tokens() -> tuple[str, ...]:
         "有多少产品",
         "多少商品",
         "有多少商品",
+        "订单数量",
+        "订单数",
+        "订单量",
+        "交易数量",
+        "交易数",
+        "购买次数",
+        "下单次数",
+        "被多少订单",
+        "多少订单",
         "number of customers",
         "customer count",
         "customers count",
         "number of products",
         "product count",
+        "order count",
+        "number of orders",
+        "transaction count",
     )
 
 
@@ -5656,6 +5806,21 @@ def _entity_count_target_concepts(question: str) -> list[str]:
         )
     ) or any(token in lowered for token in ("product count", "number of products")):
         concepts.append("product")
+    if any(
+        token in compact
+        for token in (
+            "订单数量",
+            "订单数",
+            "订单量",
+            "交易数量",
+            "交易数",
+            "购买次数",
+            "下单次数",
+            "被多少订单",
+            "多少订单",
+        )
+    ) or any(token in lowered for token in ("order count", "number of orders", "transaction count")):
+        concepts.append("order")
     return concepts
 
 
@@ -5701,6 +5866,8 @@ def _entity_count_display_dimension(
         )
         if available_column and available_column != count_target:
             return available_column
+    if count_target and not candidate_concepts:
+        return None
     if current_dimension and current_dimension != count_target:
         return current_dimension
     return _find_dimension_column(question, df, metric, exclude={count_target} if count_target else None)
@@ -5756,6 +5923,8 @@ def _dimension_concept_last_position(question: str, concept: str) -> int:
 def _entity_count_output_metric_name(question: str, metric: str | None) -> str:
     compact = re.sub(r"\s+", "", str(question or ""))
     lowered = str(question or "").lower()
+    if any(token in compact for token in ("订单", "购买次数", "下单次数")) or any(token in lowered for token in ("order", "transaction", "invoice")):
+        return "order_count"
     if any(token in compact for token in ("客户", "顾客")) or any(token in lowered for token in ("customer", "client")):
         return "customer_count"
     if any(token in compact for token in ("产品", "商品")) or any(token in lowered for token in ("product", "item", "goods")):
@@ -5825,7 +5994,7 @@ def _find_count_target_column(question: str, df: pd.DataFrame, *, dimension: str
     compact = re.sub(r"\s+", "", str(question or ""))
     lowered = str(question or "").lower()
     concepts: list[str] = []
-    if any(token in compact for token in ("订单数量", "订单数", "订单量", "交易数量", "交易数", "发票数量", "发票数")) or any(
+    if any(token in compact for token in ("订单数量", "订单数", "订单量", "交易数量", "交易数", "发票数量", "发票数", "购买次数", "下单次数", "被多少订单", "多少订单")) or any(
         token in lowered for token in ("order count", "number of orders", "transaction count", "invoice count")
     ):
         concepts.append("order")
@@ -6166,6 +6335,16 @@ def _infer_aggregation(lowered: str, default: str) -> str:
     if any(token in lowered for token in ("min value", "minimum value", "最小值")):
         return "min"
     return default
+
+
+def _plural_topn_request_without_explicit_limit(question: str) -> bool:
+    compact = re.sub(r"\s+", "", str(question or ""))
+    lowered = str(question or "").lower()
+    if _extract_limit(question, default=0):
+        return False
+    return any(token in compact for token in ("哪些", "哪几个", "是哪几个", "有哪些", "前几", "Top几", "top几")) or any(
+        token in lowered for token in ("which ", "what are", "top customers", "top products")
+    )
 
 
 def _extract_limit(question: str, default: int) -> int:

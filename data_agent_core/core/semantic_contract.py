@@ -441,6 +441,8 @@ def verify_semantic_contract_coverage(
     canonical = ensure_canonical_semantic_contract(contract)
     if canonical is None:
         return {"passed": True, "status": "legacy_unverified", "issues": [], "notes": ["No canonical semantic contract attached."]}
+    params = _dict_field(logic_form, "parameters")
+    referent_dimension = _normalize_name(str(params.get("referent_dimension") or ""))
     trace = _execution_trace_payload(execution_result)
     issues: list[dict[str, Any]] = []
     notes: list[str] = [f"Canonical semantic contract checked as {canonical.capability_family}."]
@@ -485,6 +487,11 @@ def verify_semantic_contract_coverage(
         if metric_issue is not None:
             issues.append(metric_issue)
     for dimension in canonical.dimensions:
+        if _scalar_count_operation(canonical, trace):
+            continue
+        if canonical.capability_family == "drilldown_followup" and referent_dimension and _normalize_name(str(dimension.resolved_column or "")) == referent_dimension:
+            notes.append(f"Referent dimension {dimension.resolved_column} is carried as filter scope for drilldown, not as an output grouping.")
+            continue
         if dimension.resolved_column and not _trace_dimension_covered(dimension, trace):
             issues.append(_coverage_issue("missing_groupby", f"Execution trace does not group by {dimension.resolved_column}.", correction_action="add_missing_groupby_and_rerun", dimension=dimension.to_dict()))
     for item in canonical.filters:
@@ -504,7 +511,11 @@ def verify_semantic_contract_coverage(
             issues.append(time_issue)
     row_columns = _execution_columns(execution_result)
     for dimension in canonical.dimensions:
-        if dimension.resolved_column and row_columns and dimension.resolved_column not in row_columns:
+        if _scalar_count_operation(canonical, trace):
+            continue
+        if canonical.capability_family == "drilldown_followup" and referent_dimension and _normalize_name(str(dimension.resolved_column or "")) == referent_dimension:
+            continue
+        if dimension.resolved_column and row_columns and not _result_dimension_covered(dimension, row_columns, trace):
             if canonical.task_type in {"ranking", "trend", "aggregation"} and len(row_columns) > 1:
                 issues.append(_coverage_issue("dimension_not_in_result", f"Execution result does not expose requested dimension {dimension.resolved_column}.", correction_action="add_missing_groupby_and_rerun"))
     warning_only = False
@@ -613,6 +624,11 @@ def _coverage_issue(
     }
 
 
+def _scalar_count_operation(canonical: CanonicalSemanticContract, trace: Mapping[str, Any]) -> bool:
+    operation = str(canonical.physical_operation or trace.get("operation") or "").strip()
+    return operation in {"distinct_count", "row_count"}
+
+
 def _correction_action_for_issue(issue: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if not issue:
         return None
@@ -657,7 +673,23 @@ def _trace_metric_columns(trace: Mapping[str, Any]) -> list[str]:
 def _trace_dimension_covered(dimension: ResolvedDimension, trace: Mapping[str, Any]) -> bool:
     expected = _normalize_name(str(dimension.resolved_column or dimension.display_name or ""))
     groupby = {_normalize_name(str(item)) for item in trace.get("groupby_columns") or [] if str(item)}
-    return bool(expected and expected in groupby)
+    if expected and expected in groupby:
+        return True
+    return _month_bucket_covers_dimension(expected, groupby, trace)
+
+
+def _result_dimension_covered(dimension: ResolvedDimension, row_columns: list[str], trace: Mapping[str, Any]) -> bool:
+    expected = _normalize_name(str(dimension.resolved_column or dimension.display_name or ""))
+    result_columns = {_normalize_name(str(item)) for item in row_columns if str(item)}
+    if expected and expected in result_columns:
+        return True
+    return _month_bucket_covers_dimension(expected, result_columns, trace)
+
+
+def _month_bucket_covers_dimension(expected: str, available_columns: set[str], trace: Mapping[str, Any]) -> bool:
+    time_grain = str(trace.get("time_grain") or "").strip().lower()
+    time_column = _normalize_name(str(trace.get("time_column") or ""))
+    return bool(time_grain == "month" and expected and expected == time_column and "month" in available_columns)
 
 
 def _trace_filter_covered(item: ResolvedFilter, trace: Mapping[str, Any]) -> bool:
@@ -1347,6 +1379,7 @@ def _resolve_dimensions(
     for value, source in (
         (_field(logic, "group_by"), "logic_form.group_by"),
         (params.get("dimension"), "parameters.dimension"),
+        (params.get("series_dimension"), "parameters.series_dimension"),
         (params.get("group_by"), "parameters.group_by"),
         (params.get("entity"), "parameters.entity"),
         (params.get("entity_field"), "parameters.entity_field"),
@@ -1388,6 +1421,8 @@ def _resolve_filters(
     for column, value in _dict_field(logic, "filters").items():
         if value in (None, "", []):
             continue
+        if _is_semantic_noop_filter(column, value):
+            continue
         operator = "in" if isinstance(value, (list, tuple, set)) else "eq"
         if isinstance(value, Mapping) and "operator" in value:
             operator = str(value.get("operator") or "eq")
@@ -1425,6 +1460,15 @@ def _resolve_filters(
     return filters
 
 
+def _is_semantic_noop_filter(column: Any, value: Any) -> bool:
+    column_text = str(column or "").strip().lower()
+    if column_text == "conditions" and isinstance(value, list):
+        return True
+    if column_text == "type" and str(value or "").strip().lower() in {"none", "null", "not_required"}:
+        return True
+    return False
+
+
 def _link_filter_values_from_question(question: str, schema_profile: Mapping[str, Any]) -> list[ResolvedFilter]:
     normalized_question = _normalize_text(question)
     linked: list[ResolvedFilter] = []
@@ -1441,7 +1485,7 @@ def _link_filter_values_from_question(question: str, schema_profile: Mapping[str
             if len(text) < 2:
                 continue
             normalized_value = _normalize_text(text)
-            if normalized_value and normalized_value in normalized_question:
+            if _question_mentions_filter_value(question, normalized_question, text, normalized_value):
                 linked.append(
                     ResolvedFilter(
                         dimension_id=_stable_id("filter", column_name),
@@ -1455,6 +1499,15 @@ def _link_filter_values_from_question(question: str, schema_profile: Mapping[str
                     )
                 )
     return linked
+
+
+def _question_mentions_filter_value(question: str, normalized_question: str, raw_value: str, normalized_value: str) -> bool:
+    if not normalized_value:
+        return False
+    if re.fullmatch(r"[A-Za-z0-9]{1,2}", raw_value):
+        pattern = rf"(?<![A-Za-z0-9_]){re.escape(raw_value)}(?![A-Za-z0-9_])"
+        return re.search(pattern, question, flags=re.I) is not None
+    return normalized_value in normalized_question
 
 
 def _resolve_comparison(

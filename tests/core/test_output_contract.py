@@ -45,6 +45,7 @@ class OutputContractTest(unittest.TestCase):
         raw_object = validate_final_answer("[{'merchant': 'A'}]", {"answer_type": "text"})
         debug_trace = validate_final_answer("debug: trace: tool_call foo", {"answer_type": "text"})
         process_view = validate_final_answer("process_view_v2: reasoning_trace", {"answer_type": "text"})
+        sql_query = validate_final_answer("select * from orders where amount > 0", {"answer_type": "text"})
 
         self.assertFalse(raw_object.passed)
         self.assertIn("object_or_list_leak", raw_object.issues)
@@ -52,6 +53,17 @@ class OutputContractTest(unittest.TestCase):
         self.assertIn("debug_or_trace_leak", debug_trace.issues)
         self.assertFalse(process_view.passed)
         self.assertIn("debug_or_trace_leak", process_view.issues)
+        self.assertFalse(sql_query.passed)
+        self.assertIn("sql_or_markdown_leak", sql_query.issues)
+
+    def test_validator_allows_plain_english_from_in_business_answer(self) -> None:
+        validation = validate_final_answer(
+            "Top product rows include Manual from office range and Sales_share 12.50%.",
+            {"answer_type": "table"},
+        )
+
+        self.assertTrue(validation.passed)
+        self.assertNotIn("sql_or_markdown_leak", validation.issues)
 
     def test_format_answer_preserves_existing_public_behavior(self) -> None:
         self.assertEqual("50.00%", format_answer(50, {"answer_type": "percentage"}))

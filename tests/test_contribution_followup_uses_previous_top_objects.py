@@ -126,6 +126,59 @@ class ContributionFollowupUsesPreviousTopObjectsTest(unittest.TestCase):
         self.assertNotIn("Top 3 城市是", first_sentence)
         self.assertNotIn("可以进一步分析", answer)
 
+    def test_response_formats_small_share_values_as_percent_not_ratio(self) -> None:
+        question = "各商品销售额占比是多少？销售额按 Quantity * UnitPrice 算。"
+        logic = LogicForm(
+            task_type="aggregation",
+            operation="aggregation",
+            metric="Sales",
+            group_by="Description",
+            parameters={
+                "table": "orders",
+                "metric": "Sales",
+                "share_metric": "Sales",
+                "share_of_total": True,
+                "share_column": "Sales_share",
+                "dimension": "Description",
+                "group_by": "Description",
+                "aggregation": "sum",
+            },
+            output_format={"answer_type": "table"},
+        )
+        plan = build_analysis_plan(logic, question=question)
+
+        response = build_response(
+            run_id="run_small_share_display",
+            user_question=UserQuestion(dataset_id="ds", question=question),
+            plan=plan,
+            execution_result=ExecutionResult(
+                backend="unit-test",
+                success=True,
+                value=[
+                    {
+                        "Description": "Tiny item",
+                        "Sales": 290.8,
+                        "total_Sales": 9_747_747.934,
+                        "Sales_share": 0.0029832531777488204,
+                    }
+                ],
+                columns=["Description", "Sales", "total_Sales", "Sales_share"],
+                rows=[
+                    {
+                        "Description": "Tiny item",
+                        "Sales": 290.8,
+                        "total_Sales": 9_747_747.934,
+                        "Sales_share": 0.0029832531777488204,
+                    }
+                ],
+            ),
+            verification=VerificationResult(passed=True, semantic_status="passed"),
+        ).to_dict()
+
+        answer = str(response["answer"] or "")
+        self.assertIn("0.00%", answer)
+        self.assertNotIn("29.83%", answer)
+
 
 def _ranking_context(rows: list[dict[str, object]]) -> dict[str, object]:
     return build_analysis_context(

@@ -304,6 +304,10 @@ def _trace_formula(logic: Any, params: Mapping[str, Any]) -> Any:
 
 
 def _trace_groupby_columns(logic: Any, params: Mapping[str, Any]) -> list[str]:
+    if str(getattr(logic, "operation", "") or "") in {"distinct_count", "row_count"}:
+        return []
+    time_grain = str(params.get("time_grain") or params.get("time_bucket") or "").strip().lower()
+    time_column = str(params.get("time_column") or params.get("source_time_field") or "").strip()
     columns: list[str] = []
     for value in [
         params.get("dimension"),
@@ -314,6 +318,8 @@ def _trace_groupby_columns(logic: Any, params: Mapping[str, Any]) -> list[str]:
         params.get("entity_field"),
     ]:
         text = str(value or "").strip()
+        if time_grain == "month" and time_column and text == time_column:
+            text = "month"
         if text and text not in columns:
             columns.append(text)
     return columns

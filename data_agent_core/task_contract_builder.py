@@ -104,6 +104,7 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
             output_format = dict(getattr(logic_form, "output_format", {}) or {})
             output_format["answer_type"] = "table"
             setattr(logic_form, "output_format", output_format)
+    filters = _normalize_virtual_month_referent_filters(filters)
     setattr(logic_form, "filters", filters)
     candidate_set = dict(getattr(logic_form, "candidate_set", {}) or {})
     candidate_set.update(
@@ -131,6 +132,7 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
                     "time_dimension",
                     "source_time_field",
                     "time_bucket",
+                    "series_dimension",
                     "candidate_filter",
                     "limit",
                     "top_n",
@@ -158,14 +160,19 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
     derived_metadata = _derived_metric_metadata(params)
     if derived_metadata:
         params.update(derived_metadata)
-    if str(contract.get("capability_family") or action_parameters.get("capability_family") or "") == "drilldown_followup":
+    drilldown_followup = str(contract.get("capability_family") or action_parameters.get("capability_family") or "") == "drilldown_followup"
+    if drilldown_followup:
         params["capability_family"] = "drilldown_followup"
         params["merged_filters"] = dict(filters)
     current_dimension = str(params.get("dimension") or getattr(logic_form, "group_by", None) or "")
     time_like_dimension = any(token in current_dimension.lower() for token in ("time", "date", "day", "month", "year"))
+    time_like_referent = any(token in dimension.lower() for token in ("time", "date", "day", "month", "year"))
     single_referent_time_gap = requires_gap_comparison and len(values) == 1 and time_like_dimension
-    if current_dimension and current_dimension != dimension and not single_referent_time_gap:
-        params.setdefault("series_dimension", dimension)
+    if current_dimension and current_dimension != dimension and not single_referent_time_gap and not drilldown_followup:
+        if time_like_dimension and not time_like_referent:
+            params["series_dimension"] = dimension
+        else:
+            params.setdefault("series_dimension", dimension)
     setattr(logic_form, "parameters", params)
     source_tables = params.get("source_tables")
     if isinstance(source_tables, list):
@@ -206,6 +213,22 @@ def apply_referent_contract(logic_form: Any, contract: dict[str, Any]) -> Any:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _normalize_virtual_month_referent_filters(filters: dict[str, Any]) -> dict[str, Any]:
+    month_values = filters.get("month")
+    if not isinstance(month_values, (list, tuple, set)):
+        return filters
+    labels = [str(value) for value in month_values if str(value)]
+    if not labels or not all(re.fullmatch(r"\d{4}-\d{1,2}", value) for value in labels):
+        return filters
+    normalized = dict(filters)
+    for column, expected in list(normalized.items()):
+        if column == "month" or not isinstance(expected, Mapping):
+            continue
+        if set(expected).issubset({"month", "month_range"}) and expected.get("year") is None:
+            normalized.pop(column, None)
+    return normalized
 
 
 def _positive_int(value: Any) -> int | None:

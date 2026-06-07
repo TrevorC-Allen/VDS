@@ -200,7 +200,7 @@ def resolve_followup_referent(user_question: str, context: Mapping[str, Any] | N
     if _asks_specific_dimension(compact, "city") and not _dimension_matches_concept(dimension, "city"):
         return ReferentResolution(False, missing_reason="REFERENT_ARTIFACT_MISSING").to_dict()
     values = _referent_values_from_artifact(artifact)
-    rank_index = _rank_index(compact)
+    rank_index = None if _rank_pair_gap_question(compact) else _rank_index(compact)
     if rank_index is not None and not _rank_index_applies_to_artifact(compact, dimension):
         rank_index = None
     source = str(artifact.get("source") or "")
@@ -458,9 +458,13 @@ def _normalize_join_keys(raw: Any) -> list[dict[str, str]]:
 
 
 def _looks_like_referent_question(compact: str) -> bool:
-    if re.search(r"(?:这些|这几个|上述|刚才|上一轮)?(?:排名|排行)?前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?(?:产品|商品|客户|国家|城市|地区|区域|对象)", compact):
+    referent_labels = r"(?:产品|商品|货品|客户|顾客|国家|城市|地区|区域|对象|StockCode|stockcode|sku|SKU)"
+    if re.search(
+        rf"(?:这些|这几个|上述|刚才|上一轮|这)?(?:排名|排行)?(?:前)?(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?{referent_labels}",
+        compact,
+    ):
         return True
-    if re.search(r"(?:top|Top|TOP)(?:\d+)?(?:产品|商品|客户|国家|城市|地区|区域|对象)", compact):
+    if re.search(r"(?:top|Top|TOP)(?:\d+)?(?:产品|商品|货品|客户|顾客|国家|城市|地区|区域|对象|StockCode|stockcode|sku|SKU)", compact):
         return True
     if any(
         token in compact
@@ -484,6 +488,10 @@ def _looks_like_referent_question(compact: str) -> bool:
             "top城市",
             "这些城市",
             "上述城市",
+            "这些国家",
+            "上述国家",
+            "这些月份",
+            "这些高月份",
             "这些",
             "上述",
             "它们",
@@ -509,14 +517,31 @@ def _rank_index(compact: str) -> int | None:
     return None
 
 
+def _rank_pair_gap_question(compact: str) -> bool:
+    if not any(token in compact for token in ("差", "少多少", "多多少", "相差", "差距", "gap", "difference")):
+        return False
+    ordinal_hits = sum(
+        1
+        for pattern in (
+            r"第一名|第1名|排名第一|排名第1|第一|第1",
+            r"第二名|第2名|排名第二|排名第2|第二|第2",
+            r"第三名|第3名|排名第三|排名第3|第三|第3",
+        )
+        if re.search(pattern, compact)
+    )
+    return ordinal_hits >= 2
+
+
 def _rank_index_applies_to_artifact(compact: str, dimension: str) -> bool:
     concept = _dimension_concept_from_column(dimension)
     if not concept:
         return True
     labels = {
         "city": ("城市", "地区", "区域"),
+        "country": ("国家",),
         "product": ("产品", "商品", "sku", "SKU"),
         "customer": ("客户", "顾客"),
+        "month": ("月份", "月", "月度"),
     }.get(concept, ())
     rank_patterns = (
         "排名第一",
@@ -533,7 +558,7 @@ def _rank_index_applies_to_artifact(compact: str, dimension: str) -> bool:
         return True
     if any(f"{label}排名第一" in compact or f"{label}排名第1" in compact for label in labels):
         return True
-    child_question = re.search(r"(?:哪个|哪些|哪几个|哪类|哪种)(城市|地区|区域|产品|商品|客户|顾客)", compact)
+    child_question = re.search(r"(?:哪个|哪些|哪几个|哪类|哪种)(城市|地区|区域|国家|产品|商品|客户|顾客|月份|月度)", compact)
     if child_question:
         asked_concept = _referent_dimension_concept(child_question.group(1))
         if asked_concept and asked_concept != concept:
@@ -546,12 +571,30 @@ def _asks_specific_dimension(compact: str, concept: str) -> bool:
 
 
 def _referent_dimension_concept(compact: str) -> str:
+    top_set_prefix = r"(?:这些|这几个|上述|它们|(?:这些)?(?:Top|top|TOP)|这?(?:排名|排行)?前(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?|这(?:\d+|[一二两三四五六七八九十]+)(?:个|名|位)?)"
+    referent_patterns = (
+        ("product", rf"{top_set_prefix}(?:产品|商品|货品|StockCode|stockcode|sku|SKU)"),
+        ("country", rf"{top_set_prefix}国家"),
+        ("customer", rf"{top_set_prefix}(?:客户|顾客)"),
+        ("month", rf"{top_set_prefix}(?:月份|月度|高月份)"),
+    )
+    matches: list[tuple[int, str]] = []
+    for concept, pattern in referent_patterns:
+        match = re.search(pattern, compact)
+        if match:
+            matches.append((match.start(), concept))
+    if matches:
+        return sorted(matches, key=lambda item: item[0])[0][1]
     if any(token in compact for token in ("城市", "地区", "区域")):
         return "city"
+    if "国家" in compact:
+        return "country"
     if any(token in compact for token in ("产品", "商品", "sku", "SKU")):
         return "product"
     if any(token in compact for token in ("客户", "顾客")):
         return "customer"
+    if any(token in compact for token in ("月份", "月度", "高月份")):
+        return "month"
     return ""
 
 
@@ -559,18 +602,24 @@ def _dimension_concept_from_column(dimension: str) -> str:
     normalized = _normalize(dimension)
     if any(alias in normalized for alias in ("city", "城市", "region", "area", "地区", "区域")):
         return "city"
+    if any(alias in normalized for alias in ("country", "nation", "国家")):
+        return "country"
     if any(alias in normalized for alias in ("product", "sku", "stock", "description", "desc", "item", "goods", "name", "label", "title", "产品", "商品", "品名", "名称", "描述")):
         return "product"
     if any(alias in normalized for alias in ("customer", "cust", "client", "buyer", "客户", "顾客")):
         return "customer"
+    if any(alias in normalized for alias in ("month", "月份", "月度", "period")):
+        return "month"
     return ""
 
 
 def _dimension_matches_concept(dimension: str, concept: str) -> bool:
     aliases = {
         "city": ("city", "城市", "市", "region", "area", "地区", "区域"),
+        "country": ("country", "nation", "国家"),
         "product": ("product", "sku", "stock", "description", "desc", "item", "goods", "name", "label", "title", "产品", "商品", "品名", "名称", "描述"),
         "customer": ("customer", "cust", "client", "buyer", "客户", "顾客"),
+        "month": ("month", "月份", "月度", "period"),
     }.get(concept, ())
     normalized = _normalize(dimension)
     return any(_normalize(alias) and _normalize(alias) in normalized for alias in aliases)

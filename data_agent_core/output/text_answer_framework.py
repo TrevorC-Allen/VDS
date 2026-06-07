@@ -491,8 +491,6 @@ def _normalize_share(value: Any) -> float | None:
     number = _to_float(value)
     if number is None:
         return None
-    if "%" not in str(value) and abs(number) <= 1:
-        return number * 100
     return number
 
 

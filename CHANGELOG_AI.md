@@ -70,6 +70,124 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-06-07 19:48 CST
+
+### 本次目标
+
+在隔离 worktree `/Users/trevorcui/Documents/VDS-real-user-random-stability`、分支 `codex/vds-real-user-random-stability` 中，从已通过固定 16 题稳定 gate 的 `codex/vds-real-user-eval-stability` 继续增强 UK Retail 真实用户随机问题稳定性；修复随机真实 HTTP gate 暴露的 hard fail，保证固定 gate 每轮 `16/16`，随机 gate 连续 3 轮满足 `hard_fail=0`、`pass_rate>=0.90`、`pass+soft>=0.95`、`false_semantic_passed=0`、`HTTP5xx=0`，再记录证据并提交。
+
+### 修改文件
+
+- backend/services/data_agent_service.py
+- data_agent_core/contracts/execution_contracts.py
+- data_agent_core/core/conversation_actions.py
+- data_agent_core/core/intent_parser.py
+- data_agent_core/core/semantic_contract.py
+- data_agent_core/executors/pandas_executor.py
+- data_agent_core/executors/sql_executor.py
+- data_agent_core/output/output_contract.py
+- data_agent_core/output/text_answer_framework.py
+- data_agent_core/result_artifacts.py
+- data_agent_core/task_contract_builder.py
+- data_agent_core/task_execution_contracts.py
+- data_agent_core/verifier/result_comparator.py
+- data_agent_core/verifier/rule_checker.py
+- scripts/run_uk_retail_random_user_gate.py
+- tests/backend/test_data_agent_service.py
+- tests/core/test_conversation_actions.py
+- tests/core/test_output_contract.py
+- tests/core/test_semantic_metric_verification.py
+- tests/test_contribution_followup_uses_previous_top_objects.py
+- tests/test_generic_business_semantic_binding.py
+- tests/test_uk_retail_random_gate_scoring.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 新增 `scripts/run_uk_retail_random_user_gate.py`，以真实 service / HTTP 路径运行 UK Retail Random Real User Analysis Gate：每轮重新启动服务、重新上传 `/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx`、先跑固定 16 题，再跑 80 条随机真实用户问题，并输出 per-cycle JSON / report / final stability report。
+- 强化随机 gate scoring：区分 pass / soft_fail / hard_fail，记录 HTTP status、success、semantic_status、answer summary、contract、execution_spec、execution_trace 和 semantic issues；把预期安全失败的脏输入/不存在字段/模糊实体算作 soft fail，但错误答案 semantic passed、HTTP 5xx、字段/维度/月份 bucket/计数口径错误仍为 hard fail。
+- 修复商品/产品/客户/StockCode/国家/月度趋势等 schema-aware 语义绑定和 follow-up referent 继承边界，避免自然语言“商品/产品”误落到 code key，显式 `StockCode` 仍保留 code key。
+- 修复 follow-up drilldown 中“买最多/卖最多”继承上一轮 `InvoiceNo` count 的问题，使商品/客户 drilldown 使用当前问题要求的 `Quantity` sum。
+- 修复 `time_series` 当前维度为 month 但 referent 是商品/客户时的 `series_dimension` 覆盖，保证 Top 商品按月份趋势能保留 referent dimension 并正确按月份 bucket。
+- 修复 SQL executor 对虚拟月份过滤 `filters={"month": ["YYYY-MM"]}` 的支持，使 SQL 路径和 Pandas 路径一致按 `time_column/source_time_field/available_columns` 应用月份过滤。
+- 修复 `_question_semantics` 对“活跃 / 哪些月份 / 哪个月份 / 哪几个月 / 哪些月”的计算信号识别，避免“这5个客户在哪些月份最活跃？”在真实 HTTP 路径中被路由成 dataset overview。
+- 修复单一 count / nunique / distinct_count metric_spec 的输出列契约：Pandas / SQL 对单指标计数统一输出 `count`，避免“每个国家有多少客户？按 CustomerID 去重。”计算正确但因列名 `customer_count` 被 gate 判为缺少 `count`；多指标场景仍保留 `customer_count` 等语义列名。
+- 增加 focused regression 和随机 gate scoring 单测，覆盖客户/国家/商品 distinct order/customer count、月份趋势、商品/StockCode 绑定、活跃月份路由、soft/hard scoring、false semantic passed 阻断和 expected safe failure。
+
+### 测试方式
+
+- 修复前失败轮次：`/tmp/vds-uk-retail-random-stability-20260607-183810/stability_report.md`、`/tmp/vds-uk-retail-random-stability-20260607-185517/stability_report.md`
+- focused count regression：`python3 -m pytest -q tests/test_generic_business_semantic_binding.py -k 'grouped_customer_distinct_count_by_country or customer_count or country_order_count' --tb=short`
+- 核心组合：`python3 -m pytest -q tests/test_generic_business_semantic_binding.py tests/test_uk_retail_random_gate_scoring.py tests/backend/test_data_agent_service.py::DataAgentSemanticRouteTest --tb=short`
+- Focused tests：`python3 -m pytest tests/test_topn_filter_drilldown_followup.py tests/test_generic_business_semantic_binding.py tests/test_semantic_contract_instrumentation.py`
+- semantic selector：`python3 -m pytest tests -k 'semantic_contract or verifier or execution_trace'`
+- Retail Product Floor：`python3 -m pytest -rxX tests/test_retail_cli_product_floor.py`
+- random gate scoring：`python3 -m pytest tests/test_uk_retail_random_gate_scoring.py`
+- py_compile：按用户指定清单执行 `python3 -m py_compile data_agent_core/core/conversation_actions.py ... scripts/run_uk_retail_random_user_gate.py`
+- `git diff --check`
+- 最终真实 HTTP 三轮 gate：`VDS_LLM_PROVIDER=mock python3 scripts/run_uk_retail_random_user_gate.py --dataset "/Users/trevorcui/Desktop/验证数据集/UK retail/Online Retail.xlsx" --base-url http://127.0.0.1:8877 --cycles 3 --random-questions 80 --seeds 2026060701 2026060702 2026060703 --start-service always --print-summary`
+
+### 测试结果
+
+- 修复前失败轮次 1：`/tmp/vds-uk-retail-random-stability-20260607-183810/cycle_1_random_gate.json` 为 `71 pass / 8 soft / 1 hard`，hard fail 是“这5个客户在哪些月份最活跃？”被当成 overview，原因包含 `dimension_mismatch:expected_one_of=month` 和 `month_bucket_missing`。
+- 修复前失败轮次 2：`/tmp/vds-uk-retail-random-stability-20260607-185517/cycle_2_random_gate.json` 为 `68 pass / 8 soft / 4 hard`，hard fail 均为“每个国家有多少客户？按 CustomerID 去重。”，原因是结果列为 `customer_count`，gate 要求单一 count 指标列 `count`。
+- focused count regression 通过：`2 passed, 32 deselected, 12 warnings`。
+- 核心组合最终通过：`43 passed, 200 warnings`；首次运行暴露 `test_grouped_product_order_count_uses_distinct_order_key` 仍按旧 `order_count` 断言，已同步为单一 count 指标 `count` 后通过。
+- Focused tests 通过：`71 passed, 202 warnings`。
+- semantic selector 通过：`58 passed, 939 deselected, 32 warnings`。
+- Retail Product Floor 通过：`48 passed, 5 xfailed, 222 warnings`；既有 xfailed 未扩大。
+- random gate scoring 通过：`8 passed`。
+- py_compile 通过。
+- `git diff --check` 通过。
+- 最终真实 HTTP 三轮 gate 输出目录：`/tmp/vds-uk-retail-random-stability-20260607-192047`，`stability_report.md` 显示 `passed=True`、`cycles=3/3`。
+- 最终 cycle 1：fixed `16/16/0/0`，random `80/72/8/0`，`pass_rate=0.900`，`pass_plus_soft_rate=1.000`，`HTTP5xx=0`，`false_semantic_passed=0`。
+- 最终 cycle 2：fixed `16/16/0/0`，random `80/72/8/0`，`pass_rate=0.900`，`pass_plus_soft_rate=1.000`，`HTTP5xx=0`，`false_semantic_passed=0`。
+- 最终 cycle 3：fixed `16/16/0/0`，random `80/76/4/0`，`pass_rate=0.950`，`pass_plus_soft_rate=1.000`，`HTTP5xx=0`，`false_semantic_passed=0`。
+- 最终 3 轮类别覆盖累计：ambiguous / dirty input `20 soft_fail`，count distinct `17 pass`，country share `54 pass`，customer `34 pass`，follow-up drilldown `15 pass`，follow-up gap `18 pass`，overview `26 pass`，product TopN `40 pass`，sales formula `18 pass`，share `10 pass`，time trend `36 pass`。
+- 8877 为本轮 runner 启动服务端口；运行结束后确认无 8877 监听进程。8876 为既有其他服务，本轮未停止、未修改。
+
+### 遗留问题
+
+- 本轮未扩大修复 Retail Product Floor 既有 `5 xfailed`。
+- 本轮未运行完整 pytest、长 benchmark、真实 LLM provider gate 或前端浏览器 smoke。
+- 随机 gate 中的 soft_fail 均为预期安全失败类问题，例如不存在字段、模糊“店家/最有意义客户”、当前数据不支持的最近两年变化；它们不计为 hard fail，但仍说明此类问题当前会要求补充字段/口径而不是直接回答。
+
+### 是否影响主流程
+
+是。影响真实上传 CSV / Excel 后连续自然语言数据分析中的语义路由、字段/实体绑定、follow-up referent 继承、月份 bucket、Pandas / SQL 计数列契约、semantic_status 一致性和真实 HTTP gate 稳定性。
+
+### 是否涉及 Benchmark
+
+涉及评测 gate，但不修改 benchmark 标准答案、固定题答案或既有 benchmark scorer 断言。本轮新增的是真实用户随机问题 HTTP gate runner 和 scoring regression，用于发现并验证泛化语义能力，不进入普通 Chat 主路径。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。修复保持在 provider-neutral 的 core / executor / verifier / service 契约层，增强多 Agent 默认链路未来迁移时可复用的语义证据、执行 trace 和安全失败边界。
+
+### 是否修改核心数据契约
+
+是。扩展并收紧了 execution contract / semantic contract / output contract 相关字段与校验口径，尤其是单一 count metric_spec 输出列统一为 `count`、随机 gate 所需的 semantic issue / artifact 证据和月份 / referent 执行契约。
+
+### 是否修改 API 契约
+
+否。没有新增或删除 HTTP endpoint，也没有改变前端调用所需字段；真实 HTTP 行为层更稳定，`success` / `semantic_status` / result columns 更符合既有语义契约。
+
+### 是否新增或修改错误类型
+
+否。未新增核心错误类型；新增/调整的是随机 gate scoring reason 和 verifier / comparator 的语义问题归因。
+
+### 是否新增或修改运行追踪逻辑
+
+是。执行 trace / result artifact / comparator / verifier 现在更明确记录 metric columns、groupby、月份 bucket、count/distinct-count 输出和 semantic issue，供 gate 判断 false semantic passed 与字段口径错误。
+
+### 是否已同步 README
+
+否。本轮是内部真实 HTTP gate、后端语义契约和随机评测 runner 增强，不改变公开启动方式、安装方式、API 端点、前端入口或 README 顶层项目说明；README 暂不需要同步。
+
 2026-06-07 01:24 CST
 
 ### 本次目标

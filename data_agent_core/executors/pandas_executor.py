@@ -568,6 +568,10 @@ def _actual_dataframe_filter_trace(plan: AnalysisPlan, context: dict[str, Any] |
         if column_text == "month" and "month" not in data.columns and {"year", "day_of_year"}.issubset(data.columns):
             output.append({"column": column_text, "operator": "eq", "values": [expected]})
             continue
+        if column_text == "month" and "month" not in data.columns and _virtual_month_labels(data) is not None:
+            values = list(expected) if isinstance(expected, (list, tuple, set)) else [expected]
+            output.append({"column": "month", "operator": "in" if isinstance(expected, (list, tuple, set)) else "eq", "values": values})
+            continue
         actual_column = _resolve_filter_column(data, column_text)
         if actual_column not in data.columns:
             continue
@@ -1306,6 +1310,7 @@ def _aggregate_metric_specs(data: pd.DataFrame, specs: list[dict[str, str]], dim
     missing = [spec["field"] for spec in specs if spec["field"] != "__row_count__" and spec["field"] not in data.columns]
     if missing:
         raise ValueError("Unknown metric spec field(s): " + ", ".join(missing))
+    single_count_spec = len(specs) == 1 and str(specs[0].get("aggregation") or "") in {"count", "nunique", "distinct_count"}
     if dimension:
         dimension_name = str(dimension)
         if dimension_name not in data.columns:
@@ -1315,10 +1320,10 @@ def _aggregate_metric_specs(data: pd.DataFrame, specs: list[dict[str, str]], dim
         for value, group in grouped:
             row: dict[str, Any] = {dimension_name: value}
             for spec in specs:
-                row[spec["name"]] = _aggregate_metric_spec_value(group, spec)
+                row["count" if single_count_spec else spec["name"]] = _aggregate_metric_spec_value(group, spec)
             rows.append(row)
         return rows
-    return {spec["name"]: _aggregate_metric_spec_value(data, spec) for spec in specs}
+    return {("count" if single_count_spec else spec["name"]): _aggregate_metric_spec_value(data, spec) for spec in specs}
 
 
 def _aggregate_metric_spec_value(data: pd.DataFrame, spec: dict[str, str]) -> Any:
@@ -1465,6 +1470,10 @@ def _apply_time_bucket(data: pd.DataFrame, params: dict[str, Any]) -> pd.DataFra
     working[dimension] = parsed.dt.to_period("M").astype(str)
     working = working[parsed.notna()]
     return working
+
+
+def _uses_filtered_month_time_bucket(params: dict[str, Any]) -> bool:
+    return str(params.get("time_bucket") or params.get("time_grain") or "") == "month" and bool(params.get("time_column") or params.get("source_time_field"))
 
 
 def _aggregate_series(data: pd.DataFrame, metric: str | None, aggregation: str) -> Any:
@@ -1950,6 +1959,9 @@ def _filtered_metric_ranking(df: pd.DataFrame, filters: dict[str, Any], params: 
     data = _apply_dataframe_filters(df, filters)
     data = _apply_candidate_topn_filter(data, params, source_data=df)
     dimension = str(params.get("dimension") or "")
+    if _uses_filtered_month_time_bucket(params):
+        data = _apply_time_bucket(data, {**params, "dimension": "month"})
+        dimension = "month"
     if dimension not in data.columns:
         raise ValueError("filtered_metric_ranking requires a known dimension column.")
     derived_metric = params.get("derived_metric")
@@ -2457,6 +2469,12 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
             ).dt.month
             data = data[months == int(expected)]
             continue
+        if column == "month" and "month" not in data.columns:
+            labels = _virtual_month_labels(data)
+            if labels is not None:
+                expected_values = {str(item) for item in (expected if isinstance(expected, (list, tuple, set)) else [expected])}
+                data = data[labels.astype(str).isin(expected_values)]
+                continue
         actual_column = _resolve_filter_column(data, str(column))
         if actual_column not in data.columns:
             continue
@@ -2488,6 +2506,20 @@ def _apply_dataframe_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
             continue
         data = data[_series_equals(data[actual_column], expected)]
     return data
+
+
+def _virtual_month_labels(data: pd.DataFrame) -> pd.Series | None:
+    preferred = [
+        column
+        for column in data.columns
+        if any(token in str(column).lower() for token in ("date", "time", "month", "日期", "时间", "月份"))
+    ]
+    candidates = [*preferred, *[column for column in data.columns if column not in preferred]]
+    for column in candidates:
+        values = pd.to_datetime(data[column], errors="coerce")
+        if values.notna().any():
+            return values.dt.strftime("%Y-%m")
+    return None
 
 
 def _resolve_filter_column(data: pd.DataFrame, column: str) -> str:

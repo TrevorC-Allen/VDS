@@ -175,7 +175,10 @@ class ConversationActionsTest(unittest.TestCase):
         self.assertEqual("switch_generic_dimension", actions[0]["action_id"])
         self.assertEqual("ranking", actions[0]["operation"])
         self.assertEqual("customer_id", actions[0]["dimension"])
-        self.assertEqual({"metric": "profit", "dimension": "customer_id"}, actions[0]["parameters"])
+        self.assertEqual("profit", actions[0]["parameters"]["metric"])
+        self.assertEqual("customer_id", actions[0]["parameters"]["dimension"])
+        self.assertEqual("city", actions[0]["parameters"]["referent_dimension"])
+        self.assertEqual(["上海"], actions[0]["parameters"]["referent_values"])
         self.assertIn("筛选上海城市的数据", actions[0]["question"])
         self.assertIn("按客户看利润排名前3", actions[0]["question"])
 
@@ -580,8 +583,11 @@ class ConversationActionsTest(unittest.TestCase):
         actions = plan_followup_actions("在这些月份中，该城市哪个客户段的订单金额最高？", context)
 
         self.assertEqual(1, len(actions))
-        self.assertEqual("switch_generic_dimension", actions[0]["action_id"])
+        self.assertEqual("grouped_child_ranking", actions[0]["action_id"])
+        self.assertEqual("filtered_metric_ranking", actions[0]["operation"])
         self.assertEqual("segment", actions[0]["dimension"])
+        self.assertEqual("segment", actions[0]["parameters"]["dimension"])
+        self.assertEqual("amount", actions[0]["parameters"]["metric"])
         self.assertIn("筛选上海城市的数据", actions[0]["question"])
 
     def test_growth_entity_profit_margin_followup_stays_entity_ranking(self) -> None:
@@ -1108,6 +1114,39 @@ class ConversationActionsTest(unittest.TestCase):
         }
 
         actions = plan_followup_actions("基于上一步的概况，哪个城市的客户贡献的订单总金额最高？", context)
+
+        self.assertEqual([], actions)
+
+    def test_self_contained_product_sales_topn_after_country_context_is_not_rewritten(self) -> None:
+        context = {
+            "state_name": "analysis_ready",
+            "operation": "dataset_overview",
+            "logic_form": {
+                "operation": "dataset_overview",
+                "metric": "Quantity",
+                "group_by": "Country",
+                "parameters": {
+                    "table": "Online Retail",
+                    "metric": "Quantity",
+                    "dimension": "Country",
+                    "available_columns": [
+                        "InvoiceNo",
+                        "StockCode",
+                        "Description",
+                        "Quantity",
+                        "InvoiceDate",
+                        "UnitPrice",
+                        "CustomerID",
+                        "Country",
+                    ],
+                },
+            },
+            "scope": {"metric": "Quantity", "dimension": "Country", "filters": {}},
+            "last_result": {"first_row": {"Country": "United Kingdom", "Quantity": 100}},
+            "available_followup_actions": [],
+        }
+
+        actions = plan_followup_actions("销售额最高的前5个商品是什么？销售额按 Quantity * UnitPrice 算。", context)
 
         self.assertEqual([], actions)
 

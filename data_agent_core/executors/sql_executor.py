@@ -7,6 +7,7 @@ standard-library sqlite3 fallback when DuckDB is unavailable.
 from __future__ import annotations
 
 import sqlite3
+import re
 import time
 from typing import Any
 
@@ -237,7 +238,7 @@ def _materialize_same_schema_union(tables: dict[str, Any], union_plan: dict[str,
 
 def _top_count_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> Any:
     params = plan.logic_form.parameters
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=params)
     group_by = params["group_by"]
     q_group_by = _quote_identifier(group_by)
     sql = f"SELECT {q_group_by}, COUNT(*) AS n FROM analysis_table{where_sql} GROUP BY {q_group_by} ORDER BY n DESC LIMIT 1"
@@ -290,7 +291,7 @@ def _aggregation_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> Any:
     metric = params.get("metric")
     dimension = params.get("dimension")
     aggregation = str(params.get("aggregation") or "sum")
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     where_sql, values = _with_candidate_topn_filter_sql(where_sql, values, params)
     metric_specs = _metric_specs(params.get("metric_specs"))
     if _uses_month_time_bucket(params):
@@ -377,21 +378,24 @@ def _metric_spec_aggregation_sql(
 ) -> dict[str, Any] | list[dict[str, Any]]:
     values = list(values or [])
     expressions = [_metric_spec_sql_expression(spec) for spec in specs]
+    single_count_spec = len(specs) == 1 and str(specs[0].get("aggregation") or "") in {"count", "nunique", "distinct_count"}
+    output_names = ["count" if single_count_spec else spec["name"] for spec in specs]
     if dimension:
         dimension_name = str(dimension)
         q_dimension = _quote_identifier(dimension_name)
+        where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(dimension_name))
         rows = conn.execute(
             f"SELECT {q_dimension}, {', '.join(expressions)} FROM analysis_table{where_sql} GROUP BY {q_dimension}",
             values,
         ).fetchall()
         return [
-            {dimension_name: row[0], **{spec["name"]: row[index + 1] for index, spec in enumerate(specs)}}
+            {dimension_name: row[0], **{name: row[index + 1] for index, name in enumerate(output_names)}}
             for row in rows
         ]
     row = conn.execute(f"SELECT {', '.join(expressions)} FROM analysis_table{where_sql}", values).fetchone()
     if row is None:
-        return {spec["name"]: 0 for spec in specs}
-    return {spec["name"]: 0 if row[index] is None else row[index] for index, spec in enumerate(specs)}
+        return {name: 0 for name in output_names}
+    return {name: 0 if row[index] is None else row[index] for index, name in enumerate(output_names)}
 
 
 def _metric_spec_aggregation_with_derived_sql(
@@ -524,7 +528,7 @@ def _ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> list[dict[str,
     dimension = str(params["dimension"])
     metric = None if params.get("metric") is None else str(params.get("metric"))
     aggregation = str(params.get("aggregation") or "sum")
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     where_sql, values = _with_candidate_topn_filter_sql(where_sql, values, params)
     derived_metric = params.get("derived_metric")
     if isinstance(derived_metric, dict) and derived_metric:
@@ -552,7 +556,7 @@ def _growth_ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> list[di
     metric_name = f"{metric}_growth_rate" if growth_mode == "rate" else f"{metric}_growth_delta"
     sort_order = "ASC" if str(params.get("sort_order") or "desc") == "asc" else "DESC"
     limit = 1000000 if isinstance(params.get("rank_target"), dict) else int(params.get("rank_position") or params.get("limit") or 1)
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     period_expr = _sql_period_expr(time_column)
     metric_expr = _sql_metric_agg_expr(metric, aggregation)
     growth_sort_expr = "growth_rate" if growth_mode == "rate" else "ABS(growth_delta)" if growth_mode == "abs_delta" else "growth_delta"
@@ -633,7 +637,7 @@ def _rank_by_metric_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> dict[st
         raise ValueError(f"Metric {metric} is not SQL-compatible in the MVP.")
     objective = logic.objective or params.get("objective") or "maximum"
     order = "ASC" if objective == "minimum" else "DESC"
-    where_sql, values = _where_from_filters(logic.filters)
+    where_sql, values = _where_from_filters(logic.filters, params=dict(getattr(logic, "parameters", {}) or {}))
     if options:
         placeholders = ", ".join("?" for _ in options)
         option_clause = f"{_quote_identifier(group_by)} IN ({placeholders})"
@@ -711,13 +715,13 @@ def _field_values_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> list[str]
 
 
 def _row_count_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> int:
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     return int(conn.execute(f"SELECT COUNT(*) FROM analysis_table{where_sql}", values).fetchone()[0] or 0)
 
 
 def _distinct_count_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> int:
     field = str(plan.logic_form.parameters["field"])
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     return int(
         conn.execute(
             f"SELECT COUNT(DISTINCT {_quote_identifier(field)}) FROM analysis_table{where_sql}",
@@ -733,7 +737,7 @@ def _metric_per_distinct_entity_sql(conn: sqlite3.Connection, plan: AnalysisPlan
     aggregation = str(plan.logic_form.parameters.get("aggregation") or "sum")
     if not metric or not entity_field:
         raise ValueError("metric_per_distinct_entity requires metric and entity_field.")
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     q_entity = _quote_identifier(entity_field)
     not_null_entity = f"({q_entity} IS NOT NULL AND TRIM(LOWER(CAST({q_entity} AS TEXT))) NOT IN ('', 'nan', 'none', 'null'))"
     filtered_sql = f"{where_sql} AND {not_null_entity}" if where_sql else f" WHERE {not_null_entity}"
@@ -759,7 +763,7 @@ def _metric_per_distinct_entity_sql(conn: sqlite3.Connection, plan: AnalysisPlan
 
 def _repeat_entity_percentage_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float:
     field = str(plan.logic_form.parameters["field"])
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     null_clause = f"{_quote_identifier(field)} IS NOT NULL"
     filtered_sql = f"{where_sql} AND {null_clause}" if where_sql else f" WHERE {null_clause}"
     rows = conn.execute(
@@ -777,7 +781,7 @@ def _repeat_entity_percentage_sql(conn: sqlite3.Connection, plan: AnalysisPlan) 
 def _repeat_entity_count_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> int:
     field = str(plan.logic_form.parameters["field"])
     min_count = int(plan.logic_form.parameters.get("min_count") or 2)
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     q_field = _quote_identifier(field)
     null_clause = f"({q_field} IS NOT NULL AND TRIM(LOWER(CAST({q_field} AS TEXT))) NOT IN ('', 'nan', 'none', 'null'))"
     filtered_sql = f"{where_sql} AND {null_clause}" if where_sql else f" WHERE {null_clause}"
@@ -809,7 +813,7 @@ def _top_k_share_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float | li
     derived_expr = _derived_metric_sql_expression(derived_metric) if derived_metric else ""
     aggregation = str(params.get("aggregation") or "sum")
     limit = int(params.get("limit") or 3)
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     q_dimension = _quote_identifier(dimension)
     referent_values = [value for value in params.get("referent_values") or [] if value not in (None, "")]
     referent_dimension = str(params.get("referent_dimension") or dimension)
@@ -887,7 +891,7 @@ def _null_check_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> int | float
     mode = str(params.get("mode") or "count")
     target_field = params.get("target_field")
     target_value = bool(params.get("target_value", True))
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     if field:
         field_name = str(field)
         null_expr = f"({_quote_identifier(field_name)} IS NULL OR TRIM(LOWER(CAST({_quote_identifier(field_name)} AS TEXT))) IN ('', 'nan', 'none', 'null'))"
@@ -944,8 +948,27 @@ def _filtered_metric_ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -
     aggregation = str(params.get("aggregation") or "sum")
     sort_order = "ASC" if str(params.get("sort_order") or "desc") == "asc" else "DESC"
     limit = 1000000 if isinstance(params.get("rank_target"), dict) else int(params.get("rank_position") or params.get("limit") or 1)
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     where_sql, values = _with_candidate_topn_filter_sql(where_sql, values, params)
+    if _uses_filtered_month_time_bucket(params):
+        if isinstance(derived_metric, dict) and derived_metric:
+            rows = _grouped_month_bucket_derived_sql(conn, derived_metric, params={**params, "dimension": "month"}, where_sql=where_sql, values=values)
+        else:
+            rows = _grouped_month_bucket_aggregation_sql(
+                conn,
+                None if metric is None else str(metric),
+                aggregation,
+                params={**params, "dimension": "month"},
+                where_sql=where_sql,
+                values=values,
+            )
+        if not rows:
+            return rows
+        metric_column = str(metric or "")
+        if not metric_column or metric_column not in rows[0]:
+            metric_column = next(key for key in rows[0] if key != "month")
+        rows.sort(key=lambda row: row.get(metric_column), reverse=sort_order == "DESC")
+        return _slice_ranked_rows(rows, {**params, "dimension": "month"})
     where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(dimension))
     if isinstance(derived_metric, dict) and derived_metric:
         metric_name = str(derived_metric.get("name") or "ratio")
@@ -994,7 +1017,7 @@ def _grouped_child_ranking_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> 
     derived_metric = params.get("derived_metric")
     sort_order = "ASC" if str(params.get("sort_order") or "desc") == "asc" else "DESC"
     child_limit = int(params.get("child_limit") or params.get("limit") or 1)
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     where_sql, values = _with_candidate_topn_filter_sql(where_sql, values, params)
     if isinstance(derived_metric, dict) and derived_metric:
         metric_name = str(derived_metric.get("name") or "ratio")
@@ -1189,7 +1212,7 @@ def _boolean_percentage_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> flo
     filters = plan.logic_form.filters
     field = str(params["field"])
     expected = bool(params.get("value", True))
-    where_sql, values = _where_from_filters(filters)
+    where_sql, values = _where_from_filters(filters, params=params)
     rows = conn.execute(
         f"SELECT COUNT(*) AS total_rows, "
         f"SUM(CASE WHEN LOWER(CAST({_quote_identifier(field)} AS TEXT)) IN ({_bool_literals_sql(expected)}) THEN 1 ELSE 0 END) AS matching_rows "
@@ -1207,7 +1230,7 @@ def _boolean_count_ratio_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> fl
     field = str(params["field"])
     left_value = bool(params.get("left_value", True))
     right_value = bool(params.get("right_value", False))
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     rows = conn.execute(
         f"SELECT "
         f"SUM(CASE WHEN LOWER(CAST({_quote_identifier(field)} AS TEXT)) IN ({_bool_literals_sql(left_value)}) THEN 1 ELSE 0 END), "
@@ -1222,7 +1245,7 @@ def _boolean_count_ratio_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> fl
 
 
 def _fraud_rate_filtered_sql(conn: sqlite3.Connection, plan: AnalysisPlan) -> float | str:
-    where_sql, values = _where_from_filters(plan.logic_form.filters)
+    where_sql, values = _where_from_filters(plan.logic_form.filters, params=dict(getattr(plan.logic_form, "parameters", {}) or {}))
     rows = conn.execute(
         "SELECT SUM(eur_amount) AS total_volume, "
         "SUM(CASE WHEN LOWER(CAST(has_fraudulent_dispute AS TEXT)) IN ('true', '1', 'yes', 'y') THEN eur_amount ELSE 0 END) AS fraud_volume "
@@ -1271,6 +1294,10 @@ def _grouped_aggregation_sql(
 
 def _uses_month_time_bucket(params: dict[str, Any]) -> bool:
     return str(params.get("time_bucket") or "") == "month" and str(params.get("dimension") or "") == "month"
+
+
+def _uses_filtered_month_time_bucket(params: dict[str, Any]) -> bool:
+    return str(params.get("time_bucket") or params.get("time_grain") or "") == "month" and bool(params.get("time_column") or params.get("source_time_field"))
 
 
 def _grouped_month_bucket_aggregation_sql(
@@ -1400,6 +1427,7 @@ def _grouped_derived_ratio_sql(
     values = values or []
     metric_name = str(derived_metric.get("name") or "ratio")
     q_dimension = _quote_identifier(dimension)
+    where_sql = _append_where_clause(where_sql, _dimension_not_null_clause(dimension))
     rows = conn.execute(
         f"SELECT {q_dimension}, {_derived_metric_sql_expression(derived_metric)} AS value "
         f"FROM analysis_table{where_sql} GROUP BY {q_dimension}",
@@ -1468,10 +1496,12 @@ def _dimension_not_null_clause(dimension: str) -> str:
     return f"({q_dimension} IS NOT NULL AND TRIM(CAST({q_dimension} AS TEXT)) != '')"
 
 
-def _where_from_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
+def _where_from_filters(filters: dict[str, Any], *, params: dict[str, Any] | None = None) -> tuple[str, list[Any]]:
     where = []
     values: list[Any] = []
     for column, expected in filters.items():
+        if str(column) == "conditions" and not expected:
+            continue
         if expected is None:
             continue
         if expected == "__NULL__":
@@ -1487,6 +1517,12 @@ def _where_from_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
             where.append("CAST(strftime('%m', date(year || '-01-01', '+' || (day_of_year - 1) || ' days')) AS INTEGER) BETWEEN ? AND ?")
             values.extend([int(start), int(end)])
             continue
+        if str(column) == "month":
+            clause, clause_values = _virtual_month_filter_sql(expected, params or {})
+            if clause:
+                where.append(clause)
+                values.extend(clause_values)
+                continue
         if isinstance(expected, dict) and ("year" in expected or "month" in expected or "month_range" in expected):
             clause, clause_values = _date_part_filter_sql(str(column), expected)
             if clause:
@@ -1528,6 +1564,29 @@ def _where_from_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
         where.append(f"{_quote_identifier(str(column))} = ?")
         values.append(expected)
     return (" WHERE " + " AND ".join(where) if where else ""), values
+
+
+def _virtual_month_filter_sql(expected: Any, params: dict[str, Any]) -> tuple[str, list[Any]]:
+    labels = [str(item) for item in (expected if isinstance(expected, (list, tuple, set)) else [expected]) if item not in (None, "")]
+    if not labels or not all(re.fullmatch(r"\d{4}-\d{1,2}", label) for label in labels):
+        return "", []
+    source = _virtual_month_source_column(params)
+    if not source:
+        return "", []
+    placeholders = ", ".join("?" for _ in labels)
+    return f"{_sql_period_expr(source)} IN ({placeholders})", labels
+
+
+def _virtual_month_source_column(params: dict[str, Any]) -> str:
+    available = [str(column) for column in params.get("available_columns") or [] if str(column or "").strip()]
+    for candidate in (params.get("time_column"), params.get("source_time_field")):
+        candidate_text = str(candidate or "").strip()
+        if candidate_text and (not available or candidate_text in available):
+            return candidate_text
+    for column in available:
+        if re.search(r"date|time|month|日期|时间|月份", column, re.I):
+            return column
+    return ""
 
 
 def _date_part_filter_sql(column: str, expected: dict[str, Any]) -> tuple[str, list[Any]]:

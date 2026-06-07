@@ -528,7 +528,12 @@ def _verify_generalization_contract(
     if missing:
         notes.append("Planner generalization contract is incomplete: " + ", ".join(missing))
         return False, notes, {"action": "complete_planner_contract", "missing_fields": missing}
-    if logic.operation != "distinct_count" and _asks_per_unique_entity(question) and not _has_unique_entity_denominator(logic.denominator, logic.entity_grain):
+    if (
+        logic.operation != "distinct_count"
+        and _asks_per_unique_entity(question)
+        and not _has_unique_entity_denominator(logic.denominator, logic.entity_grain)
+        and not _logic_counts_unique_entity(logic)
+    ):
         notes.append("Question asks for a per-unique-entity denominator, but the plan does not define a unique entity denominator.")
         return False, notes, {"action": "repair_denominator", "required": "unique_entity"}
     if _asks_candidate_selection(question) and _candidate_set_missing(logic.candidate_set):
@@ -747,7 +752,7 @@ def _verify_requested_metric_dimension_binding(
                 "available_columns": available,
             }
         rows = _execution_rows(primary)
-        if rows and not any(field in rows[0] for field in matched_dimensions):
+        if rows and not any(_result_has_requested_column_for_execution(set(rows[0]), field, primary) for field in matched_dimensions):
             if _scalar_share_operation(logic):
                 notes.append("Top-K share returns a scalar percentage; requested dimension is used for grouping but not exposed as an output column.")
                 return True, notes, None
@@ -829,7 +834,7 @@ def _verify_requested_metric_dimension_binding(
 def _semantic_dimension_fields(logic: Any) -> list[str]:
     params = getattr(logic, "parameters", {}) or {}
     operation = str(getattr(logic, "operation", "") or "")
-    ordered_keys = ["dimension"]
+    ordered_keys = ["dimension", "series_dimension"]
     if operation == "vds_group_top_entities":
         ordered_keys.extend(["entity", "group_by"])
     else:
@@ -1213,6 +1218,21 @@ def _has_unique_entity_denominator(denominator: dict[str, Any], entity_grain: di
     return denominator.get("role") == "unique_entity" or denominator.get("aggregation") in {"nunique", "distinct_count"}
 
 
+def _logic_counts_unique_entity(logic: Any) -> bool:
+    params = getattr(logic, "parameters", {}) or {}
+    numerator = getattr(logic, "numerator", {}) or {}
+    if str(numerator.get("aggregation") or "").lower() in {"nunique", "distinct_count", "count_distinct"}:
+        return True
+    if str(params.get("aggregation") or "").lower() in {"nunique", "distinct_count", "count_distinct"} and (
+        params.get("metric") or getattr(logic, "metric", None)
+    ):
+        return True
+    for spec in params.get("metric_specs") or []:
+        if isinstance(spec, dict) and str(spec.get("aggregation") or "").lower() in {"nunique", "distinct_count", "count_distinct"}:
+            return True
+    return False
+
+
 def _asks_candidate_selection(question: str) -> bool:
     return any(token in question for token in ("which", "choose", "choice", "top", "highest", "lowest", "排名", "最多", "最高", "最低"))
 
@@ -1238,6 +1258,8 @@ def _looks_like_metric_formula(text: str) -> bool:
 
     for segment in re.split(r"[。.!?？\n]+", str(text or "")):
         if "=" in segment and any(operator in segment for operator in ("/", "+", "*")):
+            return True
+        if "=" in segment and re.search(r"\b(?:times|multiplied\s+by|x)\b|乘以?|数量乘单价|quantity\s+times\s+unit\s*price", segment, re.I):
             return True
     return False
 
@@ -1401,7 +1423,7 @@ def _verify_requested_shape_contract(
         notes.append("Grouped metric/chart request returned no inspectable rows.")
         return False, notes, {"action": "repair_result_shape", "reason": "missing_rows"}
     sample_keys = set(rows[0])
-    if dimension and not _result_has_requested_column(sample_keys, dimension):
+    if dimension and not _result_has_requested_column_for_execution(sample_keys, dimension, primary):
         notes.append(f"Grouped metric/chart result is missing requested dimension column: {dimension}.")
         return False, notes, {"action": "repair_result_shape", "required_column": dimension}
     aggregation = str(params.get("aggregation") or "")
@@ -1417,6 +1439,15 @@ def _result_has_requested_column(sample_keys: set[str], requested: str) -> bool:
         return True
     aliases = _result_column_aliases(requested)
     return any(alias in sample_keys for alias in aliases)
+
+
+def _result_has_requested_column_for_execution(sample_keys: set[str], requested: str, primary: ExecutionResult) -> bool:
+    if _result_has_requested_column(sample_keys, requested):
+        return True
+    trace = primary.execution_trace if isinstance(primary.execution_trace, dict) else {}
+    time_column = str(trace.get("time_column") or "")
+    time_grain = str(trace.get("time_grain") or "").lower()
+    return bool(time_grain == "month" and time_column == requested and "month" in sample_keys)
 
 
 def _result_column_aliases(column: str) -> set[str]:

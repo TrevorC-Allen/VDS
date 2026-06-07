@@ -9,7 +9,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import pandas as pd
 
@@ -4496,8 +4496,17 @@ def _looks_like_self_contained_analysis_request(question: str) -> bool:
         token in compact
         for token in (
             "城市",
+            "国家",
             "客户",
             "产品",
+            "商品",
+            "货品",
+            "item",
+            "product",
+            "sku",
+            "SKU",
+            "StockCode",
+            "stockcode",
             "品类",
             "月份",
             "月度",
@@ -5114,6 +5123,11 @@ def _ensure_semantic_response_fields(payload: dict[str, Any]) -> dict[str, Any]:
         or debug.get("semantic_status")
         or "legacy_unverified"
     )
+    if bool(payload.get("success")) is False and str(semantic_status) in {"passed", "corrected_passed"}:
+        semantic_status = "failed"
+    elif str(semantic_status) in {"passed", "corrected_passed"} and _looks_like_blocked_semantic_answer(payload):
+        semantic_status = "failed"
+        payload["success"] = False
     payload["semantic_status"] = str(semantic_status)
     payload["contract_satisfied"] = contract_report.get("passed") if isinstance(contract_report, dict) else payload.get("contract_satisfied")
     if payload["contract_satisfied"] is None and not isinstance(contract_report, dict):
@@ -5141,6 +5155,32 @@ def _ensure_semantic_response_fields(payload: dict[str, Any]) -> dict[str, Any]:
         payload["debug"].setdefault("contract_report", contract_report)
         payload["debug"].setdefault("oracle_result", payload["oracle_result"])
     return payload
+
+
+def _looks_like_blocked_semantic_answer(payload: Mapping[str, Any]) -> bool:
+    text = " ".join(
+        str(value or "")
+        for value in (
+            payload.get("answer"),
+            payload.get("summary"),
+            (payload.get("result") or {}).get("summary") if isinstance(payload.get("result"), Mapping) else "",
+        )
+    )
+    compact = re.sub(r"\s+", "", text)
+    if not compact:
+        return False
+    return any(
+        marker in compact
+        for marker in (
+            "暂时不能可靠回答",
+            "不能直接给出数据结论",
+            "不能把这个结果标记为成功",
+            "不能编造字段",
+            "当前还缺少",
+            "尚未形成可计算口径",
+            "无法可靠回答",
+        )
+    )
 
 
 def _safe_dict_for_llm(value: Any, *, limit: int = 1000) -> dict[str, Any]:
@@ -5219,7 +5259,7 @@ def _question_semantics(compact: str) -> dict[str, bool]:
     quality_diagnostic = bool(re.search(r"(有什么问题|哪里有问题|质量问题|数据质量|异常|缺失|重复|坏数据|脏数据|problem|quality|anomal)", compact))
     calculation = bool(
         re.search(
-            r"(计算|求|多少|数量|客户数|客户数量|总客户数|总金额|总订单金额|订单总金额|订单金额|总利润|总额|总收入|利润率|合计|几(?!个文件|张表|个表)|最高|最低|最大|最小|最好|最佳|最优|最差|表现|排名|top|占比|比例|趋势|环比|同比|增长|下降|筛选|过滤|按.+分组|生成图|图表|预测|关联分析|join)",
+            r"(计算|求|多少|数量|客户数|客户数量|总客户数|总金额|总订单金额|订单总金额|订单金额|总利润|总额|总收入|利润率|合计|几(?!个文件|张表|个表)|最高|最低|最大|最小|最好|最佳|最优|最差|表现|排名|top|占比|比例|趋势|环比|同比|增长|下降|筛选|过滤|活跃|哪些月份|哪个月份|哪几个月|哪些月|按.+分组|生成图|图表|预测|关联分析|join)",
             compact,
         )
         or re.search(r"(?:各|每个|按).*(?:销售额|销售金额|总销售额|收入|金额|利润率|利润|工单量|工单数|指标)", compact)

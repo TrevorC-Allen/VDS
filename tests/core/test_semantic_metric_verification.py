@@ -85,6 +85,64 @@ class SemanticMetricVerificationTest(unittest.TestCase):
 
         self.assertTrue(comparison.consistent, comparison.issues)
 
+    def test_grouped_derived_share_ignores_null_dimension_consistently(self) -> None:
+        orders = pd.DataFrame(
+            [
+                {"Description": "A", "Quantity": 2, "UnitPrice": 10.0},
+                {"Description": "B", "Quantity": 1, "UnitPrice": 5.0},
+                {"Description": 20713, "Quantity": 3, "UnitPrice": 0.0},
+                {"Description": None, "Quantity": 4, "UnitPrice": 3.0},
+            ]
+        )
+        plan = build_analysis_plan(
+            LogicForm(
+                task_type="aggregation",
+                operation="aggregation",
+                metric="Sales",
+                group_by="Description",
+                parameters={
+                    "table": "orders",
+                    "metric": "Sales",
+                    "share_metric": "Sales",
+                    "share_of_total": True,
+                    "share_column": "Sales_share",
+                    "dimension": "Description",
+                    "group_by": "Description",
+                    "aggregation": "sum",
+                    "derived_metric": {
+                        "name": "Sales",
+                        "numerator": "Quantity",
+                        "denominator": "UnitPrice",
+                        "formula": "Quantity * UnitPrice",
+                        "operator": "multiply",
+                        "aggregation": "sum_product",
+                    },
+                },
+                output_format={"answer_type": "table"},
+            ),
+            question="各商品销售额占比是多少？销售额按 Quantity * UnitPrice 算。",
+        )
+
+        pandas_result = pandas_executor.execute_plan(plan, {"tables": {"orders": orders}, "primary_table": "orders"})
+        sql_result = sql_executor.execute_plan(plan, {"tables": {"orders": orders}, "primary_table": "orders"})
+        comparison = compare_results(pandas_result, sql_result)
+        verification = verify_execution(
+            pandas_result,
+            comparison=comparison,
+            plan=plan,
+            user_question=UserQuestion(
+                dataset_id="orders",
+                question="各商品销售额占比是多少？销售额按 Quantity * UnitPrice 算。",
+                execution_mode="dual",
+            ),
+        )
+
+        self.assertTrue(pandas_result.success, pandas_result.errors)
+        self.assertTrue(sql_result.success, sql_result.errors)
+        self.assertEqual(["Description", "Sales", "total_Sales", "Sales_share"], pandas_result.columns)
+        self.assertTrue(comparison.consistent, comparison.issues)
+        self.assertTrue(verification.passed, verification.issues)
+
     def test_verifier_requests_correction_when_fraud_ranking_uses_count(self) -> None:
         plan = AnalysisPlan(
             plan_id="raw_count_plan",

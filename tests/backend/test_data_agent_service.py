@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from backend.services.data_agent_service import DataAgentService, _suppress_raw_detail_answer
+from backend.services.data_agent_service import DataAgentService, _question_semantics, _suppress_raw_detail_answer
 from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.llm.client import MockLLMClient
 from data_agent_core.tracing.live_monitor import live_run_monitor
@@ -89,6 +89,13 @@ class NewNumberPresentationLLMClient(PresentationLLMClient):
                 "reasoning_summary": "Mocked unsafe new number from presentation LLM.",
             }
         return super().complete_json(messages, temperature=temperature)
+
+
+class DataAgentSemanticRouteTest(unittest.TestCase):
+    def test_contextual_active_month_question_is_calculation_signal(self) -> None:
+        semantics = _question_semantics("这5个客户在哪些月份最活跃？")
+
+        self.assertTrue(semantics["calculation"])
 
 
 class DirectChatLLMClient(MockLLMClient):
