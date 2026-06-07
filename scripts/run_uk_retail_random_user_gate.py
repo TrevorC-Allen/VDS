@@ -1078,6 +1078,11 @@ def _matches_any_metric(allowed: Sequence[str], columns: Sequence[str], params: 
     values = {str(params.get("metric") or ""), str(params.get("ranking_metric") or ""), str(params.get("share_metric") or "")}
     values.update(str(item) for item in trace.get("metric_columns") or [] if item)
     values.update(columns)
+    count_allowed = {"count", "row_count", "transaction_count", "psp_reference"}
+    if any(str(allowed_value).lower() in count_allowed for allowed_value in allowed):
+        operation_values = {str(params.get("operation") or ""), str(trace.get("operation") or "")}
+        if any(value.lower() == "row_count" for value in operation_values):
+            return True
     return any(str(value).lower() == str(allowed_value).lower() for value in values for allowed_value in allowed)
 
 

@@ -70,6 +70,104 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-06-07 22:38 CST
+
+### 本次目标
+
+在已通过 UK Retail 和 Stage 1 `vds_original_5` 后，继续多数据集分层真实用户验证的 Stage 2：DAB BM context 包。要求 DAB source / recommendation answerability / correction / random gate 从 cycle 1 重新开始连续 3 轮通过，推荐问题 100% 可答，HTTP5xx=0，false semantic passed=0；发现失败必须定位层级、定向修复并补回归。
+
+### 修改文件
+
+- data_agent_core/core/intent_parser.py
+- data_agent_core/output/source_overview.py
+- data_agent_core/output/text_answer_framework.py
+- scripts/run_uk_retail_random_user_gate.py
+- scripts/run_multi_dataset_real_user_gate.py
+- tests/test_generic_business_semantic_binding.py
+- tests/test_multi_dataset_real_user_gate_scoring.py
+- tests/test_recommendation_answerability_gate.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 增强 multi-dataset runner 对 DABstep context 包的识别与上传：只上传 `payments.csv`、`merchant_category_codes.csv`、`acquirer_countries.csv`、`fees.json`、`merchant_data.json`、`manual.md`，把 `data/tasks/*.jsonl` 记录为 benchmark task files 而不进入普通 Chat 上传。
+- 为 DAB source / recommendation / correction / random gate 增加 schema-aware case 与 contract inference，覆盖 DAB 表概览、merchant / country / card scheme / shopper interaction 排名、欺诈/拒付 count、总交易笔数和不存在字段安全失败。
+- 修复 DAB source overview 的 semantic status 输出，使 source overview 能作为真实 gate 的 passed 语义证据。
+- 收窄 DAB recommendation 生成，避免 Retail 模板和跨维度 merchant follow-up 污染；DAB 金额排名后只推荐当前系统可稳定回答的 issuing_country 金额下钻。
+- 修复 DAB parser 对 count / amount / boolean ranking 的早期路由：boolean/count/amount TopN 优先于 row_count，总交易笔数只在无 TopN 信号时进入 row_count。
+- 修复 DAB ranking 维度抽取：显式 `按 shopper_interaction` 等 group-by 语言优先于 dataframe 列顺序，避免 `eur_amount` 同时作为 metric 出现时被误绑定为 dimension。
+- 修复 gate scoring 对 DAB row_count 的误判：当 expected metric 属于 count 族且真实 operation 为 `row_count` 时，接受其作为交易总笔数证据，不再误报 metric mismatch。
+- 新增 focused 回归覆盖 DAB 中文金额 TopN、交易笔数 TopN、欺诈交易数量 TopN、amount/count override、`payment transaction` 总笔数 row_count、`shopper_interaction` 金额 Top2、DAB recommendation contract、source overview recommendation 和 DAB random template 边界。
+
+### 测试方式
+
+- 失败前 DAB cycle 1：`/tmp/vds-real-user-gates-20260607-222414-dab_bm-cycle1`
+- 修复后 DAB cycle 1：`VDS_LLM_PROVIDER=mock python3 scripts/run_multi_dataset_real_user_gate.py --dataset-path "/Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep" --dataset-name dab_bm --base-url http://127.0.0.1:8878 --cycles 1 --random-questions 80 --stop-on-failure --start-service always --output-dir /tmp/vds-real-user-gates-20260607-222925-dab_bm-cycle1 --print-summary`
+- DAB 3-cycle gate：`VDS_LLM_PROVIDER=mock python3 scripts/run_multi_dataset_real_user_gate.py --dataset-path "/Users/trevorcui/Desktop/DABstep_download_20260520/dataset_DABstep" --dataset-name dab_bm --base-url http://127.0.0.1:8878 --cycles 3 --random-questions 80 --stop-on-failure --start-service always --output-dir /tmp/vds-real-user-gates-20260607-223123-dab_bm --print-summary`
+- Focused semantic：`python3 -m pytest tests/test_topn_filter_drilldown_followup.py tests/test_generic_business_semantic_binding.py tests/test_semantic_contract_instrumentation.py --tb=short`
+- Recommendation/correction/gate scoring：`python3 -m pytest tests/test_recommendation_answerability_gate.py tests/test_correction_node_recovery.py tests/test_multi_dataset_real_user_gate_scoring.py --tb=short`
+- semantic selector：`/Users/trevorcui/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest tests -k 'semantic_contract or verifier or execution_trace' --tb=short`
+- Retail Product Floor：`python3 -m pytest -rxX tests/test_retail_cli_product_floor.py --tb=short`
+- py_compile：按 steering 指定模块清单执行，并额外包含 `data_agent_core/output/source_overview.py`、`scripts/run_uk_retail_random_user_gate.py`、`scripts/run_multi_dataset_real_user_gate.py`
+- `git diff --check`
+
+### 测试结果
+
+- 失败前 DAB cycle 1：source `5/5/0/0`、recommendation `5/5/0/0`、correction `3/3/0/0`，random `80/60/1/19`；失败集中在 `shopper_interaction` 金额 Top2 被列顺序误绑到 `eur_amount` dimension，以及总交易笔数正确 row_count 被 scoring 误报 metric mismatch。
+- 修复后 DAB cycle 1 输出目录：`/tmp/vds-real-user-gates-20260607-222925-dab_bm-cycle1`，passed=True，cycles `1/1`；source `5/5/0/0`、recommendation `5/5/0/0`、correction `3/3/0/0`、random `80/79/1/0`，HTTP5xx=0，false semantic passed=0。
+- DAB 3-cycle 输出目录：`/tmp/vds-real-user-gates-20260607-223123-dab_bm`，`dataset_stability_report.md` 显示 passed=True、cycles `3/3`。
+- DAB cycle 1：source `5/5/0/0`，recommendation `5/5/0/0`，correction `3/3/0/0`，random `80/79/1/0`，HTTP5xx=0，false semantic passed=0。
+- DAB cycle 2：source `5/5/0/0`，recommendation `5/5/0/0`，correction `3/3/0/0`，random `80/79/1/0`，HTTP5xx=0，false semantic passed=0。
+- DAB cycle 3：source `5/5/0/0`，recommendation `5/5/0/0`，correction `3/3/0/0`，random `80/79/1/0`，HTTP5xx=0，false semantic passed=0。
+- Focused semantic 通过：`80 passed, 202 warnings`。
+- Recommendation/correction/gate scoring 通过：`20 passed, 28 warnings`。
+- semantic selector 通过：`59 passed, 967 deselected, 32 warnings`；系统 `python3` 因缺少 `duckdb` 在 collection 阶段触发 `SystemExit`，随后使用 Codex bundled Python 复跑通过。
+- Retail Product Floor 通过：`48 passed, 5 xfailed, 222 warnings`；既有 xfailed 未扩大。
+- py_compile 通过。
+- `git diff --check` 通过。
+
+### 遗留问题
+
+- Stage 2 DAB BM 已通过当前 runner 的 source / recommendation / correction / random 三连；尚未进入后续巴西 e-commerce、微软数据集和 NYC Taxi 数据集。
+- DAB random gate 中 `列出不存在字段 top5。` 被正确判为 expected safe soft_fail；当前通过标准允许该类安全失败，但推荐问题中仍应避免从 safe failure 回答继续生成不可执行问题。
+- 本轮未运行完整 pytest、真实 LLM provider gate 或前端浏览器 smoke。
+
+### 是否影响主流程
+
+是。影响 DABstep context 包上传后的真实 HTTP 数据分析、parser 语义绑定、推荐问题生成和 multi-dataset gate scoring。
+
+### 是否涉及 Benchmark
+
+涉及真实用户 gate runner 和 DABstep context 数据集路径识别；不读取或上传 benchmark task JSONL 到普通 Chat，不修改 benchmark 标准答案、oracle 或 verifier 断言。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。修复保持在 core intent parser、output recommendation 和 runner scoring 层，仍通过当前 multi-agent HTTP 路径验证，不把核心算法写入 adapter。
+
+### 是否修改核心数据契约
+
+否。未新增核心 contract class 或 API 字段；调整的是 LogicForm 生成和 gate expected contract 使用方式。
+
+### 是否修改 API 契约
+
+否。没有新增、删除或修改 HTTP endpoint。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。未修改 trace schema；runner 继续记录既有 execution_trace / semantic evidence。
+
+### 是否已同步 README
+
+否。本轮是内部真实 HTTP gate、DAB parser/recommendation/scoring 修复，不改变公开启动方式、安装方式、API 端点或前端入口；README 暂不需要同步。
+
 2026-06-07 21:25 CST
 
 ### 本次目标

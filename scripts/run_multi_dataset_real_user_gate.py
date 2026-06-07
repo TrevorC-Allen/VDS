@@ -44,6 +44,20 @@ SAFE_RECOMMENDATION_PREFIXES = (
     "确认哪些字段需要删除",
     "清洗前后核心指标",
 )
+DABSTEP_CONTEXT_TABLE_FILES = (
+    "payments.csv",
+    "merchant_category_codes.csv",
+    "acquirer_countries.csv",
+)
+DABSTEP_CONTEXT_KNOWLEDGE_FILES = (
+    "fees.json",
+    "merchant_data.json",
+    "manual.md",
+)
+DABSTEP_CONTEXT_REQUIRED_FILES = frozenset(
+    [*DABSTEP_CONTEXT_TABLE_FILES, *DABSTEP_CONTEXT_KNOWLEDGE_FILES]
+)
+TABULAR_FILE_PATTERNS = ("*.csv", "*.xlsx", "*.xls", "*.parquet")
 
 
 def main() -> None:
@@ -124,7 +138,9 @@ def resolve_dataset_input(dataset_path: str, dataset_dir: str) -> Path:
 
 
 def build_dataset_manifest(dataset_path: Path, *, dataset_name: str) -> dict[str, Any]:
-    files = dataset_files(dataset_path)
+    files = dataset_all_files(dataset_path)
+    table_files = dataset_files(dataset_path)
+    dab_context_dir = resolve_dabstep_context_dir(dataset_path)
     tables: list[dict[str, Any]] = []
     row_counts: dict[str, int] = {}
     columns: dict[str, list[str]] = {}
@@ -132,7 +148,7 @@ def build_dataset_manifest(dataset_path: Path, *, dataset_name: str) -> dict[str
     detected_time_columns: dict[str, list[str]] = {}
     detected_measures: dict[str, list[str]] = {}
     detected_dimensions: dict[str, list[str]] = {}
-    for file_path in files:
+    for file_path in table_files:
         for table_name, frame in load_table_samples(file_path):
             table_id = table_name
             cols = [str(col) for col in frame.columns]
@@ -145,9 +161,17 @@ def build_dataset_manifest(dataset_path: Path, *, dataset_name: str) -> dict[str
             detected_dimensions[table_id] = [col for col in cols if looks_like_dimension(col, frame)]
     return {
         "dataset_name": dataset_name,
-        "dataset_type": "folder" if dataset_path.is_dir() else ("multi_csv" if len(files) > 1 else "single_file"),
+        "dataset_type": dataset_type(dataset_path, files, dab_context_dir=dab_context_dir),
         "dataset_path": str(dataset_path),
+        "context_dir": str(dab_context_dir) if dab_context_dir is not None else "",
         "files": [str(path) for path in files],
+        "upload_files": [str(path) for path in dataset_upload_files(dataset_path)],
+        "knowledge_files": [
+            str(path)
+            for path in files
+            if path.name.lower() in DABSTEP_CONTEXT_KNOWLEDGE_FILES
+        ],
+        "task_files": [str(path) for path in dabstep_task_files(dataset_path)],
         "tables": tables,
         "row_counts": row_counts,
         "columns": columns,
@@ -156,18 +180,71 @@ def build_dataset_manifest(dataset_path: Path, *, dataset_name: str) -> dict[str
         "detected_measures": detected_measures,
         "detected_dimensions": detected_dimensions,
         "potential_relationships": detect_relationships(columns, detected_keys),
-        "known_limitations": manifest_limitations(files, tables),
+        "known_limitations": manifest_limitations(files, tables, dab_context_dir=dab_context_dir),
     }
 
 
 def dataset_files(dataset_path: Path) -> list[Path]:
+    dab_context_dir = resolve_dabstep_context_dir(dataset_path)
+    if dab_context_dir is not None:
+        return [dab_context_dir / name for name in DABSTEP_CONTEXT_TABLE_FILES]
     if dataset_path.is_file():
         return [dataset_path]
-    patterns = ("*.csv", "*.xlsx", "*.xls", "*.parquet")
     files: list[Path] = []
-    for pattern in patterns:
+    for pattern in TABULAR_FILE_PATTERNS:
         files.extend(sorted(dataset_path.glob(pattern)))
     return [path for path in files if path.is_file() and not path.name.startswith("~$")]
+
+
+def dataset_all_files(dataset_path: Path) -> list[Path]:
+    dab_context_dir = resolve_dabstep_context_dir(dataset_path)
+    if dab_context_dir is not None:
+        return [dab_context_dir / name for name in [*DABSTEP_CONTEXT_TABLE_FILES, *DABSTEP_CONTEXT_KNOWLEDGE_FILES]]
+    return dataset_files(dataset_path)
+
+
+def dataset_upload_files(dataset_path: Path) -> list[Path]:
+    return dataset_all_files(dataset_path)
+
+
+def resolve_dabstep_context_dir(dataset_path: Path) -> Path | None:
+    if not dataset_path.is_dir():
+        return None
+    candidates = (
+        dataset_path,
+        dataset_path / "data" / "context",
+        dataset_path / "context",
+        dataset_path / "dab_context",
+    )
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        names = {path.name.lower() for path in candidate.iterdir() if path.is_file()}
+        if DABSTEP_CONTEXT_REQUIRED_FILES.issubset(names):
+            return candidate
+    return None
+
+
+def dabstep_task_files(dataset_path: Path) -> list[Path]:
+    if not dataset_path.is_dir():
+        return []
+    candidates = (dataset_path / "data" / "tasks", dataset_path / "tasks")
+    files: list[Path] = []
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        files.extend(path for path in (candidate / name for name in ("dev.jsonl", "all.jsonl")) if path.exists())
+    return files
+
+
+def dataset_type(dataset_path: Path, files: Sequence[Path], *, dab_context_dir: Path | None) -> str:
+    if dab_context_dir is not None:
+        return "dabstep_context"
+    if dataset_path.is_file():
+        return "single_file"
+    if len(files) > 1 and all(path.suffix.lower() == ".csv" for path in files):
+        return "multi_csv"
+    return "folder"
 
 
 def load_table_samples(file_path: Path) -> list[tuple[str, pd.DataFrame]]:
@@ -223,12 +300,19 @@ def detect_relationships(columns: Mapping[str, list[str]], keys: Mapping[str, li
     return relationships
 
 
-def manifest_limitations(files: Sequence[Path], tables: Sequence[Mapping[str, Any]]) -> list[str]:
+def manifest_limitations(
+    files: Sequence[Path],
+    tables: Sequence[Mapping[str, Any]],
+    *,
+    dab_context_dir: Path | None = None,
+) -> list[str]:
     limitations: list[str] = []
     if not files:
         limitations.append("No supported CSV, Excel, or Parquet files were found.")
     if any("manifest_error" in str(table.get("table")) for table in tables):
         limitations.append("At least one file could not be sampled for manifest generation.")
+    if dab_context_dir is not None:
+        limitations.append("DABstep task JSONL files are benchmark questions and are not uploaded as business data.")
     return limitations
 
 
@@ -387,13 +471,15 @@ def run_dataset_cycle(
 
 
 def upload_dataset(client: uk.HttpClient, dataset_path: Path) -> uk.HttpPayload:
-    files = dataset_files(dataset_path)
+    files = dataset_upload_files(dataset_path)
     return client.multipart_upload("/api/data-agent/upload-batch", [("files", path, path.name) for path in files])
 
 
 def source_gate_cases(dataset_name: str, manifest: Mapping[str, Any]) -> list[uk.GateQuestion]:
     if dataset_name == "uk_retail":
         return uk.fixed_gate_cases()
+    if is_dabstep_dataset(dataset_name, manifest):
+        return dabstep_source_gate_cases()
     overview = uk.ExpectedContract("overview", min_rows=1)
     cases = [
         uk.GateQuestion("先看一下这个数据，告诉我表、字段、行数和明显数据质量问题。", overview, "overview", "overview", 1),
@@ -421,6 +507,8 @@ def correction_gate_cases(dataset_name: str, manifest: Mapping[str, Any]) -> lis
             uk.GateQuestion("订单数量最多的前5个客户是谁？", uk._customer_order_count(5), "correction", "corr_customer", 1),
             uk.GateQuestion("这些客户的销售额分别是多少？销售额按 Quantity * UnitPrice 算。", uk._customer_sales(), "correction", "corr_customer", 2),
         ]
+    if is_dabstep_dataset(dataset_name, manifest):
+        return dabstep_correction_gate_cases()
     metric = first_manifest_value(manifest, "detected_measures") or ""
     dimension = first_manifest_value(manifest, "detected_dimensions") or ""
     if metric and dimension:
@@ -431,12 +519,154 @@ def correction_gate_cases(dataset_name: str, manifest: Mapping[str, Any]) -> lis
 def random_gate_cases(dataset_name: str, manifest: Mapping[str, Any], *, seed: int, total_questions: int) -> list[uk.GateQuestion]:
     if dataset_name == "uk_retail":
         return uk.generate_random_gate(seed=seed, total_questions=total_questions)
+    if is_dabstep_dataset(dataset_name, manifest):
+        return dabstep_random_gate_cases(seed=seed, total_questions=total_questions)
     rng = random.Random(seed)
     base = source_gate_cases(dataset_name, manifest)
     cases: list[uk.GateQuestion] = []
     while len(cases) < total_questions:
         case = rng.choice(base)
         cases.append(uk.GateQuestion(case.question, case.expected, "random", "", len(cases) + 1))
+    return cases
+
+
+def is_dabstep_dataset(dataset_name: str, manifest: Mapping[str, Any]) -> bool:
+    normalized = str(dataset_name or "").strip().lower().replace("-", "_")
+    return normalized in {"dab", "dab_bm", "dabstep", "dabstep_bm"} or str(manifest.get("dataset_type") or "") == "dabstep_context"
+
+
+def dabstep_source_gate_cases() -> list[uk.GateQuestion]:
+    return [
+        uk.GateQuestion(
+            "这个上传数据包含哪些表？每张表的行数和字段是什么？",
+            uk.ExpectedContract("overview", min_rows=1),
+            "overview",
+            "dab_overview",
+            1,
+        ),
+        uk.GateQuestion(
+            "按 issuing_country 看交易笔数排名前5，并给出交易笔数。",
+            uk.ExpectedContract(
+                "dab transaction count TopN",
+                min_rows=5,
+                allowed_dimensions=("issuing_country",),
+                allowed_metrics=("count", "transaction_count", "psp_reference"),
+                require_topn=True,
+                expected_n=5,
+            ),
+            "independent",
+            "",
+            1,
+        ),
+        uk.GateQuestion(
+            "按 merchant 看 eur_amount 总金额最高的前5个商户。",
+            uk.ExpectedContract(
+                "dab merchant amount TopN",
+                min_rows=5,
+                allowed_dimensions=("merchant",),
+                allowed_metrics=("eur_amount",),
+                require_topn=True,
+                expected_n=5,
+            ),
+            "independent",
+            "",
+            1,
+        ),
+        uk.GateQuestion(
+            "按 ip_country 看欺诈交易数量前5，欺诈按 has_fraudulent_dispute=True 统计。",
+            uk.ExpectedContract(
+                "dab fraud country TopN",
+                min_rows=5,
+                allowed_dimensions=("ip_country",),
+                allowed_metrics=("count", "has_fraudulent_dispute", "psp_reference"),
+                require_topn=True,
+                expected_n=5,
+            ),
+            "independent",
+            "",
+            1,
+        ),
+        uk.GateQuestion(
+            "按 acquirer_country 看交易数量排名前5。",
+            uk.ExpectedContract(
+                "dab acquirer country TopN",
+                min_rows=5,
+                allowed_dimensions=("acquirer_country",),
+                allowed_metrics=("count", "transaction_count", "psp_reference"),
+                require_topn=True,
+                expected_n=5,
+            ),
+            "independent",
+            "",
+            1,
+        ),
+    ]
+
+
+def dabstep_correction_gate_cases() -> list[uk.GateQuestion]:
+    return [
+        uk.GateQuestion(
+            "哪个 issuing country 交易最多？不要按 eur_amount，要按交易笔数统计。",
+            uk.ExpectedContract(
+                "dab correction metric override",
+                min_rows=1,
+                allowed_dimensions=("issuing_country",),
+                allowed_metrics=("count", "transaction_count", "psp_reference"),
+                require_topn=True,
+                expected_n=1,
+            ),
+            "correction",
+            "",
+            1,
+        ),
+        uk.GateQuestion(
+            "按 merchant 看总交易金额前5，总金额用 eur_amount 求和，不是交易笔数。",
+            uk.ExpectedContract(
+                "dab correction amount metric",
+                min_rows=5,
+                allowed_dimensions=("merchant",),
+                allowed_metrics=("eur_amount",),
+                require_topn=True,
+                expected_n=5,
+            ),
+            "correction",
+            "",
+            2,
+        ),
+        uk.GateQuestion(
+            "哪些 ACI 的欺诈交易数量最高？欺诈按 has_fraudulent_dispute=True 过滤。",
+            uk.ExpectedContract(
+                "dab correction filter",
+                min_rows=1,
+                allowed_dimensions=("aci",),
+                allowed_metrics=("count", "has_fraudulent_dispute", "psp_reference"),
+            ),
+            "correction",
+            "",
+            1,
+        ),
+    ]
+
+
+def dabstep_random_gate_cases(*, seed: int, total_questions: int) -> list[uk.GateQuestion]:
+    rng = random.Random(seed)
+    templates = [
+        uk.GateQuestion("这个 DABstep 数据有多少笔 payment transaction？", uk.ExpectedContract("dab count", min_rows=1, allowed_metrics=("count", "psp_reference")), "random"),
+        uk.GateQuestion("按 issuing_country 看交易笔数排名前5，并给出交易笔数。", uk.ExpectedContract("dab issuing country", min_rows=5, allowed_dimensions=("issuing_country",), allowed_metrics=("count", "psp_reference"), require_topn=True, expected_n=5), "random"),
+        uk.GateQuestion("按 merchant 看 eur_amount 总金额最高的前5个商户。", uk.ExpectedContract("dab merchant amount", min_rows=5, allowed_dimensions=("merchant",), allowed_metrics=("eur_amount",), require_topn=True, expected_n=5), "random"),
+        uk.GateQuestion("按 card_scheme 看交易数量前4。", uk.ExpectedContract("dab card scheme count", min_rows=4, allowed_dimensions=("card_scheme",), allowed_metrics=("count", "psp_reference"), require_topn=True, expected_n=4), "random"),
+        uk.GateQuestion("按 ip_country 看欺诈交易数量前5，欺诈按 has_fraudulent_dispute=True 统计。", uk.ExpectedContract("dab fraud country", min_rows=5, allowed_dimensions=("ip_country",), allowed_metrics=("count", "has_fraudulent_dispute", "psp_reference"), require_topn=True, expected_n=5), "random"),
+        uk.GateQuestion("按 acquirer_country 看交易数量排名前5。", uk.ExpectedContract("dab acquirer country", min_rows=5, allowed_dimensions=("acquirer_country",), allowed_metrics=("count", "psp_reference"), require_topn=True, expected_n=5), "random"),
+        uk.GateQuestion("按 shopper_interaction 看 eur_amount 总金额排名前2。", uk.ExpectedContract("dab shopper interaction", min_rows=2, allowed_dimensions=("shopper_interaction",), allowed_metrics=("eur_amount",), require_topn=True, expected_n=2), "random"),
+        uk.GateQuestion("拒付交易最多的 merchant 前5是谁？拒付按 is_refused_by_adyen=True 统计。", uk.ExpectedContract("dab refused merchant", min_rows=5, allowed_dimensions=("merchant",), allowed_metrics=("count", "is_refused_by_adyen", "psp_reference"), require_topn=True, expected_n=5), "random"),
+    ]
+    cases: list[uk.GateQuestion] = []
+    while len(cases) < total_questions:
+        case = rng.choice(templates)
+        cases.append(uk.GateQuestion(case.question, case.expected, "random", "", len(cases) + 1))
+    if cases:
+        safe_case = uk.GateQuestion("列出不存在字段 top5。", uk.ExpectedContract("dab nonexistent field", answerable=False, safe_failure_expected=True), "random", "", len(cases))
+        cases[-1] = safe_case
     return cases
 
 
@@ -629,6 +859,9 @@ def run_recommendation_answerability_gate(
 
 def infer_recommendation_expected(question: str) -> uk.ExpectedContract:
     text = str(question or "").lower().replace(" ", "")
+    dab_contract = _infer_dabstep_recommendation_expected(text)
+    if dab_contract is not None:
+        return dab_contract
     if any(token in text for token in ("差多少", "相差", "差距", "第一名和第二名", "第二名比第一名")):
         if any(token in text for token in ("数量", "退货", "订单", "quantity", "count")):
             return uk.ExpectedContract("follow-up gap", min_rows=2)
@@ -648,6 +881,81 @@ def infer_recommendation_expected(question: str) -> uk.ExpectedContract:
             return uk.ExpectedContract("product TopN", min_rows=1, allowed_dimensions=("Description", "StockCode"), allowed_metrics=("Quantity",))
         return uk.ExpectedContract("follow-up drilldown", min_rows=1, allowed_dimensions=("Description", "StockCode"))
     return uk.ExpectedContract("recommendation", min_rows=0)
+
+
+def _infer_dabstep_recommendation_expected(text: str) -> uk.ExpectedContract | None:
+    dimensions = {
+        "merchant": "merchant",
+        "商户": "merchant",
+        "issuing_country": "issuing_country",
+        "issuingcountry": "issuing_country",
+        "ip_country": "ip_country",
+        "ipcountry": "ip_country",
+        "acquirer_country": "acquirer_country",
+        "acquirercountry": "acquirer_country",
+        "card_scheme": "card_scheme",
+        "cardscheme": "card_scheme",
+        "shopper_interaction": "shopper_interaction",
+        "shopperinteraction": "shopper_interaction",
+        "aci": "aci",
+    }
+    dimension = next((value for token, value in dimensions.items() if token in text), "")
+    has_payment_signal = bool(dimension) or any(
+        token in text
+        for token in (
+            "eur_amount",
+            "euramount",
+            "交易笔数",
+            "交易数量",
+            "交易数",
+            "交易金额",
+            "支付金额",
+            "欺诈",
+            "拒付",
+            "has_fraudulent_dispute",
+            "is_refused_by_adyen",
+        )
+    )
+    if not has_payment_signal:
+        return None
+    has_topn = any(token in text for token in ("前5", "top5", "排名", "最高", "最多", "top"))
+    if any(token in text for token in ("差多少", "相差", "差距", "第一名和第二名", "第二名比第一名")):
+        metric = "eur_amount" if any(token in text for token in ("eur_amount", "euramount", "金额")) else "count"
+        return uk.ExpectedContract(
+            "dab follow-up gap",
+            min_rows=2,
+            allowed_dimensions=(dimension,) if dimension else (),
+            allowed_metrics=(metric, "psp_reference") if metric == "count" else (metric,),
+        )
+    negates_amount_metric = any(token in text for token in ("不要按eur_amount", "不是eur_amount", "不要按金额", "不是金额", "不要按交易金额"))
+    if negates_amount_metric and any(token in text for token in ("交易笔数", "交易数量", "交易数", "交易最多")):
+        return uk.ExpectedContract(
+            "dab count recommendation",
+            min_rows=5 if has_topn else 1,
+            allowed_dimensions=(dimension,) if dimension else (),
+            allowed_metrics=("count", "transaction_count", "psp_reference", "has_fraudulent_dispute", "is_refused_by_adyen"),
+            require_topn=has_topn,
+            expected_n=5 if has_topn else 0,
+        )
+    if any(token in text for token in ("eur_amount", "euramount", "交易金额", "支付金额", "总金额", "金额")):
+        return uk.ExpectedContract(
+            "dab amount recommendation",
+            min_rows=5 if has_topn else 1,
+            allowed_dimensions=(dimension,) if dimension else (),
+            allowed_metrics=("eur_amount",),
+            require_topn=has_topn,
+            expected_n=5 if has_topn else 0,
+        )
+    if any(token in text for token in ("交易笔数", "交易数量", "交易数", "欺诈", "拒付")):
+        return uk.ExpectedContract(
+            "dab count recommendation",
+            min_rows=5 if has_topn else 1,
+            allowed_dimensions=(dimension,) if dimension else (),
+            allowed_metrics=("count", "transaction_count", "psp_reference", "has_fraudulent_dispute", "is_refused_by_adyen"),
+            require_topn=has_topn,
+            expected_n=5 if has_topn else 0,
+        )
+    return None
 
 
 def failure_layer(score: uk.TurnScore) -> str:

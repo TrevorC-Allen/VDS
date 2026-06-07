@@ -6,13 +6,17 @@ from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm
 from data_agent_core.contracts.execution_contracts import ExecutionResult
 from data_agent_core.contracts.verification_contracts import VerificationResult
 from data_agent_core.output.response_builder import build_response
+from data_agent_core.output.source_overview import build_dataset_source_overview_response
 from scripts.run_multi_dataset_real_user_gate import (
     build_dataset_manifest,
     collect_recommended_questions,
+    dataset_files,
+    dataset_upload_files,
     infer_recommendation_expected,
     random_gate_cases,
     summarize_recommendations,
 )
+from scripts.run_uk_retail_random_user_gate import ExpectedContract, score_response
 
 
 def test_build_dataset_manifest_detects_keys_time_measures_and_dimensions(tmp_path: Path) -> None:
@@ -41,6 +45,93 @@ def test_build_dataset_manifest_detects_keys_time_measures_and_dimensions(tmp_pa
     assert manifest["detected_time_columns"][table] == ["order_date"]
     assert "revenue" in manifest["detected_measures"][table]
     assert {"country", "status"} <= set(manifest["detected_dimensions"][table])
+
+
+def test_dabstep_manifest_discovers_context_package_from_dataset_root(tmp_path: Path) -> None:
+    context = tmp_path / "data" / "context"
+    tasks = tmp_path / "data" / "tasks"
+    context.mkdir(parents=True)
+    tasks.mkdir(parents=True)
+    (context / "payments.csv").write_text(
+        "\n".join(
+            [
+                "psp_reference,merchant,issuing_country,ip_country,eur_amount,has_fraudulent_dispute,aci,acquirer_country,year",
+                "P1,M1,NL,BE,10.5,true,A,NL,2023",
+                "P2,M2,BE,NL,20.0,false,B,US,2023",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (context / "merchant_category_codes.csv").write_text("mcc,description\n5812,Restaurants\n", encoding="utf-8")
+    (context / "acquirer_countries.csv").write_text("acquirer,country_code\ngringotts,GB\n", encoding="utf-8")
+    (context / "fees.json").write_text("[{\"ID\": 1, \"rate\": 10}]", encoding="utf-8")
+    (context / "merchant_data.json").write_text("[{\"merchant\": \"M1\", \"merchant_category_code\": 5812}]", encoding="utf-8")
+    (context / "manual.md").write_text("# Manual\nFees are rule context.\n", encoding="utf-8")
+    (tasks / "dev.jsonl").write_text('{"task_id":"1","question":"q"}\n', encoding="utf-8")
+    (tasks / "all.jsonl").write_text('{"task_id":"2","question":"q"}\n', encoding="utf-8")
+
+    manifest = build_dataset_manifest(tmp_path, dataset_name="dab_bm")
+    upload_names = {Path(path).name for path in manifest["upload_files"]}
+
+    assert manifest["dataset_type"] == "dabstep_context"
+    assert manifest["context_dir"] == str(context)
+    assert upload_names == {
+        "payments.csv",
+        "merchant_category_codes.csv",
+        "acquirer_countries.csv",
+        "fees.json",
+        "merchant_data.json",
+        "manual.md",
+    }
+    assert {Path(path).name for path in manifest["knowledge_files"]} == {"fees.json", "merchant_data.json", "manual.md"}
+    assert {Path(path).name for path in manifest["task_files"]} == {"dev.jsonl", "all.jsonl"}
+    assert {path.name for path in dataset_files(tmp_path)} == {
+        "payments.csv",
+        "merchant_category_codes.csv",
+        "acquirer_countries.csv",
+    }
+    assert {path.name for path in dataset_upload_files(tmp_path)} == upload_names
+    assert "payments" in manifest["columns"]
+    assert "eur_amount" in manifest["detected_measures"]["payments"]
+    assert "DABstep task JSONL files are benchmark questions" in manifest["known_limitations"][0]
+
+
+def test_source_overview_response_has_semantic_status_for_gate_scoring() -> None:
+    response = build_dataset_source_overview_response(
+        run_id="run_source_overview",
+        dataset_id="ds_source_overview",
+        question="这个上传数据包含哪些表？每张表的行数和字段是什么？",
+        source_manifest={
+            "dataset_kind": "dabstep_context",
+            "sources": [
+                {
+                    "file_name": "payments.csv",
+                    "source_type": "table",
+                    "read_status": "loaded",
+                    "row_count": 2,
+                    "columns": ["psp_reference", "merchant", "eur_amount"],
+                },
+                {
+                    "file_name": "manual.md",
+                    "source_type": "knowledge",
+                    "read_status": "loaded",
+                    "summary": "Payment rules manual.",
+                },
+            ],
+        },
+        tables={},
+    )
+
+    score = score_response(
+        question="这个上传数据包含哪些表？每张表的行数和字段是什么？",
+        response=response,
+        http_status=200,
+        expected=ExpectedContract("overview", min_rows=1),
+    )
+
+    assert response["semantic_status"] == "passed"
+    assert response["semantic_success"] is True
+    assert score.score == "pass", score.hard_reasons
 
 
 def test_collect_recommended_questions_dedupes_filters_and_limits_to_three() -> None:
@@ -126,6 +217,47 @@ def test_generic_random_gate_keeps_independent_questions_out_of_shared_context(t
 
     assert len(cases) == 12
     assert all(case.conversation_key == "" for case in cases)
+
+
+def test_dabstep_random_gate_keeps_safe_failure_bounded_and_distinct_topn_answerable() -> None:
+    manifest = {"dataset_type": "dabstep_context"}
+    cases = random_gate_cases("dab_bm", manifest, seed=2026060701, total_questions=80)
+    questions = [case.question for case in cases]
+
+    assert len(cases) == 80
+    assert sum(1 for case in cases if case.expected.safe_failure_expected) == 1
+    assert "按 card_scheme 看交易数量前4。" in questions
+    assert "按 card_scheme 看交易数量前5。" not in questions
+    assert "按 shopper_interaction 看 eur_amount 总金额排名前2。" in questions
+
+
+def test_score_response_accepts_dabstep_row_count_as_transaction_count_metric() -> None:
+    response = {
+        "success": True,
+        "semantic_status": "passed",
+        "answer": "138236",
+        "logic_form": {
+            "operation": "row_count",
+            "parameters": {"table": "payments"},
+        },
+        "result": {
+            "columns": ["answer"],
+            "rows": [{"answer": 138236}],
+            "value": 138236,
+        },
+        "debug": {
+            "execution_trace": {"operation": "row_count"},
+        },
+    }
+
+    score = score_response(
+        question="这个 DABstep 数据有多少笔 payment transaction？",
+        response=response,
+        http_status=200,
+        expected=ExpectedContract("dab count", min_rows=1, allowed_metrics=("count", "psp_reference")),
+    )
+
+    assert score.score == "pass", score.hard_reasons
 
 
 def test_response_success_uses_semantic_contract_when_backend_consistency_differs() -> None:

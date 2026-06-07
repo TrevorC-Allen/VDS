@@ -78,7 +78,7 @@ def apply_text_answer_framework(response: dict[str, Any], *, question: str) -> d
             if not str(insight.get("summary") or "").strip():
                 insight["summary"] = _first_sentence(direct_answer, limit=180)
             next_questions = response["structured_answer_sections"].get("next_questions") or _next_questions(context)
-            if next_questions and not insight.get("next_questions"):
+            if next_questions and (_is_dabstep_payment_context(context) or not insight.get("next_questions")):
                 insight["next_questions"] = next_questions[:3]
             insight["confidence"] = max(float(insight.get("confidence") or 0.0), 0.82)
         _mark_debug(response, applied=True, reason=f"direct_kind={kind}")
@@ -102,7 +102,7 @@ def apply_text_answer_framework(response: dict[str, Any], *, question: str) -> d
             answer_type=str(response.get("answer_type") or ""),
             operation=str(context.logic_form.get("operation") or ""),
         )
-        if next_questions and (scalar_value_context or not insight.get("next_questions")):
+        if next_questions and (_is_dabstep_payment_context(context) or scalar_value_context or not insight.get("next_questions")):
             insight["next_questions"] = next_questions[:3]
         insight["confidence"] = max(float(insight.get("confidence") or 0.0), 0.82)
     _mark_debug(response, applied=True, reason=f"kind={kind}")
@@ -2401,6 +2401,10 @@ def _verification_note_scope(value: Any) -> str:
 
 
 def _next_questions(context: _FrameContext) -> list[str]:
+    dabstep_questions = _dabstep_payment_followups(context)
+    if dabstep_questions:
+        return dabstep_questions[:3]
+
     insight = _as_dict(context.response.get("insight"))
     existing = [str(item).strip() for item in insight.get("next_questions") or [] if _safe_question(item)]
     if _is_scalar_value_context(
@@ -2593,6 +2597,91 @@ def _metric_dimension_followups(*, metric: str, dimension: str) -> list[str]:
     if dimension == "month":
         return [f"哪些月份{metric}最高？"]
     return [f"按 {dimension} 分组，计算 {metric} 的总和并返回前5个 {dimension}。"]
+
+
+_DABSTEP_RANKING_DIMENSIONS = {
+    "merchant",
+    "issuing_country",
+    "ip_country",
+    "acquirer_country",
+    "card_scheme",
+    "shopper_interaction",
+    "aci",
+}
+
+
+def _dabstep_payment_followups(context: _FrameContext) -> list[str]:
+    if not _is_dabstep_payment_context(context):
+        return []
+
+    params = _as_dict(context.logic_form.get("parameters"))
+    debug = _as_dict(context.response.get("debug"))
+    trace = _as_dict(debug.get("execution_trace"))
+    if str(debug.get("operation") or "") == "dataset_source_overview" or context.overview_report.get("report_type") == "source_overview_report":
+        return ["按 issuing_country 看交易笔数排名前5，并给出交易笔数。"]
+
+    metric = _preferred_metric_column(context.columns, context.rows) or str(params.get("metric") or context.logic_form.get("metric") or "")
+    dimension = (
+        _preferred_label_column(context.columns, metric)
+        or str(params.get("dimension") or context.logic_form.get("group_by") or "")
+    )
+    dimension = _normalize_dabstep_dimension(dimension)
+    metric = "eur_amount" if str(metric).lower() == "eur_amount" else ("count" if str(metric).lower() == "count" else str(metric))
+    filters = trace.get("filters_applied") if isinstance(trace.get("filters_applied"), list) else []
+    has_fraud_filter = any(str(item.get("column") if isinstance(item, dict) else "").lower() == "has_fraudulent_dispute" for item in filters)
+    has_refused_filter = any(str(item.get("column") if isinstance(item, dict) else "").lower() == "is_refused_by_adyen" for item in filters)
+
+    if not dimension:
+        return ["按 issuing_country 看交易笔数排名前5，并给出交易笔数。"]
+    if metric == "eur_amount":
+        if dimension == "merchant":
+            return ["从全部 payments 表重新按 issuing_country 看 eur_amount 总金额最高的前5。"]
+        return [f"按 {dimension} 看交易笔数排名前5，并给出交易笔数。"]
+    if has_fraud_filter:
+        return [f"按 {dimension} 看 eur_amount 总金额最高的前5。"]
+    if has_refused_filter:
+        return [f"按 {dimension} 看 eur_amount 总金额最高的前5。"]
+    questions = [f"按 {dimension} 看 eur_amount 总金额最高的前5。"]
+    return _dedupe_points(questions, limit=3)
+
+
+def _is_dabstep_payment_context(context: _FrameContext) -> bool:
+    debug = _as_dict(context.response.get("debug"))
+    if str(debug.get("dataset_kind") or "") == "dabstep_context":
+        return True
+    columns = {str(column) for column in context.columns}
+    if "eur_amount" in columns and columns.intersection(_DABSTEP_RANKING_DIMENSIONS):
+        return True
+    params = _as_dict(context.logic_form.get("parameters"))
+    signals = {
+        str(params.get("table") or ""),
+        str(params.get("metric") or ""),
+        str(params.get("dimension") or ""),
+        str(context.logic_form.get("group_by") or ""),
+    }
+    return "payments" in signals or bool(signals.intersection(_DABSTEP_RANKING_DIMENSIONS))
+
+
+def _normalize_dabstep_dimension(value: Any) -> str:
+    lowered = str(value or "").strip().lower()
+    aliases = {
+        "country": "issuing_country",
+        "国家": "issuing_country",
+        "商户": "merchant",
+        "merchant": "merchant",
+        "issuing country": "issuing_country",
+        "issuing_country": "issuing_country",
+        "ip country": "ip_country",
+        "ip_country": "ip_country",
+        "acquirer country": "acquirer_country",
+        "acquirer_country": "acquirer_country",
+        "card scheme": "card_scheme",
+        "card_scheme": "card_scheme",
+        "shopper interaction": "shopper_interaction",
+        "shopper_interaction": "shopper_interaction",
+        "aci": "aci",
+    }
+    return aliases.get(lowered, lowered)
 
 
 def _missing_information(context: _FrameContext) -> str:

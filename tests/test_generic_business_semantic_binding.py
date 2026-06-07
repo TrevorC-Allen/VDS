@@ -4,12 +4,14 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 
 from backend.routers.data_agent import _http_status_for_response
 from backend.services.data_agent_service import DataAgentService
 from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.contracts.execution_contracts import ExecutionResult
+from data_agent_core.core.intent_parser import parse_question
 from data_agent_core.llm.client import MockLLMClient
 from data_agent_core.task_execution_contracts import (
     TaskExecutionContract,
@@ -64,6 +66,143 @@ def _params(response: dict[str, Any]) -> dict[str, Any]:
 
 def _rows(response: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in ((response.get("result") or {}).get("rows") or []) if isinstance(row, dict)]
+
+
+def _dabstep_context() -> dict[str, Any]:
+    return {
+        "payments": pd.DataFrame(
+            {
+                "psp_reference": ["P1", "P2", "P3"],
+                "merchant": ["M1", "M2", "M1"],
+                "issuing_country": ["NL", "BE", "NL"],
+                "ip_country": ["BE", "NL", "BE"],
+                "acquirer_country": ["NL", "US", "NL"],
+                "card_scheme": ["NexPay", "GlobalCard", "NexPay"],
+                "shopper_interaction": ["Ecommerce", "POS", "Ecommerce"],
+                "eur_amount": [10.0, 20.0, 5.0],
+                "has_fraudulent_dispute": [True, False, True],
+                "is_refused_by_adyen": [False, True, False],
+                "aci": ["A", "B", "A"],
+            }
+        )
+    }
+
+
+def test_dabstep_chinese_amount_topn_binds_metric_dimension_and_sum() -> None:
+    logic = parse_question("按 merchant 看 eur_amount 总金额最高的前5个商户。", context=_dabstep_context())
+
+    assert logic.operation == "filtered_metric_ranking"
+    assert logic.metric == "eur_amount"
+    assert logic.group_by == "merchant"
+    assert logic.parameters["dimension"] == "merchant"
+    assert logic.parameters["metric"] == "eur_amount"
+    assert logic.parameters["aggregation"] == "sum"
+    assert logic.parameters["limit"] == 5
+
+
+def test_dabstep_recommended_amount_topn_keeps_explicit_country_dimension() -> None:
+    logic = parse_question("按 issuing_country 看 eur_amount 总金额最高的前5。", context=_dabstep_context())
+
+    assert logic.operation == "filtered_metric_ranking"
+    assert logic.metric == "eur_amount"
+    assert logic.group_by == "issuing_country"
+    assert logic.parameters["dimension"] == "issuing_country"
+    assert logic.parameters["metric"] == "eur_amount"
+    assert logic.parameters["aggregation"] == "sum"
+    assert logic.parameters["limit"] == 5
+
+
+def test_dabstep_chinese_transaction_count_topn_binds_dimension_count_metric() -> None:
+    logic = parse_question("按 acquirer_country 看交易数量排名前5。", context=_dabstep_context())
+
+    assert logic.operation == "ranking"
+    assert logic.group_by == "acquirer_country"
+    assert logic.metric is None
+    assert logic.parameters["dimension"] == "acquirer_country"
+    assert logic.parameters["aggregation"] == "count"
+    assert logic.parameters["limit"] == 5
+
+
+def test_dabstep_recommended_count_override_does_not_inherit_amount_metric() -> None:
+    logic = parse_question("按 merchant 看交易最多的前5个商户，不要按 eur_amount，要按交易笔数统计。", context=_dabstep_context())
+
+    assert logic.operation == "ranking"
+    assert logic.group_by == "merchant"
+    assert logic.metric is None
+    assert logic.parameters["dimension"] == "merchant"
+    assert logic.parameters["aggregation"] == "count"
+    assert logic.parameters["limit"] == 5
+
+
+def test_dabstep_payment_transaction_count_question_binds_row_count_without_empty_filter() -> None:
+    logic = parse_question("这个 DABstep 数据有多少笔 payment transaction？", context=_dabstep_context())
+
+    assert logic.operation == "row_count"
+    assert logic.filters == {}
+    assert logic.parameters["table"] == "payments"
+
+
+def test_dabstep_shopper_interaction_amount_topn_binds_sum_metric() -> None:
+    logic = parse_question("按 shopper_interaction 看 eur_amount 总金额排名前2。", context=_dabstep_context())
+
+    assert logic.operation == "filtered_metric_ranking"
+    assert logic.metric == "eur_amount"
+    assert logic.group_by == "shopper_interaction"
+    assert logic.parameters["dimension"] == "shopper_interaction"
+    assert logic.parameters["aggregation"] == "sum"
+    assert logic.parameters["limit"] == 2
+
+
+def test_dabstep_amount_topn_prefers_explicit_group_by_over_metric_column_order() -> None:
+    context = _dabstep_context()
+    context["payments"] = context["payments"][
+        [
+            "psp_reference",
+            "eur_amount",
+            "merchant",
+            "issuing_country",
+            "ip_country",
+            "acquirer_country",
+            "card_scheme",
+            "shopper_interaction",
+            "has_fraudulent_dispute",
+            "is_refused_by_adyen",
+            "aci",
+        ]
+    ]
+
+    logic = parse_question("按 shopper_interaction 看 eur_amount 总金额排名前2。", context=context)
+
+    assert logic.operation == "filtered_metric_ranking"
+    assert logic.metric == "eur_amount"
+    assert logic.group_by == "shopper_interaction"
+    assert logic.parameters["dimension"] == "shopper_interaction"
+
+
+def test_dabstep_chinese_fraud_count_topn_uses_fraud_dispute_filter() -> None:
+    logic = parse_question("按 ip_country 看欺诈交易数量前5，欺诈按 has_fraudulent_dispute=True 统计。", context=_dabstep_context())
+
+    assert logic.operation == "filtered_metric_ranking"
+    assert logic.group_by == "ip_country"
+    assert logic.filters == {"has_fraudulent_dispute": True}
+    assert logic.parameters["dimension"] == "ip_country"
+    assert logic.parameters["aggregation"] == "count"
+    assert logic.parameters["limit"] == 5
+    assert logic.numerator == {
+        "aggregation": "count",
+        "field": "__row_count__",
+        "filter": {"has_fraudulent_dispute": True},
+        "scope": "filtered_rows",
+    }
+
+
+def test_dabstep_amount_metric_override_is_not_misread_as_transaction_count() -> None:
+    logic = parse_question("按 merchant 看总交易金额前5，总金额用 eur_amount 求和，不是交易笔数。", context=_dabstep_context())
+
+    assert logic.operation == "filtered_metric_ranking"
+    assert logic.group_by == "merchant"
+    assert logic.metric == "eur_amount"
+    assert logic.parameters["aggregation"] == "sum"
 
 
 def test_product_ranking_binds_generic_product_label_and_explicit_formula(

@@ -38,6 +38,8 @@ def build_dataset_source_overview_response(
         "question": question,
         "answer_type": "overview",
         "execution_mode": "overview",
+        "semantic_status": "passed",
+        "semantic_success": True,
         "answer": answer,
         "logic_form": {
             "task_type": "dataset_source_overview",
@@ -73,6 +75,7 @@ def build_dataset_source_overview_response(
         },
         "verification": {
             "passed": True,
+            "semantic_status": "passed",
             "confidence": 1.0,
             "notes": ["Source-file overview was computed from the stored upload manifest and readable source excerpts."],
         },

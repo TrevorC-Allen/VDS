@@ -39,6 +39,7 @@ FIELD_ALIASES = {
     "ip addresses": "ip_address",
     "ip": "ip_address",
     "merchant": "merchant",
+    "商户": "merchant",
     "shopper": "email_address",
     "customer": "email_address",
     "产品": "product",
@@ -88,8 +89,14 @@ FIELD_ALIASES = {
     "amount": "eur_amount",
     "transaction amount": "eur_amount",
     "transaction value": "eur_amount",
+    "交易金额": "eur_amount",
+    "支付金额": "eur_amount",
     "fraudulent disputes": "has_fraudulent_dispute",
     "fraudulent dispute": "has_fraudulent_dispute",
+    "欺诈交易": "has_fraudulent_dispute",
+    "欺诈": "has_fraudulent_dispute",
+    "拒付交易": "is_refused_by_adyen",
+    "拒付": "is_refused_by_adyen",
     "email address": "email_address",
     "account type": "account_type",
     "account_type": "account_type",
@@ -319,8 +326,12 @@ def _extract_group_by(question: str, default: str = "shopper_interaction") -> st
         "card_scheme": "card_scheme",
         "shopper_interaction": "shopper_interaction",
         "merchant": "merchant",
+        "商户": "merchant",
         "hour of day": "hour_of_day",
         "hour": "hour_of_day",
+        "发卡国家": "issuing_country",
+        "收单国家": "acquirer_country",
+        "ip国家": "ip_country",
     }
     for text, column in aliases.items():
         if any(
@@ -425,6 +436,126 @@ def _is_scalar_metric_extreme_question(lowered: str) -> bool:
     )
 
 
+def _has_dabstep_payments_context(context: Mapping[str, Any]) -> bool:
+    payments = context.get("payments")
+    if payments is None and isinstance(context.get("tables"), Mapping):
+        payments = context.get("tables", {}).get("payments")
+    columns = {str(column) for column in getattr(payments, "columns", [])}
+    return {"psp_reference", "eur_amount", "has_fraudulent_dispute", "is_refused_by_adyen"}.issubset(columns)
+
+
+def _guidelines_request_compact_benchmark_answer(guidelines: str) -> bool:
+    lowered = str(guidelines or "").lower()
+    return any(
+        token in lowered
+        for token in (
+            "answer must be just",
+            "answer must be in the form",
+            "comma separated list",
+            "comma delimited list",
+        )
+    )
+
+
+def _is_transaction_count_ranking_question(question: str, lowered: str) -> bool:
+    compact = re.sub(r"\s+", "", str(question or "").lower())
+    if "highest number of transactions" in lowered and lowered.startswith("which "):
+        return False
+    if any(token in compact for token in ("不是交易笔数", "不要按交易笔数", "nottransactioncount", "notbytransactioncount")):
+        return False
+    count_tokens = (
+        "number of transactions",
+        "transaction count",
+        "transaction counts",
+        "most transactions",
+        "交易最多",
+        "交易最少",
+        "交易数量",
+        "交易数",
+        "交易笔数",
+        "交易次数",
+        "支付数量",
+        "支付笔数",
+    )
+    return _has_dabstep_topn_signal(question, lowered) and any(token in lowered or token in compact for token in count_tokens)
+
+
+def _is_dabstep_amount_ranking_question(question: str, lowered: str) -> bool:
+    compact = re.sub(r"\s+", "", str(question or "").lower())
+    amount_tokens = (
+        "transaction value",
+        "transaction amount",
+        "eur_amount",
+        "amount",
+        "交易金额",
+        "交易额",
+        "支付金额",
+        "总金额",
+        "金额",
+    )
+    return _has_dabstep_topn_signal(question, lowered) and any(token in lowered or token in compact for token in amount_tokens)
+
+
+def _is_dabstep_row_count_question(question: str, lowered: str) -> bool:
+    if _has_dabstep_topn_signal(question, lowered):
+        return False
+    compact = re.sub(r"\s+", "", str(question or "").lower())
+    dabstep_count_tokens = (
+        "how many transactions",
+        "how many payment transactions",
+        "payment transaction count",
+        "payment transactions count",
+        "number of payment transactions",
+        "total payment transactions",
+        "交易总数",
+        "总交易数",
+        "总交易笔数",
+        "多少笔交易",
+        "有多少笔交易",
+        "多少笔paymenttransaction",
+        "多少笔paymenttransactions",
+    )
+    return _is_row_count_question(lowered) or any(token in lowered or token in compact for token in dabstep_count_tokens)
+
+
+def _has_dabstep_topn_signal(question: str, lowered: str) -> bool:
+    compact = re.sub(r"\s+", "", str(question or "").lower())
+    return (
+        _is_ranking_question(lowered)
+        or bool(re.search(r"前(?:\d+|[一二两三四五六七八九十]+)", compact))
+        or any(token in lowered or token in compact for token in ("highest", "lowest", "top", "bottom", "最多", "最高", "最低", "最少", "排名", "排行"))
+    )
+
+
+def _dabstep_boolean_count_ranking_spec(question: str, lowered: str) -> dict[str, str] | None:
+    if not _is_transaction_count_ranking_question(question, lowered):
+        return None
+    compact = re.sub(r"\s+", "", str(question or "").lower())
+    if any(token in lowered or token in compact for token in ("fraudulent", "fraud", "欺诈")):
+        return {
+            "field": "has_fraudulent_dispute",
+            "metric_name": "fraudulent_transaction_count",
+            "description": "Count of payment transactions where has_fraudulent_dispute is true.",
+        }
+    if any(token in lowered or token in compact for token in ("refused", "refusal", "拒付", "被拒")):
+        return {
+            "field": "is_refused_by_adyen",
+            "metric_name": "refused_transaction_count",
+            "description": "Count of payment transactions where is_refused_by_adyen is true.",
+        }
+    return None
+
+
+def _extract_dabstep_ranking_group_by(question: str, context: dict[str, Any] | None, *, default: str = "merchant") -> str:
+    group_by = _extract_group_by(question, default="")
+    if group_by:
+        return group_by
+    field = _extract_field_name(question, context)
+    if field in {"eur_amount", "has_fraudulent_dispute", "is_refused_by_adyen", "psp_reference"}:
+        return default
+    return field or default
+
+
 def _ranking_answer_target(question: str, guidelines: str, group_by: str | None) -> str | None:
     lowered = question.lower()
     guide = guidelines.lower()
@@ -476,6 +607,10 @@ def _extract_field_name(question: str, context: dict[str, Any] | None = None) ->
 
     lowered = question.lower()
     for alias, column in FIELD_ALIASES.items():
+        if any(ord(char) > 127 for char in alias):
+            if alias in question:
+                return column
+            continue
         if re.search(rf"\b{re.escape(alias)}\b", lowered):
             return column
     for pattern in (r"field\s+([a-zA-Z_ ]+?)(?:\?|$|,|\s+in\s+)", r"column\s+([a-zA-Z_ ]+?)(?:\?|$|,|\s+in\s+)"):
@@ -522,6 +657,100 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
     context = context or {}
     lowered = question.lower()
     output_format = {"guidelines": guidelines}
+    dabstep_context = _has_dabstep_payments_context(context)
+    compact_benchmark_answer_requested = _guidelines_request_compact_benchmark_answer(guidelines)
+
+    if dabstep_context and not compact_benchmark_answer_requested:
+        early_boolean_count_ranking = _dabstep_boolean_count_ranking_spec(question, lowered)
+        if early_boolean_count_ranking:
+            event_field = str(early_boolean_count_ranking["field"])
+            group_by = _extract_dabstep_ranking_group_by(question, context, default="merchant")
+            if group_by == event_field:
+                group_by = _extract_group_by(question, default="merchant")
+            return make_logic_form(
+                task_type="ranking",
+                operation="filtered_metric_ranking",
+                metric=None,
+                metric_definition={
+                    "name": str(early_boolean_count_ranking["metric_name"]),
+                    "description": str(early_boolean_count_ranking["description"]),
+                    "aggregation": "count",
+                    "source": "payments.csv",
+                },
+                numerator={"aggregation": "count", "field": "__row_count__", "filter": {event_field: True}, "scope": "filtered_rows"},
+                denominator={"scope": "not_required"},
+                group_by=group_by,
+                filters={event_field: True},
+                parameters={
+                    "table": "payments",
+                    "dimension": group_by,
+                    "aggregation": "count",
+                    "sort_order": "asc" if _is_bottom_question(lowered) else "desc",
+                    "limit": _extract_limit(question, default=5),
+                },
+                output_format=output_format | {"answer_type": "table"},
+            )
+        if _is_transaction_count_ranking_question(question, lowered):
+            group_by = _extract_dabstep_ranking_group_by(question, context, default="merchant")
+            return make_logic_form(
+                task_type="ranking",
+                operation="ranking",
+                metric=None,
+                metric_definition={
+                    "name": "transaction_count",
+                    "description": "Count of payment transactions grouped by the requested payment dimension.",
+                    "aggregation": "count",
+                    "source": "payments.csv",
+                },
+                numerator={"aggregation": "count", "field": "__row_count__", "scope": "filtered_rows"},
+                denominator={"scope": "not_required"},
+                group_by=group_by,
+                objective="maximum" if not _is_bottom_question(lowered) else "minimum",
+                parameters={
+                    "table": "payments",
+                    "dimension": group_by,
+                    "aggregation": "count",
+                    "sort_order": "asc" if _is_bottom_question(lowered) else "desc",
+                    "limit": _extract_limit(question, default=5),
+                },
+                output_format=output_format | {"answer_type": "table"},
+            )
+        if _is_dabstep_amount_ranking_question(question, lowered):
+            group_by = _extract_dabstep_ranking_group_by(question, context, default="merchant")
+            return make_logic_form(
+                task_type="ranking",
+                operation="filtered_metric_ranking",
+                metric="eur_amount",
+                group_by=group_by,
+                filters={
+                    key: value
+                    for key, value in {
+                        "merchant": None if group_by == "merchant" else _extract_merchant(question, context),
+                        "card_scheme": None if group_by == "card_scheme" else _extract_card_scheme(question),
+                        "year": _extract_year(question) if re.search(r"\b20\d{2}\b", question) else None,
+                        "month_range": _extract_quarter_month_range(question),
+                    }.items()
+                    if value is not None
+                },
+                parameters={
+                    "table": "payments",
+                    "metric": "eur_amount",
+                    "dimension": group_by,
+                    "aggregation": _infer_aggregation(lowered, default="mean" if "avg" in lowered or "average" in lowered else "sum"),
+                    "sort_order": "asc" if _is_bottom_question(lowered) else "desc",
+                    "limit": _extract_limit(question, default=5),
+                },
+                output_format=output_format | {"answer_type": "table"},
+            )
+        if _is_dabstep_row_count_question(question, lowered):
+            card_scheme = _extract_card_scheme(question)
+            return make_logic_form(
+                task_type="aggregation",
+                operation="row_count",
+                filters={"card_scheme": card_scheme} if card_scheme else {},
+                parameters={"table": "payments"},
+                output_format=output_format | {"answer_type": "number"},
+            )
 
     if _is_worst_fraud_segment_question(lowered):
         dimensions = _extract_segment_dimensions(question)
@@ -786,10 +1015,11 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
                 parameters={"table": "payments"},
                 output_format=output_format | {"answer_type": "number"},
             )
+        card_scheme = _extract_card_scheme(question)
         return make_logic_form(
             task_type="aggregation",
             operation="row_count",
-            filters={"card_scheme": _extract_card_scheme(question)},
+            filters={"card_scheme": card_scheme} if card_scheme else {},
             parameters={"table": "payments"},
             output_format=output_format | {"answer_type": "number"},
         )
@@ -1113,6 +1343,66 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines, 3)},
         )
 
+    boolean_count_ranking = (
+        _dabstep_boolean_count_ranking_spec(question, lowered)
+        if dabstep_context and not compact_benchmark_answer_requested
+        else None
+    )
+    if boolean_count_ranking:
+        event_field = str(boolean_count_ranking["field"])
+        group_by = _extract_dabstep_ranking_group_by(question, context, default="merchant")
+        if group_by == event_field:
+            group_by = _extract_group_by(question, default="merchant")
+        return make_logic_form(
+            task_type="ranking",
+            operation="filtered_metric_ranking",
+            metric=None,
+            metric_definition={
+                "name": str(boolean_count_ranking["metric_name"]),
+                "description": str(boolean_count_ranking["description"]),
+                "aggregation": "count",
+                "source": "payments.csv",
+            },
+            numerator={"aggregation": "count", "field": "__row_count__", "filter": {event_field: True}, "scope": "filtered_rows"},
+            denominator={"scope": "not_required"},
+            group_by=group_by,
+            filters={event_field: True},
+            parameters={
+                "table": "payments",
+                "dimension": group_by,
+                "aggregation": "count",
+                "sort_order": "asc" if _is_bottom_question(lowered) else "desc",
+                "limit": _extract_limit(question, default=5),
+            },
+            output_format=output_format | {"answer_type": "table"},
+        )
+
+    if dabstep_context and not compact_benchmark_answer_requested and _is_transaction_count_ranking_question(question, lowered):
+        group_by = _extract_dabstep_ranking_group_by(question, context, default="merchant")
+        return make_logic_form(
+            task_type="ranking",
+            operation="ranking",
+            metric=None,
+            metric_definition={
+                "name": "transaction_count",
+                "description": "Count of payment transactions grouped by the requested payment dimension.",
+                "aggregation": "count",
+                "source": "payments.csv",
+            },
+            numerator={"aggregation": "count", "field": "__row_count__", "scope": "filtered_rows"},
+            denominator={"scope": "not_required"},
+            group_by=group_by,
+            objective="maximum" if not _is_bottom_question(lowered) else "minimum",
+            parameters={
+                "table": "payments",
+                "dimension": group_by,
+                "aggregation": "count",
+                "sort_order": "asc" if _is_bottom_question(lowered) else "desc",
+                "limit": _extract_limit(question, default=5),
+            },
+            output_format=output_format | {"answer_type": "table"},
+        )
+
     if _is_scalar_metric_extreme_question(lowered):
         aggregation = "min" if _is_bottom_question(lowered) else "max"
         return make_logic_form(
@@ -1124,8 +1414,17 @@ def parse_question(question: str, guidelines: str = "", context: dict[str, Any] 
             output_format=output_format | {"answer_type": "number", "decimals": _decimal_places(guidelines)},
         )
 
-    if _is_ranking_question(lowered) and ("transaction value" in lowered or "eur_amount" in lowered or "amount" in lowered):
-        group_by = _extract_field_name(question, context) or _extract_group_by(question, default="merchant")
+    if _is_ranking_question(lowered) and (
+        "transaction value" in lowered
+        or "eur_amount" in lowered
+        or "amount" in lowered
+        or (dabstep_context and any(token in question for token in ("交易金额", "支付金额", "总金额", "金额")))
+    ):
+        group_by = (
+            _extract_dabstep_ranking_group_by(question, context, default="merchant")
+            if dabstep_context and not compact_benchmark_answer_requested
+            else _extract_field_name(question, context) or _extract_group_by(question, default="merchant")
+        )
         if "country" in lowered:
             group_by = "ip_country" if "ip" in lowered else "issuing_country"
         filters = {
@@ -5369,6 +5668,7 @@ def _is_aggregation_question(lowered: str) -> bool:
             "记录数",
             "条数",
             "笔数",
+            "多少笔",
             "次数",
             "个数",
             "金额",

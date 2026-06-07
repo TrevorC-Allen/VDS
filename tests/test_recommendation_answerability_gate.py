@@ -9,6 +9,7 @@ import pytest
 from backend.services.data_agent_service import DataAgentService
 from backend.storage.temp_file_store import TempFileStore
 from data_agent_core.llm.client import MockLLMClient
+from data_agent_core.output.text_answer_framework import apply_text_answer_framework
 from scripts.run_multi_dataset_real_user_gate import (
     collect_recommended_questions,
     infer_recommendation_expected,
@@ -76,6 +77,144 @@ def _assert_recommendation_passes(
     assert response.get("semantic_status") == "passed", response.get("answer")
     assert score.score == "pass", score.hard_reasons + score.soft_reasons
     return response
+
+
+def test_dabstep_payment_recommendations_override_retail_country_sales_templates() -> None:
+    response = {
+        "success": True,
+        "semantic_status": "passed",
+        "answer_type": "table",
+        "answer": "count最高的 5 个国家是：NL、IT、BE、SE、FR。",
+        "logic_form": {
+            "operation": "ranking",
+            "parameters": {"table": "payments", "dimension": "issuing_country", "aggregation": "count"},
+        },
+        "result": {
+            "columns": ["issuing_country", "count"],
+            "rows": [
+                {"issuing_country": "NL", "count": 29622},
+                {"issuing_country": "IT", "count": 28329},
+                {"issuing_country": "BE", "count": 23040},
+                {"issuing_country": "SE", "count": 21716},
+                {"issuing_country": "FR", "count": 14175},
+            ],
+        },
+        "insight": {
+            "next_questions": [
+                "这些国家分别占总销售额的比例是多少？",
+                "按这些国家看月份销售趋势。",
+            ]
+        },
+        "debug": {
+            "dataset_kind": "dabstep_context",
+            "operation": "ranking",
+            "execution_trace": {
+                "aggregation": "count",
+                "groupby_columns": ["issuing_country"],
+                "filters_applied": [],
+            },
+        },
+    }
+
+    framed = apply_text_answer_framework(response, question="按 issuing_country 看交易笔数排名前5，并给出交易笔数。")
+    questions = collect_recommended_questions(framed)
+
+    assert questions == ["按 issuing_country 看 eur_amount 总金额最高的前5"]
+    assert not any("销售额" in question or "Quantity * UnitPrice" in question for question in questions)
+
+
+def test_dabstep_amount_gap_recommendation_is_not_scored_as_retail_sales_formula() -> None:
+    expected = infer_recommendation_expected("第一名和第二名 eur_amount 总金额差多少？")
+    response = {
+        "success": True,
+        "semantic_status": "passed",
+        "answer": "Crossfit_Hanna 比 Golfclub_Baron_Friso 高 2523256.28。",
+        "logic_form": {"parameters": {"metric": "eur_amount", "dimension": "merchant", "aggregation": "sum"}},
+        "result": {
+            "columns": ["merchant", "eur_amount"],
+            "rows": [
+                {"merchant": "Crossfit_Hanna", "eur_amount": 5076636.9},
+                {"merchant": "Golfclub_Baron_Friso", "eur_amount": 2553380.62},
+            ],
+        },
+        "debug": {
+            "execution_trace": {
+                "metric_columns": ["eur_amount"],
+                "groupby_columns": ["merchant"],
+                "aggregation": "sum",
+            }
+        },
+    }
+
+    score = score_response(question="第一名和第二名 eur_amount 总金额差多少？", response=response, http_status=200, expected=expected)
+
+    assert expected.require_formula is False
+    assert expected.allowed_metrics == ("eur_amount",)
+    assert score.score == "pass", score.hard_reasons
+
+
+def test_dabstep_amount_ranking_recommends_context_safe_country_amount_drilldown() -> None:
+    response = {
+        "success": True,
+        "semantic_status": "passed",
+        "answer_type": "table",
+        "answer": "eur_amount最高的 5 个merchant是：Crossfit_Hanna、Golfclub_Baron_Friso、Rafa_AI、Belles_cookbook_store、Martinis_Fine_Steakhouse。",
+        "logic_form": {
+            "operation": "filtered_metric_ranking",
+            "parameters": {"table": "payments", "dimension": "merchant", "metric": "eur_amount", "aggregation": "sum"},
+        },
+        "result": {
+            "columns": ["merchant", "eur_amount"],
+            "rows": [
+                {"merchant": "Crossfit_Hanna", "eur_amount": 5076636.9},
+                {"merchant": "Golfclub_Baron_Friso", "eur_amount": 2553380.62},
+                {"merchant": "Rafa_AI", "eur_amount": 2544832.96},
+                {"merchant": "Belles_cookbook_store", "eur_amount": 1262219.8},
+                {"merchant": "Martinis_Fine_Steakhouse", "eur_amount": 1260227.18},
+            ],
+        },
+        "insight": {"next_questions": ["第一名和第二名差多少？"]},
+        "debug": {
+            "dataset_kind": "dabstep_context",
+            "operation": "filtered_metric_ranking",
+            "execution_trace": {
+                "aggregation": "sum",
+                "metric_columns": ["eur_amount"],
+                "groupby_columns": ["merchant"],
+                "filters_applied": [],
+            },
+        },
+    }
+
+    framed = apply_text_answer_framework(response, question="按 merchant 看 eur_amount 总金额最高的前5个商户。")
+    questions = collect_recommended_questions(framed)
+
+    assert questions == ["从全部 payments 表重新按 issuing_country 看 eur_amount 总金额最高的前5"]
+    expected = infer_recommendation_expected(questions[0])
+    assert expected.allowed_dimensions == ("issuing_country",)
+    assert expected.allowed_metrics == ("eur_amount",)
+
+
+def test_dabstep_source_overview_recommends_computable_payment_question() -> None:
+    response = {
+        "success": True,
+        "semantic_status": "passed",
+        "answer_type": "overview",
+        "answer": "这次上传包含 payments.csv 和规则文件。",
+        "logic_form": {"operation": "dataset_source_overview", "parameters": {}},
+        "overview_report": {"report_type": "source_overview_report"},
+        "result": {
+            "columns": ["文件", "类型", "用途", "读取状态", "关键内容"],
+            "rows": [{"文件": "payments.csv", "类型": "表格数据", "用途": "主事实表"}],
+        },
+        "insight": {"next_questions": ["按 类型 看 eur_amount 总金额最高的前5。"]},
+        "debug": {"dataset_kind": "dabstep_context", "operation": "dataset_source_overview"},
+    }
+
+    framed = apply_text_answer_framework(response, question="这个上传数据包含哪些表？每张表的行数和字段是什么？")
+    questions = collect_recommended_questions(framed)
+
+    assert questions == ["按 issuing_country 看交易笔数排名前5，并给出交易笔数"]
 
 
 def test_topn_recommendations_are_executable_in_same_conversation(
