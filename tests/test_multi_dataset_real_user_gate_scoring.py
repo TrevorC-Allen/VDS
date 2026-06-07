@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from data_agent_core.contracts.analysis_contracts import AnalysisPlan, LogicForm, UserQuestion
+from data_agent_core.contracts.execution_contracts import ExecutionResult
+from data_agent_core.contracts.verification_contracts import VerificationResult
+from data_agent_core.output.response_builder import build_response
 from scripts.run_multi_dataset_real_user_gate import (
     build_dataset_manifest,
     collect_recommended_questions,
     infer_recommendation_expected,
+    random_gate_cases,
     summarize_recommendations,
 )
 
@@ -101,3 +106,65 @@ def test_recommendation_summary_requires_every_record_to_pass() -> None:
     assert summary["soft_fail"] == 1
     assert summary["answerability_rate"] == 0.5
     assert summary["failed_questions"][0]["recommended_question"] == "bad followup"
+
+
+def test_generic_random_gate_keeps_independent_questions_out_of_shared_context(tmp_path: Path) -> None:
+    csv_path = tmp_path / "orders.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "order_id,order_date,revenue,country",
+                "O1,2024-01-01,10.5,US",
+                "O2,2024-01-02,20.0,CA",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    manifest = build_dataset_manifest(csv_path, dataset_name="synthetic_orders")
+
+    cases = random_gate_cases("synthetic_orders", manifest, seed=7, total_questions=12)
+
+    assert len(cases) == 12
+    assert all(case.conversation_key == "" for case in cases)
+
+
+def test_response_success_uses_semantic_contract_when_backend_consistency_differs() -> None:
+    plan = AnalysisPlan(
+        plan_id="plan_trend",
+        logic_form=LogicForm(
+            task_type="trend",
+            operation="aggregation",
+            metric="开通天数",
+            group_by="month",
+            parameters={"metric": "开通天数", "dimension": "month", "time_bucket": "month"},
+            output_format={"answer_type": "table"},
+        ),
+    )
+    result = ExecutionResult(
+        backend="pandas",
+        success=True,
+        columns=["month", "开通天数"],
+        rows=[{"month": "2025-01", "开通天数": 10}, {"month": "2025-02", "开通天数": 20}],
+        value=[{"month": "2025-01", "开通天数": 10}, {"month": "2025-02", "开通天数": 20}],
+    )
+    verification = VerificationResult(
+        passed=False,
+        pandas_sql_consistent=False,
+        semantic_passed=True,
+        issues=["Execution values differ after normalization."],
+    )
+    verification.semantic_status = "passed"  # type: ignore[attr-defined]
+    verification.contract_report = {"task_family": "trend", "passed": True, "violations": [], "warnings": []}  # type: ignore[attr-defined]
+    verification.task_contract = {"task_family": "trend", "required_output_columns": ["month", "开通天数"]}  # type: ignore[attr-defined]
+
+    response = build_response(
+        run_id="run_trend",
+        user_question=UserQuestion(dataset_id="ds", question="按月份看开通天数趋势。", execution_mode="dual"),
+        plan=plan,
+        execution_result=result,
+        verification=verification,
+    )
+
+    assert response.success is True
+    assert response.semantic_status == "passed"
+    assert response.result["columns"] == ["month", "开通天数"]

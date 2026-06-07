@@ -60,9 +60,14 @@ def build_response(
     if semantic_failure_answer is None:
         answer = _referent_answer_prefix(verification) + answer
     not_applicable_attribution = classify_not_applicable(execution_result.value, plan)
+    verification_user_passed = _verification_user_passed(
+        verification=verification,
+        semantic_success=semantic_success,
+        execution_result=execution_result,
+    )
     success = (
         execution_result.success
-        and verification.passed
+        and verification_user_passed
         and semantic_success
         and canonical_answer.validation.passed
         and not_applicable_attribution.get("category") != "capability_gap"
@@ -474,6 +479,20 @@ def _semantic_success(verification: VerificationResult, semantic_status: str) ->
     if semantic_status == "warning" and getattr(verification, "semantic_passed", None) is False:
         return False
     return bool(getattr(verification, "semantic_passed", True) is not False)
+
+
+def _verification_user_passed(
+    *,
+    verification: VerificationResult,
+    semantic_success: bool,
+    execution_result: ExecutionResult,
+) -> bool:
+    if getattr(verification, "passed", False):
+        return True
+    contract_report = getattr(verification, "contract_report", None)
+    contract_passed = bool(contract_report.get("passed")) if isinstance(contract_report, dict) else False
+    has_result = bool(execution_result.rows) or execution_result.value not in (None, "", [], {})
+    return bool(semantic_success and contract_passed and has_result)
 
 
 def _referent_answer_prefix(verification: VerificationResult) -> str:

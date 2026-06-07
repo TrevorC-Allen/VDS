@@ -70,6 +70,96 @@ YYYY-MM-DD HH:MM TZ
 
 ### 是否已同步 README
 
+2026-06-07 21:25 CST
+
+### 本次目标
+
+在 UK Retail + recommendation/correction/current multi runner 阶段通过并提交后，进入多数据集 Stage 1：五类人造假文件初筛 gate。按追加 steering 的停止规则，先定位本地五类 QueryGPT 单表数据，运行统一 runner；如果第一轮失败则停止、定位 failure layer、修复并补回归，再从 cycle 1 重新开始。当前目标是让 Stage 1 在现有 runner 覆盖的 manifest/source/recommendation/correction/random 初筛中连续 3 轮通过。
+
+### 修改文件
+
+- data_agent_core/output/response_builder.py
+- data_agent_core/output/text_answer_framework.py
+- scripts/run_multi_dataset_real_user_gate.py
+- tests/test_multi_dataset_real_user_gate_scoring.py
+- CHANGELOG_AI.md
+
+### 修改内容
+
+- 修复 `build_response` 对 semantic contract 已通过但 Pandas/SQL optional consistency 不一致的结果降级问题：当 execution success、semantic_success、contract_report passed 且结果非空时，用户可见 `success` 不再被 optional backend consistency 差异错误压成 failed。
+- 收窄推荐问题生成：当 Top 结果不足两个对象时，不再推荐“第一名和第二名差多少”；避免单对象 Top1 后续 gap 自然失败。
+- 在 Recommendation Answerability Gate 中过滤当前系统不可稳定执行的质量建议 `清洗前后核心指标...`，保留可执行的质量排序/字段建议。
+- 修复 generic random gate 的会话隔离：非 UK generic random 每题使用独立 conversation，避免独立单问被上一题上下文污染成错误 metric / dimension / trend。
+- 新增 runner 回归：generic random gate 不得给独立单问设置共享 `conversation_key`；response builder 在 semantic contract passed 但 backend consistency diff 时仍应保持用户可见 success。
+
+### 测试方式
+
+- Stage 1 首次失败证据：`/tmp/vds-real-user-gates-20260607-211516-vds_original_5`
+- Stage 1 第二次失败证据：`/tmp/vds-real-user-gates-20260607-211906-vds_original_5`
+- 修复后 Stage 1 三轮初筛：`VDS_LLM_PROVIDER=mock python3 scripts/run_multi_dataset_real_user_gate.py --dataset-dir "/Users/trevorcui/Desktop/Virtual Data Scientist测试数据/数据" --dataset-name vds_original_5 --base-url http://127.0.0.1:8878 --cycles 3 --random-questions 80 --start-service always --stop-on-failure --print-summary`
+- Focused + recommendation/correction/scoring：`python3 -m pytest tests/test_topn_filter_drilldown_followup.py tests/test_generic_business_semantic_binding.py tests/test_semantic_contract_instrumentation.py tests/test_recommendation_answerability_gate.py tests/test_correction_node_recovery.py tests/test_multi_dataset_real_user_gate_scoring.py --tb=short`
+- semantic selector：`python3 -m pytest tests -k "semantic_contract or verifier or execution_trace" --tb=short`
+- Retail Product Floor：`python3 -m pytest -rxX tests/test_retail_cli_product_floor.py --tb=short`
+- py_compile：按 steering 指定模块清单执行，并额外包含 `scripts/run_uk_retail_random_user_gate.py`、`scripts/run_multi_dataset_real_user_gate.py`
+- `git diff --check`
+
+### 测试结果
+
+- Stage 1 首次失败：source `5/4/0/1`，recommendation `9/7/0/2`，correction `1/1/0/0`，random skipped；失败层为 generic trend 外层 semantic_status 错降级、不可执行质量推荐、单对象 Top1 gap 推荐。
+- Stage 1 第二次失败：source `5/5/0/0`，recommendation `9/9/0/0`，correction `1/1/0/0`，random `80/69/0/11`；失败层转移为 generic random 把独立单问放进共享 conversation，导致 `业务类型/开通天数` 被上文污染为日期/month/订阅收入。
+- 修复后 Stage 1 当前 runner 三轮初筛输出目录：`/tmp/vds-real-user-gates-20260607-212112-vds_original_5`，`dataset_stability_report.md` 显示 `passed=True`、`cycles=3/3`。
+- Stage 1 cycle 1：source `5/5/0/0`，recommendation `9/9/0/0`，correction `1/1/0/0`，random `80/80/0/0`，HTTP5xx=0，false semantic passed=0。
+- Stage 1 cycle 2：source `5/5/0/0`，recommendation `9/9/0/0`，correction `1/1/0/0`，random `80/80/0/0`，HTTP5xx=0，false semantic passed=0。
+- Stage 1 cycle 3：source `5/5/0/0`，recommendation `9/9/0/0`，correction `1/1/0/0`，random `80/80/0/0`，HTTP5xx=0，false semantic passed=0。
+- Focused + recommendation/correction/scoring 通过：`83 passed, 230 warnings`。
+- semantic selector 通过：`59 passed, 950 deselected, 32 warnings`。
+- Retail Product Floor 通过：`48 passed, 5 xfailed, 222 warnings`；既有 xfailed 未扩大。
+- py_compile 通过。
+- `git diff --check` 通过。
+- 8878 为本轮 runner 启动服务端口；运行结束后确认无 8878 监听进程。
+
+### 遗留问题
+
+- 当前 Stage 1 通过的是现有 unified runner 的初筛覆盖：manifest/source/recommendation/correction/random。generic dataset 尚未完整实现 steering 中要求的 “至少 30 个独立单问 + 5 条 6-10 轮连续对话” 的专门 gate，因此不能把这条记录夸大为完整 Stage 1 终态验收。
+- Correction gate 对 generic dataset 当前只有 1 个用例，尚未覆盖 steering 列出的全部错 metric / dimension / time grain / comparison / filter / follow-up referent / formula 类型。
+- 本轮未运行完整 pytest、真实 LLM provider gate 或前端浏览器 smoke。
+
+### 是否影响主流程
+
+是。影响真实上传多文件 Excel 后的语义成功状态收敛、推荐生成边界和随机问题会话隔离。
+
+### 是否涉及 Benchmark
+
+涉及真实用户 gate runner，不修改 benchmark 标准答案、固定题答案或既有 benchmark scorer 断言。
+
+### 是否涉及 Microsoft Agent Framework
+
+否。
+
+### 是否影响未来多 Agent 迁移
+
+是，正向影响。修复保持在 core output / runner / test 层，减少多 Agent 默认链路在真实服务 gate 中的 false failed 和上下文污染。
+
+### 是否修改核心数据契约
+
+否。未新增核心 contract class 或字段；调整的是 response builder 对既有 semantic contract / contract_report 的成功判定使用方式。
+
+### 是否修改 API 契约
+
+否。没有新增、删除或修改 HTTP endpoint。
+
+### 是否新增或修改错误类型
+
+否。
+
+### 是否新增或修改运行追踪逻辑
+
+否。未修改核心 trace schema；runner 仍采集既有 execution_trace / semantic evidence。
+
+### 是否已同步 README
+
+否。本轮是内部真实 HTTP gate 和 runner 修复，不改变公开启动方式、安装方式、API 端点或前端入口；README 暂不需要同步。
+
 2026-06-07 21:13 CST
 
 ### 本次目标

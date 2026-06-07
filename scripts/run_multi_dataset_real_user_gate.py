@@ -42,6 +42,7 @@ SAFE_RECOMMENDATION_PREFIXES = (
     "上传或指定维表",
     "生成一份不覆盖原始数据",
     "确认哪些字段需要删除",
+    "清洗前后核心指标",
 )
 
 
@@ -435,7 +436,7 @@ def random_gate_cases(dataset_name: str, manifest: Mapping[str, Any], *, seed: i
     cases: list[uk.GateQuestion] = []
     while len(cases) < total_questions:
         case = rng.choice(base)
-        cases.append(uk.GateQuestion(case.question, case.expected, "random", f"random_{len(cases) // 6}" if len(cases) >= 30 else "", len(cases) + 1))
+        cases.append(uk.GateQuestion(case.question, case.expected, "random", "", len(cases) + 1))
     return cases
 
 

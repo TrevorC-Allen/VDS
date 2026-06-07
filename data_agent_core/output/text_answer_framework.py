@@ -2479,29 +2479,34 @@ def _ranking_followups(context: _FrameContext) -> list[str]:
     label = _preferred_label_column(context.columns, metric) or str(_as_dict(context.logic_form.get("parameters")).get("dimension") or context.logic_form.get("group_by") or "")
     label_lower = label.lower()
     metric_lower = metric.lower()
+    can_compare_top2 = len(context.rows) >= 2
     if label in {"Description", "StockCode"} or any(token in label_lower for token in ("product", "sku", "商品", "产品")):
         if metric == "Quantity" or "quantity" in metric_lower or "数量" in metric:
-            return [
-                "第一名和第二名数量差多少？",
-            ]
-        return [
-            "第一名和第二名差多少？",
+            return ["第一名和第二名数量差多少？"] if can_compare_top2 else []
+        questions = [
             "这些 Top 商品按月份趋势怎么看？",
             "这些 Top 商品主要卖给哪些国家？分别列出主要国家和销售额。",
         ]
+        if can_compare_top2:
+            questions.insert(0, "第一名和第二名差多少？")
+        return questions
     if label == "Country" or "country" in label_lower or "国家" in label:
-        return [
+        questions = [
             "这些国家分别占总销售额的比例是多少？",
             "按这些国家看月份销售趋势。",
-            "第一名和第二名差多少？",
         ]
+        if can_compare_top2:
+            questions.append("第一名和第二名差多少？")
+        return questions
     if label == "CustomerID" or "customer" in label_lower or "客户" in label:
         return [
             "这些客户的销售额分别是多少？销售额按 Quantity * UnitPrice 算。",
             "这5个客户在哪些月份最活跃？",
         ]
     generic = _schema_aware_followups(context)
-    return [*generic, "第一名和第二名差多少？"]
+    if can_compare_top2:
+        generic.append("第一名和第二名差多少？")
+    return generic
 
 
 def _trend_followups(context: _FrameContext) -> list[str]:
